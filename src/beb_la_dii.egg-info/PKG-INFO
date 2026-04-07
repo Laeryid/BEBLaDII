@@ -1,0 +1,15 @@
+Metadata-Version: 2.4
+Name: beb-la-dii
+Version: 0.1.0
+Summary: Reasoning Latent Diffusion framework (System 2 reasoning via iterative latent refinement)
+Author: Bogdan Buliakov
+Requires-Python: >=3.9
+License-File: LICENSE
+Requires-Dist: torch>=2.0.0
+Requires-Dist: transformers==4.57.2
+Requires-Dist: optimum-intel[openvino]
+Requires-Dist: faiss-cpu
+Requires-Dist: numpy
+Requires-Dist: tqdm
+Requires-Dist: mermaid-python
+Dynamic: license-file

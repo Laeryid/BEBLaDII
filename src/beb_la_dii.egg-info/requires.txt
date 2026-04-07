@@ -1,0 +1,7 @@
+torch>=2.0.0
+transformers==4.57.2
+optimum-intel[openvino]
+faiss-cpu
+numpy
+tqdm
+mermaid-python
