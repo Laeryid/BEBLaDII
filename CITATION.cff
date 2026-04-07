@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+authors:
+  - family-names: Buliakov
+    given-names: Bogdan
+title: "BEBLaDII: Reasoning Latent Diffusion"
+version: 0.1.0
+date-released: 2026-04-07
+url: "https://github.com/Laeryid/BEBLaDII"
+repository-code: "https://github.com/Laeryid/BEBLaDII"
+abstract: >-
+  BEBLaDII is a modular system for "Intelligent Diffusion" that decouples logical analysis (System 2)
+  and linguistic generation (System 1) using a latent diffusion process.
+keywords:
+  - latent diffusion
+  - reasoning
+  - RAG
+  - system 2
+  - ModernBERT

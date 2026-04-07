@@ -1,0 +1,24 @@
+[project]
+name = "beb-la-dii"
+version = "0.1.0"
+description = "Reasoning Latent Diffusion framework (System 2 reasoning via iterative latent refinement)"
+authors = [
+    { name = "Bogdan Buliakov" }
+]
+dependencies = [
+    "torch>=2.0.0",
+    "transformers==4.57.2",
+    "optimum-intel[openvino]",
+    "faiss-cpu",
+    "numpy",
+    "tqdm",
+    "mermaid-python"
+]
+requires-python = ">=3.9"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
