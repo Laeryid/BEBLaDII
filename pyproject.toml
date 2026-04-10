@@ -12,7 +12,9 @@ dependencies = [
     "faiss-cpu",
     "numpy",
     "tqdm",
-    "mermaid-python"
+    "mermaid-python",
+    "datasets",
+    "huggingface_hub"
 ]
 requires-python = ">=3.9"
 

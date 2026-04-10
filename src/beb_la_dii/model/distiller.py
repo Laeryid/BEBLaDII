@@ -1,3 +1,6 @@
+import torch
+import torch.nn as nn
+from transformers import AutoModelForCausalLM, BitsAndBytesConfig
 from .base import BEComponent
 from .dus import DUSModel
 from .projectors import InputProjector, FeatureProjector
@@ -15,8 +18,8 @@ class ReasoningDistiller(nn.Module):
                  device_map="auto"):
         super().__init__()
         
-        # 1. Загрузка Teacher (заморожен, 4-bit)
-        print(f"Загрузка Teacher: {teacher_id}...")
+        # 1. Loading Teacher (frozen, 4-bit)
+        print(f"Loading Teacher: {teacher_id}...")
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.float16,

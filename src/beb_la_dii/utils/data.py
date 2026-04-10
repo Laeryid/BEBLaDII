@@ -1,46 +1,85 @@
-from datasets import load_dataset, concatenate_datasets
 import torch
 from torch.utils.data import Dataset, DataLoader
+from indexed_parquet import IndexedParquetDataset
 from .tokenizer import get_tokenizer
+import os
 
 class DistillationDataset(Dataset):
     """
-    Датасет для дистилляции рассуждений.
-    Объединяет несколько источников и форматирует их для Qwen Tokenizer.
+    Universal dataset for distillation based on IndexedParquetDataset.
     """
-    def __init__(self, tokenizer, max_length=512, limit=100000):
+    def __init__(self, tokenizer, data_configs, max_length=512):
         self.tokenizer = tokenizer
         self.max_length = max_length
+        self.datasets = []
+        self.total_samples = 0
+        self.index_map = []
         
-        print("Загрузка датасетов...")
-        # 1. Magpie (Reasoning)
-        magpie = load_dataset("Magpie-Align/Magpie-Reasoning-150K", split="train", streaming=True)
+        current_offset = 0
         
-        # 2. Cosmopedia (Optional/Academic)
-        # 3. CulturX (RU/CS)
-        
-        # Для Фазы 1 ограничимся Magpie как основным источником рассуждений
-        self.data = []
-        count = 0
-        for item in magpie:
-            # Форматируем в чат-шаблон Qwen
-            # Magpie обычно имеет 'instruction' и 'response' (который содержит рассуждение)
-            instruction = item.get('instruction', '')
-            response = item.get('response', '')
-            
-            text = f"<|im_start|>user\n{instruction}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n{response}<|im_end|>"
-            self.data.append(text)
-            count += 1
-            if count >= limit:
-                break
+        for config in data_configs:
+            path = config['path']
+            if not os.path.exists(path):
+                print(f"Warning: Path {path} not found. Skipping.")
+                continue
                 
-        print(f"Загружено {len(self.data)} примеров.")
+            ds = IndexedParquetDataset.from_folder(path, auto_fill=True)
+            
+            if 'count' in config:
+                n = min(config['count'], len(ds))
+                ds = ds.sample(n=n)
+            elif 'ratio' in config:
+                n = int(len(ds) * config['ratio'])
+                ds = ds.sample(n=n)
+            
+            self.datasets.append(ds)
+            
+            self.index_map.append({
+                'start': current_offset,
+                'end': current_offset + len(ds),
+                'ds': ds,
+                'type': config['type']
+            })
+            current_offset += len(ds)
+            
+        self.total_samples = current_offset
+        print(f"Initialized combined dataset: {self.total_samples} samples.")
+
+    def _apply_mapper(self, item, dtype):
+        if dtype == 'raw':
+            return item.get('text', '')
+        elif dtype == 'magpie':
+            inst = item.get('instruction', '')
+            resp = item.get('response', '')
+            return f"<|im_start|>user\n{inst}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n{resp}<|im_end|>"
+        elif dtype == 'sharegpt':
+            system = item.get('system', '')
+            convs = item.get('conversations', [])
+            text = ""
+            if system:
+                text += f"<|im_start|>system\n{system}<|im_end|>\n"
+            for i, msg in enumerate(convs):
+                role = "user" if msg['from'] == 'human' else "assistant"
+                content = msg['value']
+                text += f"<|im_start|>{role}\n"
+                if role == "assistant" and i == 1: 
+                    text += f"<|thought|>\n"
+                text += f"{content}<|im_end|>\n"
+            return text
+        return str(item)
 
     def __len__(self):
-        return len(self.data)
+        return self.total_samples
 
     def __getitem__(self, idx):
-        text = self.data[idx]
+        for m in self.index_map:
+            if m['start'] <= idx < m['end']:
+                item = m['ds'][idx - m['start']]
+                text = self._apply_mapper(item, m['type'])
+                break
+        else:
+            return None
+
         encoding = self.tokenizer(
             text,
             max_length=self.max_length,
@@ -53,14 +92,20 @@ class DistillationDataset(Dataset):
             "attention_mask": encoding["attention_mask"].squeeze(0)
         }
 
-def get_dataloader(batch_size=1, max_length=512, limit=1000):
+def get_dataloader(stage='awakening', batch_size=1, max_length=512):
     tokenizer = get_tokenizer()
-    dataset = DistillationDataset(tokenizer, max_length=max_length, limit=limit)
+    print(f"Preparing data for stage: {stage}")
+    
+    if stage == 'awakening':
+        configs = [
+            {'path': 'data/CulturaX', 'type': 'raw', 'count': 90000},
+            {'path': 'data/magpie_reasoning', 'type': 'magpie', 'count': 10000}
+        ]
+    else:
+        configs = [
+            {'path': 'data/magpie_reasoning', 'type': 'magpie', 'count': 50000},
+            {'path': 'data/open_thoughts', 'type': 'sharegpt', 'count': 50000}
+        ]
+        
+    dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)
-
-if __name__ == "__main__":
-    # Тест
-    loader = get_dataloader(batch_size=2, limit=10)
-    for batch in loader:
-        print(f"Batch input_ids shape: {batch['input_ids'].shape}")
-        break

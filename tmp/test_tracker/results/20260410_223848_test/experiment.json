@@ -1,0 +1,36 @@
+{
+    "run_id": "20260410_223848_test",
+    "stage": "test",
+    "timestamp": "20260410_223848",
+    "git_commit": "b424fc3187295d38f41f64a9bac7e9b0494aab70",
+    "env": {
+        "python": "3.13.11",
+        "torch": "2.11.0+cpu",
+        "platform": "Windows-11-10.0.26200-SP0",
+        "transformers": "4.57.2"
+    },
+    "hyperparams": {
+        "lr": 0.0001,
+        "batch_size": 32
+    },
+    "datasets": [
+        {
+            "type": "test_ds",
+            "internal_index": [
+                {
+                    "path": "file1.parquet",
+                    "rows": 100
+                }
+            ],
+            "internal_indices": [
+                0,
+                1,
+                2,
+                3,
+                4
+            ]
+        }
+    ],
+    "status": "completed",
+    "finished_at": "2026-04-10T22:38:49.819184"
+}

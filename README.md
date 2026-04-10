@@ -36,6 +36,17 @@ The development of BEBLaDII follows a structured five-phase cycle as detailed in
 - **Phase 4: Iterative Crystallization** — Training the **Denoiser** for multi-step latent refinement (simulating System 2 deliberation).
 - **Phase 5: RAG Integration** — Final integration of Cross-Attention layers to ground the diffusion process in external knowledge.
 
+## Infrastructure
+
+### Component System
+The project uses a modular component system based on the `BEComponent` class. All major architectural elements (projectors, models, distillers) are implemented as components, ensuring consistency and ease of integration.
+
+### Versioning
+Weight management and configuration history are handled by the `ComponentRegistry`. Metadata and model weights are stored in a structured format within `storage/components/`, allowing for precise version tracking of every system part.
+
+### Experiments
+Training and research are managed via the `ExperimentManager`. It tracks hyperparameters, provides state snapshots, and integrates with **Weights & Biases (WandB)** for real-time monitoring of experiments stored in `storage/experiments/`.
+
 ## Citation
 
 > [!IMPORTANT]
