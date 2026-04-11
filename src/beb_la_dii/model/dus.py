@@ -44,10 +44,17 @@ def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40)
     Block 1: Layers 0-19 (20 layers)
     Block 2: Layers 8-27 (20 layers)
     """
-    print(f"Loading base model {model_id}...")
+    print(f"Loading model architecture from {model_id}...")
     config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     base_model = AutoModelForMaskedLM.from_pretrained(model_id, trust_remote_code=True)
     
+    # Check if the model is already scaled
+    current_layers = len(base_model.model.layers)
+    if current_layers == target_layers:
+        print(f"Model already has {target_layers} layers. Skipping DUS logic.")
+        base_model.gradient_checkpointing_enable()
+        return base_model
+
     layers = base_model.model.layers
     num_base_layers = len(layers)
     
@@ -57,7 +64,7 @@ def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40)
     # 2. Second block (8-27)
     new_layers.extend([copy.deepcopy(layers[i]) for i in range(8, 28)])
     
-    print(f"Created {len(new_layers)} layers from {num_base_layers} base layers.")
+    print(f"Created {len(new_layers)} layers from {num_base_layers} base layers (DUS applied).")
     
     # Inject layers
     base_model.model.layers = new_layers
