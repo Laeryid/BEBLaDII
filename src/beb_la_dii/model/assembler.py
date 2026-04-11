@@ -27,14 +27,16 @@ class ModelAssembler:
     def assemble_phase1_distiller(self, 
                                  teacher_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", 
                                  version="v1.0",
-                                 device_map="auto"):
+                                 device_map="auto",
+                                 **kwargs):
         """
         Собирает полную систему для Фазы 1 дистилляции.
         """
         print(f"Сборка системы дистилляции (версия {version})...")
         
         # 1. Загрузка/Инициализация latentBERT
-        student = self.get_component(DUSModel, "model", "latentBERT", version)
+        # Передаем kwargs (например, base_model_id)
+        student = self.get_component(DUSModel, "model", "latentBERT", version, **kwargs)
         
         # 2. Загрузка/Инициализация входного проектора
         input_projector = self.get_component(InputProjector, "projector", "qwen_to_bert_input", version)
