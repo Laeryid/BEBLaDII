@@ -3,12 +3,11 @@ import torch
 from torch.optim import AdamW
 from tqdm import tqdm
 import wandb
+import shutil
 
 # Импорты проекта
 from src.beb_la_dii.model.distiller import ReasoningDistiller
-from src.beb_la_dii.model.dus import DUSModel
 from src.beb_la_dii.model.assembler import ModelAssembler
-from src.beb_la_dii.model.component_registry import ComponentRegistry
 from src.beb_la_dii.utils.tokenizer import get_tokenizer
 from src.beb_la_dii.utils.loss import DistillationLoss
 from src.beb_la_dii.utils.data import get_dataloader
@@ -28,7 +27,48 @@ VERSION = "v1.0"
 # Настройка окружения
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
+def setup_kaggle():
+    """Настройка путей для Kaggle: симлинки данных из Input в ./data/"""
+    if not os.path.exists("/kaggle/input"):
+        return None
+        
+    print("Обнаружена среда Kaggle. Настройка путей...")
+    
+    # Создаем папку data в текущей рабочей директории
+    os.makedirs("data", exist_ok=True)
+    
+    # Ищем наш датасет с ресурсами
+    input_base = "/kaggle/input"
+    resource_ds = None
+    
+    for ds_name in os.listdir(input_base):
+        if "bebladii" in ds_name.lower():
+            resource_ds = os.path.join(input_base, ds_name)
+            break
+            
+    if not resource_ds:
+        print("WARN: Датасет bebladii-resources не найден в /kaggle/input")
+        return None
+
+    # 1. Симлинки для данных
+    ds_data_path = os.path.join(resource_ds, "data")
+    if os.path.exists(ds_data_path):
+        for folder in os.listdir(ds_data_path):
+            src = os.path.join(ds_data_path, folder)
+            dst = os.path.join("data", folder)
+            if not os.path.exists(dst):
+                print(f"Создание симлинка: {dst} -> {src}")
+                os.symlink(src, dst)
+    
+    if os.path.exists("data"):
+        print(f"Содержимое папки data после настройки: {os.listdir('data')}")
+        
+    return resource_ds
+
 def train():
+    # 0. Автоматическая настройка для Kaggle
+    resource_ds = setup_kaggle()
+    
     # 1. WandB Log In
     if os.environ.get("WANDB_API_KEY"):
         wandb.init(project="beb-la-dii-phase1", name=f"latentbert-{STAGE}-{VERSION}")
@@ -39,8 +79,9 @@ def train():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Инициализация системы через Assembler на {device}...")
     
-    registry = ComponentRegistry()
-    assembler = ModelAssembler(registry)
+    # Реестр в составе Ассемблера теперь сам поищет веса в resource_ds
+    alt_roots = [resource_ds] if resource_ds else None
+    assembler = ModelAssembler(alt_roots=alt_roots)
     
     distiller = assembler.assemble_phase1_distiller(
         teacher_id=TEACHER_NAME,

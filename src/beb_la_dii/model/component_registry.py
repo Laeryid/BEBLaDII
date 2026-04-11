@@ -9,12 +9,14 @@ class ComponentRegistry:
     Реестр компонентов для BEBLaDII.
     Управляет версиями весов и конфигураций в хранилище.
     """
-    def __init__(self, storage_root: str = "storage/components"):
+    def __init__(self, storage_root: str = "storage/components", alt_roots: list = None):
         self.storage_root = storage_root
+        self.alt_roots = alt_roots or []
         os.makedirs(self.storage_root, exist_ok=True)
 
-    def _get_path(self, component_type: str, component_id: str, version: str):
-        return os.path.join(self.storage_root, component_type, component_id, version)
+    def _get_path(self, component_type: str, component_id: str, version: str, root: str = None):
+        target_root = root or self.storage_root
+        return os.path.join(target_root, component_type, component_id, version)
 
     def save_component(self, component: BEComponent, component_type: str):
         """
@@ -37,15 +39,40 @@ class ComponentRegistry:
                        version: str):
         """
         Загружает компонент указанной версии из реестра.
+        Проверяет основное хранилище и список alt_roots.
         """
-        path = self._get_path(component_type, component_id, version)
-        config_path = os.path.join(path, "config.json")
-        weights_path = os.path.join(path, "weights.pt")
+        # Сначала ищем в основном хранилище, затем в альтернативных
+        search_roots = [self.storage_root] + self.alt_roots
         
-        if not os.path.exists(config_path):
-            raise FileNotFoundError(f"Метаданные не найдены по адресу {config_path}")
+        final_config_path = None
+        final_weights_path = None
+        
+        for root in search_roots:
+            # Пытаемся найти по стандартной структуре реестра
+            path = self._get_path(component_type, component_id, version, root)
+            config_path = os.path.join(path, "config.json")
+            weights_path = os.path.join(path, "weights.pt")
             
-        with open(config_path, "r", encoding="utf-8") as f:
+            if os.path.exists(config_path):
+                final_config_path = config_path
+                final_weights_path = weights_path
+                break
+                
+            # Специальная обработка для плоской структуры (например, корень датасета Kaggle)
+            # Если это latentBERT, ищем weights.pt в корне root
+            if component_id == "latentBERT" and os.path.exists(os.path.join(root, "weights.pt")):
+                # Создаем временный конфиг в памяти или используем дефолтный, если нет config.json
+                # Но по правилам DUS нам нужен config.json. 
+                # Если его нет даже в корне, мы упадем позже.
+                if os.path.exists(os.path.join(root, "config.json")):
+                    final_config_path = os.path.join(root, "config.json")
+                    final_weights_path = os.path.join(root, "weights.pt")
+                    break
+
+        if not final_config_path or not os.path.exists(final_config_path):
+            raise FileNotFoundError(f"Метаданные для {component_id} ({version}) не найдены в поисковых путях.")
+            
+        with open(final_config_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
             
         # Создаем экземпляр
@@ -55,9 +82,9 @@ class ComponentRegistry:
             config=meta["config"]
         )
         
-        if os.path.exists(weights_path):
-            instance.load_state_dict(torch.load(weights_path, map_location="cpu"))
-            print(f"Веса для {component_id} ({version}) загружены.")
+        if final_weights_path and os.path.exists(final_weights_path):
+            instance.load_state_dict(torch.load(final_weights_path, map_location="cpu"))
+            print(f"Веса для {component_id} ({version}) загружены из {final_weights_path}.")
         else:
             print(f"ВНИМАНИЕ: Веса для {component_id} {version} не найдены. Использована инициализация по умолчанию.")
             

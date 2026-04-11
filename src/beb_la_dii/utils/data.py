@@ -1,6 +1,6 @@
 import torch
 from torch.utils.data import Dataset, DataLoader
-from indexed_parquet import IndexedParquetDataset
+from indexed_parquet_dataset import IndexedParquetDataset
 from .tokenizer import get_tokenizer
 import os
 
@@ -94,18 +94,48 @@ class DistillationDataset(Dataset):
 
 def get_dataloader(stage='awakening', batch_size=1, max_length=512):
     tokenizer = get_tokenizer()
-    print(f"Preparing data for stage: {stage}")
+    # Нормализуем имя стадии для путей (Awakening / Reasoning)
+    stage_capitalized = stage.capitalize() if stage.lower() in ['awakening', 'reasoning'] else stage
+    stage_path = os.path.join('data', stage_capitalized)
     
-    if stage == 'awakening':
-        configs = [
-            {'path': 'data/CulturaX', 'type': 'raw', 'count': 90000},
-            {'path': 'data/magpie_reasoning', 'type': 'magpie', 'count': 10000}
-        ]
-    else:
-        configs = [
-            {'path': 'data/magpie_reasoning', 'type': 'magpie', 'count': 50000},
-            {'path': 'data/open_thoughts', 'type': 'sharegpt', 'count': 50000}
-        ]
+    # 1. Если есть папка стадии (Kaggle или подготовленный локальный запуск)
+    if os.path.exists(stage_path):
+        print(f"Loading merged dataset from: {stage_path}")
+        # Рекурсивно сканируем подпапки
+        try:
+            from indexed_parquet import IndexedParquetDataset
+        except ImportError:
+            from indexed_parquet_dataset import IndexedParquetDataset
+            
+        dataset_obj = IndexedParquetDataset.from_folder(stage_path)
+        # Нам нужно обернуть это в DistillationDataset для маппинга текстов
+        # Для простоты мы можем создать конфиги на лету из подпапок
+        configs = []
+        for folder in os.listdir(stage_path):
+            folder_path = os.path.join(stage_path, folder)
+            if os.path.isdir(folder_path):
+                # Пытаемся угадать тип по имени
+                dtype = 'raw'
+                if 'magpie' in folder.lower(): dtype = 'magpie'
+                elif 'open_thoughts' in folder.lower() or 'sharegpt' in folder.lower(): dtype = 'sharegpt'
+                
+                configs.append({'path': folder_path, 'type': dtype})
         
-    dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
+        dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
+    else:
+        # 2. Стандартная локальная логика
+        print(f"Using default local configs for stage: {stage}")
+        if stage == 'awakening':
+            configs = [
+                {'path': 'data/CulturaX', 'type': 'raw', 'count': 90000},
+                {'path': 'data/magpie_reasoning', 'type': 'magpie', 'count': 10000}
+            ]
+        else:
+            configs = [
+                {'path': 'data/magpie_reasoning', 'type': 'magpie', 'count': 50000},
+                {'path': 'data/open_thoughts', 'type': 'sharegpt', 'count': 50000}
+            ]
+            
+        dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
+        
     return DataLoader(dataset, batch_size=batch_size, shuffle=True)

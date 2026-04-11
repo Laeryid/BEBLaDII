@@ -9,8 +9,8 @@ class ModelAssembler:
     Класс-сборщик системы BEBLaDII.
     Реализует логику: "Найти в реестре -> если нет, инициализировать с нуля".
     """
-    def __init__(self, registry: ComponentRegistry = None):
-        self.registry = registry or ComponentRegistry()
+    def __init__(self, registry: ComponentRegistry = None, alt_roots: list = None):
+        self.registry = registry or ComponentRegistry(alt_roots=alt_roots)
 
     def get_component(self, cls, component_type: str, component_id: str, version: str = "v1.0", **kwargs):
         """
