@@ -7,6 +7,8 @@ import wandb
 # Импорты проекта
 from src.beb_la_dii.model.distiller import ReasoningDistiller
 from src.beb_la_dii.model.dus import DUSModel
+from src.beb_la_dii.model.assembler import ModelAssembler
+from src.beb_la_dii.model.component_registry import ComponentRegistry
 from src.beb_la_dii.utils.tokenizer import get_tokenizer
 from src.beb_la_dii.utils.loss import DistillationLoss
 from src.beb_la_dii.utils.data import get_dataloader
@@ -21,6 +23,7 @@ GRAD_ACCUM_STEPS = 8
 EPOCHS = 1
 LEARNING_RATE = 5e-5
 STAGE = 'awakening' # 'awakening' для Stage 1, 'reasoning' для Stage 2
+VERSION = "v1.0"
 
 # Настройка окружения
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -28,20 +31,20 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 def train():
     # 1. WandB Log In
     if os.environ.get("WANDB_API_KEY"):
-        wandb.init(project="beb-la-dii-phase1", name=f"latentbert-{STAGE}")
+        wandb.init(project="beb-la-dii-phase1", name=f"latentbert-{STAGE}-{VERSION}")
     else:
         print("WANDB_API_KEY не найден, логирование в wandb отключено.")
         
-    # 2. Инициализация моделей
+    # 2. Инициализация моделей через Assembler
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Инициализация моделей на {device}...")
+    print(f"Инициализация системы через Assembler на {device}...")
     
-    # Создаем latentBERT (ModernBERT 40 layers)
-    latentBERT = DUSModel(config={"base_model_id": BASE_MODEL_NAME, "target_layers": 40})
+    registry = ComponentRegistry()
+    assembler = ModelAssembler(registry)
     
-    distiller = ReasoningDistiller(
+    distiller = assembler.assemble_phase1_distiller(
         teacher_id=TEACHER_NAME,
-        student=latentBERT,
+        version=VERSION,
         device_map="auto"
     )
     
@@ -54,7 +57,8 @@ def train():
         "grad_accum_steps": GRAD_ACCUM_STEPS,
         "learning_rate": LEARNING_RATE,
         "epochs": EPOCHS,
-        "target_layers": 40
+        "target_layers": 40,
+        "version": VERSION
     }
     tracker = ExperimentTracker(project_root=".", stage=STAGE)
     # 3. Настройка градиентов

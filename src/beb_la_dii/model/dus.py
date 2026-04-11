@@ -15,6 +15,15 @@ class DUSModel(BEComponent):
         # Create model
         self.model = create_latentbert(base_model_id, target_layers)
         
+    @classmethod
+    def from_scratch(cls, component_id="latentBERT", version="v1.0", **kwargs):
+        """Создает новую 40-слойную модель через DUS."""
+        config = kwargs.get("config", {
+            "base_model_id": "answerdotai/ModernBERT-large",
+            "target_layers": 40
+        })
+        return cls(component_id=component_id, version=version, config=config)
+        
     def forward(self, *args, **kwargs):
         return self.model(*args, **kwargs)
 

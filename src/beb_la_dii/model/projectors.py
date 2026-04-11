@@ -24,6 +24,11 @@ class InputProjector(BEComponent):
             nn.LayerNorm(output_dim)
         )
         
+    @classmethod
+    def from_scratch(cls, component_id="qwen_to_bert_input", version="v1.0", **kwargs):
+        config = kwargs.get("config", {"input_dim": 4096, "hidden_dim": 2048, "output_dim": 1024})
+        return cls(component_id=component_id, version=version, config=config)
+        
     def forward(self, x):
         return self.proj(x)
 
@@ -46,6 +51,11 @@ class FeatureProjector(BEComponent):
             nn.Linear(input_dim * 2, output_dim),
             nn.LayerNorm(output_dim)
         )
+        
+    @classmethod
+    def from_scratch(cls, component_id="bert_to_qwen_feature", version="v1.0", **kwargs):
+        config = kwargs.get("config", {"input_dim": 1024, "output_dim": 4096})
+        return cls(component_id=component_id, version=version, config=config)
         
     def forward(self, x):
         res = self.residual_proj(x)
