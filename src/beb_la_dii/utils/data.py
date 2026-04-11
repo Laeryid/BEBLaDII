@@ -23,7 +23,10 @@ class DistillationDataset(Dataset):
                 print(f"Warning: Path {path} not found. Skipping.")
                 continue
                 
-            ds = IndexedParquetDataset.from_folder(path, auto_fill=True)
+            pattern = config.get('pattern', '*.parquet')
+            print(f" -> Loading {path} (pattern: {pattern})...")
+            
+            ds = IndexedParquetDataset.from_folder(path, pattern=pattern, auto_fill=True)
             
             if 'count' in config:
                 n = min(config['count'], len(ds))
@@ -112,19 +115,22 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512):
         # Для простоты мы можем создать конфиги на лету из подпапок
         # Сканируем содержимое папки (файлы или подпапки)
         configs = []
+        print(f"Scanning directory: {stage_path}")
+        
         for item in os.listdir(stage_path):
             item_path = os.path.join(stage_path, item)
             
-            # Если это подпапка или файл .parquet
-            is_valid = os.path.isdir(item_path) or (os.path.isfile(item_path) and item.endswith('.parquet'))
+            # Определяем тип данных по имени
+            dtype = 'raw'
+            name_lower = item.lower()
+            if 'magpie' in name_lower: dtype = 'magpie'
+            elif 'open_thoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
             
-            if is_valid:
-                # Пытаемся угадать тип по имени
-                dtype = 'raw'
-                name_lower = item.lower()
-                if 'magpie' in name_lower: dtype = 'magpie'
-                elif 'open_thoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
-                
+            if os.path.isfile(item_path) and item.endswith('.parquet'):
+                # Если это файл в корне, используем родительскую папку + паттерн имени файла
+                configs.append({'path': stage_path, 'type': dtype, 'pattern': item})
+            elif os.path.isdir(item_path):
+                # Если это подпапка, используем её как базовый путь
                 configs.append({'path': item_path, 'type': dtype})
         
         if not configs:
