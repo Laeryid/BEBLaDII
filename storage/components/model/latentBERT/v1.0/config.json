@@ -2,7 +2,7 @@
     "component_id": "latentBERT",
     "version": "v1.0",
     "config": {
-        "base_model_id": "answerdotai/ModernBERT-large",
+        "base_model_id": "/kaggle/working/BEBLaDII/storage/prebuilt/latentBERT/v1.0",
         "target_layers": 40
     }
 }

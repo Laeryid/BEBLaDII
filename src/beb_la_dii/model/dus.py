@@ -39,30 +39,14 @@ class DUSModel(BEComponent):
 def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40):
     """
     Creates latentBERT via Depth Up-Scaling (DUS).
-    
-    40-layer scheme from 28 layers:
-    Block 1: Layers 0-19 (20 layers)
-    Block 2: Layers 8-27 (20 layers)
     """
     print(f"Loading model architecture from {model_id}...")
     
-    # 1. Загрузка конфигурации с защитой от "битых" локальных конфигов
-    try:
-        config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-        # Проверяем, что конфиг корректный (в нем должен быть model_type)
-        if not hasattr(config, "model_type"):
-            raise ValueError("model_type not found in config")
-    except Exception as e:
-        print(f"Warning: Failed to load valid config from {model_id} ({e}).")
-        print("Downloading original config from internet (answerdotai/ModernBERT-large)...")
-        config = AutoConfig.from_pretrained("answerdotai/ModernBERT-large", trust_remote_code=True)
-        # Так как это наш 40-слойный скелет, обновляем количество слоев:
-        config.num_hidden_layers = target_layers
-
-    # 2. Загрузка весов, передаем наш 'починенный' конфигурационный объект
-    base_model = AutoModelForMaskedLM.from_pretrained(model_id, config=config, trust_remote_code=True)
+    # Прямая загрузка без "обмана"
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    base_model = AutoModelForMaskedLM.from_pretrained(model_id, trust_remote_code=True)
     
-    # Check if the model is already scaled
+    # Если модель уже 40-слойная (как наш скелет), просто отдаем её
     current_layers = len(base_model.model.layers)
     if current_layers == target_layers:
         print(f"Model already has {target_layers} layers. Skipping DUS logic.")
