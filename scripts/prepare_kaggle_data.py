@@ -9,24 +9,46 @@ try:
 except ImportError:
     from indexed_parquet_dataset import IndexedParquetDataset
 
+import sys
+import codecs
+
+# Fix for Windows console encoding
+if sys.platform == 'win32':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except AttributeError:
+        # Fallback for older python
+        sys.stdout = codecs.getwriter('utf-8')(sys.stdout.detach())
+
 def prepare_kaggle_package():
-    # 1. Пути
+    # 1. Paths
     root = Path(".")
     staging = root / "kaggle_upload"
     staging_data = staging / "data"
     
-    # 2. Очистка старой папки
+    # 2. Cleanup
     if staging.exists():
+        print(f"Cleaning up {staging}...")
         shutil.rmtree(staging)
     staging_data.mkdir(parents=True)
     
-    # 3. Копирование весов
-    weights_src = root / "storage" / "components" / "model" / "latentBERT" / "v1.0" / "weights.pt"
-    if weights_src.exists():
-        print(f"Копирование весов: {weights_src}...")
-        shutil.copy2(weights_src, staging / "weights.pt")
-    else:
-        print(f"WARN: Веса не найдены по адресу {weights_src}")
+    # 3. Mirroring components and prebuilts (Student & Teacher)
+    mirror_paths = [
+        ("storage/components/model/latentBERT/v1.0", "components/model/latentBERT/v1.0"),
+        ("storage/prebuilt/latentBERT/v1.0", "prebuilt/latentBERT/v1.0"),
+        ("storage/prebuilt/deepseek-7b", "prebuilt/deepseek-7b"),
+    ]
+    
+    for src_rel, dst_rel in mirror_paths:
+        src = root / src_rel
+        dst = staging / dst_rel
+        if src.exists():
+            print(f"Mirroring: {src_rel} -> {dst_rel}...")
+            if dst.exists(): shutil.rmtree(dst)
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copytree(src, dst)
+        else:
+            print(f"WARN: Path {src_rel} not found. Skipping.")
 
     # 4. Клонирование датасетов
     # Stage 1: Awakening (90k CulturaX, 10k Magpie)
@@ -45,12 +67,12 @@ def prepare_kaggle_package():
     for plan in data_plans:
         src_dir = root / plan["path"]
         if not src_dir.exists():
-            print(f"Пропуск {plan['name']}: путь {src_dir} не найден.")
+            print(f"Skipping {plan['name']}: {src_dir} not found.")
             continue
             
-        # 4.1 Формируем целевой путь: data/{Target}/{Name}
+        # 4.1 Set destination path: data/{Target}/{Name}
         dest_path = staging_data / plan["target"] / plan["name"]
-        print(f"\n--- Обработка: {plan['name']} ({plan['target']}) ---")
+        print(f"\n--- Processing: {plan['name']} ({plan['target']}) ---")
         
         # 4.2 Загрузка датасета (с фильтрацией по паттерну, если есть)
         if "pattern" in plan:
@@ -59,7 +81,7 @@ def prepare_kaggle_package():
             if not matched_files:
                 print(f"WARN: Файлы по паттерну {pattern} не найдены в {src_dir}")
                 continue
-            print(f"Найдено файлов по паттерну: {len(matched_files)}")
+            print(f"Found files by pattern: {len(matched_files)}")
             # Предполагаем, что библиотека умеет принимать список файлов
             # Если нет — IndexedParquetDataset.from_folder обычно работает в корне
             ds = IndexedParquetDataset.from_folder(src_dir, pattern=pattern)
@@ -68,10 +90,10 @@ def prepare_kaggle_package():
             
         # 4.3 Сэмплирование
         if len(ds) > plan["count"]:
-            print(f"Сэмплирование: {len(ds)} -> {plan['count']} строк")
+            print(f"Sampling: {len(ds)} -> {plan['count']} rows")
             ds = ds.sample(n=plan["count"])
         else:
-            print(f"Используем все доступные строки: {len(ds)}")
+            print(f"Using all available rows: {len(ds)}")
             
         # 4.4 Клонирование
         if dest_path.suffix != ".parquet":
@@ -79,7 +101,7 @@ def prepare_kaggle_package():
         dest_path.parent.mkdir(parents=True, exist_ok=True)
             
         print(f"Клонирование в {dest_path}...")
-        ds.clone(dest_path)
+        ds.clone(dest_path, optimize_by_reorder=True)
 
     # 5. Создание метаданных Kaggle
     metadata = {
@@ -91,9 +113,9 @@ def prepare_kaggle_package():
     with open(staging / "dataset-metadata.json", "w") as f:
         json.dump(metadata, f, indent=4)
         
-    print("\nПодготовка завершена!")
-    print(f"Все файлы в: {staging.absolute()}")
-    print("Теперь вы можете запустить 'kaggle datasets create -p kaggle_upload'")
+    print("\nPreparation complete!")
+    print(f"All files in: {staging.absolute()}")
+    print("Now you can run 'kaggle datasets create -p kaggle_upload'")
 
 if __name__ == "__main__":
     prepare_kaggle_package()

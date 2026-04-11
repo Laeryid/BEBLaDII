@@ -19,7 +19,15 @@ class ReasoningDistiller(nn.Module):
         super().__init__()
         
         # 1. Loading Teacher (frozen, 4-bit)
-        print(f"Loading Teacher: {teacher_id}...")
+        import os
+        
+        # Определение локального пути (эвристика для DeepSeek-7B)
+        short_name = "deepseek-7b" if "DeepSeek-R1-Distill-Qwen-7B" in teacher_id else teacher_id.split("/")[-1]
+        local_path = os.path.join("storage", "prebuilt", short_name)
+        
+        load_path = local_path if os.path.exists(local_path) else teacher_id
+        print(f"Loading Teacher from: {load_path}...")
+        
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
             bnb_4bit_compute_dtype=torch.float16,
@@ -27,7 +35,7 @@ class ReasoningDistiller(nn.Module):
             bnb_4bit_use_double_quant=True,
         )
         self.teacher = AutoModelForCausalLM.from_pretrained(
-            teacher_id,
+            load_path,
             quantization_config=bnb_config,
             device_map=device_map,
             trust_remote_code=True
