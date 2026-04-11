@@ -110,17 +110,27 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512):
         dataset_obj = IndexedParquetDataset.from_folder(stage_path)
         # Нам нужно обернуть это в DistillationDataset для маппинга текстов
         # Для простоты мы можем создать конфиги на лету из подпапок
+        # Сканируем содержимое папки (файлы или подпапки)
         configs = []
-        for folder in os.listdir(stage_path):
-            folder_path = os.path.join(stage_path, folder)
-            if os.path.isdir(folder_path):
+        for item in os.listdir(stage_path):
+            item_path = os.path.join(stage_path, item)
+            
+            # Если это подпапка или файл .parquet
+            is_valid = os.path.isdir(item_path) or (os.path.isfile(item_path) and item.endswith('.parquet'))
+            
+            if is_valid:
                 # Пытаемся угадать тип по имени
                 dtype = 'raw'
-                if 'magpie' in folder.lower(): dtype = 'magpie'
-                elif 'open_thoughts' in folder.lower() or 'sharegpt' in folder.lower(): dtype = 'sharegpt'
+                name_lower = item.lower()
+                if 'magpie' in name_lower: dtype = 'magpie'
+                elif 'open_thoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
                 
-                configs.append({'path': folder_path, 'type': dtype})
+                configs.append({'path': item_path, 'type': dtype})
         
+        if not configs:
+            print(f"Warning: No valid data found in {stage_path}. Falling back to default.")
+            return get_dataloader(stage='awakening', batch_size=batch_size, max_length=max_length)
+            
         dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
     else:
         # 2. Стандартная локальная логика
