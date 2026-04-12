@@ -15,7 +15,8 @@ class ReasoningDistiller(nn.Module):
                  student=None,
                  input_projector=None,
                  feature_projectors=None,
-                 device_map="auto"):
+                 device_map="auto",
+                 student_device=None):
         super().__init__()
         
         # 1. Loading Teacher (frozen, 4-bit)
@@ -67,6 +68,19 @@ class ReasoningDistiller(nn.Module):
                 "40": FeatureProjector(component_id="feat_proj_40")
             })
         
+        # 3. Явный перенос обучаемых компонентов на нужный device.
+        # Мы НЕ вызываем .to() на всём дистилляторе, т.к. учитель использует
+        # device_map='auto' (bitsandbytes), и его трогать нельзя.
+        # student_device по умолчанию - 'cuda', если доступна, иначе 'cpu'.
+        if student_device is None:
+            student_device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.student_device = student_device
+        print(f"Student device: {self.student_device}")
+        
+        self.student.to(self.student_device)
+        self.input_projector.to(self.student_device)
+        self.feature_projectors.to(self.student_device)
+        
         # Настройка маппинга слоев (Student -> Teacher)
         self.layer_mapping = {
             20: 14, # Middle
@@ -85,10 +99,13 @@ class ReasoningDistiller(nn.Module):
                 attention_mask=attention_mask,
                 output_hidden_states=True
             )
-            # Извлекаем эмбеддинги (первый слой) и нужные скрытые состояния
-            teacher_embeddings = teacher_outputs.hidden_states[0] # [batch, seq, 4096]
+            # Извлекаем эмбеддинги (первый слой) и нужные скрытые состояния.
+            # Явно переносим на student_device: с device_map='auto' учитель
+            # может раскладывать слои по разным GPU, и последний слой
+            # может оказаться не там, где student.
+            teacher_embeddings = teacher_outputs.hidden_states[0].to(self.student_device)
             teacher_targets = {
-                s_idx: teacher_outputs.hidden_states[t_idx] 
+                s_idx: teacher_outputs.hidden_states[t_idx].to(self.student_device)
                 for s_idx, t_idx in self.layer_mapping.items()
             }
             
