@@ -36,7 +36,6 @@ def prepare_kaggle_package():
     mirror_paths = [
         ("storage/components/model/latentBERT/v1.0", "components/model/latentBERT/v1.0"),
         ("storage/prebuilt/latentBERT/v1.0", "prebuilt/latentBERT/v1.0"),
-        ("storage/prebuilt/deepseek-7b", "prebuilt/deepseek-7b"),
     ]
     
     for src_rel, dst_rel in mirror_paths:

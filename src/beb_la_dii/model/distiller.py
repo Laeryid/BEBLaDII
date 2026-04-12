@@ -21,11 +21,21 @@ class ReasoningDistiller(nn.Module):
         # 1. Loading Teacher (frozen, 4-bit)
         import os
         
-        # Определение локального пути (эвристика для DeepSeek-7B)
+        # Определение путей загрузки (Приоритет: Локально -> Kaggle Models -> Kaggle Dataset -> HF ID)
         short_name = "deepseek-7b" if "DeepSeek-R1-Distill-Qwen-7B" in teacher_id else teacher_id.split("/")[-1]
-        local_path = os.path.join("storage", "prebuilt", short_name)
         
-        load_path = local_path if os.path.exists(local_path) else teacher_id
+        potential_paths = [
+            os.path.join("storage", "prebuilt", short_name), # Local Dev
+            "/kaggle/input/models/deepseek-ai/deepseek-r1/transformers/deepseek-r1-distill-qwen-7b/2", # Kaggle Models (Primary)
+            os.path.join("/kaggle/input/bebladii-resources/prebuilt", short_name), # Fallback Dataset
+        ]
+        
+        load_path = teacher_id
+        for path in potential_paths:
+            if os.path.exists(path):
+                load_path = path
+                break
+        
         print(f"Loading Teacher from: {load_path}...")
         
         bnb_config = BitsAndBytesConfig(
