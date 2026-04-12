@@ -77,9 +77,9 @@ class ReasoningDistiller(nn.Module):
         self.student_device = student_device
         print(f"Student device: {self.student_device}")
         
-        self.student.to(self.student_device)
-        self.input_projector.to(self.student_device)
-        self.feature_projectors.to(self.student_device)
+        self.student.to(self.student_device).half()
+        self.input_projector.to(self.student_device).half()
+        self.feature_projectors.to(self.student_device).half()
         
         # Настройка маппинга слоев (Student -> Teacher)
         self.layer_mapping = {
