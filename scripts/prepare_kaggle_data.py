@@ -32,11 +32,22 @@ def prepare_kaggle_package():
         shutil.rmtree(staging)
     staging_data.mkdir(parents=True)
     
-    # 3. Mirroring components and prebuilts (Student & Teacher)
-    mirror_paths = [
-        ("storage/components/model/latentBERT/v1.0", "components/model/latentBERT/v1.0"),
-        ("storage/prebuilt/latentBERT/v1.0", "prebuilt/latentBERT/v1.0"),
-    ]
+    # 3. Mirroring components (все компоненты под единой структурой components/)
+    # Соответствует build_weights_map() в train_phase1_kaggle.py
+    projector_ids = ["qwen_to_bert_input", "feat_proj_20", "feat_proj_30", "feat_proj_40"]
+    model_ids = ["latentBERT"]
+    
+    mirror_paths = []
+    for mid in model_ids:
+        mirror_paths.append((
+            f"storage/components/model/{mid}/v1.0",
+            f"components/model/{mid}/v1.0",
+        ))
+    for pid in projector_ids:
+        mirror_paths.append((
+            f"storage/components/projector/{pid}/v1.0",
+            f"components/projector/{pid}/v1.0",
+        ))
     
     for src_rel, dst_rel in mirror_paths:
         src = root / src_rel
@@ -48,6 +59,7 @@ def prepare_kaggle_package():
             shutil.copytree(src, dst)
         else:
             print(f"WARN: Path {src_rel} not found. Skipping.")
+
 
     # 4. Клонирование датасетов
     # Stage 1: Awakening (90k CulturaX, 10k Magpie)

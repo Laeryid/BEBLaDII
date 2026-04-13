@@ -65,6 +65,31 @@ def setup_kaggle():
         
     return resource_ds
 
+def build_weights_map(resource_ds=None):
+    """
+    Строит карту весов component_id -> path.
+    Приоритет: Kaggle-датасет -> локальное storage/components.
+    Если файл не найден по пути, компонент инициализируется случайно.
+    """
+    if resource_ds:
+        # Kaggle: структура kaggle_upload/ зеркалируется в resource_ds/
+        components_root = os.path.join(resource_ds, "components")
+    else:
+        # Локально: стандартный storage/components
+        components_root = "storage/components"
+
+    def _w(comp_type, comp_id):
+        return os.path.join(components_root, comp_type, comp_id, VERSION, "weights.pt")
+
+    return {
+        "latentBERT":         _w("model",     "latentBERT"),
+        "qwen_to_bert_input": _w("projector", "qwen_to_bert_input"),
+        "feat_proj_20":       _w("projector", "feat_proj_20"),
+        "feat_proj_30":       _w("projector", "feat_proj_30"),
+        "feat_proj_40":       _w("projector", "feat_proj_40"),
+    }
+
+
 def train():
     # 0. Автоматическая настройка для Kaggle
     resource_ds = setup_kaggle()
@@ -78,14 +103,18 @@ def train():
     # 2. Инициализация моделей через Assembler
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Инициализация системы через Assembler на {device}...")
-    
-    # Реестр в составе Ассемблера теперь сам поищет веса в resource_ds
-    alt_roots = [resource_ds] if resource_ds else None
-    assembler = ModelAssembler(alt_roots=alt_roots)
-    
+
+    weights_map = build_weights_map(resource_ds)
+    print("Weights map:")
+    for k, v in weights_map.items():
+        status = "[found]" if os.path.exists(v) else "[random init]"
+        print(f"  {k}: {status} {v}")
+
+    assembler = ModelAssembler()
     distiller = assembler.assemble_phase1_distiller(
         teacher_id=TEACHER_NAME,
         version=VERSION,
+        weights_map=weights_map,
         device_map="auto"
     )
     

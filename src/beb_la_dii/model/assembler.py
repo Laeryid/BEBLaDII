@@ -4,57 +4,88 @@ from .dus import DUSModel
 from .projectors import InputProjector, FeatureProjector
 from .distiller import ReasoningDistiller
 
+
 class ModelAssembler:
     """
     Класс-сборщик системы BEBLaDII.
-    Реализует логику: "Найти в реестре -> если нет, инициализировать с нуля".
+
+    Основной подход к весам: скелет каждого компонента создаётся заново из кода,
+    веса опционально загружаются из файла через weights_map.
+
+    weights_map: dict[component_id -> str (путь к weights.pt)]
+    Если ключ отсутствует или путь не найден — используется случайная инициализация.
+
+    Пример:
+        weights_map = {
+            "latentBERT":         "storage/components/model/latentBERT/v1.0/weights.pt",
+            "qwen_to_bert_input": "storage/components/projector/qwen_to_bert_input/v1.0/weights.pt",
+            "feat_proj_20":       "storage/components/projector/feat_proj_20/v1.0/weights.pt",
+            "feat_proj_30":       "storage/components/projector/feat_proj_30/v1.0/weights.pt",
+            "feat_proj_40":       "storage/components/projector/feat_proj_40/v1.0/weights.pt",
+        }
     """
-    def __init__(self, registry: ComponentRegistry = None, alt_roots: list = None):
-        self.registry = registry or ComponentRegistry(alt_roots=alt_roots)
+    def __init__(self, storage_root: str = "storage/components"):
+        # Registry используется только для сохранения компонентов после обучения
+        self.registry = ComponentRegistry(storage_root=storage_root)
 
-    def get_component(self, cls, component_type: str, component_id: str, version: str = "v1.0", **kwargs):
-        """
-        Пытается загрузить компонент из реестра. 
-        В случае неудачи — создает новый через from_scratch.
-        """
-        try:
-            instance = self.registry.load_component(cls, component_type, component_id, version)
-            return instance
-        except Exception as e:
-            print(f"Инфо: Компонент {component_id} ({version}) не найден в реестре. Создание с нуля... ({str(e)})")
-            return cls.from_scratch(component_id=component_id, version=version, **kwargs)
-
-    def assemble_phase1_distiller(self, 
-                                 teacher_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B", 
-                                 version="v1.0",
-                                 device_map="auto",
-                                 **kwargs):
+    def assemble_phase1_distiller(self,
+                                  teacher_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+                                  version="v1.0",
+                                  weights_map=None,
+                                  device_map="auto"):
         """
         Собирает полную систему для Фазы 1 дистилляции.
+
+        Args:
+            teacher_id:   HF ID или локальный путь к модели-учителю.
+            version:      Версия компонентов (используется при сохранении).
+            weights_map:  dict[component_id -> weights_path]. Если None — все компоненты
+                          инициализируются случайно.
+            device_map:   Стратегия размещения учителя ('auto' для bitsandbytes).
         """
-        print(f"Сборка системы дистилляции (версия {version})...")
-        
-        # 1. Загрузка/Инициализация latentBERT
-        # Передаем kwargs (например, base_model_id)
-        student = self.get_component(DUSModel, "model", "latentBERT", version, **kwargs)
-        
-        # 2. Загрузка/Инициализация входного проектора
-        input_projector = self.get_component(InputProjector, "projector", "qwen_to_bert_input", version)
-        
-        # 3. Загрузка/Инициализация проекторов признаков
+        weights_map = weights_map or {}
+        print(f"Assembling distillation system (version {version})...")
+
+        # 1. latentBERT — скелет строится через DUS, веса опционально из файла
+        print("[1/3] Building latentBERT skeleton (DUS from ModernBERT-large)...")
+        student = DUSModel.from_scratch(
+            component_id="latentBERT",
+            version=version,
+            weights_path=weights_map.get("latentBERT"),
+        )
+
+        # 2. InputProjector
+        print("[2/3] Building InputProjector...")
+        input_projector = InputProjector.from_scratch(
+            component_id="qwen_to_bert_input",
+            version=version,
+            weights_path=weights_map.get("qwen_to_bert_input"),
+        )
+
+        # 3. FeatureProjectors x3
+        print("[3/3] Building FeatureProjectors...")
         feature_projectors = nn.ModuleDict({
-            "20": self.get_component(FeatureProjector, "projector", "feat_proj_20", version),
-            "30": self.get_component(FeatureProjector, "projector", "feat_proj_30", version),
-            "40": self.get_component(FeatureProjector, "projector", "feat_proj_40", version)
+            "20": FeatureProjector.from_scratch(
+                component_id="feat_proj_20", version=version,
+                weights_path=weights_map.get("feat_proj_20"),
+            ),
+            "30": FeatureProjector.from_scratch(
+                component_id="feat_proj_30", version=version,
+                weights_path=weights_map.get("feat_proj_30"),
+            ),
+            "40": FeatureProjector.from_scratch(
+                component_id="feat_proj_40", version=version,
+                weights_path=weights_map.get("feat_proj_40"),
+            ),
         })
-        
+
         # 4. Сборка дистиллятора
         distiller = ReasoningDistiller(
             teacher_id=teacher_id,
             student=student,
             input_projector=input_projector,
             feature_projectors=feature_projectors,
-            device_map=device_map
+            device_map=device_map,
         )
-        
+
         return distiller

@@ -2,7 +2,7 @@
     "component_id": "qwen_to_bert_input",
     "version": "v1.0",
     "config": {
-        "input_dim": 4096,
+        "input_dim": 3584,
         "hidden_dim": 2048,
         "output_dim": 1024
     },
