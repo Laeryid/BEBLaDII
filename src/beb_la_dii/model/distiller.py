@@ -80,6 +80,7 @@ class ReasoningDistiller(nn.Module):
         self.student.to(self.student_device)
         self.input_projector.to(self.student_device)
         self.feature_projectors.to(self.student_device)
+        print("DEBUG: ReasoningDistiller initialized with float32 weights.")
         
         # Настройка маппинга слоев (Student -> Teacher)
         self.layer_mapping = {
@@ -109,11 +110,11 @@ class ReasoningDistiller(nn.Module):
                 attention_mask=attention_mask,
                 output_hidden_states=True
             )
-            teacher_embeddings = teacher_outputs.hidden_states[0].to(self.student_device)
+            teacher_embeddings = teacher_outputs.hidden_states[0].to(self.student_device).float()
             self._check_nan(teacher_embeddings, "Teacher Embeddings")
             
             teacher_targets = {
-                s_idx: teacher_outputs.hidden_states[t_idx].to(self.student_device)
+                s_idx: teacher_outputs.hidden_states[t_idx].to(self.student_device).float()
                 for s_idx, t_idx in self.layer_mapping.items()
             }
             for idx, t in teacher_targets.items():
