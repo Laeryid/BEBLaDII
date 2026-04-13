@@ -111,18 +111,18 @@ class ReasoningDistiller(nn.Module):
                 output_hidden_states=True
             )
             teacher_embeddings = teacher_outputs.hidden_states[0].to(self.student_device).float()
-            self._check_nan(teacher_embeddings, "Teacher Embeddings")
+            # self._check_nan(teacher_embeddings, "Teacher Embeddings")
             
             teacher_targets = {
                 s_idx: teacher_outputs.hidden_states[t_idx].to(self.student_device).float()
                 for s_idx, t_idx in self.layer_mapping.items()
             }
             for idx, t in teacher_targets.items():
-                self._check_nan(t, f"Teacher Target Layer {idx}")
+                pass # self._check_nan(t, f"Teacher Target Layer {idx}")
             
         # 2. Подготовка входа для Student
         student_inputs_embeds = self.input_projector(teacher_embeddings)
-        self._check_nan(student_inputs_embeds, "InputProjector Output")
+        # self._check_nan(student_inputs_embeds, "InputProjector Output")
         
         # ВНИМАНИЕ: attention_mask может приходить от данных Учителя (с cuda:0), поэтому переводим его на student_device.
         student_attention_mask = attention_mask.to(self.student_device) if attention_mask is not None else None
@@ -132,13 +132,13 @@ class ReasoningDistiller(nn.Module):
             attention_mask=student_attention_mask,
             output_hidden_states=True
         )
-        self._check_nan(student_outputs.hidden_states[-1], "Student Final Hidden State")
+        # self._check_nan(student_outputs.hidden_states[-1], "Student Final Hidden State")
         
         # 4. Проецирование состояний ученика обратно в пространство Qwen
         projected_student_states = {}
         for idx, h_state in {idx: student_outputs.hidden_states[idx] for idx in self.layer_mapping.keys()}.items():
             proj = self.feature_projectors[str(idx)](h_state)
-            self._check_nan(proj, f"FeatureProjector {idx} Output")
+            # self._check_nan(proj, f"FeatureProjector {idx} Output")
             projected_student_states[idx] = proj
             
         return projected_student_states, teacher_targets

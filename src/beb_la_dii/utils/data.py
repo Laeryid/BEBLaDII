@@ -166,4 +166,4 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512):
             
         dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
         
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)

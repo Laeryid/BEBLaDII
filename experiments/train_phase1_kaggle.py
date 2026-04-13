@@ -16,7 +16,7 @@ from src.beb_la_dii.utils.experiment_tracker import ExperimentTracker
 # Константы
 BASE_MODEL_NAME = "answerdotai/ModernBERT-large"
 TEACHER_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
-MAX_LENGTH = 512
+MAX_LENGTH = 256
 BATCH_SIZE = 8
 GRAD_ACCUM_STEPS = 1
 EPOCHS = 1
