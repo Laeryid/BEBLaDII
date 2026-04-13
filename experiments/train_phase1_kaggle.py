@@ -170,9 +170,10 @@ def train():
     
     tracker.log_metadata(hyperparams, dataset_metadata)
     
-    # 5. Оптимизатор и Лосс
+    # 5. Оптимизатор, Лосс и Скалер для FP16
     optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=LEARNING_RATE)
     criterion = DistillationLoss()
+    scaler = torch.cuda.amp.GradScaler()
     
     # 6. Тренировочный цикл
     distiller.train()
@@ -185,24 +186,36 @@ def train():
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
         
-        # Форвард
-        # ReasoningDistiller возвращает (projected_student_states, teacher_targets)
-        student_states, teacher_targets = distiller(input_ids, attention_mask)
+        # Форвард с автокастом для стабильности FP16
+        with torch.cuda.amp.autocast():
+            # ReasoningDistiller возвращает (projected_student_states, teacher_targets)
+            student_states, teacher_targets = distiller(input_ids, attention_mask)
+            
+            # Расчет лосса
+            loss = criterion(student_states, teacher_targets)
+            loss = loss / GRAD_ACCUM_STEPS
         
-        # Расчет лосса
-        loss = criterion(student_states, teacher_targets)
-        loss = loss / GRAD_ACCUM_STEPS
-        
-        # Бэквард
-        loss.backward()
+        # Проверка на NaN
+        if torch.isnan(loss):
+            print(f"WARN: NaN loss detected at step {step}. Skipping batch.")
+            optimizer.zero_grad()
+            continue
+
+        # Бэквард с масштабированием
+        scaler.scale(loss).backward()
         accum_loss += loss.item()
         
         # Шаг оптимизатора
         if (step + 1) % GRAD_ACCUM_STEPS == 0:
+            # Unscale для корректного clipping градиентов
+            scaler.unscale_(optimizer)
+            
             # Обрезаем градиенты для стабильности в 40-слойной модели
             torch.nn.utils.clip_grad_norm_(distiller.parameters(), max_norm=1.0)
             
-            optimizer.step()
+            # Шаг через скалер
+            scaler.step(optimizer)
+            scaler.update()
             optimizer.zero_grad()
             
             # Логирование

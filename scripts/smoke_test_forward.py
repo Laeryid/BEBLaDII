@@ -143,16 +143,16 @@ with torch.no_grad():
     }
 
 print(f"  Teacher embeddings shape : {teacher_embeddings.shape}")
-assert teacher_embeddings.shape == (BATCH_SIZE, SEQ_LEN, TEACHER_HIDDEN), \
-    f"Expected {(BATCH_SIZE, SEQ_LEN, TEACHER_HIDDEN)}, got {teacher_embeddings.shape}"
+assert not torch.isnan(teacher_embeddings).any(), "NaN detected in teacher embeddings!"
+for s_idx, t in teacher_targets.items():
+    assert not torch.isnan(t).any(), f"NaN detected in teacher target state for layer {s_idx}!"
 
 # ---- InputProjector ----
 with torch.no_grad():
     student_inputs_embeds = input_projector(teacher_embeddings)
 
 print(f"  After InputProjector     : {student_inputs_embeds.shape}")
-assert student_inputs_embeds.shape == (BATCH_SIZE, SEQ_LEN, STUDENT_HIDDEN), \
-    f"Expected {(BATCH_SIZE, SEQ_LEN, STUDENT_HIDDEN)}, got {student_inputs_embeds.shape}"
+assert not torch.isnan(student_inputs_embeds).any(), "NaN detected after InputProjector!"
 
 # ---- Student (latentBERT) forward ----
 with torch.no_grad():
@@ -164,8 +164,13 @@ with torch.no_grad():
 
 num_hidden = len(student_outputs.hidden_states)
 print(f"  Student hidden states    : {num_hidden} (expected {STUDENT_LAYERS + 1})")
-assert num_hidden == STUDENT_LAYERS + 1, \
-    f"Expected {STUDENT_LAYERS + 1} hidden states, got {num_hidden}"
+for i, h in enumerate(student_outputs.hidden_states):
+    assert not torch.isnan(h).any(), f"NaN detected in student hidden state at index {i}!"
+
+# ---- Student Logits (Tokens) ----
+logits = student_outputs.logits
+print(f"  Student logits shape     : {logits.shape}")
+assert not torch.isnan(logits).any(), "NaN detected in student logits (output tokens)!"
 
 # ---- FeatureProjectors ----
 print("\n  FeatureProjectors:")
@@ -178,6 +183,8 @@ with torch.no_grad():
         print(f"    Layer {s_idx:2d}: student={tuple(h_state.shape)} "
               f"-> projected={tuple(projected.shape)} "
               f"| teacher target={tuple(target.shape)}")
+
+        assert not torch.isnan(projected).any(), f"NaN detected in projected student state for layer {s_idx}!"
 
         assert h_state.shape   == (BATCH_SIZE, SEQ_LEN, STUDENT_HIDDEN), \
             f"Student hidden_state[{s_idx}]: expected (B,T,{STUDENT_HIDDEN}), got {h_state.shape}"

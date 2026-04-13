@@ -28,7 +28,7 @@ class DistillationLoss(nn.Module):
                 mse_l = self.mse(s_h, t_h)
                 
                 # 2. Cosine Similarity Loss (1 - mean(cos_sim))
-                cos_sim = F.cosine_similarity(s_h, t_h, dim=-1)
+                cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
                 cos_l = 1.0 - cos_sim.mean()
                 
                 # Комбинированный лосс для слоя

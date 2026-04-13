@@ -22,8 +22,20 @@ class InputProjector(BEComponent):
             nn.Linear(input_dim, hidden_dim),
             nn.GELU(),
             nn.Linear(hidden_dim, output_dim),
-            nn.LayerNorm(output_dim)
+            nn.LayerNorm(output_dim, eps=1e-6)
         )
+        self._init_weights()
+
+    def _init_weights(self):
+        """Стабилизированная инициализация для FP16."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
         
     @classmethod
     def from_scratch(cls, component_id="qwen_to_bert_input", version="v1.0",
@@ -59,8 +71,20 @@ class FeatureProjector(BEComponent):
             nn.Linear(input_dim, input_dim * 2),
             nn.GELU(),
             nn.Linear(input_dim * 2, output_dim),
-            nn.LayerNorm(output_dim)
+            nn.LayerNorm(output_dim, eps=1e-6)
         )
+        self._init_weights()
+
+    def _init_weights(self):
+        """Стабилизированная инициализация для FP16."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+            elif isinstance(m, nn.LayerNorm):
+                nn.init.ones_(m.weight)
+                nn.init.zeros_(m.bias)
         
     @classmethod
     def from_scratch(cls, component_id="bert_to_qwen_feature", version="v1.0",
