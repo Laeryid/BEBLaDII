@@ -83,7 +83,7 @@ def debug_nan():
 
         # --- B. Projector ---
         print("\n--- Phase B: InputProjector (3584 -> 1024) ---")
-        t_embeds = teacher_outputs.hidden_states[0].to(distiller.student_device)
+        t_embeds = teacher_outputs.hidden_states[0].to(distiller.student_device).float()
         student_in = distiller.input_projector(t_embeds)
         print_stats(student_in, "Projected Input")
 
