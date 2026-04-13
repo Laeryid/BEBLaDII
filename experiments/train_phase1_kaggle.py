@@ -92,14 +92,11 @@ def setup_kaggle():
         
     return resource_ds
 
-def build_weights_map():
+def build_weights_map(components_root="storage/components"):
     """
     Строит карту весов component_id -> path.
-    Всегда использует storage/components (на Kaggle это симлинк).
-    Если файл не найден по пути, компонент инициализируется случайно.
+    Если путь не найден, компонент инициализируется случайно.
     """
-    components_root = "storage/components"
-
     def _w(comp_type, comp_id):
         return os.path.join(components_root, comp_type, comp_id, VERSION, "weights.pt")
 
@@ -122,11 +119,21 @@ def train():
     else:
         print("WANDB_API_KEY не найден, логирование в wandb отключено.")
         
-    # 2. Инициализация моделей через Assembler
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Инициализация системы через Assembler на {device}...")
+    # 2. Определение путей к весам и базовым моделям
+    # Приоритет Kaggle абсолютным путям (предотвращает проблемы с симлинками в transformers)
+    KAG_RES = "/kaggle/input/datasets/bogdanbuliakov/bebladii-resources"
+    
+    if os.path.exists(KAG_RES):
+        print(f"Использование прямых путей Kaggle из {KAG_RES}")
+        student_base_id = os.path.join(KAG_RES, "prebuilt/latentBERT", VERSION)
+        components_root = os.path.join(KAG_RES, "components")
+    else:
+        student_base_id = os.path.join("storage/prebuilt/latentBERT", VERSION)
+        if not os.path.exists(student_base_id):
+            student_base_id = BASE_MODEL_NAME
+        components_root = "storage/components"
 
-    weights_map = build_weights_map()
+    weights_map = build_weights_map(components_root=components_root)
     print("Weights map:")
     for k, v in weights_map.items():
         status = "[found]" if os.path.exists(v) else "[random init]"
@@ -135,6 +142,7 @@ def train():
     assembler = ModelAssembler()
     distiller = assembler.assemble_phase1_distiller(
         teacher_id=TEACHER_NAME,
+        student_base_id=student_base_id,
         version=VERSION,
         weights_map=weights_map,
         device_map="auto"

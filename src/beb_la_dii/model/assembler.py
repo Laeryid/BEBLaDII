@@ -30,6 +30,7 @@ class ModelAssembler:
 
     def assemble_phase1_distiller(self,
                                   teacher_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+                                  student_base_id="answerdotai/ModernBERT-large",
                                   version="v1.0",
                                   weights_map=None,
                                   device_map="auto"):
@@ -37,21 +38,23 @@ class ModelAssembler:
         Собирает полную систему для Фазы 1 дистилляции.
 
         Args:
-            teacher_id:   HF ID или локальный путь к модели-учителю.
-            version:      Версия компонентов (используется при сохранении).
-            weights_map:  dict[component_id -> weights_path]. Если None — все компоненты
-                          инициализируются случайно.
-            device_map:   Стратегия размещения учителя ('auto' для bitsandbytes).
+            teacher_id:      HF ID или локальный путь к модели-учителю.
+            student_base_id: HF ID или локальный путь к базовой модели студента (или пребилту).
+            version:         Версия компонентов (используется при сохранении).
+            weights_map:     dict[component_id -> weights_path]. Если None — все компоненты
+                             инициализируются случайно.
+            device_map:      Стратегия размещения учителя ('auto' для bitsandbytes).
         """
         weights_map = weights_map or {}
         print(f"Assembling distillation system (version {version})...")
 
         # 1. latentBERT — скелет строится через DUS, веса опционально из файла
-        print("[1/3] Building latentBERT skeleton (DUS from ModernBERT-large)...")
+        print(f"[1/3] Building latentBERT skeleton (from {student_base_id})...")
         student = DUSModel.from_scratch(
             component_id="latentBERT",
             version=version,
             weights_path=weights_map.get("latentBERT"),
+            config={"base_model_id": student_base_id, "target_layers": 40}
         )
 
         # 2. InputProjector

@@ -20,9 +20,27 @@ def debug_nan():
     
     # 2. Сборка системы
     print("\n[1/4] Assembling system...")
+    
+    # Определение путей (дублируем логику из train_phase1_kaggle для автономности дебаг-скрипта)
+    KAG_RES = "/kaggle/input/datasets/bogdanbuliakov/bebladii-resources"
+    VERSION = "v1.0"
+    
+    if os.path.exists(KAG_RES):
+        student_base_id = os.path.join(KAG_RES, "prebuilt/latentBERT", VERSION)
+        components_root = os.path.join(KAG_RES, "components")
+    else:
+        student_base_id = os.path.join("storage/prebuilt/latentBERT", VERSION)
+        components_root = "storage/components"
+    
+    weights_map = build_weights_map() # Использует дефолт или может быть расширен
+    # Но так как мы хотим Kaggle пути в weights_map тоже:
+    from experiments.train_phase1_kaggle import build_weights_map as build_kag_weights
+    weights_map = build_kag_weights(components_root=components_root)
+
     assembler = ModelAssembler()
     distiller = assembler.assemble_phase1_distiller(
-        version="v1.0",
+        version=VERSION,
+        student_base_id=student_base_id,
         weights_map=weights_map
     )
     distiller.eval() # Режим оценки для чистоты
