@@ -33,7 +33,8 @@ class ModelAssembler:
                                   student_base_id="answerdotai/ModernBERT-large",
                                   version="v1.0",
                                   weights_map=None,
-                                  device_map="auto"):
+                                  device_map="auto",
+                                  student_device=None):
         """
         Собирает полную систему для Фазы 1 дистилляции.
 
@@ -89,6 +90,7 @@ class ModelAssembler:
             input_projector=input_projector,
             feature_projectors=feature_projectors,
             device_map=device_map,
+            student_device=student_device,
         )
 
         return distiller

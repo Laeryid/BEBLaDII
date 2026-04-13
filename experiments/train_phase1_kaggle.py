@@ -17,8 +17,8 @@ from src.beb_la_dii.utils.experiment_tracker import ExperimentTracker
 BASE_MODEL_NAME = "answerdotai/ModernBERT-large"
 TEACHER_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 MAX_LENGTH = 512
-BATCH_SIZE = 1
-GRAD_ACCUM_STEPS = 8
+BATCH_SIZE = 8
+GRAD_ACCUM_STEPS = 1
 EPOCHS = 1
 LEARNING_RATE = 5e-5
 STAGE = 'awakening' # 'awakening' для Stage 1, 'reasoning' для Stage 2
@@ -145,7 +145,8 @@ def train():
         student_base_id=student_base_id,
         version=VERSION,
         weights_map=weights_map,
-        device_map="auto"
+        device_map={"": 0}, # Учитель строго на нулевой GPU
+        student_device="cuda:1" # Студент строго на первой GPU
     )
     
     # 2.5 Инициализация трекера экспериментов
@@ -221,8 +222,9 @@ def train():
             # ReasoningDistiller возвращает (projected_student_states, teacher_targets)
             student_states, teacher_targets = distiller(input_ids, attention_mask)
             
-            # Расчет лосса с учетом маски
-            loss = criterion(student_states, teacher_targets, attention_mask=attention_mask)
+            # Расчет лосса с учетом маски (маска должна быть на устройстве студента)
+            loss_mask = attention_mask.to(distiller.student_device)
+            loss = criterion(student_states, teacher_targets, attention_mask=loss_mask)
             loss = loss / GRAD_ACCUM_STEPS
         
         # Проверка на NaN

@@ -124,10 +124,12 @@ class ReasoningDistiller(nn.Module):
         student_inputs_embeds = self.input_projector(teacher_embeddings)
         self._check_nan(student_inputs_embeds, "InputProjector Output")
         
-        # 3. Проход Student
+        # ВНИМАНИЕ: attention_mask может приходить от данных Учителя (с cuda:0), поэтому переводим его на student_device.
+        student_attention_mask = attention_mask.to(self.student_device) if attention_mask is not None else None
+        
         student_outputs = self.student(
             inputs_embeds=student_inputs_embeds,
-            attention_mask=attention_mask,
+            attention_mask=student_attention_mask,
             output_hidden_states=True
         )
         self._check_nan(student_outputs.hidden_states[-1], "Student Final Hidden State")
