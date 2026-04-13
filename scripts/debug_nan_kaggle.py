@@ -20,7 +20,8 @@ def debug_nan():
     
     # 2. Сборка системы
     print("\n[1/4] Assembling system...")
-    distiller = ModelAssembler.assemble_phase1_distiller(
+    assembler = ModelAssembler()
+    distiller = assembler.assemble_phase1_distiller(
         version="v1.0",
         weights_map=weights_map
     )
