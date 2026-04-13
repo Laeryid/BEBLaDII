@@ -49,6 +49,12 @@ def prepare_kaggle_package():
             f"components/projector/{pid}/v1.0",
         ))
     
+    # Prebuilts (LatentBERT skeleton 40 layers)
+    mirror_paths.append((
+        "storage/prebuilt/latentBERT/v1.0",
+        "prebuilt/latentBERT/v1.0",
+    ))
+    
     for src_rel, dst_rel in mirror_paths:
         src = root / src_rel
         dst = staging / dst_rel

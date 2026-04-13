@@ -60,6 +60,14 @@ def setup_kaggle():
                 print(f"Создание симлинка: {dst} -> {src}")
                 os.symlink(src, dst)
     
+    # 2. Симлинк для пребилтов в storage/
+    prebuilt_src = os.path.join(resource_ds, "prebuilt")
+    if os.path.exists(prebuilt_src):
+        os.makedirs("storage", exist_ok=True)
+        if not os.path.exists("storage/prebuilt"):
+            print(f"Создание симлинка: storage/prebuilt -> {prebuilt_src}")
+            os.symlink(prebuilt_src, "storage/prebuilt")
+    
     if os.path.exists("data"):
         print(f"Содержимое папки data после настройки: {os.listdir('data')}")
         

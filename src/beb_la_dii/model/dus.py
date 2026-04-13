@@ -11,7 +11,15 @@ class DUSModel(BEComponent):
     Предобученные веса опционально загружаются поверх скелета из файла.
     """
     def __init__(self, component_id="modernbert_dus_40", version="v1.0", config=None):
-        base_model_id = config.get("base_model_id", "answerdotai/ModernBERT-large") if config else "answerdotai/ModernBERT-large"
+        # Пытаемся найти локальный пребилт версии v1.0
+        prebuilt_path = f"storage/prebuilt/latentBERT/{version}"
+        import os
+        if os.path.exists(prebuilt_path):
+            base_model_id = prebuilt_path
+            print(f"  Using local prebuilt for skeleton: {prebuilt_path}")
+        else:
+            base_model_id = config.get("base_model_id", "answerdotai/ModernBERT-large") if config else "answerdotai/ModernBERT-large"
+            
         target_layers = config.get("target_layers", 40) if config else 40
         super().__init__(component_id, version, {"base_model_id": base_model_id, "target_layers": target_layers})
         
@@ -69,6 +77,7 @@ def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40)
     """
     print(f"Loading model architecture from {model_id}...")
     
+    # Пытаемся загрузить конфиг. Если это папка, он загрузится локально.
     config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
     base_model = AutoModelForMaskedLM.from_pretrained(model_id, trust_remote_code=True)
     
