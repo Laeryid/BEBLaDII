@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, random_split
 from indexed_parquet_dataset import IndexedParquetDataset
 from .tokenizer import get_tokenizer
 import os
@@ -95,7 +95,7 @@ class DistillationDataset(Dataset):
             "attention_mask": encoding["attention_mask"].squeeze(0)
         }
 
-def get_dataloader(stage='awakening', batch_size=1, max_length=512):
+def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train', val_ratio=0.05):
     tokenizer = get_tokenizer()
     # Нормализуем имя стадии для путей (Awakening / Reasoning)
     stage_capitalized = stage.capitalize() if stage.lower() in ['awakening', 'reasoning'] else stage
@@ -166,4 +166,15 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512):
             
         dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
         
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True)
+    # Разделение на train и val
+    if val_ratio > 0:
+        val_size = int(len(dataset) * val_ratio)
+        train_size = len(dataset) - val_size
+        # Фиксированный сид для стабильности разделения при перезапусках
+        train_ds, val_ds = random_split(
+            dataset, [train_size, val_size], 
+            generator=torch.Generator().manual_seed(42)
+        )
+        dataset = train_ds if split == 'train' else val_ds
+        
+    return DataLoader(dataset, batch_size=batch_size, shuffle=(split == 'train'), num_workers=1, pin_memory=True)

@@ -22,6 +22,8 @@ GRAD_ACCUM_STEPS = 1
 EPOCHS = 1
 LEARNING_RATE = 5e-5
 STAGE = 'awakening' # 'awakening' для Stage 1, 'reasoning' для Stage 2
+VAL_EVERY_STEPS = 100  # Валидация каждые 100 шагов
+VAL_MAX_SAMPLES = 1000 # Ограничение кол-ва сэмплов для валидации
 VERSION = "v1.0"
 
 # Путь к вашему датасету на Kaggle
@@ -183,11 +185,14 @@ def train():
     
     # 4. Подготовка данных
     print(f"Подготовка данных для стадии: {STAGE}...")
-    dataloader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH)
+    train_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='train')
+    val_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='val')
     
     # Сбор метаданных датасетов для воспроизводимости
     dataset_metadata = []
-    for entry in dataloader.dataset.index_map:
+    # Извлекаем оригинальный датасет из Subset
+    base_dataset = train_loader.dataset.dataset if isinstance(train_loader.dataset, torch.utils.data.Subset) else train_loader.dataset
+    for entry in base_dataset.index_map:
         ds = entry['ds']
         ds_info = {
             "type": entry['type'],
@@ -208,7 +213,7 @@ def train():
     
     # 6. Тренировочный цикл
     distiller.train()
-    progress_bar = tqdm(dataloader, desc=f"Training Phase 1 ({STAGE})")
+    progress_bar = tqdm(train_loader, desc=f"Training Phase 1 ({STAGE})")
     
     accum_loss = 0.0
     optimizer.zero_grad()
@@ -263,6 +268,39 @@ def train():
             # Локальное логирование
             tracker.log_step(step, {"loss": avg_loss, "lr": LEARNING_RATE})
             accum_loss = 0.0
+            
+            # --- ВАЛИДАЦИЯ ---
+            if (step + 1) % VAL_EVERY_STEPS == 0:
+                print(f"\n--- Running Validation (Step {step+1}) ---")
+                distiller.eval()
+                val_loss_sum = 0.0
+                val_steps = 0
+                max_val_steps = VAL_MAX_SAMPLES // BATCH_SIZE
+                
+                with torch.no_grad():
+                    for v_step, v_batch in enumerate(val_loader):
+                        if v_step >= max_val_steps: break
+                        
+                        v_input_ids = v_batch['input_ids'].to(device)
+                        v_mask = v_batch['attention_mask'].to(device)
+                        
+                        # Forward
+                        v_student_states, v_teacher_targets = distiller(v_input_ids, v_mask)
+                        
+                        # Loss mask must be on student device
+                        v_loss_mask = v_mask.to(distiller.student_device)
+                        v_loss = criterion(v_student_states, v_teacher_targets, attention_mask=v_loss_mask)
+                        
+                        val_loss_sum += v_loss.item()
+                        val_steps += 1
+                
+                avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
+                print(f"[{step+1}] Validation Loss: {avg_val_loss:.4f}")
+                
+                if wandb.run:
+                    wandb.log({"val_loss": avg_val_loss, "step": step})
+                
+                distiller.train() # Возврат в режим обучения
             
     # 7. Сохранение результатов
     print(f"Сохранение финальных результатов через трекер...")
