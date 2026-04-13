@@ -12,24 +12,44 @@ class DistillationLoss(nn.Module):
         self.layer_weights = layer_weights
         self.mse = nn.MSELoss()
         
-    def forward(self, student_hidden_states, teacher_hidden_states):
+    def forward(self, student_hidden_states, teacher_hidden_states, attention_mask=None):
         """
         student_hidden_states: dict {layer_idx: tensor}
         teacher_hidden_states: dict {layer_idx: tensor}
+        attention_mask: Tensor (B, T) - 1 для значимых токенов, 0 для паддинга
         """
         total_loss = 0.0
         
+        # Подготовка маски
+        if attention_mask is not None:
+            # (B, T) -> (B, T, 1)
+            mask = attention_mask.unsqueeze(-1).float()
+            num_active_elements = mask.sum()
+        else:
+            mask = 1.0
+            num_active_elements = None
+
         for layer_idx, weight in self.layer_weights.items():
             if layer_idx in student_hidden_states and layer_idx in teacher_hidden_states:
                 s_h = student_hidden_states[layer_idx]
                 t_h = teacher_hidden_states[layer_idx]
                 
-                # 1. MSE Loss
-                mse_l = self.mse(s_h, t_h)
-                
-                # 2. Cosine Similarity Loss (1 - mean(cos_sim))
-                cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
-                cos_l = 1.0 - cos_sim.mean()
+                if attention_mask is not None:
+                    # 1. MSE Loss (Masked)
+                    diff = (s_h - t_h) ** 2
+                    # Деление на (кол-во активных токенов * размер скрытого слоя)
+                    mse_l = (diff * mask).sum() / (num_active_elements * s_h.size(-1) + 1e-6)
+                    
+                    # 2. Cosine Similarity Loss (Masked)
+                    cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
+                    cos_l = 1.0 - (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+                else:
+                    # 1. MSE Loss
+                    mse_l = self.mse(s_h, t_h)
+                    
+                    # 2. Cosine Similarity Loss
+                    cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
+                    cos_l = 1.0 - cos_sim.mean()
                 
                 # Комбинированный лосс для слоя
                 layer_l = mse_l + cos_l

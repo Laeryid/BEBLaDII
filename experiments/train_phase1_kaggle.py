@@ -24,67 +24,81 @@ LEARNING_RATE = 5e-5
 STAGE = 'awakening' # 'awakening' для Stage 1, 'reasoning' для Stage 2
 VERSION = "v1.0"
 
+# Путь к вашему датасету на Kaggle
+KAGGLE_RESOURCES_DATASET = "/kaggle/input/bebladii-resources" 
+# Если Kaggle использует полный путь с именем пользователя:
+KAGGLE_RESOURCES_DATASET_ALT = "/kaggle/input/datasets/bogdanbuliakov/bebladii-resources"
+
 # Настройка окружения
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 def setup_kaggle():
-    """Настройка путей для Kaggle: симлинки данных из Input в ./data/"""
+    """Настройка путей для Kaggle: симлинки данных и пребилтов."""
     if not os.path.exists("/kaggle/input"):
         return None
         
     print("Обнаружена среда Kaggle. Настройка путей...")
     
-    # Создаем папку data в текущей рабочей директории
-    os.makedirs("data", exist_ok=True)
-    
-    # Ищем наш датасет с ресурсами
-    input_base = "/kaggle/input"
+    # 1. Поиск базовой папки ресурсов
     resource_ds = None
+    input_base = "/kaggle/input"
     
-    for ds_name in os.listdir(input_base):
-        if "bebladii" in ds_name.lower():
-            resource_ds = os.path.join(input_base, ds_name)
+    # Проверяем приоритетные пути
+    for path in [KAGGLE_RESOURCES_DATASET, KAGGLE_RESOURCES_DATASET_ALT]:
+        if os.path.exists(path):
+            resource_ds = path
             break
             
+    # Если не нашли по прямым путям — ищем перебором
     if not resource_ds:
-        print("WARN: Датасет bebladii-resources не найден в /kaggle/input")
+        print(f"Поиск ресурсов в {input_base}...")
+        for root, dirs, files in os.walk(input_base, topdown=True):
+            if "bebladii-resources" in root.lower():
+                resource_ds = root
+                break
+            # Ограничиваем глубину поиска для скорости
+            if root.count(os.sep) - input_base.count(os.sep) > 2:
+                del dirs[:] 
+                
+    if not resource_ds:
+        print(f"WARN: Ресурсы bebladii не найдены. Доступные папки в /kaggle/input: {os.listdir(input_base)}")
         return None
 
-    # 1. Симлинки для данных
+    print(f"Используются ресурсы из: {resource_ds}")
+
+    # 2. Симлинки для данных (в папку data/)
+    os.makedirs("data", exist_ok=True)
     ds_data_path = os.path.join(resource_ds, "data")
     if os.path.exists(ds_data_path):
         for folder in os.listdir(ds_data_path):
             src = os.path.join(ds_data_path, folder)
             dst = os.path.join("data", folder)
             if not os.path.exists(dst):
-                print(f"Создание симлинка: {dst} -> {src}")
+                print(f"Symlink: {dst} -> {src}")
                 os.symlink(src, dst)
     
-    # 2. Симлинк для пребилтов в storage/
-    prebuilt_src = os.path.join(resource_ds, "prebuilt")
-    if os.path.exists(prebuilt_src):
-        os.makedirs("storage", exist_ok=True)
-        if not os.path.exists("storage/prebuilt"):
-            print(f"Создание симлинка: storage/prebuilt -> {prebuilt_src}")
-            os.symlink(prebuilt_src, "storage/prebuilt")
-    
+    # 3. Симлинки для пребилтов и компонентов (в папку storage/)
+    os.makedirs("storage", exist_ok=True)
+    for folder in ["prebuilt", "components"]:
+        src = os.path.join(resource_ds, folder)
+        dst = os.path.join("storage", folder)
+        if os.path.exists(src):
+            if not os.path.exists(dst):
+                print(f"Symlink: {dst} -> {src}")
+                os.symlink(src, dst)
+
     if os.path.exists("data"):
         print(f"Содержимое папки data после настройки: {os.listdir('data')}")
         
     return resource_ds
 
-def build_weights_map(resource_ds=None):
+def build_weights_map():
     """
     Строит карту весов component_id -> path.
-    Приоритет: Kaggle-датасет -> локальное storage/components.
+    Всегда использует storage/components (на Kaggle это симлинк).
     Если файл не найден по пути, компонент инициализируется случайно.
     """
-    if resource_ds:
-        # Kaggle: структура kaggle_upload/ зеркалируется в resource_ds/
-        components_root = os.path.join(resource_ds, "components")
-    else:
-        # Локально: стандартный storage/components
-        components_root = "storage/components"
+    components_root = "storage/components"
 
     def _w(comp_type, comp_id):
         return os.path.join(components_root, comp_type, comp_id, VERSION, "weights.pt")
@@ -112,7 +126,7 @@ def train():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Инициализация системы через Assembler на {device}...")
 
-    weights_map = build_weights_map(resource_ds)
+    weights_map = build_weights_map()
     print("Weights map:")
     for k, v in weights_map.items():
         status = "[found]" if os.path.exists(v) else "[random init]"
@@ -199,8 +213,8 @@ def train():
             # ReasoningDistiller возвращает (projected_student_states, teacher_targets)
             student_states, teacher_targets = distiller(input_ids, attention_mask)
             
-            # Расчет лосса
-            loss = criterion(student_states, teacher_targets)
+            # Расчет лосса с учетом маски
+            loss = criterion(student_states, teacher_targets, attention_mask=attention_mask)
             loss = loss / GRAD_ACCUM_STEPS
         
         # Проверка на NaN

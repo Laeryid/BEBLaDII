@@ -41,7 +41,7 @@ class ReasoningDistiller(nn.Module):
         
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_compute_dtype=torch.float32,  # Стабильнее для T4
             bnb_4bit_quant_type="nf4",
             bnb_4bit_use_double_quant=True,
         )
@@ -88,9 +88,19 @@ class ReasoningDistiller(nn.Module):
             40: 28  # Last
         }
 
+    def _check_nan(self, tensor, name):
+        """Вспомогательная функция для отладки NaN/Inf."""
+        if torch.isnan(tensor).any():
+            print(f"!!! DEBUG: NaN detected in {name}")
+            return True
+        if torch.isinf(tensor).any():
+            print(f"!!! DEBUG: Inf detected in {name}")
+            return True
+        return False
+
     def forward(self, input_ids, attention_mask=None):
         """
-        Прямой проход для дистилляции.
+        Прямой проход для дистилляции с отладкой.
         """
         # 1. Проход Teacher
         with torch.no_grad():
@@ -99,19 +109,19 @@ class ReasoningDistiller(nn.Module):
                 attention_mask=attention_mask,
                 output_hidden_states=True
             )
-            # Извлекаем эмбеддинги (первый слой) и нужные скрытые состояния.
-            # Явно переносим на student_device: с device_map='auto' учитель
-            # может раскладывать слои по разным GPU, и последний слой
-            # может оказаться не там, где student.
             teacher_embeddings = teacher_outputs.hidden_states[0].to(self.student_device)
+            self._check_nan(teacher_embeddings, "Teacher Embeddings")
+            
             teacher_targets = {
                 s_idx: teacher_outputs.hidden_states[t_idx].to(self.student_device)
                 for s_idx, t_idx in self.layer_mapping.items()
             }
+            for idx, t in teacher_targets.items():
+                self._check_nan(t, f"Teacher Target Layer {idx}")
             
         # 2. Подготовка входа для Student
-        # Эмбеддинги учителя -> Проектор -> Вход ученика
         student_inputs_embeds = self.input_projector(teacher_embeddings)
+        self._check_nan(student_inputs_embeds, "InputProjector Output")
         
         # 3. Проход Student
         student_outputs = self.student(
@@ -119,19 +129,14 @@ class ReasoningDistiller(nn.Module):
             attention_mask=attention_mask,
             output_hidden_states=True
         )
-        
-        # Извлекаем скрытые состояния ученика (индексы слоев 1-indexed для конфига)
-        # Но в transformers hidden_states[0] - это входной эмбеддинг, hidden_states[1] - 1-й слой.
-        # Поэтому hidden_states[20] - это слой 20.
-        student_samples = {
-            idx: student_outputs.hidden_states[idx] 
-            for idx in self.layer_mapping.keys()
-        }
+        self._check_nan(student_outputs.hidden_states[-1], "Student Final Hidden State")
         
         # 4. Проецирование состояний ученика обратно в пространство Qwen
         projected_student_states = {}
-        for idx, h_state in student_samples.items():
-            projected_student_states[idx] = self.feature_projectors[str(idx)](h_state)
+        for idx, h_state in {idx: student_outputs.hidden_states[idx] for idx in self.layer_mapping.keys()}.items():
+            proj = self.feature_projectors[str(idx)](h_state)
+            self._check_nan(proj, f"FeatureProjector {idx} Output")
+            projected_student_states[idx] = proj
             
         return projected_student_states, teacher_targets
 
