@@ -1,0 +1,9 @@
+{
+    "paths": {
+        "knowledge_root": ".\\.know",
+        "agent_instructions": "AGENTS.md",
+        "workflows_dir": ".agent/workflows",
+        "venv_python": ".venv\\Scripts\\python.exe"
+    },
+    "auto_resolve": true
+}

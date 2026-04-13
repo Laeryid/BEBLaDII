@@ -104,10 +104,15 @@ class ReasoningDistiller(nn.Module):
         Прямой проход для дистилляции с отладкой.
         """
         # 1. Проход Teacher
+        # Определяем устройство учителя (обычно первая видеокарта в device_map)
+        teacher_device = next(self.teacher.parameters()).device
+        t_input_ids = input_ids.to(teacher_device)
+        t_attention_mask = attention_mask.to(teacher_device) if attention_mask is not None else None
+
         with torch.no_grad():
             teacher_outputs = self.teacher(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
+                input_ids=t_input_ids,
+                attention_mask=t_attention_mask,
                 output_hidden_states=True
             )
             teacher_embeddings = teacher_outputs.hidden_states[0].to(self.student_device).float()

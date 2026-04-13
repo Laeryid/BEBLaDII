@@ -216,11 +216,12 @@ def train():
     progress_bar = tqdm(train_loader, desc=f"Training Phase 1 ({STAGE})")
     
     accum_loss = 0.0
+    best_val_loss = float('inf')
     optimizer.zero_grad()
     
     for step, batch in enumerate(progress_bar):
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
+        input_ids = batch["input_ids"].to(distiller.student_device)
+        attention_mask = batch["attention_mask"].to(distiller.student_device)
         
         # Форвард с автокастом для стабильности FP16
         with torch.cuda.amp.autocast():
@@ -281,8 +282,8 @@ def train():
                     for v_step, v_batch in enumerate(val_loader):
                         if v_step >= max_val_steps: break
                         
-                        v_input_ids = v_batch['input_ids'].to(device)
-                        v_mask = v_batch['attention_mask'].to(device)
+                        v_input_ids = v_batch['input_ids'].to(distiller.student_device)
+                        v_mask = v_batch['attention_mask'].to(distiller.student_device)
                         
                         # Forward
                         v_student_states, v_teacher_targets = distiller(v_input_ids, v_mask)
@@ -296,6 +297,22 @@ def train():
                 
                 avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
                 print(f"[{step+1}] Validation Loss: {avg_val_loss:.4f}")
+                
+                # --- СОХРАНЕНИЕ ЛУЧШЕЙ МОДЕЛИ ---
+                if avg_val_loss < best_val_loss:
+                    best_val_loss = avg_val_loss
+                    print(f"New Best Model detected! (val_loss: {best_val_loss:.4f}) Saving...")
+                    best_state = {
+                        "latentBERT_state_dict": distiller.student.state_dict(),
+                        "input_projector": distiller.input_projector.state_dict(),
+                        "feature_projectors": distiller.feature_projectors.state_dict(),
+                        "config": hyperparams,
+                        "step": step,
+                        "val_loss": best_val_loss
+                    }
+                    tracker.save_checkpoint(best_state, name="phase1_best")
+                    if wandb.run:
+                        wandb.log({"best_val_loss": best_val_loss}, commit=False)
                 
                 if wandb.run:
                     wandb.log({"val_loss": avg_val_loss, "step": step})
