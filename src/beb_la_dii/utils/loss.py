@@ -31,8 +31,8 @@ class DistillationLoss(nn.Module):
 
         for layer_idx, weight in self.layer_weights.items():
             if layer_idx in student_hidden_states and layer_idx in teacher_hidden_states:
-                s_h = student_hidden_states[layer_idx]
-                t_h = teacher_hidden_states[layer_idx]
+                s_h = student_hidden_states[layer_idx].float()
+                t_h = teacher_hidden_states[layer_idx].float()
                 
                 if attention_mask is not None:
                     # 1. MSE Loss (Masked)
