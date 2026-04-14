@@ -49,21 +49,28 @@ class DistillationDataset(Dataset):
         print(f"Initialized combined dataset: {self.total_samples} samples.")
 
     def _apply_mapper(self, item, dtype):
+        if item is None: return ""
+        
         if dtype == 'raw':
-            return item.get('text', '')
+            return item.get('text', '') or ""
         elif dtype == 'magpie':
-            inst = item.get('instruction', '')
-            resp = item.get('response', '')
+            inst = item.get('instruction', '') or ""
+            resp = item.get('response', '') or ""
             return f"<|im_start|>user\n{inst}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n{resp}<|im_end|>"
         elif dtype == 'sharegpt':
-            system = item.get('system', '')
-            convs = item.get('conversations', [])
+            system = item.get('system') or ""
+            convs = item.get('conversations') or []
             text = ""
             if system:
                 text += f"<|im_start|>system\n{system}<|im_end|>\n"
+            
+            if not isinstance(convs, (list, tuple)):
+                return text
+                
             for i, msg in enumerate(convs):
-                role = "user" if msg['from'] == 'human' else "assistant"
-                content = msg['value']
+                if not isinstance(msg, dict): continue
+                role = "user" if msg.get('from') == 'human' else "assistant"
+                content = msg.get('value', '') or ""
                 text += f"<|im_start|>{role}\n"
                 if role == "assistant" and i == 1: 
                     text += f"<|thought|>\n"
