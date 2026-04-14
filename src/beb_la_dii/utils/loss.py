@@ -21,6 +21,7 @@ class DistillationLoss(nn.Module):
         total_loss = 0.0
         mse_total = 0.0
         cos_total = 0.0
+        metrics = {}
         
         # Подготовка маски
         if attention_mask is not None:
@@ -57,11 +58,18 @@ class DistillationLoss(nn.Module):
                 mse_total += weight * mse_l
                 cos_total += weight * cos_l
                 
+                # Послойная детализация
+                metrics[f"l{layer_idx}_mse"] = mse_l.item()
+                metrics[f"l{layer_idx}_cos"] = cos_l.item()
+                
                 # Комбинированный лосс для слоя
                 layer_l = mse_l + cos_l
                 total_loss += weight * layer_l
+        
+        metrics["mse"] = mse_total.item() if torch.is_tensor(mse_total) else mse_total
+        metrics["cosine"] = cos_total.item() if torch.is_tensor(cos_total) else cos_total
                 
-        return total_loss, {"mse": mse_total, "cosine": cos_total}
+        return total_loss, metrics
 
 if __name__ == "__main__":
     # Тест

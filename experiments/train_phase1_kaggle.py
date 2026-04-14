@@ -246,6 +246,8 @@ def train():
     accum_loss = 0.0
     accum_mse = 0.0
     accum_cosine = 0.0
+    accum_metrics = {} # Для послойных метрик
+    
     best_val_loss = float('inf')
     optimizer.zero_grad()
     
@@ -277,8 +279,13 @@ def train():
             
             # Накопление метрик для логирования
             accum_loss += loss.item()
-            accum_mse += loss_metrics["mse"].item() / GRAD_ACCUM_STEPS
-            accum_cosine += loss_metrics["cosine"].item() / GRAD_ACCUM_STEPS
+            accum_mse += loss_metrics["mse"] / GRAD_ACCUM_STEPS
+            accum_cosine += loss_metrics["cosine"] / GRAD_ACCUM_STEPS
+            
+            # Накопление послойных метрик
+            for k, v in loss_metrics.items():
+                if k.startswith("l") and ("_mse" in k or "_cos" in k):
+                    accum_metrics[k] = accum_metrics.get(k, 0.0) + v / GRAD_ACCUM_STEPS
             
         except RuntimeError as e:
             if "out of memory" in str(e):
@@ -290,17 +297,27 @@ def train():
                 gc.collect()
                 optimizer.zero_grad() # Сброс накопленных градиентов при ошибке
                 accum_loss = 0.0
+                accum_mse = 0.0
+                accum_cosine = 0.0
+                accum_metrics = {}
                 continue
             else:
                 raise e
         
         # Шаг оптимизатора
         if (step + 1) % GRAD_ACCUM_STEPS == 0:
+            # --- ВРУЧНУЮ WARMUP ---
+            macro_step = (step + 1) // GRAD_ACCUM_STEPS
+            if macro_step <= WARMUP_STEPS:
+                lr_scale = macro_step / WARMUP_STEPS
+                for pg in optimizer.param_groups:
+                    pg['lr'] = LEARNING_RATE * lr_scale
+            
             # Unscale для корректного clipping градиентов
             scaler.unscale_(optimizer)
             
-            # Обрезаем градиенты для стабильности в 40-слойной модели
-            torch.nn.utils.clip_grad_norm_(distiller.parameters(), max_norm=1.0)
+            # Обрезаем градиенты и получаем норму
+            grad_norm = torch.nn.utils.clip_grad_norm_(distiller.parameters(), max_norm=1.0)
             
             # Шаг через скалер
             scaler.step(optimizer)
@@ -308,30 +325,44 @@ def train():
             optimizer.zero_grad()
             
             # Логирование
-            avg_loss = accum_loss * GRAD_ACCUM_STEPS
-            avg_mse = accum_mse * GRAD_ACCUM_STEPS
-            avg_cos = accum_cosine * GRAD_ACCUM_STEPS
+            avg_loss = accum_loss # accum_loss уже сумма поделенных на GRAD_ACCUM_STEPS
+            avg_mse = accum_mse
+            avg_cos = accum_cosine
+            current_lr = optimizer.param_groups[0]['lr']
             
-            progress_bar.set_postfix({"loss": f"{avg_loss:.4f}", "mse": f"{avg_mse:.4f}"})
+            progress_bar.set_postfix({
+                "loss": f"{avg_loss:.4f}", 
+                "mse": f"{avg_mse:.4f}", 
+                "gn": f"{grad_norm:.2f}"
+            })
+            
             if wandb.run:
-                wandb.log({
+                log_dict = {
                     "loss": avg_loss, 
                     "mse": avg_mse,
                     "cosine": avg_cos,
+                    "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
                     "step": step,
-                    "lr": LEARNING_RATE
-                })
+                    "lr": current_lr
+                }
+                # Добавляем послойные метрики
+                for k, v in accum_metrics.items():
+                    log_dict[f"train/{k}"] = v
+                    
+                wandb.log(log_dict)
             
             # Локальное логирование
             tracker.log_step(step, {
                 "loss": avg_loss, 
                 "mse": avg_mse, 
                 "cosine": avg_cos, 
-                "lr": LEARNING_RATE
+                "grad_norm": grad_norm,
+                "lr": current_lr
             })
             accum_loss = 0.0
             accum_mse = 0.0
             accum_cosine = 0.0
+            accum_metrics = {}
             
             # --- ВАЛИДАЦИЯ ---
             if (step + 1) % VAL_EVERY_STEPS == 0:
