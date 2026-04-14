@@ -16,9 +16,9 @@ from src.beb_la_dii.utils.experiment_tracker import ExperimentTracker
 # Константы
 BASE_MODEL_NAME = "answerdotai/ModernBERT-large"
 TEACHER_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
-MAX_LENGTH = 256
-BATCH_SIZE = 8
-GRAD_ACCUM_STEPS = 1
+MAX_LENGTH = 1024
+BATCH_SIZE = 1
+GRAD_ACCUM_STEPS = 8
 EPOCHS = 1
 LEARNING_RATE = 5e-5
 STAGE = 'reasoning' # 'awakening' для Stage 1, 'reasoning' для Stage 2
@@ -36,6 +36,7 @@ KAGGLE_RESOURCES_DATASET_ALT = "/kaggle/input/datasets/bogdanbuliakov/bebladii-r
 
 # Настройка окружения
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 def setup_kaggle():
     """Настройка путей для Kaggle: симлинки данных и пребилтов."""
@@ -154,6 +155,12 @@ def train():
         student_device="cuda:1" # Студент строго на первой GPU
     )
     
+    # Оптимизации памяти для длинных последовательностей
+    if hasattr(distiller.student.model, "gradient_checkpointing_enable"):
+        print("Enabling Gradient Checkpointing for Student...")
+        distiller.student.model.gradient_checkpointing_enable()
+        distiller.student.model.config.use_cache = False
+    
     # 2.2 Загрузка кастомных весов, если указаны
     if CUSTOM_STUDENT_WEIGHTS_PATH and os.path.exists(CUSTOM_STUDENT_WEIGHTS_PATH):
         print(f"Загрузка кастомных весов студента из {CUSTOM_STUDENT_WEIGHTS_PATH}...")
@@ -241,28 +248,43 @@ def train():
     optimizer.zero_grad()
     
     for step, batch in enumerate(progress_bar):
-        input_ids = batch["input_ids"].to(distiller.student_device)
-        attention_mask = batch["attention_mask"].to(distiller.student_device)
-        
-        # Форвард с автокастом для стабильности FP16
-        with torch.cuda.amp.autocast():
-            # ReasoningDistiller возвращает (projected_student_states, teacher_targets)
-            student_states, teacher_targets = distiller(input_ids, attention_mask)
+        try:
+            input_ids = batch["input_ids"].to(distiller.student_device)
+            attention_mask = batch["attention_mask"].to(distiller.student_device)
             
-            # Расчет лосса с учетом маски (маска должна быть на устройстве студента)
-            loss_mask = attention_mask.to(distiller.student_device)
-            loss = criterion(student_states, teacher_targets, attention_mask=loss_mask)
-            loss = loss / GRAD_ACCUM_STEPS
-        
-        # Проверка на NaN
-        if torch.isnan(loss):
-            print(f"WARN: NaN loss detected at step {step}. Skipping batch.")
-            optimizer.zero_grad()
-            continue
+            # Форвард с автокастом для стабильности FP16
+            with torch.cuda.amp.autocast():
+                # ReasoningDistiller возвращает (projected_student_states, teacher_targets)
+                student_states, teacher_targets = distiller(input_ids, attention_mask)
+                
+                # Расчет лосса с учетом маски
+                loss_mask = attention_mask.to(distiller.student_device)
+                loss = criterion(student_states, teacher_targets, attention_mask=loss_mask)
+                loss = loss / GRAD_ACCUM_STEPS
+            
+            # Проверка на NaN
+            if torch.isnan(loss):
+                print(f"WARN: NaN loss detected at step {step}. Skipping batch.")
+                optimizer.zero_grad()
+                continue
 
-        # Бэквард с масштабированием
-        scaler.scale(loss).backward()
-        accum_loss += loss.item()
+            # Бэквард с масштабированием
+            scaler.scale(loss).backward()
+            accum_loss += loss.item()
+            
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                print(f"\n[OOM] Out of memory at step {step}. Cleaning cache and skipping...")
+                for p in distiller.parameters(): 
+                    if p.grad is not None: p.grad = None
+                torch.cuda.empty_cache()
+                import gc
+                gc.collect()
+                optimizer.zero_grad() # Сброс накопленных градиентов при ошибке
+                accum_loss = 0.0
+                continue
+            else:
+                raise e
         
         # Шаг оптимизатора
         if (step + 1) % GRAD_ACCUM_STEPS == 0:
