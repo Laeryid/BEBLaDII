@@ -19,6 +19,8 @@ class DistillationLoss(nn.Module):
         attention_mask: Tensor (B, T) - 1 для значимых токенов, 0 для паддинга
         """
         total_loss = 0.0
+        mse_total = 0.0
+        cos_total = 0.0
         
         # Подготовка маски
         if attention_mask is not None:
@@ -51,11 +53,15 @@ class DistillationLoss(nn.Module):
                     cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
                     cos_l = 1.0 - cos_sim.mean()
                 
+                # Накопление по компонентам
+                mse_total += weight * mse_l
+                cos_total += weight * cos_l
+                
                 # Комбинированный лосс для слоя
                 layer_l = mse_l + cos_l
                 total_loss += weight * layer_l
                 
-        return total_loss
+        return total_loss, {"mse": mse_total, "cosine": cos_total}
 
 if __name__ == "__main__":
     # Тест

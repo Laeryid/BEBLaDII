@@ -16,7 +16,7 @@ from src.beb_la_dii.utils.experiment_tracker import ExperimentTracker
 # Константы
 BASE_MODEL_NAME = "answerdotai/ModernBERT-large"
 TEACHER_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
-MAX_LENGTH = 1024
+MAX_LENGTH = 4096
 BATCH_SIZE = 1
 GRAD_ACCUM_STEPS = 8
 EPOCHS = 1
@@ -244,6 +244,8 @@ def train():
     progress_bar = tqdm(train_loader, desc=f"Training Phase 1 ({STAGE})")
     
     accum_loss = 0.0
+    accum_mse = 0.0
+    accum_cosine = 0.0
     best_val_loss = float('inf')
     optimizer.zero_grad()
     
@@ -253,13 +255,15 @@ def train():
             attention_mask = batch["attention_mask"].to(distiller.student_device)
             
             # Форвард с автокастом для стабильности FP16
-            with torch.cuda.amp.autocast():
+            with torch.amp.autocast('cuda'):
                 # ReasoningDistiller возвращает (projected_student_states, teacher_targets)
                 student_states, teacher_targets = distiller(input_ids, attention_mask)
                 
                 # Расчет лосса с учетом маски
                 loss_mask = attention_mask.to(distiller.student_device)
-                loss = criterion(student_states, teacher_targets, attention_mask=loss_mask)
+                loss, loss_metrics = criterion(student_states, teacher_targets, attention_mask=loss_mask)
+                
+                # Масштабирование для накопления градиентов
                 loss = loss / GRAD_ACCUM_STEPS
             
             # Проверка на NaN
@@ -270,7 +274,11 @@ def train():
 
             # Бэквард с масштабированием
             scaler.scale(loss).backward()
+            
+            # Накопление метрик для логирования
             accum_loss += loss.item()
+            accum_mse += loss_metrics["mse"].item() / GRAD_ACCUM_STEPS
+            accum_cosine += loss_metrics["cosine"].item() / GRAD_ACCUM_STEPS
             
         except RuntimeError as e:
             if "out of memory" in str(e):
@@ -301,23 +309,37 @@ def train():
             
             # Логирование
             avg_loss = accum_loss * GRAD_ACCUM_STEPS
-            progress_bar.set_postfix({"loss": f"{avg_loss:.4f}"})
+            avg_mse = accum_mse * GRAD_ACCUM_STEPS
+            avg_cos = accum_cosine * GRAD_ACCUM_STEPS
+            
+            progress_bar.set_postfix({"loss": f"{avg_loss:.4f}", "mse": f"{avg_mse:.4f}"})
             if wandb.run:
                 wandb.log({
                     "loss": avg_loss, 
+                    "mse": avg_mse,
+                    "cosine": avg_cos,
                     "step": step,
                     "lr": LEARNING_RATE
                 })
             
             # Локальное логирование
-            tracker.log_step(step, {"loss": avg_loss, "lr": LEARNING_RATE})
+            tracker.log_step(step, {
+                "loss": avg_loss, 
+                "mse": avg_mse, 
+                "cosine": avg_cos, 
+                "lr": LEARNING_RATE
+            })
             accum_loss = 0.0
+            accum_mse = 0.0
+            accum_cosine = 0.0
             
             # --- ВАЛИДАЦИЯ ---
             if (step + 1) % VAL_EVERY_STEPS == 0:
                 print(f"\n--- Running Validation (Step {step+1}) ---")
                 distiller.eval()
                 val_loss_sum = 0.0
+                val_mse_sum = 0.0
+                val_cos_sum = 0.0
                 val_steps = 0
                 max_val_steps = VAL_MAX_SAMPLES // BATCH_SIZE
                 
@@ -333,13 +355,18 @@ def train():
                         
                         # Loss mask must be on student device
                         v_loss_mask = v_mask.to(distiller.student_device)
-                        v_loss = criterion(v_student_states, v_teacher_targets, attention_mask=v_loss_mask)
+                        v_loss, v_metrics = criterion(v_student_states, v_teacher_targets, attention_mask=v_loss_mask)
                         
                         val_loss_sum += v_loss.item()
+                        val_mse_sum += v_metrics["mse"].item()
+                        val_cos_sum += v_metrics["cosine"].item()
                         val_steps += 1
                 
                 avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
-                print(f"[{step+1}] Validation Loss: {avg_val_loss:.4f}")
+                avg_val_mse = val_mse_sum / val_steps if val_steps > 0 else 0
+                avg_val_cos = val_cos_sum / val_steps if val_steps > 0 else 0
+                
+                print(f"[{step+1}] Validation - Loss: {avg_val_loss:.4f}, MSE: {avg_val_mse:.4f}, Cos: {avg_val_cos:.4f}")
                 
                 # --- СОХРАНЕНИЕ ЛУЧШЕЙ МОДЕЛИ ---
                 if avg_val_loss < best_val_loss:
@@ -358,7 +385,12 @@ def train():
                         wandb.log({"best_val_loss": best_val_loss}, commit=False)
                 
                 if wandb.run:
-                    wandb.log({"val_loss": avg_val_loss, "step": step})
+                    wandb.log({
+                        "val_loss": avg_val_loss, 
+                        "val_mse": avg_val_mse,
+                        "val_cosine": avg_val_cos,
+                        "step": step
+                    })
                 
                 distiller.train() # Возврат в режим обучения
             
