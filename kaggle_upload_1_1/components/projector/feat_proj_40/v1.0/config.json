@@ -1,0 +1,9 @@
+{
+    "component_id": "feat_proj_40",
+    "version": "v1.0",
+    "config": {
+        "input_dim": 1024,
+        "output_dim": 3584
+    },
+    "class_name": "FeatureProjector"
+}

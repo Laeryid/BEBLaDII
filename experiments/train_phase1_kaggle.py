@@ -21,10 +21,13 @@ BATCH_SIZE = 8
 GRAD_ACCUM_STEPS = 1
 EPOCHS = 1
 LEARNING_RATE = 5e-5
-STAGE = 'awakening' # 'awakening' для Stage 1, 'reasoning' для Stage 2
+STAGE = 'reasoning' # 'awakening' для Stage 1, 'reasoning' для Stage 2
 VAL_EVERY_STEPS = 100  # Валидация каждые 100 шагов
 VAL_MAX_SAMPLES = 1000 # Ограничение кол-ва сэмплов для валидации
 VERSION = "v1.0"
+
+# Кастомный путь к весам (например, из другого датасета Kaggle)
+CUSTOM_STUDENT_WEIGHTS_PATH = None 
 
 # Путь к вашему датасету на Kaggle
 KAGGLE_RESOURCES_DATASET = "/kaggle/input/bebladii-resources" 
@@ -151,6 +154,24 @@ def train():
         student_device="cuda:1" # Студент строго на первой GPU
     )
     
+    # 2.2 Загрузка кастомных весов, если указаны
+    if CUSTOM_STUDENT_WEIGHTS_PATH and os.path.exists(CUSTOM_STUDENT_WEIGHTS_PATH):
+        print(f"Загрузка кастомных весов студента из {CUSTOM_STUDENT_WEIGHTS_PATH}...")
+        try:
+            ckpt = torch.load(CUSTOM_STUDENT_WEIGHTS_PATH, map_location='cpu')
+            if isinstance(ckpt, dict) and "latentBERT_state_dict" in ckpt:
+                distiller.student.load_state_dict(ckpt["latentBERT_state_dict"])
+                if "input_projector" in ckpt:
+                    distiller.input_projector.load_state_dict(ckpt["input_projector"])
+                if "feature_projectors" in ckpt:
+                    distiller.feature_projectors.load_state_dict(ckpt["feature_projectors"])
+                print("Успешно: Загружен полный чекпоинт (Student + Projectors)")
+            else:
+                distiller.student.load_state_dict(ckpt)
+                print("Успешно: Загружен state_dict студента")
+        except Exception as e:
+            print(f"ОШИБКА загрузки кастомных весов: {e}")
+
     # 2.5 Инициализация трекера экспериментов
     hyperparams = {
         "base_model": BASE_MODEL_NAME,
