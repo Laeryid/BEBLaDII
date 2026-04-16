@@ -1,0 +1,197 @@
+{
+    "coverage_settings": {
+        "tracked_modules": [
+            ["src/beb_la_dii/model", "Model Core", 10],
+            ["src/beb_la_dii/rag", "RAG Engine", 10],
+            ["ideas", "Architecture & Training Phases", 10],
+            ["src/beb_la_dii/utils", "Utilities", 5],
+            ["src/beb_la_dii", "Core Package", 2],
+            ["tests", "Tests", 4],
+            ["experiments", "Experiments", 4],
+            [".know", "Knowledge Infrastructure", 8],
+            ["scripts", "Data & Ops Scripts", 3]
+        ],
+        "thresholds": {
+            "density": 50.0,
+            "complexity": 10
+        }
+    },
+    "artifacts": {
+        "README.md": {
+            "description": "General documentation and project overview.",
+            "depends_on": ["src/", "tests/", "pyproject.toml"]
+        },
+        "AGENTS.md": {
+            "description": "Instructions and context for AI agents.",
+            "depends_on": [".know/knowledge/", ".know/doc_config.json"]
+        }
+    },
+    "knowledge_items": {
+        "KI_model_core.md": {
+            "description": "Model logic, Depth Up-Scaling (DUS), projectors, and inference.",
+            "covers": ["Model Core"],
+            "depends_on": [
+                "src/beb_la_dii/model/base.py",
+                "src/beb_la_dii/model/component_registry.py",
+                "src/beb_la_dii/model/distiller.py",
+                "src/beb_la_dii/model/dus.py",
+                "src/beb_la_dii/model/projectors.py",
+                "src/beb_la_dii/model/assembler.py"
+            ]
+        },
+        "KI_architecture.md": {
+            "description": "Central description of architecture (System 1/2) and training phases.",
+            "covers": ["Architecture & Training Phases"],
+            "depends_on": [
+                "ideas/Architecture.md",
+                "ideas/Training phases.md",
+                "ideas/BEBLaDII idea.md",
+                "experiments/train_phase1_kaggle.py"
+            ]
+        },
+        "KI_rag_engine.md": {
+            "description": "RAG system, indexing, and knowledge search.",
+            "covers": ["RAG Engine"],
+            "depends_on": [
+                "src/beb_la_dii/rag/",
+                "ideas/Architecture.md"
+            ]
+        },
+        "KI_utilities.md": {
+            "description": "Tokenizer integration, training optimization, and loss calculation.",
+            "covers": ["Utilities"],
+            "depends_on": [
+                "src/beb_la_dii/utils/data.py",
+                "src/beb_la_dii/utils/experiment_manager.py",
+                "src/beb_la_dii/utils/experiment_tracker.py",
+                "src/beb_la_dii/utils/loss.py",
+                "src/beb_la_dii/utils/tokenizer.py",
+                "scripts/download_datasets.py"
+            ]
+        },
+        "KI_tests.md": {
+            "description": "Testing strategy for DUS, alignment, and gradient stability.",
+            "covers": ["Tests"],
+            "depends_on": [
+                "tests/test_constructor_logic.py",
+                "tests/test_dus_stability.py",
+                "tests/test_inference.py",
+                "tests/test_infrastructure.py"
+            ]
+        },
+        "KI_experiments.md": {
+            "description": "Experiments with DUS Mapping, hyperparameters, and language data.",
+            "covers": ["Experiments"],
+            "depends_on": ["experiments/train_phase1_kaggle.py"]
+        },
+        "KI_knowledge_management.md": {
+            "description": "Knowledge management system: MCP server, audit, and documentation version control.",
+            "covers": ["Knowledge Infrastructure"],
+            "depends_on": [
+                ".know/scripts/knowledge_mcp.py",
+                ".know/scripts/knowledge_engine.py",
+                ".know/scripts/audit_coverage.py",
+                ".know/doc_config.json",
+                ".know/scripts/sync_agents_md.py",
+                ".know/scripts/generate_dir_index.py",
+                ".know/scripts/add_ki_to_config.py"
+            ]
+        },
+        "KI_kaggle.md": {
+            "description": "Instructions for Kaggle CLI: API configuration, creation, and updating of datasets.",
+            "covers": ["Data & Ops Scripts"],
+            "depends_on": ["scripts/prepare_kaggle_data.py"]
+        },
+        "KI_operations.md": {
+            "description": "Technical and debugging scripts: smoke tests, NaN debugging, synchronization.",
+            "covers": ["Data & Ops Scripts"],
+            "depends_on": [
+                "scripts/smoke_test_forward.py",
+                "scripts/debug_nan_kaggle.py",
+                "scripts/build_prebuilt_latentbert.py",
+                "scripts/download_teacher.py",
+                "scripts/download_teacher.py",
+                "scripts/sync_to_kaggle.ps1"
+            ]
+        },
+        "decisions/001_kaggle_phase1_retrospective.md": {
+            "description": "ADR: Kaggle Phase 1 deployment retrospective (reasons for choosing FP32, Mirror-Load, Arrow_Schema).",
+            "covers": ["Knowledge Infrastructure"],
+            "depends_on": []
+        }
+    },
+    "knowledge_system": {
+        "mcp_server": {
+            "name": "KnowledgeManager",
+            "version": "1.0.0",
+            "jail_dir": ".know"
+        },
+        "tools": [
+            {
+                "name": "audit_coverage",
+                "description": "Run knowledge base coverage audit. Returns coverage matrix and recommendations.",
+                "script": ".know/scripts/audit_coverage.py",
+                "args": []
+            },
+            {
+                "name": "sync_agents_md",
+                "description": "Synchronize AGENTS.md with current KI state.",
+                "script": ".know/scripts/sync_agents_md.py",
+                "args": []
+            },
+            {
+                "name": "generate_dir_index",
+                "description": "Generate or update DIR_INDEX.md.",
+                "script": ".know/scripts/generate_dir_index.py",
+                "args": []
+            },
+            {
+                "name": "check_changes",
+                "description": "Check changes in tracked project files.",
+                "method": "check_changes",
+                "args": []
+            },
+            {
+                "name": "save_state",
+                "description": "Commit current hash state (doc_state.json).",
+                "method": "save_state",
+                "args": []
+            },
+            {
+                "name": "read_know_file",
+                "description": "Read file inside .know.",
+                "method": "read_file",
+                "args": [
+                    {"name": "rel_path", "type": "string", "description": "Path relative to .know/"}
+                ]
+            },
+            {
+                "name": "write_know_file",
+                "description": "Safely create or overwrite file inside .know.",
+                "method": "write_file",
+                "args": [
+                    {"name": "rel_path", "type": "string", "description": "Path relative to .know/"},
+                    {"name": "content", "type": "string", "description": "File content"}
+                ]
+            },
+            {
+                "name": "edit_know_file",
+                "description": "Safely edit file inside .know via text replacement.",
+                "method": "edit_file",
+                "args": [
+                    {"name": "rel_path", "type": "string", "description": "Path relative to .know/"},
+                    {"name": "old_text", "type": "string", "description": "Text to replace (must be unique)"},
+                    {"name": "new_text", "type": "string", "description": "New text"}
+                ]
+            },
+            {
+                "name": "make_know_dir",
+                "description": "Create new directory inside .know.",
+                "method": "make_dir",
+                "args": [
+                    {"name": "rel_path", "type": "string", "description": "Path relative to .know/"}
+                ]
+            }
+        ]
+    }
+}
