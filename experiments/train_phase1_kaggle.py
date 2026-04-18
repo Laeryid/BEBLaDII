@@ -79,37 +79,57 @@ def smart_load_weights(model, path, strict=False):
         print(f"[WARN] Файл не найден: {path}")
         return False
         
+    print(f"--- Загрузка весов из {path} ---")
     ckpt = torch.load(path, map_location='cpu')
     
     # Извлекаем state_dict если он обернут
     if isinstance(ckpt, dict):
-        if "state_dict" in ckpt: state_dict = ckpt["state_dict"]
-        elif "latentBERT_state_dict" in ckpt: state_dict = ckpt["latentBERT_state_dict"]
-        else: state_dict = ckpt
+        state_dict = ckpt.get("state_dict", ckpt.get("latentBERT_state_dict", ckpt))
     else: state_dict = ckpt
+
+    # Исключаем веса учителя из загрузки, если они там есть
+    state_dict = {k: v for k, v in state_dict.items() if not k.startswith("teacher.")}
 
     model_state = model.state_dict()
     new_state = {}
+    matched_keys = []
     
-    # Сопоставляем ключи
+    # Сопоставляем ключи по «хвостам» для обхода разной вложенности model.model
     for k, v in state_dict.items():
+        # 1. Прямое совпадение
         if k in model_state:
             new_state[k] = v
-        else:
-            # Пробуем убрать/добавить префиксы
-            clean_key = k
-            for prefix in ["student.", "distiller.", "model."]:
-                if clean_key.startswith(prefix): clean_key = clean_key[len(prefix):]
+            matched_keys.append(k)
+            continue
             
-            matched = False
-            for mk in model_state.keys():
-                if mk.endswith(clean_key) or clean_key.endswith(mk):
+        # 2. Сопоставление по суффиксу (для обхода student.model vs student.model.model)
+        clean_key = k
+        for prefix in ["student.", "distiller.", "model."]:
+            if clean_key.startswith(prefix): clean_key = clean_key[len(prefix):]
+        
+        # Ищем идеальное совпадение суффикса
+        for mk in model_state.keys():
+            if mk.endswith(clean_key):
+                # Проверяем, что это не случайное совпадение
+                if len(clean_key) > 5:
                     new_state[mk] = v
-                    matched = True
+                    matched_keys.append(mk)
                     break
     
+    if matched_keys:
+        print(f"[DEBUG] Сопоставлено {len(matched_keys)} тензоров. Примеры:")
+        for i in range(min(3, len(matched_keys))):
+            print(f"  ...{matched_keys[i][-30:]} (Matched)")
+
     msg = model.load_state_dict(new_state, strict=strict)
     print(f"Загружено {len(new_state)} тензоров из {len(state_dict)}. Matching: {msg}")
+    
+    # КРИТИЧЕСКАЯ ПРОВЕРКА: если слои студента отсутствуют, прерываемся
+    student_layers_loaded = any("layers.0." in k for k in new_state.keys())
+    if not student_layers_loaded:
+        print("!!! ОШИБКА: Веса слоев Студента НЕ ЗАГРУЖЕНЫ. Проверьте путь к файлу.")
+        if strict: raise ValueError("Student layers missing in checkpoint!")
+        
     return True
 
 # %%
@@ -360,17 +380,17 @@ for epoch in range(EPOCHS):
                 
                 if wandb.run: 
                     log_dict = {
-                        "loss": avg_loss, 
-                        "mse": avg_mse,
-                        "cosine": accum_cosine,
-                        "kl": avg_kl,
-                        "beta": current_beta,
-                        "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
-                        "step": step,
-                        "lr": current_lr,
-                        "grad_norm": grad_norm
+                        "train/loss": avg_loss, 
+                        "train/mse": avg_mse,
+                        "train/cosine": accum_cosine,
+                        "train/kl": avg_kl,
+                        "tech/beta": current_beta,
+                        "tech/grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
+                        "tech/step": step,
+                        "tech/lr": current_lr,
+                        "tech/grad_norm": grad_norm
                     }
-                    for k, v in accum_metrics.items(): log_dict[f"train/{k}"] = v
+                    for k, v in accum_metrics.items(): log_dict[f"train/layers/{k}"] = v
                     wandb.log(log_dict)
                 
                 accum_loss = 0.0; accum_mse = 0.0; accum_cosine = 0.0; accum_kl = 0.0; accum_metrics = {}

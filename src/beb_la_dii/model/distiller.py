@@ -147,6 +147,13 @@ class ReasoningDistiller(nn.Module):
             projected_student_states[idx] = proj
         return projected_student_states, teacher_targets, mu, logvar
 
+    def state_dict(self, *args, destination=None, prefix='', keep_vars=False):
+        """Переопределяем state_dict, чтобы ИСКЛЮЧИТЬ веса учителя из сохранения."""
+        full_dict = super().state_dict(*args, destination=destination, prefix=prefix, keep_vars=keep_vars)
+        # Фильтруем ключи, не трогая те, что относятся к учителю
+        filtered_dict = {k: v for k, v in full_dict.items() if not k.startswith(prefix + 'teacher.')}
+        return filtered_dict
+
 if __name__ == "__main__":
     # Тест инициализации (потребует много памяти)
     # distill = ReasoningDistiller()
