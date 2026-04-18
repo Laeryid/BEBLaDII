@@ -49,7 +49,7 @@ if os.path.exists(REPO_NAME) and REPO_NAME not in os.getcwd():
 # 1. УСТАНОВКА ЗАВИСИМОСТЕЙ И ПУТЕЙ
 import subprocess
 def install_packages():
-    packages = ["transformers==4.57.2", "indexed-parquet-dataset", "optimum-intel[openvino]", "wandb", "accelerate", "bitsandbytes", "jupytext"]
+    packages = ["transformers==4.57.2", "indexed-parquet-dataset", "optimum-intel[openvino]", "wandb", "accelerate", "bitsandbytes"]
     for pkg in packages:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", pkg])
 
@@ -94,14 +94,14 @@ MAX_LENGTH = 4096
 BATCH_SIZE = 1
 GRAD_ACCUM_STEPS = 8
 STAGE = 'reasoning'
-VAL_EVERY_STEPS = 100
+VAL_EVERY_STEPS = 200
 VAL_MAX_SAMPLES = 100
-LEARNING_RATE = 1e-5
+LEARNING_RATE = 2e-5
 EPOCHS = 1
-WARMUP_STEPS = 100
+WARMUP_STEPS = 32
 
 # VAE & Validation Settings
-BETA_MAX = 0.00001
+BETA_MAX = 0.0001
 best_val_loss = float('inf')
 
 CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
