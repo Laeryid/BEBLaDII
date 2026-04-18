@@ -74,62 +74,87 @@ try:
 except ImportError as e: print(f"Ошибка импорта: {e}")
 
 def smart_load_weights(model, path, strict=False):
-    """Умная загрузка весов с обработкой префиксов и вложенных словарей"""
+    """
+    Умная загрузка весов с поддержкой многокомпонентных файлов (DUS + Projectors).
+    Исключает веса учителя из сопоставления.
+    """
     if not os.path.exists(path):
         print(f"[WARN] Файл не найден: {path}")
         return False
         
-    print(f"--- Загрузка весов из {path} ---")
+    print(f"--- [LOADER] Загрузка весов из {path} ---")
     ckpt = torch.load(path, map_location='cpu')
     
-    # Извлекаем state_dict если он обернут
-    if isinstance(ckpt, dict):
-        state_dict = ckpt.get("state_dict", ckpt.get("latentBERT_state_dict", ckpt))
-    else: state_dict = ckpt
+    # 1. Формируем плоский словарь из чекпоинта (обрабатываем вложенность)
+    flat_ckpt = {}
+    if isinstance(ckpt, dict) and "latentBERT_state_dict" in ckpt:
+        print("[LOADER] Обнаружена многокомпонентная структура (Phase 1).")
+        # Распаковываем основные веса ( student.model.layers... )
+        for k, v in ckpt["latentBERT_state_dict"].items():
+            flat_ckpt[f"student.{k}"] = v
+        # Распаковываем проекторы
+        if "input_projector" in ckpt:
+            input_pj = ckpt["input_projector"]
+            if isinstance(input_pj, dict):
+                for k, v in input_pj.items(): flat_ckpt[f"input_projector.{k}"] = v
+        if "feature_projectors" in ckpt:
+            feat_pjs = ckpt["feature_projectors"]
+            if isinstance(feat_pjs, dict):
+                for layer_id, sd in feat_pjs.items():
+                    if isinstance(sd, dict):
+                        for k, v in sd.items(): flat_ckpt[f"feature_projectors.{layer_id}.{k}"] = v
+    else:
+        # Стандартная структура или старый формат
+        flat_ckpt = ckpt.get("state_dict", ckpt.get("latentBERT_state_dict", ckpt))
 
-    # Исключаем веса учителя из загрузки, если они там есть
-    state_dict = {k: v for k, v in state_dict.items() if not k.startswith("teacher.")}
-
+    # 2. Получаем текущее состояние модели БЕЗ учителя
     model_state = model.state_dict()
-    new_state = {}
-    matched_keys = []
+    target_keys = {k: v for k, v in model_state.items() if not k.startswith("teacher.")}
     
-    # Сопоставляем ключи по «хвостам» для обхода разной вложенности model.model
-    for k, v in state_dict.items():
-        # 1. Прямое совпадение
-        if k in model_state:
+    new_state = {}
+    matched_groups = {"student": 0, "input_projector": 0, "feature_projectors": 0}
+    
+    # 3. Сопоставляем ключи
+    for k, v in flat_ckpt.items():
+        # Прямое совпадение
+        if k in target_keys:
             new_state[k] = v
-            matched_keys.append(k)
+            group = k.split(".")[0]
+            if group in matched_groups: matched_groups[group] += 1
             continue
             
-        # 2. Сопоставление по суффиксу (для обхода student.model vs student.model.model)
+        # Сопоставление по суффиксу (для обхода разной вложенности)
         clean_key = k
-        for prefix in ["student.", "distiller.", "model."]:
+        for prefix in ["student.", "distiller.", "model.", "input_projector.", "feature_projectors."]:
             if clean_key.startswith(prefix): clean_key = clean_key[len(prefix):]
         
-        # Ищем идеальное совпадение суффикса
-        for mk in model_state.keys():
-            if mk.endswith(clean_key):
-                # Проверяем, что это не случайное совпадение
-                if len(clean_key) > 5:
-                    new_state[mk] = v
-                    matched_keys.append(mk)
-                    break
+        if len(clean_key) <= 5: continue # Защита от слишком коротких имен (.weight)
+
+        for tk in target_keys.keys():
+            if tk.endswith(clean_key):
+                new_state[tk] = v
+                group = tk.split(".")[0]
+                if group in matched_groups: matched_groups[group] += 1
+                break
     
-    if matched_keys:
-        print(f"[DEBUG] Сопоставлено {len(matched_keys)} тензоров. Примеры:")
-        for i in range(min(3, len(matched_keys))):
-            print(f"  ...{matched_keys[i][-30:]} (Matched)")
+    # ПРОВЕРКА: если ничего не загрузилось, это повод для паники
+    if not new_state:
+        print("!!! КРИТИЧЕСКАЯ ОШИБКА: Ни один тензор не сопоставлен. Проверьте структуру файла.")
+        return False
 
     msg = model.load_state_dict(new_state, strict=strict)
-    print(f"Загружено {len(new_state)} тензоров из {len(state_dict)}. Matching: {msg}")
     
-    # КРИТИЧЕСКАЯ ПРОВЕРКА: если слои студента отсутствуют, прерываемся
-    student_layers_loaded = any("layers.0." in k for k in new_state.keys())
-    if not student_layers_loaded:
-        print("!!! ОШИБКА: Веса слоев Студента НЕ ЗАГРУЖЕНЫ. Проверьте путь к файлу.")
-        if strict: raise ValueError("Student layers missing in checkpoint!")
-        
+    # Итоговый отчет
+    print(f"[LOADER] Результаты сопоставления:")
+    print(f"  - Student: {matched_groups['student']} тензоров")
+    print(f"  - Input Projector: {matched_groups['input_projector']} тензоров")
+    print(f"  - Feature Projectors: {matched_groups['feature_projectors']} тензоров")
+    print(f"[LOADER] Итог: {msg}")
+    
+    # Очистка памяти
+    del ckpt, flat_ckpt, new_state
+    torch.cuda.empty_cache()
+    
     return True
 
 # %%
@@ -264,7 +289,6 @@ if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
 
 # --- ЗАГРУЗКА КАСТОМНЫХ ВЕСОВ --- 
 if CUSTOM_STUDENT_WEIGHTS_PATH and os.path.exists(CUSTOM_STUDENT_WEIGHTS_PATH):
-    print(f"--- Загрузка весов из {CUSTOM_STUDENT_WEIGHTS_PATH} ---")
     smart_load_weights(distiller, CUSTOM_STUDENT_WEIGHTS_PATH, strict=False)
 
 # 1. Замораживаем всё
