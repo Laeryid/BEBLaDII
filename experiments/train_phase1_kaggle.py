@@ -112,34 +112,46 @@ os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 # %%
 def setup_mirrored_kaggle(data_path, resources_path):
-    """Настройка зеркальной структуры симлинков из разных источников"""
+    """Настройка зеркальной структуры симлинков с принудительной перезаписью при конфликтах"""
     if not os.path.exists("/kaggle/input"): return
     print("--- Зеркальная настройка ресурсов Kaggle ---")
     
+    def force_symlink(src, dst):
+        if os.path.lexists(dst):
+            try:
+                if os.path.islink(dst): os.unlink(dst)
+                elif os.path.isdir(dst): shutil.rmtree(dst)
+                else: os.remove(dst)
+            except Exception: pass
+
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        try:
+            os.symlink(src, dst)
+        except FileExistsError:
+            # Вторая попытка, если ФС сообщила об ошибке после удаления
+            try:
+                if os.path.islink(dst): os.unlink(dst)
+                elif os.path.isdir(dst): shutil.rmtree(dst)
+                else: os.remove(dst)
+                os.symlink(src, dst)
+            except Exception as e: print(f"Ошибка при создании симлинка {dst}: {e}")
+
     # Маппинг для данных
     if os.path.exists(data_path):
         sub_data = os.path.join(data_path, "data")
         src_root = sub_data if os.path.exists(sub_data) else data_path
         os.makedirs("data", exist_ok=True)
         for item in os.listdir(src_root):
-            src = os.path.join(src_root, item)
-            dst = os.path.join("data", item)
-            if not os.path.exists(dst):
-                os.symlink(src, dst)
-                print(f"Symlink (Data): {dst} -> {item}")
+            force_symlink(os.path.join(src_root, item), os.path.join("data", item))
+            print(f"Symlink (Data): data/{item} -> {item}")
     
     # Маппинг для модели/компонентов
     if os.path.exists(resources_path):
         mappings = [("components", "storage/components"), ("prebuilt", "storage/prebuilt")]
         for src_name, dst_path in mappings:
             src = os.path.join(resources_path, src_name)
-            dst = os.path.abspath(dst_path)
             if os.path.exists(src):
-                if os.path.exists(dst):
-                    if os.path.islink(dst): os.unlink(dst)
-                    else: shutil.rmtree(dst)
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                os.symlink(src, dst)
+                force_symlink(src, dst_path)
                 print(f"Symlink (Model): {dst_path} -> {src_name}")
 
 setup_mirrored_kaggle(DATA_PATH, RESOURCES_PATH)
