@@ -12,7 +12,7 @@ class DistillationLoss(nn.Module):
         self.layer_weights = layer_weights
         self.mse = nn.MSELoss()
         
-    def forward(self, student_hidden_states, teacher_hidden_states, attention_mask=None):
+    def forward(self, student_hidden_states, teacher_hidden_states, attention_mask=None, mu=None, logvar=None, beta=0.0):
         """
         student_hidden_states: dict {layer_idx: tensor}
         teacher_hidden_states: dict {layer_idx: tensor}
@@ -68,6 +68,17 @@ class DistillationLoss(nn.Module):
         
         metrics["mse"] = mse_total.item() if torch.is_tensor(mse_total) else mse_total
         metrics["cosine"] = cos_total.item() if torch.is_tensor(cos_total) else cos_total
+        
+        # Вычисление KL-Divergence, если переданы параметры головки
+        if mu is not None and logvar is not None:
+            kl_loss_raw = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1)
+            if attention_mask is not None:
+                kl_loss = (kl_loss_raw * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+            else:
+                kl_loss = kl_loss_raw.mean()
+                
+            total_loss = total_loss + beta * kl_loss
+            metrics["kl"] = kl_loss.item()
                 
         return total_loss, metrics
 

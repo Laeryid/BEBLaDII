@@ -43,8 +43,8 @@ class BEComponent(nn.Module):
         import torch
         if weights_path and os.path.exists(weights_path):
             state = torch.load(weights_path, map_location="cpu")
-            self.load_state_dict(state)
-            print(f"  Weights loaded: {weights_path}")
+            self.load_state_dict(state, strict=False)
+            print(f"  Weights loaded (strict=False): {weights_path}")
         elif weights_path:
             print(f"  WARN: weights_path not found, using random init: {weights_path}")
         return self

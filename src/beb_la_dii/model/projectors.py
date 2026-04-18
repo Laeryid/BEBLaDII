@@ -24,6 +24,11 @@ class InputProjector(BEComponent):
             nn.Linear(hidden_dim, output_dim),
             nn.LayerNorm(output_dim, eps=1e-6)
         )
+        
+        # μ-VAE heads
+        self.mu_head = nn.Linear(output_dim, output_dim)
+        self.logvar_head = nn.Linear(output_dim, output_dim)
+        
         self._init_weights()
 
     def _init_weights(self):
@@ -50,7 +55,18 @@ class InputProjector(BEComponent):
         return instance
         
     def forward(self, x):
-        return self.proj(x)
+        h = self.proj(x)
+        mu = self.mu_head(h)
+        logvar = self.logvar_head(h)
+        
+        if self.training:
+            std = torch.exp(0.5 * logvar)
+            eps = torch.randn_like(std)
+            z = mu + eps * std
+        else:
+            z = mu
+            
+        return z, mu, logvar
 
 
 class FeatureProjector(BEComponent):

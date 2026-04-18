@@ -126,7 +126,7 @@ class ReasoningDistiller(nn.Module):
                 pass # self._check_nan(t, f"Teacher Target Layer {idx}")
             
         # 2. Подготовка входа для Student
-        student_inputs_embeds = self.input_projector(teacher_embeddings)
+        student_inputs_embeds, mu, logvar = self.input_projector(teacher_embeddings)
         # self._check_nan(student_inputs_embeds, "InputProjector Output")
         
         # ВНИМАНИЕ: attention_mask может приходить от данных Учителя (с cuda:0), поэтому переводим его на student_device.
@@ -145,8 +145,7 @@ class ReasoningDistiller(nn.Module):
             proj = self.feature_projectors[str(idx)](h_state)
             # self._check_nan(proj, f"FeatureProjector {idx} Output")
             projected_student_states[idx] = proj
-            
-        return projected_student_states, teacher_targets
+        return projected_student_states, teacher_targets, mu, logvar
 
 if __name__ == "__main__":
     # Тест инициализации (потребует много памяти)

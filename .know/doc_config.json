@@ -94,7 +94,22 @@
                 ".know/doc_config.json",
                 ".know/scripts/sync_agents_md.py",
                 ".know/scripts/generate_dir_index.py",
-                ".know/scripts/add_ki_to_config.py"
+                ".know/scripts/add_ki_to_config.py",
+                ".know/scripts/init_ki_system.py",
+                ".know/scripts/ki_utils.py",
+                ".know/tests/conftest.py",
+                ".know/tests/test_audit_coverage.py",
+                ".know/tests/test_generate_dir_index.py",
+                ".know/tests/test_init_ki_system.py",
+                ".know/tests/test_ki_utils.py",
+                ".know/tests/test_knowledge_engine.py",
+                ".know/tests/test_knowledge_engine_extra.py",
+                ".know/tests/test_mcp_security.py",
+                ".know/tests/test_sync_and_add_ki.py",
+                ".know/workflows/create-adr.md",
+                ".know/workflows/expand-knowledge.md",
+                ".know/workflows/sync-knowledge.md",
+                ".know/decisions/001_kaggle_phase1_retrospective.md"
             ]
         },
         "KI_kaggle.md": {

@@ -75,9 +75,9 @@ def prepare_data_v2():
         {"name": "CulturaX_ru_Awakening", "target": "Awakening", "path": "data/CulturaX", "pattern": "ru_part_00000.parquet", "count": 45000, "type": "raw", "action": "truncate"},
         {"name": "magpie_awakening", "target": "Awakening", "path": "data/magpie_reasoning", "count": 10000, "type": "magpie", "action": "truncate"},
         
-        # Reasoning (Filter 3k-4k & Sample)
-        {"name": "magpie_reasoning", "target": "Reasoning", "path": "data/magpie_reasoning", "count": 50000, "type": "magpie", "action": "filter"},
-        {"name": "open_thoughts", "target": "Reasoning", "path": "data/open_thoughts", "count": 50000, "type": "sharegpt", "action": "filter"},
+        # Reasoning (Filter < 4096 for reasoning, specific bounds for CulturaX)
+        {"name": "magpie_reasoning", "target": "Reasoning", "path": "data/magpie_reasoning", "count": None, "type": "magpie", "action": "filter"},
+        {"name": "open_thoughts", "target": "Reasoning", "path": "data/open_thoughts", "count": None, "type": "sharegpt", "action": "filter"},
         {"name": "CulturaX_cs_Reasoning", "target": "Reasoning", "path": "data/CulturaX", "pattern": "cs_part_00000.parquet", "count": 15000, "type": "raw", "action": "filter"},
         {"name": "CulturaX_ru_Reasoning", "target": "Reasoning", "path": "data/CulturaX", "pattern": "ru_part_00000.parquet", "count": 15000, "type": "raw", "action": "filter"},
     ]
@@ -96,22 +96,44 @@ def prepare_data_v2():
         dest_path.parent.mkdir(parents=True, exist_ok=True)
         
         if plan["action"] == "filter":
-            print(f"Filtering {plan['name']} for length 3000-4000 tokens...")
+            is_culturax = "CulturaX" in plan["name"]
+            
+            if is_culturax:
+                print(f"Filtering {plan['name']} for length 3000-4000 tokens...")
+                filter_fn = lambda batch: [3000 <= x["token_count"] <= 4000 for x in batch]
+            else:
+                print(f"Filtering {plan['name']} for length < 4096 tokens...")
+                filter_fn = lambda batch: [0 < x["token_count"] < 4096 for x in batch]
+
             # We add a column 'token_count' using map
-            def calc_len(item):
-                text = apply_format(item, plan["type"])
-                # Fast token counting
-                tokens = tokenizer.encode(text, add_special_tokens=False)
-                item["token_count"] = len(tokens)
-                return item
+            def calc_len_batch(batch):
+                texts = [apply_format(item, plan["type"]) for item in batch]
+                # Fast batch token counting
+                batch_results = tokenizer.batch_encode_plus(
+                    texts, 
+                    add_special_tokens=False,
+                    return_attention_mask=False,
+                    return_token_type_ids=False
+                )
+                for item, tokens in zip(batch, batch_results["input_ids"]):
+                    item["token_count"] = len(tokens)
+                return batch
             
-            # Note: map and filter are lazy but clone will trigger them
-            ds_mapped = ds.map(calc_len)
-            ds_filtered = ds_mapped.filter(lambda x: 3000 <= x["token_count"] <= 4000)
+            # Use batch versions for 10-100x speedup
+            ds_mapped = ds.map_batches(calc_len_batch, batch_size=512)
+            ds_filtered = ds_mapped.filter_batches(
+                filter_fn, 
+                batch_size=512,
+                show_progress=True
+            )
             
-            print(f"Starting clone with filter and limit {plan['count']} (using .limit() for speed)...")
-            # Using .limit() instead of .sample() to avoid a full scan for length counting
-            ds_final = ds_filtered.limit(plan["count"])
+            if plan.get("count"):
+                print(f"Starting clone with filter and limit {plan['count']} (using .limit() for speed)...")
+                # Using .limit() instead of .sample() to avoid a full scan for length counting
+                ds_final = ds_filtered.limit(plan["count"])
+            else:
+                print(f"Starting clone for all filtered records...")
+                ds_final = ds_filtered
                 
             ds_final.clone(dest_path, optimize_by_reorder=True)
             

@@ -25,6 +25,7 @@ STAGE = 'reasoning' # 'awakening' для Stage 1, 'reasoning' для Stage 2
 VAL_EVERY_STEPS = 100  # Валидация каждые 100 шагов
 VAL_MAX_SAMPLES = 1000 # Ограничение кол-ва сэмплов для валидации
 VERSION = "v1.0"
+WARMUP_STEPS = 1000
 
 # Кастомный путь к весам (например, из другого датасета Kaggle)
 CUSTOM_STUDENT_WEIGHTS_PATH = None 
@@ -246,6 +247,7 @@ def train():
     accum_loss = 0.0
     accum_mse = 0.0
     accum_cosine = 0.0
+    accum_kl = 0.0
     accum_metrics = {} # Для послойных метрик
     
     best_val_loss = float('inf')
@@ -256,14 +258,19 @@ def train():
             input_ids = batch["input_ids"].to(distiller.student_device)
             attention_mask = batch["attention_mask"].to(distiller.student_device)
             
+            # KL Annealing: от 0.0 до 1e-4 за 500 макро-шагов
+            macro_step = step // GRAD_ACCUM_STEPS
+            current_beta = min(1e-4, 1e-4 * (macro_step / 500.0))
+
             # Форвард с автокастом для стабильности FP16
             with torch.amp.autocast('cuda'):
-                # ReasoningDistiller возвращает (projected_student_states, teacher_targets)
-                student_states, teacher_targets = distiller(input_ids, attention_mask)
+                # ReasoningDistiller возвращает (projected_student_states, teacher_targets, mu, logvar)
+                student_states, teacher_targets, mu, logvar = distiller(input_ids, attention_mask)
                 
                 # Расчет лосса с учетом маски
                 loss_mask = attention_mask.to(distiller.student_device)
-                loss, loss_metrics = criterion(student_states, teacher_targets, attention_mask=loss_mask)
+                loss, loss_metrics = criterion(student_states, teacher_targets, attention_mask=loss_mask, mu=mu, logvar=logvar, beta=current_beta)
+                
                 
                 # Масштабирование для накопления градиентов
                 loss = loss / GRAD_ACCUM_STEPS
@@ -281,6 +288,7 @@ def train():
             accum_loss += loss.item()
             accum_mse += loss_metrics["mse"] / GRAD_ACCUM_STEPS
             accum_cosine += loss_metrics["cosine"] / GRAD_ACCUM_STEPS
+            if "kl" in loss_metrics: accum_kl += loss_metrics["kl"] / GRAD_ACCUM_STEPS
             
             # Накопление послойных метрик
             for k, v in loss_metrics.items():
@@ -299,6 +307,7 @@ def train():
                 accum_loss = 0.0
                 accum_mse = 0.0
                 accum_cosine = 0.0
+                accum_kl = 0.0
                 accum_metrics = {}
                 continue
             else:
@@ -328,11 +337,13 @@ def train():
             avg_loss = accum_loss # accum_loss уже сумма поделенных на GRAD_ACCUM_STEPS
             avg_mse = accum_mse
             avg_cos = accum_cosine
+            avg_kl = accum_kl
             current_lr = optimizer.param_groups[0]['lr']
             
             progress_bar.set_postfix({
                 "loss": f"{avg_loss:.4f}", 
                 "mse": f"{avg_mse:.4f}", 
+                "kl": f"{avg_kl:.4f}",
                 "gn": f"{grad_norm:.2f}"
             })
             
@@ -341,6 +352,8 @@ def train():
                     "loss": avg_loss, 
                     "mse": avg_mse,
                     "cosine": avg_cos,
+                    "kl": avg_kl,
+                    "beta": current_beta,
                     "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
                     "step": step,
                     "lr": current_lr
@@ -356,12 +369,14 @@ def train():
                 "loss": avg_loss, 
                 "mse": avg_mse, 
                 "cosine": avg_cos, 
+                "kl": avg_kl,
                 "grad_norm": grad_norm,
                 "lr": current_lr
             })
             accum_loss = 0.0
             accum_mse = 0.0
             accum_cosine = 0.0
+            accum_kl = 0.0
             accum_metrics = {}
             
             # --- ВАЛИДАЦИЯ ---
@@ -381,12 +396,13 @@ def train():
                         v_input_ids = v_batch['input_ids'].to(distiller.student_device)
                         v_mask = v_batch['attention_mask'].to(distiller.student_device)
                         
-                        # Forward
-                        v_student_states, v_teacher_targets = distiller(v_input_ids, v_mask)
-                        
                         # Loss mask must be on student device
                         v_loss_mask = v_mask.to(distiller.student_device)
-                        v_loss, v_metrics = criterion(v_student_states, v_teacher_targets, attention_mask=v_loss_mask)
+                        
+                        # Forward pass in eval mode outputs expected shapes
+                        v_student_states, v_teacher_targets, v_mu, v_logvar = distiller(v_input_ids, v_mask)
+                        
+                        v_loss, v_metrics = criterion(v_student_states, v_teacher_targets, attention_mask=v_loss_mask, mu=v_mu, logvar=v_logvar, beta=current_beta)
                         
                         val_loss_sum += v_loss.item()
                         val_mse_sum += v_metrics["mse"].item()
