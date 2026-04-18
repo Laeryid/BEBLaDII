@@ -1,3 +1,19 @@
+# ---
+# jupyter:
+#   jupytext:
+#     formats: ipynb,py:percent
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.1
+#   kernelspec:
+#     display_name: Python 3
+#     language: python
+#     name: python3
+# ---
+
+# %%
 import os
 import torch
 from torch.optim import AdamW
@@ -20,15 +36,16 @@ MAX_LENGTH = 4096
 BATCH_SIZE = 1
 GRAD_ACCUM_STEPS = 8
 EPOCHS = 1
-LEARNING_RATE = 5e-5
+LEARNING_RATE = 1e-5
 STAGE = 'reasoning' # 'awakening' для Stage 1, 'reasoning' для Stage 2
 VAL_EVERY_STEPS = 100  # Валидация каждые 100 шагов
 VAL_MAX_SAMPLES = 1000 # Ограничение кол-ва сэмплов для валидации
 VERSION = "v1.0"
-WARMUP_STEPS = 1000
+WARMUP_STEPS = 100
 
 # Кастомный путь к весам (например, из другого датасета Kaggle)
-CUSTOM_STUDENT_WEIGHTS_PATH = None 
+CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/working/BEBLaDII/storage/experiments/20260418_155301_reasoning/checkpoints/BEST_MODEL.pt"
+ 
 
 # Пути к датасетам на Kaggle
 KAGGLE_DATA_DATASET = "/kaggle/input/bebladii-data-v1-3"
@@ -111,6 +128,15 @@ def build_weights_map(components_root="storage/components"):
 def train():
     # 0. Автоматическая настройка для Kaggle
     resource_ds = setup_kaggle()
+    
+    # Создание симлинка для удобного скачивания лучшей модели, если она существует
+    best_model_src = "/kaggle/working/BEBLaDII/storage/experiments/20260418_155301_reasoning/checkpoints/BEST_MODEL.pt"
+    if os.path.exists(best_model_src):
+        best_model_link = "/kaggle/working/BEST_MODEL.pt"
+        if not os.path.exists(best_model_link):
+            os.symlink(best_model_src, best_model_link)
+            print(f"Created symlink for easy download: {best_model_link}")
+
     
     # 1. WandB Log In
     if os.environ.get("WANDB_API_KEY"):
@@ -250,9 +276,10 @@ def train():
             input_ids = batch["input_ids"].to(distiller.student_device)
             attention_mask = batch["attention_mask"].to(distiller.student_device)
             
-            # KL Annealing: от 0.0 до 1e-4 за 500 макро-шагов
+            # KL Annealing: от 0.0 до 1e-5 за 500 макро-шагов
             macro_step = step // GRAD_ACCUM_STEPS
-            current_beta = min(1e-4, 1e-4 * (macro_step / 500.0))
+            current_beta = min(1e-5, 1e-5 * (macro_step / 500.0))
+
 
             # Форвард с автокастом для стабильности FP16
             with torch.amp.autocast('cuda'):

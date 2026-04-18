@@ -11,9 +11,13 @@
 | **DUS Stability** | [test_dus_stability.py](file:///c:/Experiments/BEBLaDII/tests/test_dus_stability.py) | Тестирование логики расширения слоев (Depth Up-Scaling). Проверка корректности итогового количества слоев в `ModernBERT`. |
 | **Projector & Wrapper Tests** | [test_constructor_logic.py](file:///c:/Experiments/BEBLaDII/tests/test_constructor_logic.py) | Проверка размерностей тензоров в `InputProjector`/`FeatureProjector` и инициализации `DUSModel`. |
 | **Inference Smoke Test** | [test_inference.py](file:///c:/Experiments/BEBLaDII/tests/test_inference.py) | Сквозная проверка (Smoke Test) процесса инференса через `MockDistiller`. Верификация 1024-мерных тензоров. |
+| **VAE & Loss Logic** | [test_vae_components.py](file:///c:/Experiments/BEBLaDII/tests/test_vae_components.py) | Верификация стохастической логики `InputProjector` (VAE) и математической корректности `DistillationLoss` (KL-дивергенция, маскирование внимание). |
 | **temp_storage** (fixture) | [test_infrastructure.py](file:///c:/Experiments/BEBLaDII/tests/test_infrastructure.py) | Изолированная временная директория для тестов реестра и экспериментов. Очищается автоматически после завершения тестов. |
 
 ## Неочевидные детали
+- **VAE Modes**: Тесты в `test_vae_components.py` принудительно проверяют, что в режиме `eval` проектор работает детерминировано (z = mu), а в режиме `train` добавляет шум (z != mu).
+- **KL Masking**: `DistillationLoss` проверяет, что KL-дивергенция не рассчитывается для токенов паддинга, если передана `attention_mask`. Это критично для стабильности градиентов на коротких последовательностях.
+- **Lenient Loading**: Тест `test_lenient_weight_loading` подтверждает, что `BEComponent.load_weights` использует `strict=False`, позволяя загружать частично несовпадающие чекпоинты (полезно при итеративном изменении архитектуры).
 - **Мокирование (Mocking)**: Тесты DUS используют `unittest.mock.patch` для имитации загрузки весов `transformers`. Это позволяет проверять архитектурную логику без наличия GPU.
 - **MockDistiller**: В `test_inference.py` реализована мини-версия дистиллятора. Она имитирует выходы Teacher-модели (Qwen), что позволяет тестировать проекторы и latentBERT (ученика) на обычном CPU.
 - **1024-dim Verification**: Тест инференса принудительно проверяет, что ModernBERT-large (1024 скрытых признака) корректно стыкуется с MLP-проекторами, возвращающими 4096 признаков.

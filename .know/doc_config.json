@@ -76,7 +76,8 @@
                 "tests/test_constructor_logic.py",
                 "tests/test_dus_stability.py",
                 "tests/test_inference.py",
-                "tests/test_infrastructure.py"
+                "tests/test_infrastructure.py",
+                "tests/test_vae_components.py"
             ]
         },
         "KI_experiments.md": {
@@ -125,8 +126,13 @@
                 "scripts/debug_nan_kaggle.py",
                 "scripts/build_prebuilt_latentbert.py",
                 "scripts/download_teacher.py",
-                "scripts/download_teacher.py",
-                "scripts/sync_to_kaggle.ps1"
+                "scripts/download_datasets.py",
+                "scripts/downsample_magpie.py",
+                "scripts/prepare_kaggle_data.py",
+                "scripts/prepare_phase1_data_v2.py",
+                "scripts/sync_to_kaggle.ps1",
+                "evaluate_lengths.py",
+                "scratch_check_hf.py"
             ]
         },
         "decisions/001_kaggle_phase1_retrospective.md": {

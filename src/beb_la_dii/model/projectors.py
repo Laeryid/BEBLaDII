@@ -58,6 +58,8 @@ class InputProjector(BEComponent):
         h = self.proj(x)
         mu = self.mu_head(h)
         logvar = self.logvar_head(h)
+        logvar = torch.clamp(logvar, -10.0, 10.0) # Стабилизация для FP16
+
         
         if self.training:
             std = torch.exp(0.5 * logvar)

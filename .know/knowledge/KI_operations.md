@@ -1,25 +1,44 @@
-<!-- last_verified: 2026-04-13 -->
-# KI: Operations & Scripts
+<!-- last_verified: 2026-04-18 -->
+# KI: Data & Ops Scripts
 
-## Что это
-Набор операционных скриптов и инструментов для тестирования, отладки, подготовки данных и управления инфраструктурой проекта BEBLaDII.
+## Overview
+Технические и отладочные скрипты для подготовки данных, инициализации компонентов, синхронизации с Kaggle и проведения Smoke-тестов.
 
-## Ключевые компоненты
-| Скрипт | Описание | Назначение |
+## Key Components
+
+### Data Preparation
+| Class / Function / Script | File | Purpose |
 |---|---|---|
-| `smoke_test_forward.py` | Интеграционный тест | Проверка forward pass всей системы (DUS + Projectors + Distiller) с фиктивными данными. |
-| `debug_nan_kaggle.py` | Отладочный хук | Поиск причин появления NaNs в градиентах и активациях при обучении на Kaggle. |
-| `build_prebuilt_latentbert.py` | Сборка компонента | Генерация и сохранение весов расширенного latentBERT (DUS) в `storage/prebuilt/`. |
-| `download_teacher.py` | Утилита загрузки | Загрузка весов учителя (DeepSeek/Qwen) с HF в локальное хранилище. |
-| `sync_to_kaggle.ps1` | Скрипт синхронизации | Быстрая отправка изменений кода в Kaggle Dataset через CLI. |
+| `prepare_phase1_data_v2.py` | `scripts/` | Токенизация CulturaX и сохранение в Parquet для Фазы 1. |
+| `prepare_kaggle_data.py` | `scripts/` | Формирование структуры датасета для Kaggle (arrow schema, metadata). |
+| `downsample_magpie.py` | `scripts/` | Фильтрация и уменьшение объема данных Magpie для ускорения итераций. |
+| `download_datasets.py` | `scripts/` | Автоматическая загрузка необходимых датасетов из HuggingFace/Kaggle. |
+| `download_teacher.py` | `scripts/` | Загрузка весов учителя (Qwen) и токенизатора. |
 
-## Неочевидные детали
-- **Smoke Test Weights**: `smoke_test_forward.py` использует `weights_map=None` по умолчанию, что инициализирует всю систему случайно. Это позволяет тестировать архитектурную целостность без наличия реальных весов.
-- **NaN Debugger**: `debug_nan_kaggle.py` устанавливает хуки на веса и градиенты. Он выводит детальную статистику (min, max, mean, std) при обнаружении `inf` или `nan`. Критично для настройки `loss_scale` и `bf16/fp16`.
-- **Prebuilt LatentBERT**: Сохраненный пребилт позволяет избежать повторного выполнения DUS-алгоритма при каждом запуске, ускоряя инициализацию обучения.
-- **Kaggle Sync**: Скрипт `sync_to_kaggle.ps1` автоматически инкрементирует версию датасета и требует установленного `kaggle` CLI.
+### Kaggle Operations
+| Class / Function / Script | File | Purpose |
+|---|---|---|
+| `kaggle_emergency_save.py` | `scripts/` | Экстренное сохранение чекпоинтов при угрозе остановки сессии Kaggle. |
+| `sync_to_kaggle.ps1` | `scripts/` | PowerShell скрипт для синхронизации локальных правок с Kaggle Dataset. |
+| `debug_nan_kaggle.py` | `scripts/` | Специализированный отладчик для поиска причин появления NaN в условиях Kaggle. |
 
-## Типичные ошибки
-- **Kaggle Dataset Lock**: Если предыдущая загрузка на Kaggle еще не обработана, `sync_to_kaggle.ps1` может завершиться ошибкой "Dataset is locked". Нужно подождать 1-2 минуты.
-- **Teacher Download Timeout**: При загрузке больших моделей с HF (7B+) используйте `download_teacher.py` заранее, чтобы не тратить время квоты на Kaggle.
-- **NaN in VAE/Projectors**: Если `debug_nan_kaggle.py` показывает NaNs в проекторах сразу после инициализации — проверьте масштаб инициализации весов в `KI_model_core.md`.
+### Component Initialization
+| Class / Function / Script | File | Purpose |
+|---|---|---|
+| `build_prebuilt_latentbert.py` | `scripts/` | Сборка локального LatentBERT из весов HF (BERT) и сохранение в `storage/prebuilt`. |
+| `fix_model_save.py` | `root` | Хак для исправления структуры сохраненных моделей при миграции версий. |
+
+### Smoke Tests
+| Class / Function / Script | File | Purpose |
+|---|---|---|
+| `smoke_test_qwen.py` | `root` | Быстрая проверка работоспособности базовой модели Qwen. |
+| `smoke_test_forward.py` | `scripts/` | Полный тест прямого прохода всей системы (Vect, Proj, Model). |
+| `nan_debug.py` | `root` | Инструмент для перехвата и локализации градиентных взрывов. |
+
+## Non-obvious Details
+- **Parquet vs Arrow**: `prepare_phase1_data_v2.py` использует Parquet для промежуточного хранения, но `prepare_kaggle_data.py` конвертирует всё в Arrow для оптимального чтения через `datasets`.
+- **Prebuilt LatentBERT**: Скрипт `build_prebuilt_latentbert.py` обязателен перед первым запуском Фазы 1, так как система ожидает наличие готовых тензоров в `storage/`.
+
+## Common Pitfalls
+- **Out of Disk Space**: При работе `prepare_phase1_data_v2.py` требуется минимум 200GB свободного места из-за кэширования HuggingFace.
+- **Kaggle API Limit**: Частые запуски `sync_to_kaggle.ps1` могут привести к блокировке API (429 Too Many Requests). Используйте батчинг изменений.

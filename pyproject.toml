@@ -18,7 +18,8 @@ dependencies = [
     "indexed-parquet-dataset",
     "wandb",
     "accelerate",
-    "bitsandbytes"
+    "bitsandbytes",
+    "jupytext"
 ]
 requires-python = ">=3.9"
 
