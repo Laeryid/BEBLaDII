@@ -145,7 +145,21 @@ setup_mirrored_kaggle(DATA_PATH, RESOURCES_PATH)
 
 # %%
 # СБОРКА МОДЕЛИ И НАСТРОЙКА ГРАДИЕНТОВ
-from experiments.train_phase1_kaggle import build_weights_map
+def build_weights_map(components_root="storage/components"):
+    """
+    Строит карту весов component_id -> path.
+    Если путь не найден, компонент инициализируется случайно.
+    """
+    def _w(comp_type, comp_id):
+        return os.path.join(components_root, comp_type, comp_id, VERSION, "weights.pt")
+
+    return {
+        "latentBERT":         _w("model",     "latentBERT"),
+        "qwen_to_bert_input": _w("projector", "qwen_to_bert_input"),
+        "feat_proj_20":       _w("projector", "feat_proj_20"),
+        "feat_proj_30":       _w("projector", "feat_proj_30"),
+        "feat_proj_40":       _w("projector", "feat_proj_40"),
+    }
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print(f"Инициализация на {device}...")
