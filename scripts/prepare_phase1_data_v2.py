@@ -76,7 +76,7 @@ def prepare_data_v2():
         {"name": "magpie_awakening", "target": "Awakening", "path": "data/magpie_reasoning", "count": 10000, "type": "magpie", "action": "truncate"},
         
         # Reasoning (Filter < 4096 for reasoning, specific bounds for CulturaX)
-        {"name": "magpie_reasoning", "target": "Reasoning", "path": "data/magpie_reasoning", "count": None, "type": "magpie", "action": "filter"},
+        {"name": "magpie_reasoning", "target": "Reasoning", "path": "data/magpie_reasoning", "count": 80000, "type": "magpie", "action": "filter"},
         {"name": "open_thoughts", "target": "Reasoning", "path": "data/open_thoughts", "count": None, "type": "sharegpt", "action": "filter"},
         {"name": "CulturaX_cs_Reasoning", "target": "Reasoning", "path": "data/CulturaX", "pattern": "cs_part_00000.parquet", "count": 15000, "type": "raw", "action": "filter"},
         {"name": "CulturaX_ru_Reasoning", "target": "Reasoning", "path": "data/CulturaX", "pattern": "ru_part_00000.parquet", "count": 15000, "type": "raw", "action": "filter"},
