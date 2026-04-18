@@ -78,8 +78,9 @@ except ImportError as e: print(f"Ошибка импорта: {e}")
 VERSION = "v1.0"
 
 # Пути к датасетам на Kaggle
-KAGGLE_DATA_DATASET = "/kaggle/input/bebladii-data-v1-3"
-KAGGLE_MODEL_DATASET = "/kaggle/input/bebladii-resources-v1-1"
+
+KAGGLE_DATA_DATASET = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-data"
+KAGGLE_MODEL_DATASET = "/kaggle/input/datasets/bogdanbuliakov/bebladii-resources"
 
 # Пути для обратной совместимости и локального запуска
 RESOURCES_PATH = KAGGLE_MODEL_DATASET if os.path.exists(KAGGLE_MODEL_DATASET) else "./storage"
@@ -94,17 +95,17 @@ MAX_LENGTH = 4096
 BATCH_SIZE = 1
 GRAD_ACCUM_STEPS = 8
 STAGE = 'reasoning'
-VAL_EVERY_STEPS = 100
+VAL_EVERY_STEPS = 200
 VAL_MAX_SAMPLES = 100
 LEARNING_RATE = 1e-5
 EPOCHS = 1
-WARMUP_STEPS = 100
+WARMUP_STEPS = 200
 
 # VAE & Validation Settings
 BETA_MAX = 0.00001
 best_val_loss = float('inf')
 
-CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
+CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/working/BEST_MODEL.pt"
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
