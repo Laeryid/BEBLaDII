@@ -57,12 +57,6 @@ class DUSModel(BEComponent):
     def parameters(self, recurse: bool = True):
         return self.model.parameters(recurse)
 
-    def state_dict(self, *args, **kwargs):
-        return self.model.state_dict(*args, **kwargs)
-
-    def load_state_dict(self, state_dict, strict=True):
-        return self.model.load_state_dict(state_dict, strict)
-
 
 def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40):
     """

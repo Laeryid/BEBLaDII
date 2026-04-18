@@ -75,8 +75,9 @@ except ImportError as e: print(f"Ошибка импорта: {e}")
 
 def smart_load_weights(model, path, strict=False):
     """
-    Умная загрузка весов с поддержкой многокомпонентных файлов (DUS + Projectors).
-    Исключает веса учителя из сопоставления.
+    Ультра-надежная загрузка весов. 
+    Поддерживает плоские и вложенные структуры проекторов, 
+    игнорирует teacher.* и корректно матчит student.model.model.*
     """
     if not os.path.exists(path):
         print(f"[WARN] Файл не найден: {path}")
@@ -85,76 +86,69 @@ def smart_load_weights(model, path, strict=False):
     print(f"--- [LOADER] Загрузка весов из {path} ---")
     ckpt = torch.load(path, map_location='cpu')
     
-    # 1. Формируем плоский словарь из чекпоинта (обрабатываем вложенность)
+    # 1. Формируем максимально плоский словарь из чекпоинта
     flat_ckpt = {}
-    if isinstance(ckpt, dict) and "latentBERT_state_dict" in ckpt:
-        print("[LOADER] Обнаружена многокомпонентная структура (Phase 1).")
-        # Распаковываем основные веса ( student.model.layers... )
-        for k, v in ckpt["latentBERT_state_dict"].items():
-            flat_ckpt[f"student.{k}"] = v
-        # Распаковываем проекторы
-        if "input_projector" in ckpt:
-            input_pj = ckpt["input_projector"]
-            if isinstance(input_pj, dict):
-                for k, v in input_pj.items(): flat_ckpt[f"input_projector.{k}"] = v
-        if "feature_projectors" in ckpt:
-            feat_pjs = ckpt["feature_projectors"]
-            if isinstance(feat_pjs, dict):
-                for layer_id, sd in feat_pjs.items():
-                    if isinstance(sd, dict):
-                        for k, v in sd.items(): flat_ckpt[f"feature_projectors.{layer_id}.{k}"] = v
-    else:
-        # Стандартная структура или старый формат
-        flat_ckpt = ckpt.get("state_dict", ckpt.get("latentBERT_state_dict", ckpt))
+    if isinstance(ckpt, dict) and any(k in ckpt for k in ["latentBERT_state_dict", "state_dict"]):
+        print("[LOADER] Распаковка многокомпонентного чекпоинта...")
+        model_sd = ckpt.get("latentBERT_state_dict", ckpt.get("state_dict", {}))
+        for k, v in model_sd.items(): flat_ckpt[f"student.{k}"] = v
+        
+        # Обработка проекторов (поддержка и плоских, и вложенных структур)
+        for p_name in ["input_projector", "feature_projectors"]:
+            if p_name in ckpt:
+                p_sd = ckpt[p_name]
+                if isinstance(p_sd, dict):
+                    for k, v in p_sd.items():
+                        # Если k - это уже словарь (вложенный), распаковываем глубже
+                        if isinstance(v, dict):
+                            for inner_k, inner_v in v.items():
+                                flat_ckpt[f"{p_name}.{k}.{inner_k}"] = inner_v
+                        else:
+                            flat_ckpt[f"{p_name}.{k}"] = v
+    else: flat_ckpt = ckpt
 
-    # 2. Получаем текущее состояние модели БЕЗ учителя
+    # 2. Получаем целевые ключи модели (исключая учителя)
     model_state = model.state_dict()
     target_keys = {k: v for k, v in model_state.items() if not k.startswith("teacher.")}
     
     new_state = {}
     matched_groups = {"student": 0, "input_projector": 0, "feature_projectors": 0}
-    
-    # 3. Сопоставляем ключи
+
+    def clean_prefix(key):
+        k = key
+        for p in ["student.", "model.", "distiller.", "input_projector.", "feature_projectors."]:
+            while k.startswith(p): k = k[len(p):]
+        return k
+
+    # 3. Сопоставление
     for k, v in flat_ckpt.items():
-        # Прямое совпадение
-        if k in target_keys:
+        if k in target_keys: # Прямое совпадение
             new_state[k] = v
-            group = k.split(".")[0]
-            if group in matched_groups: matched_groups[group] += 1
+            g = k.split(".")[0]
+            if g in matched_groups: matched_groups[g] += 1
             continue
             
-        # Сопоставление по суффиксу (для обхода разной вложенности)
-        clean_key = k
-        for prefix in ["student.", "distiller.", "model.", "input_projector.", "feature_projectors."]:
-            if clean_key.startswith(prefix): clean_key = clean_key[len(prefix):]
+        # Умный матчинг по суффиксу
+        ck = clean_prefix(k)
+        if len(ck) <= 5: continue
         
-        if len(clean_key) <= 5: continue # Защита от слишком коротких имен (.weight)
-
         for tk in target_keys.keys():
-            if tk.endswith(clean_key):
+            if tk.endswith(ck):
                 new_state[tk] = v
-                group = tk.split(".")[0]
-                if group in matched_groups: matched_groups[group] += 1
+                g = tk.split(".")[0]
+                if g in matched_groups: matched_groups[g] += 1
                 break
     
-    # ПРОВЕРКА: если ничего не загрузилось, это повод для паники
     if not new_state:
-        print("!!! КРИТИЧЕСКАЯ ОШИБКА: Ни один тензор не сопоставлен. Проверьте структуру файла.")
+        print("!!! ОШИБКА: Ни один тензор не загружен.")
         return False
 
     msg = model.load_state_dict(new_state, strict=strict)
-    
-    # Итоговый отчет
-    print(f"[LOADER] Результаты сопоставления:")
-    print(f"  - Student: {matched_groups['student']} тензоров")
-    print(f"  - Input Projector: {matched_groups['input_projector']} тензоров")
-    print(f"  - Feature Projectors: {matched_groups['feature_projectors']} тензоров")
+    print(f"[LOADER] Загружено: Student={matched_groups['student']}, Input={matched_groups['input_projector']}, Feature={matched_groups['feature_projectors']}")
     print(f"[LOADER] Итог: {msg}")
     
-    # Очистка памяти
     del ckpt, flat_ckpt, new_state
     torch.cuda.empty_cache()
-    
     return True
 
 # %%
@@ -189,7 +183,8 @@ WARMUP_STEPS = 200
 BETA_MAX = 0.00001
 best_val_loss = float('inf')
 
-CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/working/BEBLaDII/storage/experiments/20260418_155301_reasoning/checkpoints/BEST_MODEL.pt"
+CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
+# CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/working/BEBLaDII/storage/experiments/20260418_155301_reasoning/checkpoints/BEST_MODEL.pt"
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
