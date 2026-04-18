@@ -30,74 +30,66 @@ WARMUP_STEPS = 1000
 # Кастомный путь к весам (например, из другого датасета Kaggle)
 CUSTOM_STUDENT_WEIGHTS_PATH = None 
 
-# Путь к вашему датасету на Kaggle
-KAGGLE_RESOURCES_DATASET = "/kaggle/input/bebladii-resources" 
-# Если Kaggle использует полный путь с именем пользователя:
-KAGGLE_RESOURCES_DATASET_ALT = "/kaggle/input/datasets/bogdanbuliakov/bebladii-resources"
+# Пути к датасетам на Kaggle
+KAGGLE_DATA_DATASET = "/kaggle/input/bebladii-data-v1-3"
+KAGGLE_MODEL_DATASET = "/kaggle/input/bebladii-resources-v1-1"
+
+# Альтернативные пути (пользовательские ID)
+KAGGLE_DATA_DATASET_ALT = "/kaggle/input/datasets/bogdanbuliakov/bebladii-data-v1-3"
+KAGGLE_RESOURCES_DATASET_ALT = "/kaggle/input/datasets/bogdanbuliakov/bebladii-resources-v1-1"
 
 # Настройка окружения
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
+def find_path(pref, alt):
+    """Вспомогательная функция для поиска существующего пути из двух вариантов."""
+    if pref and os.path.exists(pref): return pref
+    if alt and os.path.exists(alt): return alt
+    return None
+
 def setup_kaggle():
-    """Настройка путей для Kaggle: симлинки данных и пребилтов."""
+    """Настройка путей для Kaggle: симлинки данных и ресурсов модели."""
     if not os.path.exists("/kaggle/input"):
         return None
         
-    print("Обнаружена среда Kaggle. Настройка путей...")
+    print("--- Настройка окружения Kaggle ---")
     
-    # 1. Поиск базовой папки ресурсов
-    resource_ds = None
-    input_base = "/kaggle/input"
-    
-    # Проверяем приоритетные пути
-    for path in [KAGGLE_RESOURCES_DATASET, KAGGLE_RESOURCES_DATASET_ALT]:
-        if os.path.exists(path):
-            resource_ds = path
-            break
-            
-    # Если не нашли по прямым путям — ищем перебором
-    if not resource_ds:
-        print(f"Поиск ресурсов в {input_base}...")
-        for root, dirs, files in os.walk(input_base, topdown=True):
-            if "bebladii-resources" in root.lower():
-                resource_ds = root
-                break
-            # Ограничиваем глубину поиска для скорости
-            if root.count(os.sep) - input_base.count(os.sep) > 2:
-                del dirs[:] 
-                
-    if not resource_ds:
-        print(f"WARN: Ресурсы bebladii не найдены. Доступные папки в /kaggle/input: {os.listdir(input_base)}")
-        return None
+    # 1. Поиск путей
+    data_src = find_path(KAGGLE_DATA_DATASET, KAGGLE_DATA_DATASET_ALT)
+    model_src = find_path(KAGGLE_MODEL_DATASET, KAGGLE_RESOURCES_DATASET_ALT)
 
-    print(f"Используются ресурсы из: {resource_ds}")
-
-    # 2. Симлинки для данных (в папку data/)
+    # 2. Настройка данных (в папку data/)
     os.makedirs("data", exist_ok=True)
-    ds_data_path = os.path.join(resource_ds, "data")
-    if os.path.exists(ds_data_path):
-        for folder in os.listdir(ds_data_path):
-            src = os.path.join(ds_data_path, folder)
-            dst = os.path.join("data", folder)
-            if not os.path.exists(dst):
-                print(f"Symlink: {dst} -> {src}")
-                os.symlink(src, dst)
-    
-    # 3. Симлинки для пребилтов и компонентов (в папку storage/)
-    os.makedirs("storage", exist_ok=True)
-    for folder in ["prebuilt", "components"]:
-        src = os.path.join(resource_ds, folder)
-        dst = os.path.join("storage", folder)
-        if os.path.exists(src):
-            if not os.path.exists(dst):
-                print(f"Symlink: {dst} -> {src}")
-                os.symlink(src, dst)
-
-    if os.path.exists("data"):
-        print(f"Содержимое папки data после настройки: {os.listdir('data')}")
+    if data_src:
+        print(f"Использование данных из: {data_src}")
+        # Если в корне датасета есть папка data, заходим в неё
+        sub_data = os.path.join(data_src, "data")
+        src_root = sub_data if os.path.exists(sub_data) else data_src
         
-    return resource_ds
+        for item in os.listdir(src_root):
+            src = os.path.join(src_root, item)
+            dst = os.path.join("data", item)
+            if not os.path.exists(dst):
+                print(f"Symlink (Data): {dst} -> {src}")
+                os.symlink(src, dst)
+    else:
+        print("WARN: Датасет с данными не найден.")
+
+    # 3. Настройка ресурсов (в папку storage/)
+    os.makedirs("storage", exist_ok=True)
+    if model_src:
+        print(f"Использование ресурсов модели из: {model_src}")
+        for folder in ["prebuilt", "components"]:
+            src = os.path.join(model_src, folder)
+            dst = os.path.join("storage", folder)
+            if os.path.exists(src) and not os.path.exists(dst):
+                print(f"Symlink (Storage): {dst} -> {src}")
+                os.symlink(src, dst)
+    else:
+        print("WARN: Датасет с ресурсами модели не найден.")
+
+    return {"data": data_src, "model": model_src}
 
 def build_weights_map(components_root="storage/components"):
     """
@@ -127,13 +119,13 @@ def train():
         print("WANDB_API_KEY не найден, логирование в wandb отключено.")
         
     # 2. Определение путей к весам и базовым моделям
-    # Приоритет Kaggle абсолютным путям (предотвращает проблемы с симлинками в transformers)
-    KAG_RES = "/kaggle/input/datasets/bogdanbuliakov/bebladii-resources"
+    # Приоритет Kaggle абсолютным путям
+    model_res = find_path(KAGGLE_MODEL_DATASET, KAGGLE_RESOURCES_DATASET_ALT)
     
-    if os.path.exists(KAG_RES):
-        print(f"Использование прямых путей Kaggle из {KAG_RES}")
-        student_base_id = os.path.join(KAG_RES, "prebuilt/latentBERT", VERSION)
-        components_root = os.path.join(KAG_RES, "components")
+    if model_res:
+        print(f"Использование прямых путей Kaggle из {model_res}")
+        student_base_id = os.path.join(model_res, "prebuilt/latentBERT", VERSION)
+        components_root = os.path.join(model_res, "components")
     else:
         student_base_id = os.path.join("storage/prebuilt/latentBERT", VERSION)
         if not os.path.exists(student_base_id):
