@@ -73,6 +73,45 @@ try:
     print("Модули проекта успешно импортированы.")
 except ImportError as e: print(f"Ошибка импорта: {e}")
 
+def smart_load_weights(model, path, strict=False):
+    """Умная загрузка весов с обработкой префиксов и вложенных словарей"""
+    if not os.path.exists(path):
+        print(f"[WARN] Файл не найден: {path}")
+        return False
+        
+    ckpt = torch.load(path, map_location='cpu')
+    
+    # Извлекаем state_dict если он обернут
+    if isinstance(ckpt, dict):
+        if "state_dict" in ckpt: state_dict = ckpt["state_dict"]
+        elif "latentBERT_state_dict" in ckpt: state_dict = ckpt["latentBERT_state_dict"]
+        else: state_dict = ckpt
+    else: state_dict = ckpt
+
+    model_state = model.state_dict()
+    new_state = {}
+    
+    # Сопоставляем ключи
+    for k, v in state_dict.items():
+        if k in model_state:
+            new_state[k] = v
+        else:
+            # Пробуем убрать/добавить префиксы
+            clean_key = k
+            for prefix in ["student.", "distiller.", "model."]:
+                if clean_key.startswith(prefix): clean_key = clean_key[len(prefix):]
+            
+            matched = False
+            for mk in model_state.keys():
+                if mk.endswith(clean_key) or clean_key.endswith(mk):
+                    new_state[mk] = v
+                    matched = True
+                    break
+    
+    msg = model.load_state_dict(new_state, strict=strict)
+    print(f"Загружено {len(new_state)} тензоров из {len(state_dict)}. Matching: {msg}")
+    return True
+
 # %%
 # --- PATH CONFIGURATION ---
 VERSION = "v1.0"
@@ -203,20 +242,10 @@ if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
     distiller.student.model.gradient_checkpointing_enable()
     distiller.student.model.config.use_cache = False
 
-# --- ЗАГРУЗКА КАСТОМНЫХ ВЕСОВ ---
+# --- ЗАГРУЗКА КАСТОМНЫХ ВЕСОВ --- 
 if CUSTOM_STUDENT_WEIGHTS_PATH and os.path.exists(CUSTOM_STUDENT_WEIGHTS_PATH):
-    print(f"Загрузка кастомных весов студента из {CUSTOM_STUDENT_WEIGHTS_PATH}...")
-    ckpt = torch.load(CUSTOM_STUDENT_WEIGHTS_PATH, map_location='cpu')
-    if isinstance(ckpt, dict) and "latentBERT_state_dict" in ckpt:
-        distiller.student.load_state_dict(ckpt["latentBERT_state_dict"])
-        if "input_projector" in ckpt:
-            distiller.input_projector.load_state_dict(ckpt["input_projector"])
-        if "feature_projectors" in ckpt:
-            distiller.feature_projectors.load_state_dict(ckpt["feature_projectors"])
-        print("Успешно: Загружен полный чекпоинт")
-    else:
-        distiller.student.load_state_dict(ckpt)
-        print("Успешно: Загружен state_dict студента")
+    print(f"--- Загрузка весов из {CUSTOM_STUDENT_WEIGHTS_PATH} ---")
+    smart_load_weights(distiller, CUSTOM_STUDENT_WEIGHTS_PATH, strict=False)
 
 # 1. Замораживаем всё
 for p in distiller.parameters(): p.requires_grad = False
@@ -405,7 +434,8 @@ for epoch in range(EPOCHS):
                 # --- СОХРАНЕНИЕ ЛУЧШЕЙ МОДЕЛИ ---
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
-                    print(f"[SAIVING BEST] New best val_loss: {best_val_loss:.4f}. Saving BEST_MODEL...")
+                    print(f"[SAVING BEST] New best val_loss: {best_val_loss:.4f}. Saving BEST_MODEL...")
+                    # Сохраняем весь дистиллер (единый стандарт)
                     tracker.save_checkpoint(distiller.state_dict(), name='BEST_MODEL')
                 
                 distiller.train()
