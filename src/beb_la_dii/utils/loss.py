@@ -7,9 +7,11 @@ class DistillationLoss(nn.Module):
     Расчет L_total для выравнивания латентных пространств.
     Использует MSE и Cosine Similarity для трех контрольных точек (слои 20, 30, 40).
     """
-    def __init__(self, layer_weights={20: 0.5, 30: 0.7, 40: 1.0}):
+    def __init__(self, layer_weights={20: 0.5, 30: 0.7, 40: 1.0}, mse_weight=1.0, cos_weight=1.0):
         super().__init__()
         self.layer_weights = layer_weights
+        self.mse_weight = mse_weight
+        self.cos_weight = cos_weight
         self.mse = nn.MSELoss()
         
     def forward(self, student_hidden_states, teacher_hidden_states, attention_mask=None, mu=None, logvar=None, beta=0.0):
@@ -62,8 +64,8 @@ class DistillationLoss(nn.Module):
                 metrics[f"l{layer_idx}_mse"] = mse_l.item()
                 metrics[f"l{layer_idx}_cos"] = cos_l.item()
                 
-                # Комбинированный лосс для слоя
-                layer_l = mse_l + cos_l
+                # Комбинированный лосс для слоя с учетом балансировки
+                layer_l = self.mse_weight * mse_l + self.cos_weight * cos_l
                 total_loss += weight * layer_l
         
         metrics["mse"] = mse_total.item() if torch.is_tensor(mse_total) else mse_total
@@ -97,5 +99,6 @@ if __name__ == "__main__":
         40: torch.randn(2, 5, 4096)
     }
     
-    loss = criterion(s_states, t_states)
+    loss, metrics = criterion(s_states, t_states)
     print(f"Calculated loss: {loss.item()}")
+    print(f"Metrics: {metrics}")

@@ -112,11 +112,19 @@ def smart_load_weights(model, path, strict=False):
     target_keys = {k: v for k, v in model_state.items() if not k.startswith("teacher.")}
     
     new_state = {}
-    matched_groups = {"student": 0, "input_projector": 0, "feature_projectors": 0}
+    # Группы для расширенного логгирования
+    matched_groups = {
+        "student": 0, 
+        "input_projector": 0, 
+        "feature_projectors.20": 0, 
+        "feature_projectors.30": 0, 
+        "feature_projectors.40": 0
+    }
 
     def clean_prefix(key):
         k = key
-        for p in ["student.", "model.", "distiller.", "input_projector.", "feature_projectors."]:
+        # Убираем префиксы, но сохраняем уникальную часть индекса слоя для проекторов
+        for p in ["student.", "model.", "distiller."]:
             while k.startswith(p): k = k[len(p):]
         return k
 
@@ -124,19 +132,30 @@ def smart_load_weights(model, path, strict=False):
     for k, v in flat_ckpt.items():
         if k in target_keys: # Прямое совпадение
             new_state[k] = v
-            g = k.split(".")[0]
-            if g in matched_groups: matched_groups[g] += 1
+            for g in matched_groups.keys():
+                if k.startswith(g): matched_groups[g] += 1
+            if k.startswith("student."): matched_groups["student"] += 1
             continue
             
-        # Умный матчинг по суффиксу
+        # Умный матчинг
         ck = clean_prefix(k)
         if len(ck) <= 5: continue
         
         for tk in target_keys.keys():
             if tk.endswith(ck):
+                # Доп. проверка для проекторов, чтобы не перепутать слои
+                if "feature_projectors" in tk:
+                    # Извлекаем индекс из ck (напр. '20.weight') и из tk
+                    if any(idx in tk and idx in ck for idx in ["20", "30", "40"]):
+                        new_state[tk] = v
+                        for g in matched_groups.keys():
+                            if tk.startswith(g): matched_groups[g] += 1
+                        break
+                    continue
+                
                 new_state[tk] = v
-                g = tk.split(".")[0]
-                if g in matched_groups: matched_groups[g] += 1
+                if tk.startswith("student."): matched_groups["student"] += 1
+                if tk.startswith("input_projector"): matched_groups["input_projector"] += 1
                 break
     
     if not new_state:
@@ -144,7 +163,12 @@ def smart_load_weights(model, path, strict=False):
         return False
 
     msg = model.load_state_dict(new_state, strict=strict)
-    print(f"[LOADER] Загружено: Student={matched_groups['student']}, Input={matched_groups['input_projector']}, Feature={matched_groups['feature_projectors']}")
+    print(f"[LOADER] Результаты загрузки:")
+    print(f"  - Student: {matched_groups['student']}")
+    print(f"  - Input Proj: {matched_groups['input_projector']}")
+    print(f"  - Feat Proj 20: {matched_groups['feature_projectors.20']}")
+    print(f"  - Feat Proj 30: {matched_groups['feature_projectors.30']}")
+    print(f"  - Feat Proj 40: {matched_groups['feature_projectors.40']}")
     print(f"[LOADER] Итог: {msg}")
     
     del ckpt, flat_ckpt, new_state
@@ -175,12 +199,12 @@ GRAD_ACCUM_STEPS = 8
 STAGE = 'reasoning'
 VAL_EVERY_STEPS = 200
 VAL_MAX_SAMPLES = 100
-LEARNING_RATE = 1e-5
+LEARNING_RATE = 2e-5
 EPOCHS = 1
-WARMUP_STEPS = 200
+WARMUP_STEPS = 50
 
 # VAE & Validation Settings
-BETA_MAX = 0.00001
+BETA_MAX = 0.0001
 best_val_loss = float('inf')
 
 CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
@@ -305,7 +329,7 @@ tokenizer = get_tokenizer()
 train_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='train')
 val_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='val')
 optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=LEARNING_RATE)
-criterion = DistillationLoss()
+criterion = DistillationLoss(cos_weight=20.0)
 # Добавляем скейлер для Mixed Precision
 scaler = torch.amp.GradScaler('cuda')
 tracker = ExperimentTracker(project_root=".", stage=STAGE)
@@ -343,7 +367,7 @@ for epoch in range(EPOCHS):
             
             # Расчет текущей BETA (линейный отжиг)
             macro_step_total = (step + 1) // GRAD_ACCUM_STEPS
-            current_beta = min(BETA_MAX, BETA_MAX * (macro_step_total / (WARMUP_STEPS * 10 or 1)))
+            current_beta = min(BETA_MAX, BETA_MAX * (macro_step_total / (WARMUP_STEPS or 1)))
             
             with torch.amp.autocast('cuda'):
                 student_states, teacher_targets, mu, logvar = distiller(input_ids, mask)
@@ -407,7 +431,7 @@ for epoch in range(EPOCHS):
                         "tech/grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
                         "tech/step": step,
                         "tech/lr": current_lr,
-                        "tech/grad_norm": grad_norm
+                        "tech/scaler": scaler.get_scale()
                     }
                     for k, v in accum_metrics.items(): log_dict[f"train/layers/{k}"] = v
                     wandb.log(log_dict)

@@ -12,7 +12,7 @@
 | `ModelAssembler` | [assembler.py](file:///c:/Experiments/BEBLaDII/src/beb_la_dii/model/assembler.py) | Принимает `weights_map: dict` и собирает дистиллятор. Главная точка инициализации системы. |
 | `InputProjector` | [projectors.py](file:///c:/Experiments/BEBLaDII/src/beb_la_dii/model/projectors.py) | MLP-адаптер для входа: Qwen (3584) -> ModernBERT (1024). |
 | `FeatureProjector` | [projectors.py](file:///c:/Experiments/BEBLaDII/src/beb_la_dii/model/projectors.py) | Адаптер скрытых состояний: BERT (1024) -> Qwen (3584) с Residual-связью. |
-| `DUSModel` | [dus.py](file:///c:/Experiments/BEBLaDII/src/beb_la_dii/model/dus.py) | Обертка над ModernBERT, расширенным до 40 слоев. Переопределяет `load_weights()`. |
+| `DUSModel` | [dus.py](file:///c:/Experiments/BEBLaDII/src/beb_la_dii/model/dus.py) | Обертка над ModernBERT, расширенным до 40 слоев. |
 | `create_latentbert` | [dus.py](file:///c:/Experiments/BEBLaDII/src/beb_la_dii/model/dus.py) | Функция реализации Depth Up-Scaling через копирование блоков. |
 | `ReasoningDistiller` | [distiller.py](file:///c:/Experiments/BEBLaDII/src/beb_la_dii/model/distiller.py) | Основной класс связки "Учитель-Ученик" для процесса дистилляции. |
 
@@ -45,5 +45,5 @@ component = MyComponent.from_scratch(
 
 ## Типичные ошибки
 - **Weights Path Mismatch**: `build_weights_map()` выводит статус `[found]`/`[random init]` для каждого компонента — проверяй логи перед запуском обучения.
-- **DUSModel.load_weights()**: переопределён, т.к. веса хранятся в `self.model` (HF-модуль), а не в `self`. При ручном сохранении — используй `registry.save_component()`, а не `torch.save(dus_model.state_dict())`.
+- **Smart Loading**: В Kaggle-скриптах используется `smart_load_weights`, которая автоматически сопоставляет ключи вне зависимости от глубины вложенности (например, корректно обрабатывает `student.model.layers` vs `student.model.model.layers`).
 - **Gradient Checkpointing**: В `create_latentbert` принудительно включается Checkpointing через `base_model.gradient_checkpointing_enable()`. Если его отключить при 40 слоях, возникнет `OutOfMemory` на GPU с <24GB VRAM.
