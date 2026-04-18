@@ -144,7 +144,7 @@ WARMUP_STEPS = 200
 BETA_MAX = 0.00001
 best_val_loss = float('inf')
 
-CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/working/BEST_MODEL.pt"
+CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/working/BEBLaDII/storage/experiments/20260418_155301_reasoning/checkpoints/BEST_MODEL.pt"
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
@@ -367,7 +367,8 @@ for epoch in range(EPOCHS):
                         "beta": current_beta,
                         "grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
                         "step": step,
-                        "lr": current_lr
+                        "lr": current_lr,
+                        "grad_norm": grad_norm
                     }
                     for k, v in accum_metrics.items(): log_dict[f"train/{k}"] = v
                     wandb.log(log_dict)
