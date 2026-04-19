@@ -89,10 +89,15 @@ def smart_load_weights(model, path, strict=False):
     
     # 1. Формируем максимально плоский словарь из чекпоинта
     flat_ckpt = {}
-    if isinstance(ckpt, dict) and any(k in ckpt for k in ["latentBERT_state_dict", "state_dict"]):
+    if isinstance(ckpt, dict) and any(k in ckpt for k in ["latentBERT_state_dict", "state_dict", "model_state_dict"]):
         print("[LOADER] Распаковка многокомпонентного чекпоинта...")
-        model_sd = ckpt.get("latentBERT_state_dict", ckpt.get("state_dict", {}))
-        for k, v in model_sd.items(): flat_ckpt[f"student.{k}"] = v
+        if "model_state_dict" in ckpt:
+            # Новый формат: уже содержит полные ключи 'student.', 'input_projector.' и т.д.
+            flat_ckpt = ckpt["model_state_dict"]
+        else:
+            # Старый формат: только веса студента, нужно добавить префикс
+            model_sd = ckpt.get("latentBERT_state_dict", ckpt.get("state_dict", {}))
+            for k, v in model_sd.items(): flat_ckpt[f"student.{k}"] = v
         
         # Обработка проекторов (поддержка и плоских, и вложенных структур)
         for p_name in ["input_projector", "feature_projectors"]:
