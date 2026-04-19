@@ -112,19 +112,11 @@ def smart_load_weights(model, path, strict=False):
     target_keys = {k: v for k, v in model_state.items() if not k.startswith("teacher.")}
     
     new_state = {}
-    # Группы для расширенного логгирования
-    matched_groups = {
-        "student": 0, 
-        "input_projector": 0, 
-        "feature_projectors.20": 0, 
-        "feature_projectors.30": 0, 
-        "feature_projectors.40": 0
-    }
+    matched_groups = {"student": 0, "input_projector": 0, "feature_projectors": 0}
 
     def clean_prefix(key):
         k = key
-        # Убираем префиксы, но сохраняем уникальную часть индекса слоя для проекторов
-        for p in ["student.", "model.", "distiller."]:
+        for p in ["student.", "model.", "distiller.", "input_projector.", "feature_projectors."]:
             while k.startswith(p): k = k[len(p):]
         return k
 
@@ -132,30 +124,19 @@ def smart_load_weights(model, path, strict=False):
     for k, v in flat_ckpt.items():
         if k in target_keys: # Прямое совпадение
             new_state[k] = v
-            for g in matched_groups.keys():
-                if k.startswith(g): matched_groups[g] += 1
-            if k.startswith("student."): matched_groups["student"] += 1
+            g = k.split(".")[0]
+            if g in matched_groups: matched_groups[g] += 1
             continue
             
-        # Умный матчинг
+        # Умный матчинг по суффиксу
         ck = clean_prefix(k)
         if len(ck) <= 5: continue
         
         for tk in target_keys.keys():
             if tk.endswith(ck):
-                # Доп. проверка для проекторов, чтобы не перепутать слои
-                if "feature_projectors" in tk:
-                    # Извлекаем индекс из ck (напр. '20.weight') и из tk
-                    if any(idx in tk and idx in ck for idx in ["20", "30", "40"]):
-                        new_state[tk] = v
-                        for g in matched_groups.keys():
-                            if tk.startswith(g): matched_groups[g] += 1
-                        break
-                    continue
-                
                 new_state[tk] = v
-                if tk.startswith("student."): matched_groups["student"] += 1
-                if tk.startswith("input_projector"): matched_groups["input_projector"] += 1
+                g = tk.split(".")[0]
+                if g in matched_groups: matched_groups[g] += 1
                 break
     
     if not new_state:
@@ -163,12 +144,7 @@ def smart_load_weights(model, path, strict=False):
         return False
 
     msg = model.load_state_dict(new_state, strict=strict)
-    print(f"[LOADER] Результаты загрузки:")
-    print(f"  - Student: {matched_groups['student']}")
-    print(f"  - Input Proj: {matched_groups['input_projector']}")
-    print(f"  - Feat Proj 20: {matched_groups['feature_projectors.20']}")
-    print(f"  - Feat Proj 30: {matched_groups['feature_projectors.30']}")
-    print(f"  - Feat Proj 40: {matched_groups['feature_projectors.40']}")
+    print(f"[LOADER] Загружено: Student={matched_groups['student']}, Input={matched_groups['input_projector']}, Feature={matched_groups['feature_projectors']}")
     print(f"[LOADER] Итог: {msg}")
     
     del ckpt, flat_ckpt, new_state
@@ -206,6 +182,9 @@ WARMUP_STEPS = 50
 # VAE & Validation Settings
 BETA_MAX = 0.0001
 best_val_loss = float('inf')
+
+RESUME_RUN = False
+RESUME_PATH = "/kaggle/working/RESUME_PHASE1_STEP_X.pt"
 
 CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
 # CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/working/BEBLaDII/storage/experiments/20260418_155301_reasoning/checkpoints/BEST_MODEL.pt"
@@ -307,7 +286,9 @@ if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
     distiller.student.model.config.use_cache = False
 
 # --- ЗАГРУЗКА КАСТОМНЫХ ВЕСОВ --- 
-if CUSTOM_STUDENT_WEIGHTS_PATH and os.path.exists(CUSTOM_STUDENT_WEIGHTS_PATH):
+if RESUME_RUN:
+    print("[INIT] RESUME_RUN=True: Загрузка весов отложена до инициализации оптимизатора...")
+elif CUSTOM_STUDENT_WEIGHTS_PATH and os.path.exists(CUSTOM_STUDENT_WEIGHTS_PATH):
     smart_load_weights(distiller, CUSTOM_STUDENT_WEIGHTS_PATH, strict=False)
 
 # 1. Замораживаем всё
@@ -334,6 +315,38 @@ criterion = DistillationLoss(cos_weight=20.0)
 scaler = torch.amp.GradScaler('cuda')
 tracker = ExperimentTracker(project_root=".", stage=STAGE)
 
+offset_step = 0
+offset_epoch = 0
+
+if RESUME_RUN and RESUME_PATH and os.path.exists(RESUME_PATH):
+    print(f"--- [RESUME] Восстановление из {RESUME_PATH} ---")
+    ckpt = torch.load(RESUME_PATH, map_location='cpu')
+    
+    if 'model_state_dict' in ckpt:
+        distiller.load_state_dict(ckpt['model_state_dict'])
+        print("Веса модели загружены.")
+    
+    if 'optimizer_state_dict' in ckpt:
+        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        print("Состояние оптимизатора загружено.")
+    else:
+        print("[WARN] optimizer_state_dict отсутствует в чекпоинте!")
+        
+    if 'scaler_state_dict' in ckpt:
+        try:
+            scaler.load_state_dict(ckpt['scaler_state_dict'])
+            print("Состояние GradScaler загружено.")
+        except Exception as e:
+            print(f"[WARN] Ошибка загрузки скейлера: {e}")
+            
+    best_val_loss = ckpt.get('best_val_loss', float('inf'))
+    offset_step = ckpt.get('step', -1) + 1
+    offset_epoch = ckpt.get('epoch', 0)
+    
+    print(f"[RESUME] Продолжаем с Эпохи {offset_epoch}, Глобальный шаг {offset_step}, Best Val Loss: {best_val_loss}")
+    del ckpt
+    torch.cuda.empty_cache()
+
 try:
     user_secrets = UserSecretsClient()
     wandb_key = user_secrets.get_secret("WANDB_API_KEY")
@@ -348,7 +361,7 @@ if os.environ.get("WANDB_API_KEY"):
 distiller.train()
 print(f"--- Запуск обучения Фазы 1 ({STAGE}) ---")
 
-for epoch in range(EPOCHS):
+for epoch in range(offset_epoch, EPOCHS):
     progress_bar = tqdm(train_loader, desc=f"Epoch {epoch}")
     accum_loss = 0.0
     accum_mse = 0.0
@@ -360,13 +373,14 @@ for epoch in range(EPOCHS):
     optimizer.zero_grad()
     
     for step, batch in enumerate(progress_bar):
+        global_batch_idx = offset_step + step
         try:
             # 1. Используем distiller.student_device вместо глобального device.
             input_ids = batch['input_ids'].to(distiller.student_device).to(torch.long)
             mask = batch['attention_mask'].to(distiller.student_device)
             
             # Расчет текущей BETA (линейный отжиг)
-            macro_step_total = (step + 1) // GRAD_ACCUM_STEPS
+            macro_step_total = (global_batch_idx + 1) // GRAD_ACCUM_STEPS
             current_beta = min(BETA_MAX, BETA_MAX * (macro_step_total / (WARMUP_STEPS or 1)))
             
             with torch.amp.autocast('cuda'):
@@ -381,7 +395,7 @@ for epoch in range(EPOCHS):
             
             # 2. Мягкая защита от NaN.
             if torch.isnan(loss):
-                print(f"\n[WARN] NaN loss detected at step {step}. Skipping batch.")
+                print(f"\n[WARN] NaN loss detected at global step {global_batch_idx}. Skipping batch.")
                 optimizer.zero_grad()
                 continue
             
@@ -398,8 +412,8 @@ for epoch in range(EPOCHS):
                     accum_metrics[k] = accum_metrics.get(k, 0.0) + v / GRAD_ACCUM_STEPS
             
             # 4. Шаг оптимизатора
-            if (step + 1) % GRAD_ACCUM_STEPS == 0:
-                macro_step = (step + 1) // GRAD_ACCUM_STEPS
+            if (global_batch_idx + 1) % GRAD_ACCUM_STEPS == 0:
+                macro_step = (global_batch_idx + 1) // GRAD_ACCUM_STEPS
                 if macro_step <= WARMUP_STEPS:
                     lr_scale = macro_step / WARMUP_STEPS
                     for pg in optimizer.param_groups: 
@@ -429,7 +443,7 @@ for epoch in range(EPOCHS):
                         "train/kl": avg_kl,
                         "tech/beta": current_beta,
                         "tech/grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
-                        "tech/step": step,
+                        "tech/step": global_batch_idx,
                         "tech/lr": current_lr,
                         "tech/scaler": scaler.get_scale()
                     }
@@ -439,8 +453,8 @@ for epoch in range(EPOCHS):
                 accum_loss = 0.0; accum_mse = 0.0; accum_cosine = 0.0; accum_kl = 0.0; accum_metrics = {}
             
             # --- ВАЛИДАЦИЯ ---
-            if (step + 1) % VAL_EVERY_STEPS == 0:
-                print(f"\n--- Валидация (Шаг {step+1}) ---")
+            if (global_batch_idx + 1) % VAL_EVERY_STEPS == 0:
+                print(f"\n--- Валидация (Шаг {global_batch_idx+1}) ---")
                 distiller.eval()
                 val_loss_sum = 0.0
                 val_mse_sum = 0.0
@@ -481,7 +495,7 @@ for epoch in range(EPOCHS):
                 avg_val_cos = val_cos_sum / val_steps if val_steps > 0 else 0
                 avg_val_kl = val_kl_sum / val_steps if val_steps > 0 else 0
                 
-                print(f"[{step+1}] Validation - Loss: {avg_val_loss:.4f}, MSE: {avg_val_mse:.4f}, Cosine: {avg_val_cos:.4f}, KL: {avg_val_kl:.6f}")
+                print(f"[{global_batch_idx+1}] Validation - Loss: {avg_val_loss:.4f}, MSE: {avg_val_mse:.4f}, Cosine: {avg_val_cos:.4f}, KL: {avg_val_kl:.6f}")
                 
                 if wandb.run:
                     val_log = {
@@ -489,7 +503,7 @@ for epoch in range(EPOCHS):
                         "val/mse": avg_val_mse,
                         "val/cosine": avg_val_cos,
                         "val/kl": avg_val_kl,
-                        "step": step
+                        "step": global_batch_idx
                     }
                     for k, v in val_layers_sums.items():
                         val_log[f"val/layers/{k}"] = v / val_steps
@@ -506,7 +520,7 @@ for epoch in range(EPOCHS):
 
         except RuntimeError as e:
             if "out of memory" in str(e):
-                print(f"\n[OOM] Step {step}: Cleaning cache...")
+                print(f"\n[OOM] Step {global_batch_idx}: Cleaning cache...")
                 for p in distiller.parameters():
                     if p.grad is not None: p.grad = None
                 torch.cuda.empty_cache()
@@ -524,6 +538,7 @@ for epoch in range(EPOCHS):
 
     # Сохранение после каждой эпохи
     tracker.save_checkpoint(distiller.state_dict(), name=f"phase1_{STAGE}_epoch_{epoch}")
+    offset_step = 0
 
 print("Обучение завершено!")
 
