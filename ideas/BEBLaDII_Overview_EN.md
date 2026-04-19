@@ -6,7 +6,47 @@
 BEBLaDII is an advanced AI model designed to use **Retrieval-Augmented Generation (RAG) directly as its own internal memory**. Unlike standard auto-regressive models that predict the next discrete token, BEBLaDII separates logical reasoning from linguistic generation. It continuously "thinks", doubts its own representations, and iteratively crystallizes meaning inside a continuous latent space. When the model detects high uncertainty in its thoughts, it directly queries external RAG memory to stabilize its latent representations before finally translating them into human-readable text.
 
 ## Architecture
-BEBLaDII is a discrete diffusion model with soft latent anchoring. The architecture is modular and processes data through four key stages:
+BEBLaDII is a discrete diffusion model with soft latent anchoring. The architecture is modular and processes data through four key stages. 
+
+```mermaid
+graph TD
+    classDef verbal fill:#2d3436,stroke:#74b9ff,stroke-width:2px,color:#fff
+    classDef latent fill:#6c5ce7,stroke:#a29bfe,stroke-width:2px,color:#fff
+    classDef rag fill:#27ae60,stroke:#2ecc71,stroke-width:2px,color:#fff
+
+    subgraph "Discrete Verbal Space (System 1)"
+        A["Input Text"] --> B["Tokenizer (e.g., Qwen)"]
+        B --> C["Decoder Embeddings (4096-dim)"]
+        
+        K["4096-dim Decoded Vectors"] --> L["Frozen LM-Head"]
+        L --> M["Final Output Text"]
+    end
+
+    subgraph "Continuous Latent Space (System 2)"
+        C --> D["Input Projector & μ-VAE"]
+        D -->|"768-dim Normalized"| E{"latentBERT Diffusion Core"}
+        
+        E --> F["Uncertainty Head (Denoiser)"]
+        F -->|"Confidence Maps"| G{"Orchestrator"}
+        
+        G -->|"High Confidence (Proceed) or no ideas"| E
+        G -->|"Low Confidence (Trigger Memory)"| H["RAG Pooling & Cross-Attention"]
+        
+        H -->|"Inject Knowledge"| E
+        
+        G -->|"Final Denoised State"| J["Adapter MLP"]
+        J --> K
+    end
+    
+    subgraph "External Memory (RAG Space)"
+        H -.->|"Queries"| I[("FAISS Vector Index (Latent Chunks)")]
+        I -.->|"Retrieves Context"| H
+    end
+
+    class A,B,C,K,L,M verbal
+    class D,E,F,G,J latent
+    class H,I rag
+```
 
 1. **Latent Ingestion (Entry)**
    - **Tokenizer**: Converts input text into embeddings using a frozen decoder vocabulary (e.g., Qwen) to ensure strong baseline linguistic features.
