@@ -113,7 +113,8 @@
                 ".know/workflows/create-adr.md",
                 ".know/workflows/expand-knowledge.md",
                 ".know/workflows/sync-knowledge.md",
-                ".know/decisions/001_kaggle_phase1_retrospective.md"
+                ".know/decisions/001_kaggle_phase1_retrospective.md",
+                ".know/decisions/002_phase1_training_optimization.md"
             ]
         },
         "KI_kaggle.md": {
@@ -143,6 +144,11 @@
         },
         "decisions/001_kaggle_phase1_retrospective.md": {
             "description": "ADR: Kaggle Phase 1 deployment retrospective (reasons for choosing FP32, Mirror-Load, Arrow_Schema).",
+            "covers": ["Knowledge Infrastructure"],
+            "depends_on": []
+        },
+        "decisions/002_phase1_training_optimization.md": {
+            "description": "ADR: Оптимизация стабильности и ресурсов Phase 1 (AdamW8bit, Persistence, Cosine Annealing).",
             "covers": ["Knowledge Infrastructure"],
             "depends_on": []
         }
