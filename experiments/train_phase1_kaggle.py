@@ -61,7 +61,12 @@ print(f"Корень проекта: {root_str}")
 
 # %%
 import os, torch, json, wandb
-from torch.optim import AdamW
+try:
+    from bitsandbytes.optim import AdamW8bit as AdamW
+    print("Используется 8-битный оптимизатор AdamW (bitsandbytes).")
+except ImportError:
+    from torch.optim import AdamW
+    print("[WARN] bitsandbytes не найден, используется стандартный AdamW.")
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from tqdm.auto import tqdm
 
@@ -190,9 +195,9 @@ BETA_MAX = 0.0001
 best_val_loss = float('inf')
 
 RESUME_RUN = False
-RESUME_PATH = "/kaggle/working/RESUME_PHASE1_STEP_X.pt"
+RESUME_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-snapshot-4000/RESUME_PHASE1_STEP_4000.pt"
 
-CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
+CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-snapshot-4000/RESUME_PHASE1_STEP_4000.pt"
 # CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/working/BEBLaDII/storage/experiments/20260418_155301_reasoning/checkpoints/BEST_MODEL.pt"
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
@@ -333,11 +338,12 @@ if RESUME_RUN and RESUME_PATH and os.path.exists(RESUME_PATH):
         distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
         print("Веса модели загружены (non-strict).")
     
-    if 'optimizer_state_dict' in ckpt:
-        optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-        print("Состояние оптимизатора загружено.")
-    else:
-        print("[WARN] optimizer_state_dict отсутствует в чекпоинте!")
+    # if 'optimizer_state_dict' in ckpt:
+    #     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+    #     print("Состояние оптимизатора загружено.")
+    # else:
+    #     print("[WARN] optimizer_state_dict отсутствует в чекпоинте!")
+    print("[INFO] Загрузка состояний оптимизатора пропущена (переход на AdamW8bit).")
         
     if 'scaler_state_dict' in ckpt:
         try:
