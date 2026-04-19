@@ -62,6 +62,7 @@ print(f"Корень проекта: {root_str}")
 # %%
 import os, torch, json, wandb
 from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from tqdm.auto import tqdm
 
 try:
@@ -175,7 +176,7 @@ GRAD_ACCUM_STEPS = 8
 STAGE = 'reasoning'
 VAL_EVERY_STEPS = 200
 VAL_MAX_SAMPLES = 100
-LEARNING_RATE = 2e-5
+LEARNING_RATE = 5e-5
 EPOCHS = 1
 WARMUP_STEPS = 50
 
@@ -310,12 +311,13 @@ tokenizer = get_tokenizer()
 train_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='train')
 val_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='val')
 optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=LEARNING_RATE)
+scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
 criterion = DistillationLoss(cos_weight=20.0)
 # Добавляем скейлер для Mixed Precision
 scaler = torch.amp.GradScaler('cuda')
 tracker = ExperimentTracker(project_root=".", stage=STAGE)
 
-offset_step = 0
+global_step = 0
 offset_epoch = 0
 
 if RESUME_RUN and RESUME_PATH and os.path.exists(RESUME_PATH):
@@ -323,8 +325,8 @@ if RESUME_RUN and RESUME_PATH and os.path.exists(RESUME_PATH):
     ckpt = torch.load(RESUME_PATH, map_location='cpu')
     
     if 'model_state_dict' in ckpt:
-        distiller.load_state_dict(ckpt['model_state_dict'])
-        print("Веса модели загружены.")
+        distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+        print("Веса модели загружены (non-strict).")
     
     if 'optimizer_state_dict' in ckpt:
         optimizer.load_state_dict(ckpt['optimizer_state_dict'])
@@ -338,12 +340,19 @@ if RESUME_RUN and RESUME_PATH and os.path.exists(RESUME_PATH):
             print("Состояние GradScaler загружено.")
         except Exception as e:
             print(f"[WARN] Ошибка загрузки скейлера: {e}")
+
+    if 'scheduler_state_dict' in ckpt:
+        try:
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            print("Состояние планировщика загружено.")
+        except Exception as e:
+            print(f"[WARN] Ошибка загрузки планировщика: {e}")
             
     best_val_loss = ckpt.get('best_val_loss', float('inf'))
-    offset_step = ckpt.get('step', -1) + 1
+    global_step = ckpt.get('step', -1) + 1
     offset_epoch = ckpt.get('epoch', 0)
     
-    print(f"[RESUME] Продолжаем с Эпохи {offset_epoch}, Глобальный шаг {offset_step}, Best Val Loss: {best_val_loss}")
+    print(f"[RESUME] Продолжаем с Эпохи {offset_epoch}, Глобальный шаг {global_step}, Best Val Loss: {best_val_loss}")
     del ckpt
     torch.cuda.empty_cache()
 
@@ -372,8 +381,9 @@ for epoch in range(offset_epoch, EPOCHS):
     # Сброс градиентов перед началом эпохи
     optimizer.zero_grad()
     
-    for step, batch in enumerate(progress_bar):
-        global_batch_idx = offset_step + step
+    for step_idx, batch in enumerate(progress_bar):
+        global_batch_idx = global_step
+        global_step += 1
         try:
             # 1. Используем distiller.student_device вместо глобального device.
             input_ids = batch['input_ids'].to(distiller.student_device).to(torch.long)
@@ -413,12 +423,6 @@ for epoch in range(offset_epoch, EPOCHS):
             
             # 4. Шаг оптимизатора
             if (global_batch_idx + 1) % GRAD_ACCUM_STEPS == 0:
-                macro_step = (global_batch_idx + 1) // GRAD_ACCUM_STEPS
-                if macro_step <= WARMUP_STEPS:
-                    lr_scale = macro_step / WARMUP_STEPS
-                    for pg in optimizer.param_groups: 
-                        pg['lr'] = LEARNING_RATE * lr_scale
-                
                 # 5. Unscale перед клиппингом
                 scaler.unscale_(optimizer)
                 grad_norm = torch.nn.utils.clip_grad_norm_(distiller.parameters(), 1.0)
@@ -426,12 +430,13 @@ for epoch in range(offset_epoch, EPOCHS):
                 # 6. Безопасный шаг через скейлер
                 scaler.step(optimizer)
                 scaler.update()
+                scheduler.step()
                 optimizer.zero_grad()
                 
                 avg_loss = accum_loss
                 avg_mse = accum_mse
                 avg_kl = accum_kl
-                current_lr = optimizer.param_groups[0]['lr']
+                current_lr = scheduler.get_last_lr()[0]
                 
                 progress_bar.set_postfix({"loss": f"{avg_loss:.4f}", "kl": f"{avg_kl:.6f}", "gn": f"{grad_norm:.2f}"})
                 
@@ -513,8 +518,17 @@ for epoch in range(offset_epoch, EPOCHS):
                 if avg_val_loss < best_val_loss:
                     best_val_loss = avg_val_loss
                     print(f"[SAVING BEST] New best val_loss: {best_val_loss:.4f}. Saving BEST_MODEL...")
-                    # Сохраняем весь дистиллер (единый стандарт)
-                    tracker.save_checkpoint(distiller.state_dict(), name='BEST_MODEL')
+                    ckpt_dict = {
+                        'epoch': epoch,
+                        'step': global_batch_idx,
+                        'model_state_dict': distiller.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scaler_state_dict': scaler.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'best_val_loss': best_val_loss,
+                        'current_beta': current_beta
+                    }
+                    tracker.save_checkpoint(ckpt_dict, name='BEST_MODEL')
                 
                 distiller.train()
 
@@ -537,8 +551,60 @@ for epoch in range(offset_epoch, EPOCHS):
             continue
 
     # Сохранение после каждой эпохи
-    tracker.save_checkpoint(distiller.state_dict(), name=f"phase1_{STAGE}_epoch_{epoch}")
-    offset_step = 0
+    ckpt_dict = {
+        'epoch': epoch,
+        'step': global_step - 1,
+        'model_state_dict': distiller.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scaler_state_dict': scaler.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'best_val_loss': best_val_loss,
+        'current_beta': current_beta if 'current_beta' in locals() else None 
+    }
+    tracker.save_checkpoint(ckpt_dict, name=f"phase1_{STAGE}_epoch_{epoch}")
 
 print("Обучение завершено!")
+
+
+# %%
+# %% [markdown]
+# ### Emergency Resume Checkpoint
+# Эта ячейка сохраняет полное состояние для бесшовного продолжения обучения.
+
+# %%
+import torch
+import os
+
+# Путь для сохранения (корень рабочей директории Kaggle)
+# Рекомендую именовать с указанием текущего шага
+resume_save_path = f"/kaggle/working/RESUME_PHASE1_STEP_{global_step}.pt"
+
+print(f"Подготовка к сохранению полного чекпоинта на шаге {global_step}...")
+
+try:
+    checkpoint = {
+        'epoch': epoch,
+        'step': global_step - 1,
+        'model_state_dict': distiller.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scaler_state_dict': scaler.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict(),
+        'best_val_loss': best_val_loss,
+        # Сохраняем и доп. параметры, если есть
+        'current_beta': current_beta if 'current_beta' in locals() else None 
+    }
+    
+    torch.save(checkpoint, resume_save_path)
+    
+    # Также создаем "удобную" копию без номера шага для скриптов
+    # torch.save(checkpoint, "/kaggle/working/RESUME_LATEST.pt")
+    
+    print("="*50)
+    print(f"УСПЕШНО СОХРАНЕНО: {resume_save_path}")
+    print(f"Размер файла: {os.path.getsize(resume_save_path) / 1024 / 1024:.2f} MB")
+    print("Теперь можно смело скачивать этот файл или фиксировать версию датасета.")
+    print("="*50)
+    
+except Exception as e:
+    print(f"Ошибка при сохранении: {e}")
 

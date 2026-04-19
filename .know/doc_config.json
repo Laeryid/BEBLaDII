@@ -83,7 +83,10 @@
         "KI_experiments.md": {
             "description": "Experiments with DUS Mapping, hyperparameters, and language data.",
             "covers": ["Experiments"],
-            "depends_on": ["experiments/train_phase1_kaggle.py"]
+            "depends_on": [
+                "experiments/train_phase1_kaggle.py",
+                "experiments/train_phase1_kaggle.ipynb"
+            ]
         },
         "KI_knowledge_management.md": {
             "description": "Knowledge management system: MCP server, audit, and documentation version control.",
@@ -131,6 +134,9 @@
                 "scripts/prepare_kaggle_data.py",
                 "scripts/prepare_phase1_data_v2.py",
                 "scripts/sync_to_kaggle.ps1",
+                "scripts/deep_inspect_weights.py",
+                "scripts/check_model_keys.py",
+                "scripts/inspect_best_model.py",
                 "evaluate_lengths.py",
                 "scratch_check_hf.py"
             ]

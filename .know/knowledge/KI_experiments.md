@@ -1,32 +1,34 @@
-<!-- last_verified: 2026-04-14 -->
+<!-- last_verified: 2026-04-19 -->
 # KI: Experiments
 
 ## Что это
-Песочница для отработки гипотез по дистилляции и основной хаб для запуска тренировочных скриптов проекта BEBLaDII.
+Песочница для отработки гипотез по дистилляции и основной хаб для запуска тренировочных скриптов проекта BEBLaDII. Основной фокус сейчас: Phase 1 (Awakening & Reasoning).
 
 ## Ключевые компоненты
 | Класс / Функция | Файл | Назначение |
 |---|---|---|
-| `Phase 1 Training` | [train_phase1_kaggle.py](file:///c:/Experiments/BEBLaDII/experiments/train_phase1_kaggle.py) | Скрипт для латентного выравнивания (Distillation Phase 1). Использует `ReasoningDistiller` для обучения проекторов и latentBERT. |
+| `Phase 1 Training` | [train_phase1_kaggle.ipynb](file:///c:/Experiments/BEBLaDII/experiments/train_phase1_kaggle.ipynb) | Основной инструмент обучения. Поддерживает стадии Awakening и Reasoning. |
+| `smart_load_weights` | [train_phase1_kaggle.ipynb](file:///c:/Experiments/BEBLaDII/experiments/train_phase1_kaggle.ipynb) | Ультра-надежный загрузчик весов. Распаковывает вложенные структуры проекторов и матчит ключи по суффиксам. |
 | **Logic Benchmarks** | experiments/ | Оценка сохранения цепочек рассуждений (CoT) на элитных примерах (планируется). |
-| **Teacher Comparison** | experiments/ | Сравнение влияния различных учителей на финальные метрики latentBERT (ученика). |
 
 ## Детали обучения (Phase 1)
-- **Целевая архитектура**: latentBERT (база `ModernBERT-large`, 28 -> 40 слоев через DUS), Учитель `DeepSeek-R1-Distill-Qwen-7B`.
-- **Обучаемые параметры**: Градиенты включены только для `latentBERT`, `input_projector` и `feature_projectors`. Веса учителя (`teacher`) заморожены (`requires_grad=False`).
-- **Конфигурация (Kaggle T4x2)**:
-    - `MAX_LENGTH`: 4096 (Покрывает ~65-70% CoT цепочек в Reasoning датасетах).
-    - `BATCH_SIZE`: 1 (с `GRAD_ACCUM_STEPS`: 8–16).
-    - **Оптимизации**: Обязателен `Gradient Checkpointing` для студента и `os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"`. Снижает нагрузку, позволяет загружать длинные тексты.
-    - `WandB`: Интеграция через `wandb.init` для отслеживания динамики лосса в реальном времени.
+### Стадия 2: Reasoning
+- **Целевая архитектура**: latentBERT (ModernBERT-large, 40 слоев).
+- **Компоненты**: Включает μ-VAE голову для работы в латентном пространстве.
+- **Loss Function**: `DistillationLoss` с весом косинусного сходства (cos_weight=20.0) и **KL-дивергенцией** для регуляризации латентного пространства (BETA отжиг до 0.0001).
+- **Оптимизации**: Используется `Mixed Precision (torch.amp)` и `Gradient Checkpointing`.
+
+### Конфигурация (Kaggle T4x2)
+- `MAX_LENGTH`: 4096.
+- `BATCH_SIZE`: 1 (с `GRAD_ACCUM_STEPS`: 8–16).
+- **Зеркалирование данных**: Скрипт автоматически настраивает симлинки из `/kaggle/input` в локальную структуру `data/` и `storage/`.
 
 ## Неочевидные детали
-- **Manual Grad Control**: В скрипте `train_phase1_kaggle.py` цикл вручную включает `requires_grad` для компонентов. Это критично, так как по умолчанию после инициализации дистиллятора некоторые проекторы могут быть заморожены.
-- **Normalization**: Лосс нормализуется на `GRAD_ACCUM_STEPS` перед `backward()`, что обеспечивает корректное усреднение градиентов при накоплении.
-- **Save Format**: Итоговые веса сохраняются в один `.pt` файл, содержащий `state_dict` трех ключевых подсистем: latentBERT и обоих типов проекторов. (Поддерживается загрузка через `CUSTOM_STUDENT_WEIGHTS_PATH`).
-- **Device Synchronization**: Крайне важно следить за тем, чтобы все тензоры (`input_ids`, `attention_mask`) перемещались на корректный девайс (`student_device`) перед передачей в дистиллятор во избежание ошибки `Expected all tensors to be on the same device`.
+- **Smart Loading**: При загрузке весов Awakening в Reasoning сессию, `smart_load_weights` игнорирует префиксы `teacher.*` и корректно сопоставляет веса студента, даже если структура `state_dict` изменилась (например, при добавлении VAE).
+- **Emergency Checkpoints**: В блокноте предусмотрена ячейка "Emergency Resume Checkpoint", сохраняющая полное состояние (модель + оптимизатор + скейлер) для восстановления после прерывания Kaggle.
+- **Normalization**: Лосс нормализуется на `GRAD_ACCUM_STEPS` перед `backward()`.
 
 ## Типичные ошибки
-- **Missing API Key**: Если переменная окружения `WANDB_API_KEY` не задана, логирование в облако будет пропущено.
-- **CUDA OOM**: В тренировочном цикле добавлен механизм отлова исключения выбега за пределы памяти: при падении очищается кэш (`empty_cache`), вызывается `gc.collect()`, обнуляются градиенты и батч пропускается. 
-- **Path Bias**: Скрипт использует `from src.beb_la_dii...`, что требует запуска из корня проекта.
+- **CUDA OOM**: При выбеге памяти добавлен отлов исключения: очистка `empty_cache`, вызов `gc.collect()`, обнуление градиентов и пропуск батча.
+- **NaN Loss**: В режиме `autocast` возможны NaN. Скрипт проверяет `torch.isnan(loss)` и пропускает такие итерации без обновления весов.
+- **Device Mixup**: Обязательно использовать `distiller.student_device` для перемещения батчей, так как учитель и студент могут находиться на разных GPU в режиме `device_map`.

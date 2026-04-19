@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-18 -->
+<!-- last_verified: 2026-04-19 -->
 # KI: Data & Ops Scripts
 
 ## Overview
@@ -26,7 +26,14 @@
 | Class / Function / Script | File | Purpose |
 |---|---|---|
 | `build_prebuilt_latentbert.py` | `scripts/` | Сборка локального LatentBERT из весов HF (BERT) и сохранение в `storage/prebuilt`. |
-| `fix_model_save.py` | `root` | Хак для исправления структуры сохраненных моделей при миграции версий. |
+| `init_components.py` | `scripts/` | Инициализация структуры компонентов и весов по умолчанию. |
+
+### Checkpoint Inspection
+| Class / Function / Script | File | Purpose |
+|---|---|---|
+| `deep_inspect_weights.py` | `scripts/` | Глубокий анализ чекпоинтов: распаковка вложенных dict-ов (в feature_projectors) и анализ весов. |
+| `check_model_keys.py` | `scripts/` | Сверка ключей state_dict модели и сохраненного файла для отладки `smart_load`. |
+| `inspect_best_model.py` | `scripts/` | Инспекция весов лучшей модели после завершения тренировки. |
 
 ### Smoke Tests
 | Class / Function / Script | File | Purpose |
@@ -38,10 +45,18 @@
 ### Loading and Weight Matching
 | Class / Function / Script | File | Purpose |
 |---|---|---|
-| `smart_load_weights` | `experiments/train_phase1_kaggle.py` | Универсальная загрузка с поддержкой многокомпонентных файлов, фильтрацией учителя и нечетким матчингом по суффиксам. |
+| `smart_load_weights` | `experiments/train_phase1_kaggle.ipynb` | Универсальная загрузка с поддержкой многокомпонентных файлов, фильтрацией учителя и нечетким матчингом по суффиксам. |
 
 ## Non-obvious Details
-- **Fuzzy Weight Matching**: `smart_load_weights` использует сопоставление по "хвостам" (suffixes) имен тензоров. Это позволяет загружать веса даже при изменении глубины вложенности модели (например, `student.model.layers` vs `student.model.model.layers`).
+- **Nested State Dicts**: В Phase 1 Reasoning `feature_projectors` сохраняются как вложенные словари. Использовать `deep_inspect_weights.py` для корректного отображения структуры перед миграцией.
+- **Fuzzy Weight Matching**: `smart_load_weights` использует сопоставление по "хвостам" (suffixes) имен тензоров. Это позволяет загружать веса даже при изменении глубины вложенности модели.
+- **Strict Teacher Exclusion**: Все тензоры, начинающиеся на `teacher.*`, принудительно исключаются из процесса загрузки.
+- **Prebuilt LatentBERT**: Скрипт `build_prebuilt_latentbert.py` обязателен перед первым запуском Фазы 1.
+
+## Common Pitfalls
+- **Out of Disk Space**: При работе `prepare_phase1_data_v2.py` требуется минимум 200GB свободного места.
+- **Python Path**: Скрипты в `scripts/` следует запускать из корня проекта через `.venv/Scripts/python.exe -m scripts.<script_name>`, если они используют импорт из `src`.
+nt.model.layers` vs `student.model.model.layers`).
 - **Strict Teacher Exclusion**: Все тензоры, начинающиеся на `teacher.*`, принудительно исключаются из процесса загрузки для предотвращения порчи замороженных весов.
 - **Parquet vs Arrow**: `prepare_phase1_data_v2.py` использует Parquet для промежуточного хранения, но `prepare_kaggle_data.py` конвертирует всё в Arrow для оптимального чтения через `datasets`.
 - **Prebuilt LatentBERT**: Скрипт `build_prebuilt_latentbert.py` обязателен перед первым запуском Фазы 1, так как система ожидает наличие готовых тензоров в `storage/`.
