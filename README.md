@@ -198,6 +198,11 @@ The final assembly of the system. Cross-Attention layers are embedded throughout
 **Phase 6: Capabilities Integration (Mini-RAG)**
 Implementation of the task-specific operational index. The model learns to utilize contextual tool descriptions, MCP server connections, and directory/file structures via the CA_Capabilities layer, enabling precise, context-aware command generation. Here we try to give the model the ability to use tools.
 
+## Reports
+
+* Phase 1
+  * [Phase 1 Awakening Report](reports/phase1_awakening_report.md)
+
 ## Citation
 
 > [!IMPORTANT]
