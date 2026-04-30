@@ -1,9 +1,15 @@
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, BitsAndBytesConfig
+from transformers import AutoModelForCausalLM
 from .base import BEComponent
 from .dus import DUSModel
 from .projectors import InputProjector, FeatureProjector
+
+try:
+    import torch_xla.core.xla_model as xm
+    XLA_AVAILABLE = True
+except ImportError:
+    XLA_AVAILABLE = False
 
 class ReasoningDistiller(nn.Module):
     """
@@ -39,16 +45,11 @@ class ReasoningDistiller(nn.Module):
         
         print(f"Loading Teacher from: {load_path}...")
         
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float32,  # Стабильнее для T4
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-        )
+        # Загружаем учителя в bfloat16 (без 4-битного квантования)
         self.teacher = AutoModelForCausalLM.from_pretrained(
             load_path,
-            quantization_config=bnb_config,
-            device_map=device_map,
+            torch_dtype=torch.bfloat16,
+            device_map=device_map if not XLA_AVAILABLE else None,
             trust_remote_code=True
         )
         for param in self.teacher.parameters():
@@ -69,18 +70,28 @@ class ReasoningDistiller(nn.Module):
             })
         
         # 3. Явный перенос обучаемых компонентов на нужный device.
-        # Мы НЕ вызываем .to() на всём дистилляторе, т.к. учитель использует
-        # device_map='auto' (bitsandbytes), и его трогать нельзя.
-        # student_device по умолчанию - 'cuda', если доступна, иначе 'cpu'.
         if student_device is None:
-            student_device = "cuda" if torch.cuda.is_available() else "cpu"
+            if XLA_AVAILABLE:
+                student_device = xm.xla_device()
+            else:
+                student_device = "cuda" if torch.cuda.is_available() else "cpu"
+                
         self.student_device = student_device
         print(f"Student device: {self.student_device}")
         
+        if XLA_AVAILABLE:
+            # На TPU мы переносим и учителя, и ученика на XLA устройство
+            self.teacher.to(self.student_device)
+            
         self.student.to(self.student_device)
         self.input_projector.to(self.student_device)
         self.feature_projectors.to(self.student_device)
-        print("DEBUG: ReasoningDistiller initialized with float32 weights.")
+        
+        # Переводим обучаемые компоненты в bfloat16
+        self.student.to(torch.bfloat16)
+        self.input_projector.to(torch.bfloat16)
+        self.feature_projectors.to(torch.bfloat16)
+        print("DEBUG: ReasoningDistiller initialized with bfloat16 weights.")
         
         # Настройка маппинга слоев (Student -> Teacher)
         self.layer_mapping = {
@@ -115,11 +126,11 @@ class ReasoningDistiller(nn.Module):
                 attention_mask=t_attention_mask,
                 output_hidden_states=True
             )
-            teacher_embeddings = teacher_outputs.hidden_states[0].to(self.student_device).float()
+            teacher_embeddings = teacher_outputs.hidden_states[0].to(self.student_device).to(torch.bfloat16)
             # self._check_nan(teacher_embeddings, "Teacher Embeddings")
             
             teacher_targets = {
-                s_idx: teacher_outputs.hidden_states[t_idx].to(self.student_device).float()
+                s_idx: teacher_outputs.hidden_states[t_idx].to(self.student_device).to(torch.bfloat16)
                 for s_idx, t_idx in self.layer_mapping.items()
             }
             for idx, t in teacher_targets.items():

@@ -61,12 +61,16 @@ print(f"Корень проекта: {root_str}")
 
 # %%
 import os, torch, json, wandb
+from torch.optim import AdamW
 try:
-    from bitsandbytes.optim import AdamW8bit as AdamW
-    print("Используется 8-битный оптимизатор AdamW (bitsandbytes).")
+    import torch_xla.core.xla_model as xm
+    import torch_xla.distributed.xla_multiprocessing as xmp
+    import torch_xla.distributed.parallel_loader as pl
+    XLA_AVAILABLE = True
+    print("PyTorch XLA доступен. Включаем распределенное обучение для TPU.")
 except ImportError:
-    from torch.optim import AdamW
-    print("[WARN] bitsandbytes не найден, используется стандартный AdamW.")
+    XLA_AVAILABLE = False
+    print("PyTorch XLA не найден. Работаем в стандартном режиме.")
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 from tqdm.auto import tqdm
 
@@ -181,8 +185,8 @@ TEACHER_NAME = KAGGLE_TEACHER_MODEL if os.path.exists(KAGGLE_TEACHER_MODEL) else
 # Hyperparameters
 BASE_MODEL_NAME = "answerdotai/ModernBERT-large"
 MAX_LENGTH = 4096
-BATCH_SIZE = 1
-GRAD_ACCUM_STEPS = 8
+BATCH_SIZE = 4
+GRAD_ACCUM_STEPS = 1
 STAGE = 'reasoning'
 VAL_EVERY_STEPS = 200
 VAL_MAX_SAMPLES = 100
@@ -250,161 +254,166 @@ def setup_mirrored_kaggle(data_path, resources_path):
 setup_mirrored_kaggle(DATA_PATH, RESOURCES_PATH)
 
 # %%
-# СБОРКА МОДЕЛИ И НАСТРОЙКА ГРАДИЕНТОВ
-def build_weights_map(components_root="storage/components"):
-    """
-    Строит карту весов component_id -> path.
-    Если путь не найден, компонент инициализируется случайно.
-    """
-    def _w(comp_type, comp_id):
-        return os.path.join(components_root, comp_type, comp_id, VERSION, "weights.pt")
+def _mp_fn(index, flags):
+    global best_val_loss, global_step
+    # СБОРКА МОДЕЛИ И НАСТРОЙКА ГРАДИЕНТОВ
+    def build_weights_map(components_root="storage/components"):
+        """
+        Строит карту весов component_id -> path.
+        Если путь не найден, компонент инициализируется случайно.
+        """
+        def _w(comp_type, comp_id):
+            return os.path.join(components_root, comp_type, comp_id, VERSION, "weights.pt")
 
-    return {
-        "latentBERT":         _w("model",     "latentBERT"),
-        "qwen_to_bert_input": _w("projector", "qwen_to_bert_input"),
-        "feat_proj_20":       _w("projector", "feat_proj_20"),
-        "feat_proj_30":       _w("projector", "feat_proj_30"),
-        "feat_proj_40":       _w("projector", "feat_proj_40"),
-    }
+        return {
+            "latentBERT":         _w("model",     "latentBERT"),
+            "qwen_to_bert_input": _w("projector", "qwen_to_bert_input"),
+            "feat_proj_20":       _w("projector", "feat_proj_20"),
+            "feat_proj_30":       _w("projector", "feat_proj_30"),
+            "feat_proj_40":       _w("projector", "feat_proj_40"),
+        }
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
-print(f"Инициализация на {device}...")
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    print(f"Инициализация на {device}...")
 
-# Определение путей
-if os.path.exists(KAGGLE_MODEL_DATASET):
-    student_base_id = os.path.join(KAGGLE_MODEL_DATASET, "prebuilt/latentBERT", VERSION)
-    components_root = os.path.join(KAGGLE_MODEL_DATASET, "components")
-else:
-    student_base_id = os.path.join("storage/prebuilt/latentBERT", VERSION)
-    if not os.path.exists(student_base_id): student_base_id = BASE_MODEL_NAME
-    components_root = "storage/components"
+    # Определение путей
+    if os.path.exists(KAGGLE_MODEL_DATASET):
+        student_base_id = os.path.join(KAGGLE_MODEL_DATASET, "prebuilt/latentBERT", VERSION)
+        components_root = os.path.join(KAGGLE_MODEL_DATASET, "components")
+    else:
+        student_base_id = os.path.join("storage/prebuilt/latentBERT", VERSION)
+        if not os.path.exists(student_base_id): student_base_id = BASE_MODEL_NAME
+        components_root = "storage/components"
 
-weights_map = build_weights_map(components_root=components_root)
-assembler = ModelAssembler()
-distiller = assembler.assemble_phase1_distiller(
-    teacher_id=TEACHER_NAME, 
-    student_base_id=student_base_id,
-    version=VERSION,
-    weights_map=weights_map,
-    device_map={"": 0},
-    student_device="cuda:1"
-)
+    weights_map = build_weights_map(components_root=components_root)
+    assembler = ModelAssembler()
+    distiller = assembler.assemble_phase1_distiller(
+        teacher_id=TEACHER_NAME, 
+        student_base_id=student_base_id,
+        version=VERSION,
+        weights_map=weights_map,
+        device_map={"": 0},
+        student_device="cuda:1"
+    )
 
-# Оптимизации памяти для длинных последовательностей
-if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
-    print('Enabling Gradient Checkpointing for Student...')
-    distiller.student.model.gradient_checkpointing_enable()
-    distiller.student.model.config.use_cache = False
+    # Оптимизации памяти для длинных последовательностей
+    if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
+        print('Enabling Gradient Checkpointing for Student...')
+        distiller.student.model.gradient_checkpointing_enable()
+        distiller.student.model.config.use_cache = False
 
-# --- ЗАГРУЗКА КАСТОМНЫХ ВЕСОВ --- 
-if RESUME_RUN:
-    print("[INIT] RESUME_RUN=True: Загрузка весов отложена до инициализации оптимизатора...")
-elif CUSTOM_STUDENT_WEIGHTS_PATH and os.path.exists(CUSTOM_STUDENT_WEIGHTS_PATH):
-    smart_load_weights(distiller, CUSTOM_STUDENT_WEIGHTS_PATH, strict=False)
+    # --- ЗАГРУЗКА КАСТОМНЫХ ВЕСОВ --- 
+    if RESUME_RUN:
+        print("[INIT] RESUME_RUN=True: Загрузка весов отложена до инициализации оптимизатора...")
+    elif CUSTOM_STUDENT_WEIGHTS_PATH and os.path.exists(CUSTOM_STUDENT_WEIGHTS_PATH):
+        smart_load_weights(distiller, CUSTOM_STUDENT_WEIGHTS_PATH, strict=False)
 
-# 1. Замораживаем всё
-for p in distiller.parameters(): p.requires_grad = False
+    # 1. Замораживаем всё
+    for p in distiller.parameters(): p.requires_grad = False
 
-# 2. Размораживаем студента и проекторы
-for p in distiller.student.parameters(): p.requires_grad = True
-for p in distiller.input_projector.parameters(): p.requires_grad = True
-for proj in distiller.feature_projectors.values():
-    for p in proj.parameters(): p.requires_grad = True
+    # 2. Размораживаем студента и проекторы
+    for p in distiller.student.parameters(): p.requires_grad = True
+    for p in distiller.input_projector.parameters(): p.requires_grad = True
+    for proj in distiller.feature_projectors.values():
+        for p in proj.parameters(): p.requires_grad = True
 
-print(f"Обучаемых параметров: {sum(p.numel() for p in distiller.parameters() if p.requires_grad):,}")
+    print(f"Обучаемых параметров: {sum(p.numel() for p in distiller.parameters() if p.requires_grad):,}")
 
-# %%
-# ПОДГОТОВКА ОБУЧЕНИЯ
-from kaggle_secrets import UserSecretsClient
+    # %%
+    # ПОДГОТОВКА ОБУЧЕНИЯ
+    from kaggle_secrets import UserSecretsClient
 
-tokenizer = get_tokenizer()
-train_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='train')
-val_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='val')
-optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=LEARNING_RATE)
-scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
-criterion = DistillationLoss(cos_weight=20.0)
-# Добавляем скейлер для Mixed Precision
-scaler = torch.amp.GradScaler('cuda')
-tracker = ExperimentTracker(project_root=".", stage=STAGE)
-
-global_step = 0
-offset_epoch = 0
-
-if RESUME_RUN and RESUME_PATH and os.path.exists(RESUME_PATH):
-    print(f"--- [RESUME] Восстановление из {RESUME_PATH} ---")
-    ckpt = torch.load(RESUME_PATH, map_location='cpu')
+    tokenizer = get_tokenizer()
+    train_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='train')
+    val_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='val')
+    optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=LEARNING_RATE)
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
+    criterion = DistillationLoss(cos_weight=20.0)
     
-    if 'model_state_dict' in ckpt:
-        distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
-        print("Веса модели загружены (non-strict).")
-    
-    # if 'optimizer_state_dict' in ckpt:
-    #     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-    #     print("Состояние оптимизатора загружено.")
-    # else:
-    #     print("[WARN] optimizer_state_dict отсутствует в чекпоинте!")
-    print("[INFO] Загрузка состояний оптимизатора пропущена (переход на AdamW8bit).")
+    if XLA_AVAILABLE:
+        train_loader = pl.MpDeviceLoader(train_loader, distiller.student_device)
+        val_loader = pl.MpDeviceLoader(val_loader, distiller.student_device)
         
-    if 'scaler_state_dict' in ckpt:
-        try:
-            scaler.load_state_dict(ckpt['scaler_state_dict'])
-            print("Состояние GradScaler загружено.")
-        except Exception as e:
-            print(f"[WARN] Ошибка загрузки скейлера: {e}")
+    tracker = ExperimentTracker(project_root=".", stage=STAGE)
 
-    if 'scheduler_state_dict' in ckpt:
-        try:
-            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
-            print("Состояние планировщика загружено.")
-        except Exception as e:
-            print(f"[WARN] Ошибка загрузки планировщика: {e}")
+    global_step = 0
+    offset_epoch = 0
+
+    if RESUME_RUN and RESUME_PATH and os.path.exists(RESUME_PATH):
+        print(f"--- [RESUME] Восстановление из {RESUME_PATH} ---")
+        ckpt = torch.load(RESUME_PATH, map_location='cpu')
+        
+        if 'model_state_dict' in ckpt:
+            distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+            print("Веса модели загружены (non-strict).")
+        
+        # if 'optimizer_state_dict' in ckpt:
+        #     optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+        #     print("Состояние оптимизатора загружено.")
+        # else:
+        #     print("[WARN] optimizer_state_dict отсутствует в чекпоинте!")
+        print("[INFO] Загрузка состояний оптимизатора пропущена (переход на AdamW8bit).")
             
-    best_val_loss = ckpt.get('best_val_loss', float('inf'))
-    global_step = ckpt.get('step', -1) + 1
-    offset_epoch = ckpt.get('epoch', 0)
-    
-    print(f"[RESUME] Продолжаем с Эпохи {offset_epoch}, Глобальный шаг {global_step}, Best Val Loss: {best_val_loss}")
-    del ckpt
-    torch.cuda.empty_cache()
+        # if 'scaler_state_dict' in ckpt:
+        #     try:
+        #         scaler.load_state_dict(ckpt['scaler_state_dict'])
+        #         print("Состояние GradScaler загружено.")
+        #     except Exception as e:
+        #         print(f"[WARN] Ошибка загрузки скейлера: {e}")
 
-try:
-    user_secrets = UserSecretsClient()
-    wandb_key = user_secrets.get_secret("WANDB_API_KEY")
-    if wandb_key: os.environ["WANDB_API_KEY"] = wandb_key
-except Exception: pass
+        if 'scheduler_state_dict' in ckpt:
+            try:
+                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+                print("Состояние планировщика загружено.")
+            except Exception as e:
+                print(f"[WARN] Ошибка загрузки планировщика: {e}")
+                
+        best_val_loss = ckpt.get('best_val_loss', float('inf'))
+        global_step = ckpt.get('step', -1) + 1
+        offset_epoch = ckpt.get('epoch', 0)
+        
+        print(f"[RESUME] Продолжаем с Эпохи {offset_epoch}, Глобальный шаг {global_step}, Best Val Loss: {best_val_loss}")
+        del ckpt
+        torch.cuda.empty_cache()
 
-if os.environ.get("WANDB_API_KEY"):
-    wandb.init(project="BEBLaDII", name=f"phase1-{STAGE}")
+    try:
+        user_secrets = UserSecretsClient()
+        wandb_key = user_secrets.get_secret("WANDB_API_KEY")
+        if wandb_key: os.environ["WANDB_API_KEY"] = wandb_key
+    except Exception: pass
 
-# %%
-# ЦИКЛ ОБУЧЕНИЯ
-distiller.train()
-print(f"--- Запуск обучения Фазы 1 ({STAGE}) ---")
+    if os.environ.get("WANDB_API_KEY"):
+        wandb.init(project="BEBLaDII", name=f"phase1-{STAGE}")
 
-for epoch in range(offset_epoch, EPOCHS):
-    progress_bar = tqdm(train_loader, desc=f"Epoch {epoch}")
-    accum_loss = 0.0
-    accum_mse = 0.0
-    accum_cosine = 0.0
-    accum_kl = 0.0
-    accum_metrics = {} # Для послойных метрик
-    
-    # Сброс градиентов перед началом эпохи
-    optimizer.zero_grad()
-    
-    for step_idx, batch in enumerate(progress_bar):
-        global_batch_idx = global_step
-        global_step += 1
-        try:
-            # 1. Используем distiller.student_device вместо глобального device.
-            input_ids = batch['input_ids'].to(distiller.student_device).to(torch.long)
-            mask = batch['attention_mask'].to(distiller.student_device)
-            
-            # Расчет текущей BETA (линейный отжиг)
-            macro_step_total = (global_batch_idx + 1) // GRAD_ACCUM_STEPS
-            current_beta = min(BETA_MAX, BETA_MAX * (macro_step_total / (WARMUP_STEPS or 1)))
-            
-            with torch.amp.autocast('cuda'):
+    # %%
+    # ЦИКЛ ОБУЧЕНИЯ
+    distiller.train()
+    print(f"--- Запуск обучения Фазы 1 ({STAGE}) ---")
+
+    for epoch in range(offset_epoch, EPOCHS):
+        progress_bar = tqdm(train_loader, desc=f"Epoch {epoch}")
+        accum_loss = 0.0
+        accum_mse = 0.0
+        accum_cosine = 0.0
+        accum_kl = 0.0
+        accum_metrics = {} # Для послойных метрик
+        
+        # Сброс градиентов перед началом эпохи
+        optimizer.zero_grad()
+        
+        for step_idx, batch in enumerate(progress_bar):
+            global_batch_idx = global_step
+            global_step += 1
+            try:
+                # 1. Используем distiller.student_device вместо глобального device.
+                input_ids = batch['input_ids'].to(distiller.student_device).to(torch.long)
+                mask = batch['attention_mask'].to(distiller.student_device)
+                
+                # Расчет текущей BETA (линейный отжиг)
+                macro_step_total = (global_batch_idx + 1) // GRAD_ACCUM_STEPS
+                current_beta = min(BETA_MAX, BETA_MAX * (macro_step_total / (WARMUP_STEPS or 1)))
+                
+                # Прямой проход (модели уже в bfloat16)
                 student_states, teacher_targets, mu, logvar = distiller(input_ids, mask)
                 loss_mask = mask.to(distiller.student_device)
                 loss, loss_metrics = criterion(
@@ -413,80 +422,80 @@ for epoch in range(offset_epoch, EPOCHS):
                     mu=mu, logvar=logvar, beta=current_beta
                 )
                 loss = loss / GRAD_ACCUM_STEPS
-            
-            # 2. Мягкая защита от NaN.
-            if torch.isnan(loss):
-                print(f"\n[WARN] NaN loss detected at global step {global_batch_idx}. Skipping batch.")
-                optimizer.zero_grad()
-                continue
-            
-            # 3. Scale Backward
-            scaler.scale(loss).backward()
-            
-            accum_loss += loss.item()
-            accum_mse += loss_metrics.get('mse', 0.0) / GRAD_ACCUM_STEPS
-            accum_cosine += loss_metrics.get('cosine', 0.0) / GRAD_ACCUM_STEPS
-            accum_kl += loss_metrics.get('kl', 0.0) / GRAD_ACCUM_STEPS
-            
-            for k, v in loss_metrics.items():
-                if k.startswith("l") and ("_mse" in k or "_cos" in k):
-                    accum_metrics[k] = accum_metrics.get(k, 0.0) + v / GRAD_ACCUM_STEPS
-            
-            # 4. Шаг оптимизатора
-            if (global_batch_idx + 1) % GRAD_ACCUM_STEPS == 0:
-                # 5. Unscale перед клиппингом
-                scaler.unscale_(optimizer)
-                grad_norm = torch.nn.utils.clip_grad_norm_(distiller.parameters(), 1.0)
                 
-                # 6. Безопасный шаг через скейлер
-                scaler.step(optimizer)
-                scaler.update()
-                scheduler.step()
-                optimizer.zero_grad()
+                # 2. Мягкая защита от NaN.
+                if torch.isnan(loss):
+                    print(f"\n[WARN] NaN loss detected at global step {global_batch_idx}. Skipping batch.")
+                    optimizer.zero_grad()
+                    continue
                 
-                avg_loss = accum_loss
-                avg_mse = accum_mse
-                avg_kl = accum_kl
-                current_lr = scheduler.get_last_lr()[0]
+                # 3. Backward
+                loss.backward()
                 
-                progress_bar.set_postfix({"loss": f"{avg_loss:.4f}", "kl": f"{avg_kl:.6f}", "gn": f"{grad_norm:.2f}"})
+                accum_loss += loss.item()
+                accum_mse += loss_metrics.get('mse', 0.0) / GRAD_ACCUM_STEPS
+                accum_cosine += loss_metrics.get('cosine', 0.0) / GRAD_ACCUM_STEPS
+                accum_kl += loss_metrics.get('kl', 0.0) / GRAD_ACCUM_STEPS
                 
-                if wandb.run: 
-                    log_dict = {
-                        "train/loss": avg_loss, 
-                        "train/mse": avg_mse,
-                        "train/cosine": accum_cosine,
-                        "train/kl": avg_kl,
-                        "tech/beta": current_beta,
-                        "tech/grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
-                        "tech/step": global_batch_idx,
-                        "tech/lr": current_lr,
-                        "tech/scaler": scaler.get_scale()
-                    }
-                    for k, v in accum_metrics.items(): log_dict[f"train/layers/{k}"] = v
-                    wandb.log(log_dict)
+                for k, v in loss_metrics.items():
+                    if k.startswith("l") and ("_mse" in k or "_cos" in k):
+                        accum_metrics[k] = accum_metrics.get(k, 0.0) + v / GRAD_ACCUM_STEPS
                 
-                accum_loss = 0.0; accum_mse = 0.0; accum_cosine = 0.0; accum_kl = 0.0; accum_metrics = {}
-            
-            # --- ВАЛИДАЦИЯ ---
-            if (global_batch_idx + 1) % VAL_EVERY_STEPS == 0:
-                print(f"\n--- Валидация (Шаг {global_batch_idx+1}) ---")
-                distiller.eval()
-                val_loss_sum = 0.0
-                val_mse_sum = 0.0
-                val_cos_sum = 0.0
-                val_kl_sum = 0.0
-                val_layers_sums = {}
-                val_steps = 0
-                max_val_steps = VAL_MAX_SAMPLES // BATCH_SIZE
-                
-                with torch.no_grad():
-                    for v_step, v_batch in enumerate(val_loader):
-                        if v_step >= max_val_steps: break
-                        v_input_ids = v_batch['input_ids'].to(distiller.student_device).to(torch.long)
-                        v_mask = v_batch['attention_mask'].to(distiller.student_device)
+                # 4. Шаг оптимизатора
+                if (global_batch_idx + 1) % GRAD_ACCUM_STEPS == 0:
+                    grad_norm = torch.nn.utils.clip_grad_norm_(distiller.parameters(), 1.0)
+                    
+                    if XLA_AVAILABLE:
+                        xm.optimizer_step(optimizer)
+                    else:
+                        optimizer.step()
                         
-                        with torch.amp.autocast('cuda'):
+                    scheduler.step()
+                    optimizer.zero_grad()
+                    
+                    avg_loss = accum_loss
+                    avg_mse = accum_mse
+                    avg_kl = accum_kl
+                    current_lr = scheduler.get_last_lr()[0]
+                    
+                    progress_bar.set_postfix({"loss": f"{avg_loss:.4f}", "kl": f"{avg_kl:.6f}", "gn": f"{grad_norm:.2f}"})
+                    
+                    if wandb.run: 
+                        log_dict = {
+                            "train/loss": avg_loss, 
+                            "train/mse": avg_mse,
+                            "train/cosine": accum_cosine,
+                            "train/kl": avg_kl,
+                            "tech/beta": current_beta,
+                            "tech/grad_norm": grad_norm.item() if torch.is_tensor(grad_norm) else grad_norm,
+                            "tech/step": global_batch_idx,
+                            "tech/lr": current_lr,
+                            "tech/scaler": scaler.get_scale()
+                        }
+                        for k, v in accum_metrics.items(): log_dict[f"train/layers/{k}"] = v
+                        wandb.log(log_dict)
+                    
+                    accum_loss = 0.0; accum_mse = 0.0; accum_cosine = 0.0; accum_kl = 0.0; accum_metrics = {}
+                
+                # --- ВАЛИДАЦИЯ ---
+                if (global_batch_idx + 1) % VAL_EVERY_STEPS == 0:
+                    print(f"\n--- Валидация (Шаг {global_batch_idx+1}) ---")
+                    distiller.eval()
+                    val_loss_sum = 0.0
+                    val_mse_sum = 0.0
+                    val_cos_sum = 0.0
+                    val_kl_sum = 0.0
+                    val_layers_sums = {}
+                    val_steps = 0
+                    max_val_steps = VAL_MAX_SAMPLES // BATCH_SIZE
+                    
+                    with torch.no_grad():
+                        for v_step, v_batch in enumerate(val_loader):
+                            if v_step >= max_val_steps: break
+                            v_input_ids = v_batch['input_ids'].to(distiller.student_device).to(torch.long)
+                            v_mask = v_batch['attention_mask'].to(distiller.student_device)
+                            
+                            # Прямой проход для валидации (модели уже в bfloat16)
                             v_st, v_tgt, v_mu, v_logvar = distiller(v_input_ids, v_mask)
                             v_loss_msk = v_mask.to(distiller.student_device)
                             # Для валидации используем текущую beta
@@ -495,127 +504,132 @@ for epoch in range(offset_epoch, EPOCHS):
                                 attention_mask=v_loss_msk, 
                                 mu=v_mu, logvar=v_logvar, beta=current_beta
                             )
-                        
-                        val_loss_sum += v_loss.item()
-                        val_mse_sum += v_metrics.get("mse", 0.0)
-                        val_cos_sum += v_metrics.get("cosine", 0.0)
-                        val_kl_sum += v_metrics.get("kl", 0.0)
-                        
-                        for k, v in v_metrics.items():
-                            if k.startswith("l") and ("_mse" in k or "_cos" in k):
-                                val_layers_sums[k] = val_layers_sums.get(k, 0.0) + v
-                        val_steps += 1
-                
-                avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
-                avg_val_mse = val_mse_sum / val_steps if val_steps > 0 else 0
-                avg_val_cos = val_cos_sum / val_steps if val_steps > 0 else 0
-                avg_val_kl = val_kl_sum / val_steps if val_steps > 0 else 0
-                
-                print(f"[{global_batch_idx+1}] Validation - Loss: {avg_val_loss:.4f}, MSE: {avg_val_mse:.4f}, Cosine: {avg_val_cos:.4f}, KL: {avg_val_kl:.6f}")
-                
-                if wandb.run:
-                    val_log = {
-                        "val/loss": avg_val_loss, 
-                        "val/mse": avg_val_mse,
-                        "val/cosine": avg_val_cos,
-                        "val/kl": avg_val_kl,
-                        "step": global_batch_idx
-                    }
-                    for k, v in val_layers_sums.items():
-                        val_log[f"val/layers/{k}"] = v / val_steps
-                    wandb.log(val_log)
-                
-                # --- СОХРАНЕНИЕ ЛУЧШЕЙ МОДЕЛИ ---
-                if avg_val_loss < best_val_loss:
-                    best_val_loss = avg_val_loss
-                    print(f"[SAVING BEST] New best val_loss: {best_val_loss:.4f}. Saving BEST_MODEL...")
-                    ckpt_dict = {
-                        'epoch': epoch,
-                        'step': global_batch_idx,
-                        'model_state_dict': distiller.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'scaler_state_dict': scaler.state_dict(),
-                        'scheduler_state_dict': scheduler.state_dict(),
-                        'best_val_loss': best_val_loss,
-                        'current_beta': current_beta
-                    }
-                    tracker.save_checkpoint(ckpt_dict, name='BEST_MODEL')
-                
-                distiller.train()
+                            
+                            val_loss_sum += v_loss.item()
+                            val_mse_sum += v_metrics.get("mse", 0.0)
+                            val_cos_sum += v_metrics.get("cosine", 0.0)
+                            val_kl_sum += v_metrics.get("kl", 0.0)
+                            
+                            for k, v in v_metrics.items():
+                                if k.startswith("l") and ("_mse" in k or "_cos" in k):
+                                    val_layers_sums[k] = val_layers_sums.get(k, 0.0) + v
+                            val_steps += 1
+                    
+                    avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
+                    avg_val_mse = val_mse_sum / val_steps if val_steps > 0 else 0
+                    avg_val_cos = val_cos_sum / val_steps if val_steps > 0 else 0
+                    avg_val_kl = val_kl_sum / val_steps if val_steps > 0 else 0
+                    
+                    print(f"[{global_batch_idx+1}] Validation - Loss: {avg_val_loss:.4f}, MSE: {avg_val_mse:.4f}, Cosine: {avg_val_cos:.4f}, KL: {avg_val_kl:.6f}")
+                    
+                    if wandb.run:
+                        val_log = {
+                            "val/loss": avg_val_loss, 
+                            "val/mse": avg_val_mse,
+                            "val/cosine": avg_val_cos,
+                            "val/kl": avg_val_kl,
+                            "step": global_batch_idx
+                        }
+                        for k, v in val_layers_sums.items():
+                            val_log[f"val/layers/{k}"] = v / val_steps
+                        wandb.log(val_log)
+                    
+                    # --- СОХРАНЕНИЕ ЛУЧШЕЙ МОДЕЛИ ---
+                    if avg_val_loss < best_val_loss:
+                        best_val_loss = avg_val_loss
+                        print(f"[SAVING BEST] New best val_loss: {best_val_loss:.4f}. Saving BEST_MODEL...")
+                        ckpt_dict = {
+                            'epoch': epoch,
+                            'step': global_batch_idx,
+                            'model_state_dict': distiller.state_dict(),
+                            'optimizer_state_dict': optimizer.state_dict(),
+                            'scheduler_state_dict': scheduler.state_dict(),
+                            'best_val_loss': best_val_loss,
+                            'current_beta': current_beta
+                        }
+                        # На TPU сохраняем только с главного процесса
+                        if not XLA_AVAILABLE or xm.is_master_ordinal():
+                            tracker.save_checkpoint(ckpt_dict, name='BEST_MODEL')
+                    
+                    distiller.train()
 
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                print(f"\n[OOM] Step {global_batch_idx}: Cleaning cache...")
-                for p in distiller.parameters():
-                    if p.grad is not None: p.grad = None
-                torch.cuda.empty_cache()
-                import gc
-                gc.collect()
-                optimizer.zero_grad()
-                accum_loss = 0.0; accum_mse = 0.0; accum_cosine = 0.0; accum_kl = 0.0; accum_metrics = {}
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    print(f"\n[OOM] Step {global_batch_idx}: Cleaning cache...")
+                    for p in distiller.parameters():
+                        if p.grad is not None: p.grad = None
+                    torch.cuda.empty_cache()
+                    import gc
+                    gc.collect()
+                    optimizer.zero_grad()
+                    accum_loss = 0.0; accum_mse = 0.0; accum_cosine = 0.0; accum_kl = 0.0; accum_metrics = {}
+                    continue
+                else: 
+                    print(f"Ошибка RuntimeError: {e}")
+                    continue
+            except Exception as e: 
+                print(f"Критическая ошибка: {e}")
                 continue
-            else: 
-                print(f"Ошибка RuntimeError: {e}")
-                continue
-        except Exception as e: 
-            print(f"Критическая ошибка: {e}")
-            continue
 
-    # Сохранение после каждой эпохи
-    ckpt_dict = {
-        'epoch': epoch,
-        'step': global_step - 1,
-        'model_state_dict': distiller.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scaler_state_dict': scaler.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-        'best_val_loss': best_val_loss,
-        'current_beta': current_beta if 'current_beta' in locals() else None 
-    }
-    tracker.save_checkpoint(ckpt_dict, name=f"phase1_{STAGE}_epoch_{epoch}")
+        # Сохранение после каждой эпохи
+        ckpt_dict = {
+            'epoch': epoch,
+            'step': global_step - 1,
+            'model_state_dict': distiller.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'best_val_loss': best_val_loss,
+            'current_beta': current_beta if 'current_beta' in locals() else None 
+        }
+        if not XLA_AVAILABLE or xm.is_master_ordinal():
+            tracker.save_checkpoint(ckpt_dict, name=f"phase1_{STAGE}_epoch_{epoch}")
+            if XLA_AVAILABLE:
+                xm.rendezvous('epoch_save')
 
-print("Обучение завершено!")
+    print("Обучение завершено!")
 
 
 # %%
 # %% [markdown]
-# ### Emergency Resume Checkpoint
-# Эта ячейка сохраняет полное состояние для бесшовного продолжения обучения.
+#     # ### Emergency Resume Checkpoint
+#     # Эта ячейка сохраняет полное состояние для бесшовного продолжения обучения.
+
+    # %%
+    import torch
+    import os
+
+    # Путь для сохранения (корень рабочей директории Kaggle)
+    # Рекомендую именовать с указанием текущего шага
+    resume_save_path = f"/kaggle/working/RESUME_PHASE1_STEP_{global_step}.pt"
+
+    print(f"Подготовка к сохранению полного чекпоинта на шаге {global_step}...")
+
+    try:
+        checkpoint = {
+            'epoch': epoch,
+            'step': global_step - 1,
+            'model_state_dict': distiller.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'best_val_loss': best_val_loss,
+            # Сохраняем и доп. параметры, если есть
+            'current_beta': current_beta if 'current_beta' in locals() else None 
+        }
+        
+        print(f"УСПЕШНО СОХРАНЕНО: {resume_save_path}")
+        print(f"Размер файла: {os.path.getsize(resume_save_path) / 1024 / 1024:.2f} MB")
+        print("Теперь можно смело скачивать этот файл или фиксировать версию датасета.")
+        print("="*50)
+        
+    except Exception as e:
+        print(f"Ошибка при сохранении: {e}")
+
 
 # %%
-import torch
-import os
-
-# Путь для сохранения (корень рабочей директории Kaggle)
-# Рекомендую именовать с указанием текущего шага
-resume_save_path = f"/kaggle/working/RESUME_PHASE1_STEP_{global_step}.pt"
-
-print(f"Подготовка к сохранению полного чекпоинта на шаге {global_step}...")
-
-try:
-    checkpoint = {
-        'epoch': epoch,
-        'step': global_step - 1,
-        'model_state_dict': distiller.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scaler_state_dict': scaler.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict(),
-        'best_val_loss': best_val_loss,
-        # Сохраняем и доп. параметры, если есть
-        'current_beta': current_beta if 'current_beta' in locals() else None 
-    }
-    
-    torch.save(checkpoint, resume_save_path)
-    
-    # Также создаем "удобную" копию без номера шага для скриптов
-    # torch.save(checkpoint, "/kaggle/working/RESUME_LATEST.pt")
-    
-    print("="*50)
-    print(f"УСПЕШНО СОХРАНЕНО: {resume_save_path}")
-    print(f"Размер файла: {os.path.getsize(resume_save_path) / 1024 / 1024:.2f} MB")
-    print("Теперь можно смело скачивать этот файл или фиксировать версию датасета.")
-    print("="*50)
-    
-except Exception as e:
-    print(f"Ошибка при сохранении: {e}")
-
+if __name__ == "__main__":
+    if XLA_AVAILABLE:
+        print("Запуск через xmp.spawn для TPU...")
+        xmp.spawn(_mp_fn, args=({},), nprocs=8, start_method="fork")
+    else:
+        print("Запуск в стандартном режиме (1 процесс)...")
+        _mp_fn(0, {})
