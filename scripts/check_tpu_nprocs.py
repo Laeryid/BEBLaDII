@@ -3,12 +3,20 @@ import sys
 
 def check_tpu():
     print("--- Диагностика TPU / XLA ---")
-    if "PJRT_DEVICE" not in os.environ:
-        os.environ["PJRT_DEVICE"] = "TPU"
-        print("[INFO] PJRT_DEVICE не был задан, устанавливаем 'TPU'...")
-        
+    # Пытаемся инициализировать TPU, если не вышло - откатываемся на CPU
     try:
+        if "PJRT_DEVICE" not in os.environ:
+            os.environ["PJRT_DEVICE"] = "TPU"
         import torch_xla.core.xla_model as xm
+        devices = xm.get_xla_supported_devices()
+        print(f"[SUCCESS] PJRT_DEVICE={os.environ['PJRT_DEVICE']} инициализирован.")
+    except Exception as e:
+        print(f"[WARN] Инициализация TPU не удалась: {e}")
+        print("[INFO] Переключаемся на PJRT_DEVICE=CPU для работы через XLA на процессоре.")
+        os.environ["PJRT_DEVICE"] = "CPU"
+        import torch_xla.core.xla_model as xm
+
+    try:
         import torch_xla.runtime as xr
     except ImportError:
         print("ОШИБКА: torch_xla не установлен в текущем окружении.")

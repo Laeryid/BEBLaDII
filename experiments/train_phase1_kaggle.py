@@ -745,16 +745,27 @@ def _mp_fn(index, flags):
 
 # %%
 if __name__ == "__main__":
-    if XLA_AVAILABLE:
-        # Принудительная установка PJRT до первого обращения к XLA
-        if "PJRT_DEVICE" not in os.environ:
-            os.environ["PJRT_DEVICE"] = "TPU"
-            print(f"--- [XLA] PJRT_DEVICE установлен в TPU ---")
+    def check_tpu():
+        print("--- Диагностика TPU / XLA ---")
+        # Пытаемся инициализировать TPU, если не вышло - откатываемся на CPU
+        try:
+            if "PJRT_DEVICE" not in os.environ:
+                os.environ["PJRT_DEVICE"] = "TPU"
+            import torch_xla.core.xla_model as xm
+            devices = xm.get_xla_supported_devices()
+            print(f"[SUCCESS] PJRT_DEVICE={os.environ['PJRT_DEVICE']} инициализирован.")
+        except Exception as e:
+            print(f"[WARN] Инициализация TPU не удалась: {e}")
+            print("[INFO] Переключаемся на PJRT_DEVICE=CPU для работы через XLA на процессоре.")
+            os.environ["PJRT_DEVICE"] = "CPU"
+            import torch_xla.core.xla_model as xm
+            devices = xm.get_xla_supported_devices()
+        return devices
 
-        # Авто-определение количества ядер
-        import torch_xla.core.xla_model as xm
-        devices = xm.get_xla_supported_devices()
+    if XLA_AVAILABLE:
+        devices = check_tpu()
         nprocs = len(devices)
+        print(f"--- [XLA] PJRT_DEVICE: {os.environ.get('PJRT_DEVICE')}, nprocs: {nprocs} ---")
         
         print(f"Запуск через xmp.spawn ({nprocs} ядер, start_method='spawn')...")
         xmp.spawn(_mp_fn, args=({},), nprocs=nprocs, start_method="spawn")
