@@ -347,17 +347,28 @@ def _mp_fn(index, flags):
 
     # Определение путей для базы студента
     local_prebuilt_path = os.path.abspath(os.path.join("storage/prebuilt/latentBERT", VERSION))
+    alternative_path = os.path.abspath("storage/prebuilt/kaggle_upload_1_4")
     
-    # Приоритет 1: Локальный пребилт с уже примененным DUS (40 слоев)
-    has_prebuilt = os.path.exists(local_prebuilt_path) and any(
-        os.path.exists(os.path.join(local_prebuilt_path, f)) for f in ["model.safetensors", "pytorch_model.bin"]
-    )
+    # Приоритет 1: Локальный пребилт (40 слоев)
+    student_base_id = None
+    for sp in [local_prebuilt_path, alternative_path]:
+        if os.path.exists(sp):
+            # Проверяем наличие весов (включая найденный чекпоинт)
+            files = ["model.safetensors", "pytorch_model.bin", "RESUME_PHASE1_STEP_5400.pt"]
+            if any(os.path.exists(os.path.join(sp, f)) for f in files):
+                # Если нашли наш тяжелый файл, но нет стандартного имени - создаем симлинк для transformers
+                if os.path.exists(os.path.join(sp, "RESUME_PHASE1_STEP_5400.pt")) and not any(os.path.exists(os.path.join(sp, f)) for f in ["model.safetensors", "pytorch_model.bin"]):
+                    print(f"--- [INIT] Создание симлинка для весов в {sp} ---")
+                    try:
+                        os.symlink("RESUME_PHASE1_STEP_5400.pt", os.path.join(sp, "pytorch_model.bin"))
+                    except Exception as e: print(f"Ошибка симлинка: {e}")
+                
+                student_base_id = sp
+                print(f"--- [INIT] Обнаружен пребилт: {student_base_id} ---")
+                print(f"--- [INIT] DUS будет пропущен. ---")
+                break
 
-    if has_prebuilt:
-        student_base_id = local_prebuilt_path
-        print(f"--- [INIT] Обнаружен пребилт: {student_base_id} ---")
-        print(f"--- [INIT] DUS будет пропущен, загрузка 40 слоев напрямую. ---")
-    else:
+    if not student_base_id:
         # Приоритет 2: Базовая модель из Hub (будет применен DUS)
         student_base_id = BASE_MODEL_NAME
         print(f"--- [INIT] Пребилт не найден. Используется база из Hub: {student_base_id} (DUS будет применен) ---")
@@ -735,8 +746,18 @@ def _mp_fn(index, flags):
 # %%
 if __name__ == "__main__":
     if XLA_AVAILABLE:
-        print("Запуск через xmp.spawn для TPU (start_method='spawn')...")
-        xmp.spawn(_mp_fn, args=({},), nprocs=8, start_method="spawn")
+        # Авто-определение количества ядер
+        import torch_xla.core.xla_model as xm
+        devices = xm.get_xla_supported_devices()
+        nprocs = len(devices)
+        
+        # Принудительная установка PJRT на TPU, если ядра доступны
+        if nprocs > 0:
+            os.environ["PJRT_DEVICE"] = "TPU"
+            print(f"--- [XLA] PJRT_DEVICE установлен в TPU ---")
+        
+        print(f"Запуск через xmp.spawn ({nprocs} ядер, start_method='spawn')...")
+        xmp.spawn(_mp_fn, args=({},), nprocs=nprocs, start_method="spawn")
     else:
         print("Запуск в стандартном режиме (1 процесс)...")
         _mp_fn(0, {})
