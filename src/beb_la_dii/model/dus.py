@@ -1,5 +1,5 @@
 import torch
-from transformers import AutoConfig, AutoModelForMaskedLM
+from transformers import AutoConfig, AutoModel
 import copy
 from .base import BEComponent
 
@@ -63,20 +63,21 @@ def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40)
     Creates latentBERT via Depth Up-Scaling (DUS).
     Always builds the skeleton from scratch from ModernBERT-large.
     """
+    import torch
     print(f"Loading model architecture from {model_id}...")
     
     # Пытаемся загрузить конфиг. Если это папка, он загрузится локально.
     config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-    base_model = AutoModelForMaskedLM.from_pretrained(model_id, trust_remote_code=True)
+    base_model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
     
     # If model already has target_layers (e.g. saved skeleton), skip DUS
-    current_layers = len(base_model.model.layers)
+    current_layers = len(base_model.layers)
     if current_layers == target_layers:
         print(f"Model already has {target_layers} layers. Skipping DUS logic.")
         base_model.gradient_checkpointing_enable()
         return base_model
 
-    layers = base_model.model.layers
+    layers = base_model.layers
     num_base_layers = len(layers)
     
     # Block 1: layers 0-19 (first 20)
@@ -88,7 +89,7 @@ def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40)
     print(f"Created {len(new_layers)} layers from {num_base_layers} base layers (DUS applied).")
     
     # Inject layers
-    base_model.model.layers = new_layers
+    base_model.layers = new_layers
     base_model.config.num_hidden_layers = target_layers
     
     # Enable Gradient Checkpointing for memory efficiency
