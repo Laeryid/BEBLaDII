@@ -3,6 +3,11 @@ import torch._dynamo
 
 # Отключаем Dynamo/Inductor, так как он конфликтует с XLA (особенно в ModernBERT)
 torch._dynamo.disable()
+torch._dynamo.config.suppress_errors = True
+torch._dynamo.config.disable = True
+
+# Устанавливаем ключ W&B напрямую
+os.environ["WANDB_API_KEY"] = "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"
 
 # 1. УСТАНОВКА ПЕРЕМЕННЫХ
 os.environ["PJRT_DEVICE"] = "TPU"
@@ -57,13 +62,22 @@ def train():
     train_loader = pl.MpDeviceLoader(train_loader, device)
 
     if rank == 0:
-        wandb.init(project="BEBLaDII", name="tpu-v6e-torchrun")
+        try:
+            wandb.init(project="BEBLaDII", name="tpu-v6e-torchrun")
+        except Exception as e:
+            print(f"--- [WANDB ERROR] Ошибка инициализации: {e} ---")
+            print("--- Переключение W&B в offline режим ---")
+            wandb.init(project="BEBLaDII", name="tpu-v6e-torchrun", mode="offline")
 
     # Обучение
     distiller.train()
     global_step = 0
     for epoch in range(1):
         progress_bar = tqdm(train_loader, disable=(rank != 0), desc=f"Epoch {epoch}")
+        
+        if rank == 0:
+            print("--- [RANK 0] Начинаем итерации. ПЕРВЫЙ ШАГ вызовет компиляцию XLA графа (это может занять 5-15 минут, подождите!)... ---")
+            
         for batch in progress_bar:
             optimizer.zero_grad()
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])

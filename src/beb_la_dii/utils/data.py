@@ -184,4 +184,35 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
         )
         dataset = train_ds if split == 'train' else val_ds
         
-    return DataLoader(dataset, batch_size=batch_size, shuffle=(split == 'train'), num_workers=1, pin_memory=True)
+    # Добавляем поддержку DistributedSampler для XLA
+    sampler = None
+    shuffle = (split == 'train')
+    
+    import torch.distributed as dist
+    try:
+        import torch_xla.core.xla_model as xm
+        is_xla = True
+    except ImportError:
+        is_xla = False
+
+    if is_xla and dist.is_initialized():
+        from torch.utils.data.distributed import DistributedSampler
+        # xm.xrt_world_size() or dist.get_world_size()
+        world_size = xm.xrt_world_size()
+        rank = xm.get_ordinal()
+        sampler = DistributedSampler(
+            dataset,
+            num_replicas=world_size,
+            rank=rank,
+            shuffle=shuffle
+        )
+        shuffle = False # Sampler handles shuffling
+
+    return DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=shuffle, 
+        sampler=sampler,
+        num_workers=0, # Устанавливаем 0, чтобы избежать зависаний (deadlocks) с parquet в дочерних процессах
+        pin_memory=False # Для XLA pin_memory не так важен
+    )
