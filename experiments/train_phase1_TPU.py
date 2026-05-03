@@ -42,9 +42,11 @@ def train():
         student_base_id="answerdotai/ModernBERT-large",
         version="v1.0", weights_map={}, device_map={"": device}, student_device=device
     )
-    # Отключаем градиентный чекпоинтинг для совместимости с XLA
-    if hasattr(distiller.student.model, 'gradient_checkpointing_disable'):
-        distiller.student.model.gradient_checkpointing_disable()
+    # Включаем градиентный чекпоинтинг для экономии памяти TPU (иначе OOM на seq_len=4096)
+    if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
+        distiller.student.model.gradient_checkpointing_enable()
+        if rank == 0:
+            print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН ---")
 
     # Загрузка последнего чекпоинта (если есть)
     if os.path.exists("latest_checkpoint.pt"):
@@ -79,12 +81,20 @@ def train():
             print("--- [RANK 0] Начинаем итерации. ПЕРВЫЙ ШАГ вызовет компиляцию XLA графа (это может занять 5-15 минут, подождите!)... ---")
             
         for batch in progress_bar:
+            if rank == 0 and global_step < 3: print(f"\n--- [RANK 0] Шаг {global_step+1}: Forward pass... ---")
             optimizer.zero_grad()
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
             loss, _ = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
+            
+            if rank == 0 and global_step < 3: print(f"--- [RANK 0] Шаг {global_step+1}: Backward pass... ---")
             loss.backward()
+            
+            if rank == 0 and global_step < 3: print(f"--- [RANK 0] Шаг {global_step+1}: Optimizer step (XLA Compile)... ---")
             xm.optimizer_step(optimizer)
             global_step += 1
+            
+            if rank == 0 and global_step <= 3: print(f"--- [RANK 0] Шаг {global_step} завершён! ---")
+            
             if rank == 0:
                 progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "step": global_step})
                 if global_step % 200 == 0:
