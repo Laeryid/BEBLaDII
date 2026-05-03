@@ -24,7 +24,7 @@
 
 # %%
 # 0. ПОЛУЧЕНИЕ И ОБНОВЛЕНИЕ ИСХОДНОГО КОДА
-import os, sys, shutil
+import os, sys, shutil, subprocess
 from pathlib import Path
 
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
@@ -32,18 +32,40 @@ os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 REPO_URL = "https://github.com/Laeryid/BEBLaDII"
 REPO_NAME = "BEBLaDII"
 
-os.chdir("/kaggle/working/")
+# Автоматическое определение рабочей директории
+if os.path.exists("/content"):
+    # Официальный облачный Colab
+    WORK_DIR = "/content"
+elif os.path.exists("/kaggle/working"):
+    # Kaggle
+    WORK_DIR = "/kaggle/working"
+else:
+    # Локальный рантайм или TPU VM (GCP)
+    # Используем текущую директорию, где запущен Jupyter
+    WORK_DIR = os.getcwd()
+
+print(f"Используется рабочая директория: {WORK_DIR}")
+os.makedirs(WORK_DIR, exist_ok=True)
+os.chdir(WORK_DIR)
+print(f"Рабочая директория установлена: {os.getcwd()}")
+
+# 1. Клонирование или обновление
+if os.path.basename(os.getcwd()) == REPO_NAME:
+    print(f"Мы уже внутри {REPO_NAME}. Возвращаемся на уровень выше для проверки...")
+    os.chdir("..")
 
 if not os.path.exists(REPO_NAME):
     print(f"Клонирование репозитория {REPO_URL}...")
-    # !git clone {REPO_URL}
+    subprocess.run(["git", "clone", REPO_URL], check=True)
 else:
-    print(f"Репозиторий {REPO_NAME} уже присутствует. Проверка обновлений...")
-    # !cd {REPO_NAME} && git pull
+    print(f"Репозиторий {REPO_NAME} найден. Обновляем...")
+    subprocess.run(["git", "-C", REPO_NAME, "pull"], check=True)
 
-if os.path.exists(REPO_NAME) and REPO_NAME not in os.getcwd():
-    os.chdir(REPO_NAME)
-    print(f"Рабочая директория: {os.getcwd()}")
+# 2. Переход в папку проекта и настройка путей
+os.chdir(os.path.join(os.getcwd(), REPO_NAME))
+if os.getcwd() not in sys.path:
+    sys.path.insert(0, os.getcwd())
+print(f"Текущая папка проекта: {os.getcwd()}")
 
 # %%
 # 1. УСТАНОВКА ЗАВИСИМОСТЕЙ И ПУТЕЙ
@@ -170,17 +192,16 @@ def smart_load_weights(model, path, strict=False):
 # --- PATH CONFIGURATION ---
 VERSION = "v1.0"
 
-# Пути к датасетам на Kaggle
+# Пути GCP GCS
+GCS_DATA_BUCKET = "gs://bebladii-datasets"
+GCS_WEIGHTS_BUCKET = "gs://bebladii-weigths"
+GCS_CHECKPOINT_BUCKET = "gs://bebladii-weigths" # Используем бакет весов для чекпоинтов
 
-KAGGLE_DATA_DATASET = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-data"
-KAGGLE_MODEL_DATASET = "/kaggle/input/datasets/bogdanbuliakov/bebladii-resources"
+# Пути для локальных ресурсов
+RESOURCES_PATH = "./storage"
+DATA_PATH = "./data"
 
-# Пути для обратной совместимости и локального запуска
-RESOURCES_PATH = KAGGLE_MODEL_DATASET if os.path.exists(KAGGLE_MODEL_DATASET) else "./storage"
-DATA_PATH = KAGGLE_DATA_DATASET if os.path.exists(KAGGLE_DATA_DATASET) else "."
-
-KAGGLE_TEACHER_MODEL = "/kaggle/input/models/deepseek-ai/deepseek-r1/transformers/deepseek-r1-distill-qwen-7b/2"
-TEACHER_NAME = KAGGLE_TEACHER_MODEL if os.path.exists(KAGGLE_TEACHER_MODEL) else "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+TEACHER_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
 
 # Hyperparameters
 BASE_MODEL_NAME = "answerdotai/ModernBERT-large"
@@ -194,15 +215,60 @@ LEARNING_RATE = 5e-5
 EPOCHS = 1
 WARMUP_STEPS = 50
 
+# Spot Instance Auto-Save
+SPOT_SAVE_EVERY = 200
+
 # VAE & Validation Settings
 BETA_MAX = 0.0001
 best_val_loss = float('inf')
 
+# --- GCS Sync & Auto-Resume ---
+import subprocess, re
 RESUME_RUN = False
-RESUME_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-snapshot-4000/RESUME_PHASE1_STEP_4000.pt"
+RESUME_PATH = None
+CUSTOM_STUDENT_WEIGHTS_PATH = None
 
-CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-snapshot-4000/RESUME_PHASE1_STEP_4000.pt"
-# CUSTOM_STUDENT_WEIGHTS_PATH = "/kaggle/working/BEBLaDII/storage/experiments/20260418_155301_reasoning/checkpoints/BEST_MODEL.pt"
+def sync_gcs_resources():
+    """Синхронизация датасетов и весов перед стартом"""
+    if not XLA_AVAILABLE or xm.is_master_ordinal():
+        print(f"[GCS] Синхронизация датасетов из {GCS_DATA_BUCKET}...")
+        os.makedirs(DATA_PATH, exist_ok=True)
+        subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_DATA_BUCKET}/data", DATA_PATH], check=True)
+        
+        print(f"[GCS] Синхронизация весов из {GCS_WEIGHTS_BUCKET}...")
+        os.makedirs(RESOURCES_PATH, exist_ok=True)
+        subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_WEIGHTS_BUCKET}/components", f"{RESOURCES_PATH}/components"], check=True)
+        subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_WEIGHTS_BUCKET}/prebuilt", f"{RESOURCES_PATH}/prebuilt"], check=True)
+
+try:
+    sync_gcs_resources()
+    
+    print(f"[GCS] Поиск чекпоинтов в {GCS_CHECKPOINT_BUCKET}/checkpoints/")
+    result = subprocess.run(["gsutil", "ls", f"{GCS_CHECKPOINT_BUCKET}/checkpoints/RESUME_PHASE1_STEP_*.pt"], capture_output=True, text=True)
+    if result.returncode == 0 and result.stdout.strip():
+        files = result.stdout.strip().split('\n')
+        latest_step = -1
+        latest_gs_path = None
+        for f in files:
+            match = re.search(r"STEP_(\d+)\.pt", f)
+            if match:
+                step = int(match.group(1))
+                if step > latest_step:
+                    latest_step = step
+                    latest_gs_path = f
+        
+        if latest_gs_path:
+            local_ckpt = os.path.basename(latest_gs_path)
+            print(f"[GCS] Скачивание последнего чекпоинта: {latest_gs_path} -> {local_ckpt}")
+            subprocess.run(["gsutil", "cp", latest_gs_path, local_ckpt], check=True)
+            RESUME_RUN = True
+            RESUME_PATH = local_ckpt
+            CUSTOM_STUDENT_WEIGHTS_PATH = local_ckpt
+except Exception as e:
+    print(f"[GCS] Ошибка при синхронизации или авто-восстановлении: {e}")
+
+# Для работы с GCS на TPU VM убедитесь, что выполнена команда:
+# gcloud auth application-default login
 
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
@@ -277,13 +343,9 @@ def _mp_fn(index, flags):
     print(f"Инициализация на {device}...")
 
     # Определение путей
-    if os.path.exists(KAGGLE_MODEL_DATASET):
-        student_base_id = os.path.join(KAGGLE_MODEL_DATASET, "prebuilt/latentBERT", VERSION)
-        components_root = os.path.join(KAGGLE_MODEL_DATASET, "components")
-    else:
-        student_base_id = os.path.join("storage/prebuilt/latentBERT", VERSION)
-        if not os.path.exists(student_base_id): student_base_id = BASE_MODEL_NAME
-        components_root = "storage/components"
+    student_base_id = os.path.join("storage/prebuilt/latentBERT", VERSION)
+    if not os.path.exists(student_base_id): student_base_id = BASE_MODEL_NAME
+    components_root = "storage/components"
 
     weights_map = build_weights_map(components_root=components_root)
     assembler = ModelAssembler()
@@ -321,11 +383,13 @@ def _mp_fn(index, flags):
 
     # %%
     # ПОДГОТОВКА ОБУЧЕНИЯ
-    from kaggle_secrets import UserSecretsClient
+    # Окружение готово
 
     tokenizer = get_tokenizer()
     train_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='train')
     val_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='val')
+    
+    # Теперь distiller определен и доступен
     optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=LEARNING_RATE)
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
     criterion = DistillationLoss(cos_weight=20.0)
@@ -477,6 +541,29 @@ def _mp_fn(index, flags):
                     
                     accum_loss = 0.0; accum_mse = 0.0; accum_cosine = 0.0; accum_kl = 0.0; accum_metrics = {}
                 
+                # --- SPOT SAVE ---
+                if (global_batch_idx + 1) % SPOT_SAVE_EVERY == 0:
+                    print(f"\n[SPOT SAVE] Сохранение промежуточного чекпоинта на шаге {global_batch_idx+1}...")
+                    ckpt_dict = {
+                        'epoch': epoch,
+                        'step': global_batch_idx,
+                        'model_state_dict': distiller.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'best_val_loss': best_val_loss,
+                        'current_beta': current_beta
+                    }
+                    if not XLA_AVAILABLE or xm.is_master_ordinal():
+                        ckpt_name = f"RESUME_PHASE1_STEP_{global_batch_idx+1}"
+                        tracker.save_checkpoint(ckpt_dict, name=ckpt_name)
+                        local_ckpt = os.path.join(tracker.checkpoint_dir, f"{ckpt_name}.pt")
+                        gcs_ckpt = f"{GCS_CHECKPOINT_BUCKET}/checkpoints/{ckpt_name}.pt"
+                        subprocess.run(["gsutil", "cp", local_ckpt, gcs_ckpt])
+                        prev_ckpt_name = f"RESUME_PHASE1_STEP_{global_batch_idx+1 - SPOT_SAVE_EVERY}"
+                        subprocess.run(["gsutil", "rm", f"{GCS_CHECKPOINT_BUCKET}/checkpoints/{prev_ckpt_name}.pt"], stderr=subprocess.DEVNULL)
+                    if XLA_AVAILABLE:
+                        xm.rendezvous('spot_save')
+                
                 # --- ВАЛИДАЦИЯ ---
                 if (global_batch_idx + 1) % VAL_EVERY_STEPS == 0:
                     print(f"\n--- Валидация (Шаг {global_batch_idx+1}) ---")
@@ -550,6 +637,7 @@ def _mp_fn(index, flags):
                         # На TPU сохраняем только с главного процесса
                         if not XLA_AVAILABLE or xm.is_master_ordinal():
                             tracker.save_checkpoint(ckpt_dict, name='BEST_MODEL')
+                            subprocess.run(["gsutil", "cp", os.path.join(tracker.checkpoint_dir, "BEST_MODEL.pt"), f"{GCS_CHECKPOINT_BUCKET}/checkpoints/BEST_MODEL.pt"])
                     
                     distiller.train()
 
@@ -582,7 +670,9 @@ def _mp_fn(index, flags):
             'current_beta': current_beta if 'current_beta' in locals() else None 
         }
         if not XLA_AVAILABLE or xm.is_master_ordinal():
-            tracker.save_checkpoint(ckpt_dict, name=f"phase1_{STAGE}_epoch_{epoch}")
+            ckpt_name = f"phase1_{STAGE}_epoch_{epoch}"
+            tracker.save_checkpoint(ckpt_dict, name=ckpt_name)
+            subprocess.run(["gsutil", "cp", os.path.join(tracker.checkpoint_dir, f"{ckpt_name}.pt"), f"{GCS_CHECKPOINT_BUCKET}/checkpoints/{ckpt_name}.pt"])
             if XLA_AVAILABLE:
                 xm.rendezvous('epoch_save')
 
@@ -598,9 +688,9 @@ def _mp_fn(index, flags):
     import torch
     import os
 
-    # Путь для сохранения (корень рабочей директории Kaggle)
-    # Рекомендую именовать с указанием текущего шага
-    resume_save_path = f"/kaggle/working/RESUME_PHASE1_STEP_{global_step}.pt"
+    # Путь для сохранения
+    # Используем WORK_DIR, определенный в начале скрипта
+    resume_save_path = os.path.join(WORK_DIR, f"RESUME_PHASE1_STEP_{global_step}.pt")
 
     print(f"Подготовка к сохранению полного чекпоинта на шаге {global_step}...")
 
