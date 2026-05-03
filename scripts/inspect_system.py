@@ -17,7 +17,8 @@ def inspect():
     print(f"Python:   {platform.python_version()}")
     
     print("\n[CPU & Memory]")
-    print(f"CPU Model: {run('lscpu | grep \"Model name\" | cut -d \":\" -f 2')}")
+    cpu_model = run("lscpu | grep 'Model name' | cut -d ':' -f 2")
+    print(f"CPU Model: {cpu_model}")
     print(f"Memory:\n{run('free -h')}")
     
     print("\n[TPU Hardware Check]")
