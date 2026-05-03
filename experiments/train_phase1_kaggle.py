@@ -42,7 +42,7 @@ elif os.path.exists("/kaggle/working"):
 else:
     # Локальный рантайм или TPU VM (GCP)
     # Используем текущую директорию, где запущен Jupyter
-    WORK_DIR = os.getcwd()
+    WORK_DIR = "/tmp"
 
 print(f"Используется рабочая директория: {WORK_DIR}")
 os.makedirs(WORK_DIR, exist_ok=True)
