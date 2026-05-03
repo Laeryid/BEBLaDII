@@ -18,14 +18,21 @@ def verify():
         print("[ERROR] torch_xla is not installed!")
         sys.exit(1)
     
-    # 2. Check for physical devices
-    print("\n[1/3] Checking /dev/accel* devices...")
+    # 2. Check for physical devices (Accel or VFIO for v6e)
+    print("\n[1/3] Checking physical devices...")
     import subprocess
-    try:
-        accels = subprocess.check_output("ls -l /dev/accel*", shell=True).decode()
-        print(f"Found devices:\n{accels.strip()}")
-    except:
-        print("[FAIL] No /dev/accel* devices found. TPU is not accessible.")
+    found_devs = False
+    for path in ["/dev/accel*", "/dev/vfio/[0-9]*"]:
+        try:
+            devs = subprocess.check_output(f"ls -l {path} 2>/dev/null", shell=True).decode()
+            if devs.strip():
+                print(f"Found devices at {path}:\n{devs.strip()}")
+                found_devs = True
+        except:
+            continue
+    
+    if not found_devs:
+        print("[FAIL] No TPU devices found (checked /dev/accel and /dev/vfio).")
         return
 
     # 3. Check XLA supported devices
