@@ -345,19 +345,22 @@ def _mp_fn(index, flags):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Инициализация на {device}...")
 
-    # Определение путей
-    local_base_path = os.path.join("storage/prebuilt/latentBERT", VERSION)
-    # Проверяем наличие файла весов (bin или safetensors)
-    has_weights = os.path.exists(local_base_path) and any(
-        os.path.exists(os.path.join(local_base_path, f)) for f in ["pytorch_model.bin", "model.safetensors"]
+    # Определение путей для базы студента
+    local_prebuilt_path = os.path.abspath(os.path.join("storage/prebuilt/latentBERT", VERSION))
+    
+    # Приоритет 1: Локальный пребилт с уже примененным DUS (40 слоев)
+    has_prebuilt = os.path.exists(local_prebuilt_path) and any(
+        os.path.exists(os.path.join(local_prebuilt_path, f)) for f in ["model.safetensors", "pytorch_model.bin"]
     )
 
-    if has_weights:
-        student_base_id = local_base_path
-        print(f"Используется локальная база: {student_base_id}")
+    if has_prebuilt:
+        student_base_id = local_prebuilt_path
+        print(f"--- [INIT] Обнаружен пребилт: {student_base_id} ---")
+        print(f"--- [INIT] DUS будет пропущен, загрузка 40 слоев напрямую. ---")
     else:
+        # Приоритет 2: Базовая модель из Hub (будет применен DUS)
         student_base_id = BASE_MODEL_NAME
-        print(f"Локальная база не найдена или не полна. Используется Hub: {student_base_id}")
+        print(f"--- [INIT] Пребилт не найден. Используется база из Hub: {student_base_id} (DUS будет применен) ---")
     
     components_root = "storage/components"
 
@@ -732,8 +735,8 @@ def _mp_fn(index, flags):
 # %%
 if __name__ == "__main__":
     if XLA_AVAILABLE:
-        print("Запуск через xmp.spawn для TPU...")
-        xmp.spawn(_mp_fn, args=({},), nprocs=8, start_method="fork")
+        print("Запуск через xmp.spawn для TPU (start_method='spawn')...")
+        xmp.spawn(_mp_fn, args=({},), nprocs=8, start_method="spawn")
     else:
         print("Запуск в стандартном режиме (1 процесс)...")
         _mp_fn(0, {})
