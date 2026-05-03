@@ -61,15 +61,15 @@ class DistillationLoss(nn.Module):
                 cos_total += weight * cos_l
                 
                 # Послойная детализация
-                metrics[f"l{layer_idx}_mse"] = mse_l.item()
-                metrics[f"l{layer_idx}_cos"] = cos_l.item()
+                metrics[f"l{layer_idx}_mse"] = mse_l.detach()
+                metrics[f"l{layer_idx}_cos"] = cos_l.detach()
                 
                 # Комбинированный лосс для слоя с учетом балансировки
                 layer_l = self.mse_weight * mse_l + self.cos_weight * cos_l
                 total_loss += weight * layer_l
         
-        metrics["mse"] = mse_total.item() if torch.is_tensor(mse_total) else mse_total
-        metrics["cosine"] = cos_total.item() if torch.is_tensor(cos_total) else cos_total
+        metrics["mse"] = mse_total.detach() if torch.is_tensor(mse_total) else mse_total
+        metrics["cosine"] = cos_total.detach() if torch.is_tensor(cos_total) else cos_total
         
         # Вычисление KL-Divergence, если переданы параметры головки
         if mu is not None and logvar is not None:
@@ -80,7 +80,7 @@ class DistillationLoss(nn.Module):
                 kl_loss = kl_loss_raw.mean()
                 
             total_loss = total_loss + beta * kl_loss
-            metrics["kl"] = kl_loss.item()
+            metrics["kl"] = kl_loss.detach()
                 
         return total_loss, metrics
 

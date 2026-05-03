@@ -21,6 +21,15 @@ import torch_xla.distributed.parallel_loader as pl
 import subprocess, re
 from tqdm.auto import tqdm
 
+# ХАК: monkey-patch torch.xla для починки gradient checkpointing
+if not hasattr(torch, "xla"):
+    class DummyXLA:
+        @staticmethod
+        def get_rng_state(*args, **kwargs): return torch.tensor(0)
+        @staticmethod
+        def set_rng_state(*args, **kwargs): pass
+    torch.xla = DummyXLA()
+
 # Добавляем путь к src
 sys.path.append(os.getcwd())
 
@@ -63,8 +72,9 @@ def train():
     optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=5e-5)
     criterion = DistillationLoss(cos_weight=20.0)
 
-    # Данные
-    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+    # Данные (УМЕНЬШЕН BATCH SIZE ДО 1)
+    # На TPU v6e граф для batch_size=4 seq_len=4096 требует 93GB HBM. Снижаем до 1 (глобальный батч 4)
+    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
     train_loader = pl.MpDeviceLoader(train_loader, device)
 
     if rank == 0:
