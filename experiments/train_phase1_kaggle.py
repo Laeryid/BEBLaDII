@@ -233,12 +233,13 @@ def sync_gcs_resources():
     if not XLA_AVAILABLE or xm.is_master_ordinal():
         print(f"[GCS] Синхронизация датасетов из {GCS_DATA_BUCKET}...")
         os.makedirs(DATA_PATH, exist_ok=True)
-        subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_DATA_BUCKET}/data", DATA_PATH], check=True)
+        # Синхронизируем содержимое бакета напрямую в DATA_PATH
+        subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_DATA_BUCKET}/", DATA_PATH], check=True)
         
         print(f"[GCS] Синхронизация весов из {GCS_WEIGHTS_BUCKET}...")
         os.makedirs(RESOURCES_PATH, exist_ok=True)
-        subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_WEIGHTS_BUCKET}/components", f"{RESOURCES_PATH}/components"], check=True)
-        subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_WEIGHTS_BUCKET}/prebuilt", f"{RESOURCES_PATH}/prebuilt"], check=True)
+        # Синхронизируем содержимое бакета напрямую в RESOURCES_PATH
+        subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_WEIGHTS_BUCKET}/", RESOURCES_PATH], check=True)
 
 try:
     sync_gcs_resources()
@@ -317,7 +318,7 @@ def setup_mirrored_kaggle(data_path, resources_path):
                 force_symlink(src, dst_path)
                 print(f"Symlink (Model): {dst_path} -> {src_name}")
 
-setup_mirrored_kaggle(DATA_PATH, RESOURCES_PATH)
+# setup_mirrored_kaggle(DATA_PATH, RESOURCES_PATH) # Больше не требуется, используется GCS rsync
 
 # %%
 def _mp_fn(index, flags):
@@ -343,8 +344,19 @@ def _mp_fn(index, flags):
     print(f"Инициализация на {device}...")
 
     # Определение путей
-    student_base_id = os.path.join("storage/prebuilt/latentBERT", VERSION)
-    if not os.path.exists(student_base_id): student_base_id = BASE_MODEL_NAME
+    local_base_path = os.path.join("storage/prebuilt/latentBERT", VERSION)
+    # Проверяем, есть ли в локальной папке веса. Если нет - грузим базу из Hub
+    has_local_weights = os.path.exists(local_base_path) and any(
+        f in os.listdir(local_base_path) for f in ["pytorch_model.bin", "model.safetensors", "config.json"]
+    )
+    
+    if has_local_weights:
+        student_base_id = local_base_path
+        print(f"Используется локальная база: {student_base_id}")
+    else:
+        student_base_id = BASE_MODEL_NAME
+        print(f"Локальная база не найдена или не полна. Используется Hub: {student_base_id}")
+    
     components_root = "storage/components"
 
     weights_map = build_weights_map(components_root=components_root)
