@@ -73,9 +73,11 @@ def train():
     criterion = DistillationLoss(cos_weight=20.0)
 
     # Данные (УМЕНЬШЕН BATCH SIZE ДО 1)
-    # На TPU v6e граф для batch_size=4 seq_len=4096 требует 93GB HBM. Снижаем до 1 (глобальный батч 4)
-    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
-    train_loader = pl.MpDeviceLoader(train_loader, device)
+    # На TPU v6e граф для batch_size=1 seq_len=4096 требует 36GB HBM (OOM). Снижаем seq_len до 2048.
+    # Это даст 4х экономию по памяти внимания. Батч можно поднять до 2.
+    train_loader = get_dataloader(stage='reasoning', batch_size=2, max_length=2048, split='train')
+    val_loader = get_dataloader(stage='reasoning', batch_size=2, max_length=2048, split='val')
+    # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
     if rank == 0:
         try:
@@ -88,32 +90,110 @@ def train():
     # Обучение
     distiller.train()
     global_step = 0
+    gradient_accumulation_steps = 8 # Глобальный батч будет 2 * 4 (ядра) * 8 = 64
+    
     for epoch in range(1):
         progress_bar = tqdm(train_loader, disable=(rank != 0), desc=f"Epoch {epoch}")
         
         if rank == 0:
-            print("--- [RANK 0] Начинаем итерации. ПЕРВЫЙ ШАГ вызовет компиляцию XLA графа (это может занять 5-15 минут, подождите!)... ---")
+            print(f"--- [RANK 0] Начинаем итерации. Градиенты обновляются каждые {gradient_accumulation_steps} шагов. ---")
             
+        optimizer.zero_grad()
         for batch in progress_bar:
-            if rank == 0 and global_step < 3: print(f"\n--- [RANK 0] Шаг {global_step+1}: Forward pass... ---")
-            optimizer.zero_grad()
-            student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
-            loss, _ = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
+            # Ручной перенос на устройство (без MpDeviceLoader)
+            batch = {k: v.to(device) for k, v in batch.items()}
             
-            if rank == 0 and global_step < 3: print(f"--- [RANK 0] Шаг {global_step+1}: Backward pass... ---")
+            if rank == 0 and global_step < 3: print(f"\n--- [RANK 0] Шаг {global_step+1}: Forward pass... ---")
+            
+            student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
+            loss, loss_metrics = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
+            
+            # Делим лосс на количество шагов накопления
+            loss = loss / gradient_accumulation_steps
             loss.backward()
             
-            if rank == 0 and global_step < 3: print(f"--- [RANK 0] Шаг {global_step+1}: Optimizer step (XLA Compile)... ---")
-            xm.optimizer_step(optimizer)
+            if (global_step + 1) % gradient_accumulation_steps == 0:
+                xm.optimizer_step(optimizer)
+                optimizer.zero_grad()
+            else:
+                # ОЧЕНЬ ВАЖНО ДЛЯ XLA: заставляем выполнить микро-батч, чтобы он не сливал
+                # 16 шагов в один гигантский граф (что вызвало бы 93GB * 16 OOM).
+                xm.mark_step()
+            
             global_step += 1
-            
-            if rank == 0 and global_step <= 3: print(f"--- [RANK 0] Шаг {global_step} завершён! ---")
-            
             if rank == 0:
-                progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "step": global_step})
-                if global_step % 200 == 0:
+                # Метрика лосса после всех шагов накопления
+                final_loss = loss.item() * gradient_accumulation_steps
+                progress_bar.set_postfix({"loss": f"{final_loss:.4f}", "step": global_step})
+                
+                log_dict = {
+                    "train/loss": final_loss,
+                    "global_step": global_step,
+                    "tech/beta": 0.0001,
+                    "tech/lr": 5e-5
+                }
+                for k, v in loss_metrics.items():
+                    val = v.item() if torch.is_tensor(v) else v
+                    if k.startswith("l") and ("_mse" in k or "_cos" in k):
+                        log_dict[f"train/layers/{k}"] = val
+                    else:
+                        log_dict[f"train/{k}"] = val
+                        
+                wandb.log(log_dict)
+                
+            if global_step % 200 == 0:
+                if rank == 0: print(f"\n--- [RANK 0] Валидация (Шаг {global_step}) ---")
+                distiller.eval()
+                val_loss_sum = 0.0
+                val_mse_sum = 0.0
+                val_cos_sum = 0.0
+                val_kl_sum = 0.0
+                val_layers_sums = {}
+                val_steps = 0
+                max_val_steps = 100 // 2
+                
+                with torch.no_grad():
+                    for v_step, v_batch in enumerate(val_loader):
+                        if v_step >= max_val_steps: break
+                        v_batch = {k: v.to(device) for k, v in v_batch.items()}
+                        v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
+                        v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
+                        xm.mark_step()
+                        
+                        val_loss_sum += v_loss.item()
+                        val_mse_sum += v_metrics.get("mse", 0.0).item() if torch.is_tensor(v_metrics.get("mse", 0.0)) else v_metrics.get("mse", 0.0)
+                        val_cos_sum += v_metrics.get("cosine", 0.0).item() if torch.is_tensor(v_metrics.get("cosine", 0.0)) else v_metrics.get("cosine", 0.0)
+                        val_kl_sum += v_metrics.get("kl", 0.0).item() if torch.is_tensor(v_metrics.get("kl", 0.0)) else v_metrics.get("kl", 0.0)
+                        
+                        for k, v in v_metrics.items():
+                            if k.startswith("l") and ("_mse" in k or "_cos" in k):
+                                val = v.item() if torch.is_tensor(v) else v
+                                val_layers_sums[k] = val_layers_sums.get(k, 0.0) + val
+                        val_steps += 1
+                
+                if rank == 0:
+                    avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
+                    avg_val_mse = val_mse_sum / val_steps if val_steps > 0 else 0
+                    avg_val_cos = val_cos_sum / val_steps if val_steps > 0 else 0
+                    avg_val_kl = val_kl_sum / val_steps if val_steps > 0 else 0
+                    
+                    print(f"[{global_step}] Validation - Loss: {avg_val_loss:.4f}, MSE: {avg_val_mse:.4f}, Cosine: {avg_val_cos:.4f}, KL: {avg_val_kl:.6f}")
+                    
+                    val_log = {
+                        "val/loss": avg_val_loss,
+                        "val/mse": avg_val_mse,
+                        "val/cosine": avg_val_cos,
+                        "val/kl": avg_val_kl,
+                        "global_step": global_step
+                    }
+                    for k, v in val_layers_sums.items():
+                        val_log[f"val/layers/{k}"] = v / val_steps
+                    wandb.log(val_log)
+                    
                     torch.save({'model_state_dict': distiller.state_dict()}, "latest_checkpoint.pt")
                     subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"])
+                    
+                distiller.train()
 
 if __name__ == "__main__":
     import time
@@ -131,11 +211,20 @@ if __name__ == "__main__":
 
         # Скачиваем чекпоинт
         try:
-            res = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths/checkpoints/RESUME_TPU_STEP_*.pt"], capture_output=True, text=True)
+            # Сначала проверяем TPU чекпоинт
+            res = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt"], capture_output=True, text=True)
             if res.returncode == 0 and res.stdout.strip():
-                latest = sorted(res.stdout.strip().split('\n'))[-1]
-                subprocess.run(["gsutil", "cp", latest, "latest_checkpoint.pt"], check=True)
-        except: pass
+                print("--- [RANK 0] Найден TPU чекпоинт. Скачиваем... ---")
+                subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt", "latest_checkpoint.pt"], check=True)
+            else:
+                # Если TPU чекпоинта нет, скачиваем Kaggle чекпоинт
+                print("--- [RANK 0] TPU чекпоинт не найден. Ищем Kaggle чекпоинт... ---")
+                res = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths/kaggle_upload_1_4/RESUME_PHASE1_STEP_5400.pt"], capture_output=True, text=True)
+                if res.returncode == 0 and res.stdout.strip():
+                    print("--- [RANK 0] Скачиваем Kaggle чекпоинт RESUME_PHASE1_STEP_5400.pt ---")
+                    subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/kaggle_upload_1_4/RESUME_PHASE1_STEP_5400.pt", "latest_checkpoint.pt"], check=True)
+        except Exception as e:
+            print(f"--- [RANK 0] Ошибка при загрузке чекпоинта: {e} ---")
         
         # Сигнализируем, что загрузка завершена
         with open("/tmp/resources_prepared.flag", "w") as f: f.write("ok")
