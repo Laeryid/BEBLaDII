@@ -3,6 +3,10 @@ import sys
 
 def check_tpu():
     print("--- Диагностика TPU / XLA ---")
+    if "PJRT_DEVICE" not in os.environ:
+        os.environ["PJRT_DEVICE"] = "TPU"
+        print("[INFO] PJRT_DEVICE не был задан, устанавливаем 'TPU'...")
+        
     try:
         import torch_xla.core.xla_model as xm
         import torch_xla.runtime as xr
