@@ -1,62 +1,53 @@
-# Инструкция по переразвертыванию на Cloud TPU VM (Spot)
+# Cloud TPU v6e (Trillium) Redeploy Guide
 
-Эта инструкция поможет быстро восстановить рабочее окружение при получении нового Spot-инстанса.
+Это руководство содержит шаги для быстрой настройки свежего инстанса TPU v6e. 
+**ВАЖНО:** Для автоматизации на Spot-инстансах рекомендуется обернуть эти команды в bash-скрипт `setup_tpu.sh`.
 
----
+## 1. Рекомендуемые параметры инстанса
+- **Image:** `tpu-ubuntu2204-base` (или `v2-alpha-tpuv6e`)
+- **Software Stack:** PyTorch 2.4 / Python 3.10+
 
-## 1. С локального компьютера (Windows/PowerShell)
+## 2. Команды для установки ПО
+Выполните эти команды сразу после создания инстанса и активации `.venv`:
 
-Выполняйте эти команды из корня проекта `c:\Experiments\BEBLaDII`.
-
-### А. Подключение с пробросом порта для Colab
-Замените `bebladii-v6-8` на актуальное имя инстанса, если оно изменится.
-```powershell
-gcloud compute tpus tpu-vm ssh bebladii-v6e-4 --zone europe-west4-a -- -L 8888:localhost:8888
-```
-
-### Б. Отправка скрипта настройки
-Отправка только установочного скрипта (код будет склонирован позже через Git/Jupyter):
-```powershell
-gcloud compute tpus tpu-vm scp C:\Experiments\BEBLaDII\experiments\setup_tpu_vm.sh bebladii-v6e-4:/home/hp/setup_tpu_vm.sh --zone europe-west4-a
-```
-
----
-
-## 2. На удаленном сервере (TPU VM)
-
-После подключения по SSH выполните настройку.
-
-### А. Первый запуск (на чистой машине)
-Запустите скрипт для настройки окружения:
 ```bash
-bash setup_tpu_vm.sh
+# 1. Очистка старых конфликтующих пакетов
+pip uninstall -y libtpu-nightly jax jaxlib torch-xla torch
+
+# 2. Установка "Золотой пары" PyTorch 2.4
+pip install torch==2.4.0 torchvision torchaudio --no-cache-dir
+pip install torch_xla[tpu]==2.4.0 -f https://storage.googleapis.com/tpu-pytorch/releases/tpuvm/release-2.4.html --no-cache-dir
+
+# 3. Установка совместимого JAX и библиотеки libtpu (PJRT 0.54)
+pip install jax==0.4.31 jaxlib==0.4.31 --no-cache-dir
+pip install libtpu-nightly==0.1.dev20240912+nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html --no-cache-dir
 ```
-Скрипт установит Python venv, PyTorch XLA и Jupyter.
+
+## 3. Системные правки (КРИТИЧНО)
+Без этих правок XLA не увидит библиотеку или не сможет выделить память.
+
 ```bash
-mkdir ~/BEBLaDII
-cd ~/BEBLaDII
-chmod +x experiments/setup_tpu_vm.sh
-./experiments/setup_tpu_vm.sh
+# Создание системной ссылки на библиотеку (решает ошибку "libtpu.so not found")
+sudo ln -sf $(pwd)/.venv/lib/python3.10/site-packages/libtpu/libtpu.so /usr/lib/libtpu.so
+sudo ldconfig
+
+# Поднятие лимитов заблокированной памяти (memlock)
+echo "* soft memlock unlimited" | sudo tee -a /etc/security/limits.conf
+echo "* hard memlock unlimited" | sudo tee -a /etc/security/limits.conf
+# Примечание: лимиты вступают в силу после перезахода в SSH или рестарта
 ```
 
-### Б. Запуск Jupyter для Colab
-Если окружение уже настроено, просто запустите сервер:
-```bash
-source .venv/bin/activate
-jupyter notebook \
-  --NotebookApp.allow_origin='https://colab.research.google.com' \
-  --port=8888 \
-  --NotebookApp.port_retries=0 \
-  --no-browser
+## 4. Переменные окружения для запуска
+Добавляйте их в начало вашего тренировочного скрипта или экспортируйте в bash:
+
+```python
+import os
+os.environ["PJRT_DEVICE"] = "TPU"
+os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "2,2,1" # Сетка для v6e-4
 ```
 
----
+## 5. Проверка готовности
+Запустите скрипт верификации:
+`python scripts/verify_new_tpu.py`
 
-## 3. В Google Colab
-
-1. Нажмите на стрелочку у кнопки **Connect** (Подключиться).
-2. Выберите **Connect to a local runtime** (Подключиться к локальной среде выполнения).
-3. Вставьте URL с токеном из консоли сервера (вида `http://localhost:8888/?token=...`).
-
----
-**Заметка:** Если инстанс был просто остановлен, а не удален, все файлы в `~/BEBLaDII` и окружение `.venv` сохранятся на диске. В этом случае Шаг 2А выполнять не нужно.
+Если JAX видит 4 устройства, а PyTorch проходит тест умножения матриц — сервер готов к работе.

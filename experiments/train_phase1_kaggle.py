@@ -764,30 +764,13 @@ def _mp_fn(index, flags):
 
 # %%
 if __name__ == "__main__":
-    def check_tpu():
-        print("--- Диагностика TPU / XLA ---")
-        # Пытаемся инициализировать TPU, если не вышло - откатываемся на CPU
-        try:
-            if "PJRT_DEVICE" not in os.environ:
-                os.environ["PJRT_DEVICE"] = "TPU"
-            import torch_xla.core.xla_model as xm
-            devices = xm.get_xla_supported_devices()
-            print(f"[SUCCESS] PJRT_DEVICE={os.environ['PJRT_DEVICE']} инициализирован.")
-        except Exception as e:
-            print(f"[WARN] Инициализация TPU не удалась: {e}")
-            print("[INFO] Переключаемся на PJRT_DEVICE=CPU для работы через XLA на процессоре.")
-            os.environ["PJRT_DEVICE"] = "CPU"
-            import torch_xla.core.xla_model as xm
-            devices = xm.get_xla_supported_devices()
-        return devices
-
     if XLA_AVAILABLE:
-        devices = check_tpu()
-        nprocs = len(devices)
-        print(f"--- [XLA] PJRT_DEVICE: {os.environ.get('PJRT_DEVICE')}, nprocs: {nprocs} ---")
+        # Явно устанавливаем устройство для PJRT
+        os.environ["PJRT_DEVICE"] = "TPU"
         
-        print(f"Запуск через xmp.spawn ({nprocs} ядер, start_method='spawn')...")
-        xmp.spawn(_mp_fn, args=({},), nprocs=nprocs, start_method="spawn")
+        # Мы НЕ вызываем диагностику здесь, чтобы не инициализировать рантайм до spawn
+        print(f"--- [XLA] Запуск через xmp.spawn (4 ядра) ---")
+        xmp.spawn(_mp_fn, args=({},), nprocs=None, start_method="spawn")
     else:
         print("Запуск в стандартном режиме (1 процесс)...")
         _mp_fn(0, {})
