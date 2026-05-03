@@ -347,12 +347,12 @@ def _mp_fn(index, flags):
 
     # Определение путей
     local_base_path = os.path.join("storage/prebuilt/latentBERT", VERSION)
-    # Проверяем, есть ли в локальной папке веса. Если нет - грузим базу из Hub
-    has_local_weights = os.path.exists(local_base_path) and any(
-        f in os.listdir(local_base_path) for f in ["pytorch_model.bin", "model.safetensors", "config.json"]
+    # Проверяем наличие файла весов (bin или safetensors)
+    has_weights = os.path.exists(local_base_path) and any(
+        os.path.exists(os.path.join(local_base_path, f)) for f in ["pytorch_model.bin", "model.safetensors"]
     )
-    
-    if has_local_weights:
+
+    if has_weights:
         student_base_id = local_base_path
         print(f"Используется локальная база: {student_base_id}")
     else:
