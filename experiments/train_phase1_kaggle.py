@@ -228,9 +228,9 @@ RESUME_RUN = False
 RESUME_PATH = None
 CUSTOM_STUDENT_WEIGHTS_PATH = None
 
-def sync_gcs_resources():
+def sync_gcs_resources(is_master=True):
     """Синхронизация датасетов и весов перед стартом"""
-    if not XLA_AVAILABLE or xm.is_master_ordinal():
+    if is_master:
         print(f"[GCS] Синхронизация датасетов из {GCS_DATA_BUCKET}...")
         os.makedirs(DATA_PATH, exist_ok=True)
         # Синхронизируем содержимое бакета напрямую в DATA_PATH
@@ -242,7 +242,9 @@ def sync_gcs_resources():
         subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_WEIGHTS_BUCKET}/", RESOURCES_PATH], check=True)
 
 try:
-    sync_gcs_resources()
+    # Синхронизируем ресурсы только в главном процессе ДО spawn
+    # Вне spawn мы всегда считаем себя мастером
+    sync_gcs_resources(is_master=True)
     
     print(f"[GCS] Поиск чекпоинтов в {GCS_CHECKPOINT_BUCKET}/checkpoints/")
     result = subprocess.run(["gsutil", "ls", f"{GCS_CHECKPOINT_BUCKET}/checkpoints/RESUME_PHASE1_STEP_*.pt"], capture_output=True, text=True)
