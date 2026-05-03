@@ -105,6 +105,28 @@ try:
     print("Модули проекта успешно импортированы.")
 except ImportError as e: print(f"Ошибка импорта: {e}")
 
+def get_secret_safe(key_name):
+    """Безопасное получение секретов из Colab или Kaggle"""
+    # 1. Проверяем переменные окружения
+    if key_name in os.environ:
+        return os.environ[key_name]
+    
+    # 2. Пробуем Colab
+    try:
+        from google.colab import userdata
+        return userdata.get(key_name)
+    except (ImportError, Exception):
+        pass
+        
+    # 3. Пробуем Kaggle
+    try:
+        from kaggle_secrets import UserSecretsClient
+        return UserSecretsClient().get_secret(key_name)
+    except (ImportError, Exception):
+        pass
+        
+    return None
+
 def smart_load_weights(model, path, strict=False):
     """
     Ультра-надежная загрузка весов. 
@@ -468,11 +490,8 @@ def _mp_fn(index, flags):
         del ckpt
         torch.cuda.empty_cache()
 
-    try:
-        user_secrets = UserSecretsClient()
-        wandb_key = user_secrets.get_secret("WANDB_API_KEY")
-        if wandb_key: os.environ["WANDB_API_KEY"] = wandb_key
-    except Exception: pass
+    wandb_key = get_secret_safe("WANDB_API_KEY")
+    if wandb_key: os.environ["WANDB_API_KEY"] = wandb_key
 
     if os.environ.get("WANDB_API_KEY"):
         wandb.init(project="BEBLaDII", name=f"phase1-{STAGE}")
