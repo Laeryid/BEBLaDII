@@ -192,10 +192,10 @@ def train():
             global_step = 5400
             if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
 
-    # Данные (Уменьшаем батч для HBM, добавляем накопление)
-    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='val')
-    accumulation_steps = 4
+    # Данные (Используем SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
+    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+    accumulation_steps = 1
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
     if rank == 0:
