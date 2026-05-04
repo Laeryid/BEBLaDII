@@ -212,28 +212,41 @@ def train():
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
             loss, loss_metrics = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
             
+            # ВАЖНО: Удаляем огромные тензоры до градиентного шага и компиляции графа!
+            del student_states, teacher_targets, mu, logvar
+            
             loss.backward()
             
             # Для SPMD FSDP используется стандартный optimizer.step()
             optimizer.step()
             scheduler.step()
             optimizer.zero_grad()
+            
+            # Извлекаем скаляры, чтобы не держать тензоры в HBM как выходы графа
+            if rank == 0 and (global_step + 1) % 10 == 0:
+                loss_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_metrics.items()}
+                loss_val = loss.item()
+            else:
+                loss_scalars = {}
+                loss_val = loss.item() if rank == 0 else 0.0
+                
+            del loss_metrics, loss
+            
             xm.mark_step()
             
             global_step += 1
             
             if rank == 0:
                 lr = optimizer.param_groups[0]['lr']
-                progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "step": global_step, "lr": f"{lr:.1e}"})
+                progress_bar.set_postfix({"loss": f"{loss_val:.4f}", "step": global_step, "lr": f"{lr:.1e}"})
                 
                 if global_step % 10 == 0:
                     log_dict = {
-                        "train/loss": loss.item(),
+                        "train/loss": loss_val,
                         "train/lr": lr,
                         "global_step": global_step,
                     }
-                    for k, v in loss_metrics.items():
-                        val = v.item() if torch.is_tensor(v) else v
+                    for k, val in loss_scalars.items():
                         if k.startswith("l") and ("_mse" in k or "_cos" in k):
                             log_dict[f"train/layers/{k}"] = val
                         else:
@@ -289,11 +302,17 @@ def train():
                             
                         v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
                         v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
+                        
+                        v_loss_scalar = v_loss.item()
+                        v_metrics_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in v_metrics.items()}
+                        
+                        # Удаляем тензоры до компиляции
+                        del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics
+                        
                         xm.mark_step()
                         
-                        val_loss_sum += v_loss.item()
-                        for k, v in v_metrics.items():
-                            val = v.item() if torch.is_tensor(v) else v
+                        val_loss_sum += v_loss_scalar
+                        for k, val in v_metrics_scalars.items():
                             val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + val
                         val_steps += 1
                 
