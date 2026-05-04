@@ -127,22 +127,18 @@ def train():
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
             loss, loss_metrics = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
             
-            # Делим лосс на количество шагов накопления
-            loss = loss / gradient_accumulation_steps
+            # FSDP в XLA может падать при накоплении градиентов без no_sync(). 
+            # Отключаем gradient_accumulation_steps для стабильности.
             loss.backward()
             
-            if (global_step + 1) % gradient_accumulation_steps == 0:
-                xm.optimizer_step(optimizer)
-                optimizer.zero_grad()
-            else:
-                # ОЧЕНЬ ВАЖНО ДЛЯ XLA: заставляем выполнить микро-батч, чтобы он не сливал
-                # 16 шагов в один гигантский граф (что вызвало бы 93GB * 16 OOM).
-                xm.mark_step()
+            xm.optimizer_step(optimizer)
+            optimizer.zero_grad()
             
             global_step += 1
+
             if rank == 0:
-                # Метрика лосса после всех шагов накопления
-                final_loss = loss.item() * gradient_accumulation_steps
+                # Метрика лосса 
+                final_loss = loss.item()
                 progress_bar.set_postfix({"loss": f"{final_loss:.4f}", "step": global_step})
                 
                 log_dict = {
