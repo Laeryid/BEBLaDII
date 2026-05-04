@@ -166,6 +166,11 @@
             "description": "ADR: Отказ от Gradient Checkpointing для ModernBERT на XLA (TPU) из-за OOM (Sliding Window Attention).",
             "covers": ["Knowledge Infrastructure"],
             "depends_on": ["experiments/train_phase1_TPU_fsdp.py", "src/beb_la_dii/model/dus.py"]
+        },
+        "decisions/006_fsdp_checkpoint_loading_fix.md": {
+            "description": "ADR: Исправление логики загрузки весов в FSDP на TPU (устранение OOM и проблем с префиксами).",
+            "covers": ["Knowledge Infrastructure"],
+            "depends_on": ["experiments/train_phase1_TPU_fsdp.py"]
         }
     },
     "knowledge_system": {

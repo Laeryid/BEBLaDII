@@ -195,18 +195,21 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
     except ImportError:
         is_xla = False
 
-    if is_xla and dist.is_initialized():
+    if is_xla:
         from torch.utils.data.distributed import DistributedSampler
-        # xm.xrt_world_size() or dist.get_world_size()
-        world_size = xm.xrt_world_size()
-        rank = xm.get_ordinal()
-        sampler = DistributedSampler(
-            dataset,
-            num_replicas=world_size,
-            rank=rank,
-            shuffle=shuffle
-        )
-        shuffle = False # Sampler handles shuffling
+        try:
+            world_size = xm.xrt_world_size()
+            rank = xm.get_ordinal()
+            if world_size > 1:
+                sampler = DistributedSampler(
+                    dataset,
+                    num_replicas=world_size,
+                    rank=rank,
+                    shuffle=shuffle
+                )
+                shuffle = False # Sampler handles shuffling
+        except Exception as e:
+            print(f"Warning: Failed to initialize DistributedSampler: {e}")
 
     return DataLoader(
         dataset, 
