@@ -54,6 +54,29 @@ def custom_auto_wrap_policy(module, recurse, unwrapped_params, **kwargs):
         return True
     return False
 
+def custom_shard_output(output, mesh):
+    import torch_xla.experimental.xla_sharding as xs
+    # выход имеет вид: (student_states, teacher_targets, mu, logvar)
+    student_states, teacher_targets, mu, logvar = output
+    
+    # Шардируем выходные состояния ученика (batch_size находится на 0-й оси)
+    if isinstance(student_states, dict):
+        for v in student_states.values():
+            if v is not None:
+                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
+                
+    # Шардируем целевые состояния учителя
+    if isinstance(teacher_targets, dict):
+        for v in teacher_targets.values():
+            if v is not None:
+                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
+                
+    if mu is not None:
+        xs.mark_sharding(mu, mesh, ('fsdp',) + (None,) * (mu.dim() - 1))
+    if logvar is not None:
+        xs.mark_sharding(logvar, mesh, ('fsdp',) + (None,) * (logvar.dim() - 1))
+    return None
+
 def train():
     # Импорты модулей проекта
     from src.beb_la_dii.model.assembler import ModelAssembler
@@ -94,6 +117,7 @@ def train():
         distiller,
         mesh=mesh,
         auto_wrap_policy=custom_auto_wrap_policy,
+        shard_output=custom_shard_output
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута в XlaFullyShardedDataParallel ---")
 
