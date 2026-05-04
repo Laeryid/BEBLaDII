@@ -112,6 +112,11 @@ def train():
             print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
 
     # Загрузка последнего чекпоинта (если есть) ДО обертки FSDP
+    # Явная заморозка Учителя, чтобы XLA не строил графы активаций для него
+    for name, param in distiller.named_parameters():
+        if "teacher" in name:
+            param.requires_grad = False
+
     if os.path.exists("latest_checkpoint.pt"):
         ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
         incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
@@ -132,10 +137,14 @@ def train():
     if rank == 0: print("--- [FSDP] Модель успешно обернута в XlaFullyShardedDataParallel ---")
 
     # Настройка оптимизатора и планировщика (согласно ADR 002)
-    from torch.optim import AdamW
+    from transformers.optimization import Adafactor
     from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
     
-    optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=5e-5)
+    # Используем Adafactor для HBM оптимизации
+    optimizer = Adafactor(
+        filter(lambda p: p.requires_grad, distiller.parameters()), 
+        lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False
+    )
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
     criterion = DistillationLoss(cos_weight=20.0)
 
@@ -156,8 +165,9 @@ def train():
         # 2. Оптимизатор
         if 'optimizer_state_dict' in ckpt:
             try:
-                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-                if rank == 0: print("--- [RESUME] Состояние оптимизатора восстановлено ---")
+                # Временно отключаем загрузку оптимизатора при смене AdamW -> Adafactor
+                # optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+                if rank == 0: print("--- [RESUME WARNING] Загрузка оптимизатора пропущена (переход на Adafactor) ---")
             except Exception as e:
                 if rank == 0: print(f"--- [RESUME WARNING] Ошибка оптимизатора: {e} ---")
         
@@ -178,9 +188,10 @@ def train():
             global_step = 5400
             if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
 
-    # Данные
-    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+    # Данные (Уменьшаем батч для HBM, добавляем накопление)
+    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
+    val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='val')
+    accumulation_steps = 4
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
     if rank == 0:
@@ -212,15 +223,20 @@ def train():
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
             loss, loss_metrics = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
             
+            # Делим лосс на шаги накопления
+            loss = loss / accumulation_steps
+            
             # ВАЖНО: Удаляем огромные тензоры до градиентного шага и компиляции графа!
             del student_states, teacher_targets, mu, logvar
+            import gc; gc.collect()
             
             loss.backward()
             
-            # Для SPMD FSDP используется стандартный optimizer.step()
-            optimizer.step()
-            scheduler.step()
-            optimizer.zero_grad()
+            if (global_step + 1) % accumulation_steps == 0:
+                # Для SPMD FSDP используется стандартный optimizer.step()
+                optimizer.step()
+                scheduler.step()
+                optimizer.zero_grad()
             
             # Извлекаем скаляры, чтобы не держать тензоры в HBM как выходы графа
             if rank == 0 and (global_step + 1) % 10 == 0:
