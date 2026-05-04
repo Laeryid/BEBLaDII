@@ -116,7 +116,12 @@ class ReasoningDistiller(nn.Module):
         """
         # 1. Проход Teacher
         # Определяем устройство учителя (обычно первая видеокарта в device_map)
-        teacher_device = next(self.teacher.parameters()).device
+        try:
+            teacher_device = next(self.teacher.parameters()).device
+        except StopIteration:
+            # XLA FSDP может скрывать параметры под FlatParameter wrapper'ами
+            teacher_device = getattr(self, "student_device", input_ids.device)
+            
         t_input_ids = input_ids.to(teacher_device)
         t_attention_mask = attention_mask.to(teacher_device) if attention_mask is not None else None
 
