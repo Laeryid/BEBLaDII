@@ -29,6 +29,9 @@ import numpy as np
 import subprocess, re
 from tqdm.auto import tqdm
 
+# Включаем SPMD режим до любых операций XLA
+xr.use_spmd()
+
 # ХАК: monkey-patch torch.xla для починки gradient checkpointing
 if not hasattr(torch, "xla"):
     class DummyXLA:
