@@ -190,8 +190,12 @@ def train():
                         val_log[f"val/layers/{k}"] = v / val_steps
                     wandb.log(val_log)
                     
-                    torch.save({'model_state_dict': distiller.state_dict()}, "latest_checkpoint.pt")
-                    subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"])
+                # Сохраняем веса корректно для XLA (вызывается на всех ядрах для синхронизации, пишет только rank 0)
+                xm.save({'model_state_dict': distiller.state_dict()}, "latest_checkpoint.pt", master_only=True)
+                
+                if rank == 0:
+                    # Отправляем в фон (Popen), чтобы rank 0 не отставал от остальных ядер
+                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"])
                     
                 distiller.train()
 
