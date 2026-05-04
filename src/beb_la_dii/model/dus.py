@@ -68,7 +68,11 @@ def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40)
     
     # Пытаемся загрузить конфиг. Если это папка, он загрузится локально.
     config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-    base_model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
+    base_model = AutoModel.from_pretrained(
+        model_id, 
+        trust_remote_code=True,
+        attn_implementation="sdpa"
+    )
     
     # If model already has target_layers (e.g. saved skeleton), skip DUS
     current_layers = len(base_model.layers)

@@ -50,7 +50,8 @@ class ReasoningDistiller(nn.Module):
             load_path,
             torch_dtype=torch.bfloat16,
             device_map=device_map if not XLA_AVAILABLE else None,
-            trust_remote_code=True
+            trust_remote_code=True,
+            attn_implementation="sdpa"
         )
         for param in self.teacher.parameters():
             param.requires_grad = False
