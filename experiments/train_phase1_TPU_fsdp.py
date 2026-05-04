@@ -143,10 +143,16 @@ def train():
     global_step = 0
     # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
     if os.path.exists("latest_checkpoint.pt"):
+        # Загружаем на CPU, чтобы не забивать HBM
         ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
+        if rank == 0:
+            print(f"--- [DEBUG] Ключи в чекпоинте: {list(ckpt.keys())} ---")
         
-        # 1. Веса (уже загружены выше, но для надежности проверим еще раз)
-        # distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+        # 1. Веса
+        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+        if rank == 0: 
+            print(f"--- [RESUME] Веса загружены ---")
+            if incompatible_keys.missing_keys: print(f"Missing: {len(incompatible_keys.missing_keys)}")
         
         # 2. Оптимизатор
         if 'optimizer_state_dict' in ckpt:
@@ -154,7 +160,7 @@ def train():
                 optimizer.load_state_dict(ckpt['optimizer_state_dict'])
                 if rank == 0: print("--- [RESUME] Состояние оптимизатора восстановлено ---")
             except Exception as e:
-                if rank == 0: print(f"--- [RESUME WARNING] Не удалось загрузить оптимизатор: {e} ---")
+                if rank == 0: print(f"--- [RESUME WARNING] Ошибка оптимизатора: {e} ---")
         
         # 3. Планировщик
         if 'scheduler_state_dict' in ckpt:
@@ -162,12 +168,16 @@ def train():
                 scheduler.load_state_dict(ckpt['scheduler_state_dict'])
                 if rank == 0: print("--- [RESUME] Состояние планировщика восстановлено ---")
             except Exception as e:
-                if rank == 0: print(f"--- [RESUME WARNING] Не удалось загрузить планировщик: {e} ---")
+                if rank == 0: print(f"--- [RESUME WARNING] Ошибка планировщика: {e} ---")
         
         # 4. Глобальный шаг
         if 'global_step' in ckpt:
             global_step = ckpt['global_step']
             if rank == 0: print(f"--- [RESUME] Продолжаем с шага {global_step} ---")
+        else:
+            # Если ключа нет (бывает в Kaggle-снапшотах), ставим 5400 вручную
+            global_step = 5400
+            if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
 
     # Данные
     train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
@@ -229,10 +239,13 @@ def train():
                             log_dict[f"train/layers/{k}"] = val
                         else:
                             log_dict[f"train/{k}"] = val
-                    wandb.log(log_dict)
+                    wandb.log(log_dict, step=global_step)
                 
-            # Сохранение и валидация
-            if global_step % 100 == 0:
+            # Сохранение (раз в 500 шагов, так как модель тяжелая)
+            if global_step % 500 == 0:
+                xm.mark_step() # Синхронизация перед сохранением
+                if rank == 0: print(f"--- [RANK 0] Подготовка чекпоинта на шаге {global_step}... ---")
+                
                 # Сохраняем веса, оптимизатор и планировщик
                 save_data = {
                     'model_state_dict': distiller.state_dict(),
@@ -240,11 +253,13 @@ def train():
                     'scheduler_state_dict': scheduler.state_dict(),
                     'global_step': global_step
                 }
-                xm.save(save_data, "latest_checkpoint.pt", master_only=True)
+                xm.save(save_data, "latest_checkpoint.pt") # master_only=True внутри xm.save по умолчанию для файлов
                 
                 if rank == 0:
-                    print(f"--- [SAVE] Чекпоинт сохранен на шаге {global_step} ---")
-                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"])
+                    print(f"--- [SAVE] Чекпоинт сохранен. Отправка в GCS... ---")
+                    # Отправляем в фоновом режиме
+                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", f"gs://bebladii-weigths/checkpoints/ckpt_{global_step}.pt"])
+                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt"])
 
             if global_step % 500 == 0:
                 if rank == 0: print(f"\n--- [RANK 0] Валидация (Шаг {global_step}) ---")
