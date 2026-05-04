@@ -48,8 +48,7 @@ def custom_auto_wrap_policy(module, recurse, unwrapped_params, **kwargs):
     cls_name = module.__class__.__name__
     if any(name in cls_name for name in [
         "Qwen2DecoderLayer", "ModernBertLayer", "ModernBertBlock",
-        "FeatureProjector", "InputProjector", "Qwen2RMSNorm", 
-        "Embedding", "Linear", "LayerNorm"
+        "FeatureProjector", "InputProjector"
     ]):
         return True
     return False
@@ -107,7 +106,7 @@ def train():
         # Для XLA критически важно отключить preserve_rng_state, так как torch.utils.checkpoint
         # пытается вызвать getattr(torch, "xla"), что приводит к AttributeError.
         distiller.student.model.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={'preserve_rng_state': False}
+            gradient_checkpointing_kwargs={'preserve_rng_state': False, 'use_reentrant': False}
         )
         if rank == 0:
             print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
@@ -207,7 +206,7 @@ def train():
             for k, v in batch.items():
                 v = v.to(device)
                 # Критично: сообщаем XLA, что батч нужно разрезать по ядрам ('fsdp')
-                xs.mark_sharding(v, mesh, ('fsdp', None))
+                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
                 batch[k] = v
             
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
@@ -285,7 +284,7 @@ def train():
                         if v_step >= max_val_steps: break
                         for k, v in v_batch.items():
                             v = v.to(device)
-                            xs.mark_sharding(v, mesh, ('fsdp', None))
+                            xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
                             v_batch[k] = v
                             
                         v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
