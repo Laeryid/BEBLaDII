@@ -193,8 +193,12 @@ def train():
             
         optimizer.zero_grad()
         for batch in progress_bar:
-            # Ручной перенос на устройство (без MpDeviceLoader)
-            batch = {k: v.to(device) for k, v in batch.items()}
+            # Ручной перенос на устройство и SPMD Data Parallel шардинг
+            for k, v in batch.items():
+                v = v.to(device)
+                # Критично: сообщаем XLA, что батч нужно разрезать по ядрам ('fsdp')
+                xs.mark_sharding(v, mesh, ('fsdp', None))
+                batch[k] = v
             
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
             loss, loss_metrics = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
@@ -252,7 +256,11 @@ def train():
                 with torch.no_grad():
                     for v_step, v_batch in enumerate(val_loader):
                         if v_step >= max_val_steps: break
-                        v_batch = {k: v.to(device) for k, v in v_batch.items()}
+                        for k, v in v_batch.items():
+                            v = v.to(device)
+                            xs.mark_sharding(v, mesh, ('fsdp', None))
+                            v_batch[k] = v
+                            
                         v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
                         v_loss, _ = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
                         xm.mark_step()
