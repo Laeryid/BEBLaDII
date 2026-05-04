@@ -37,7 +37,11 @@ sys.path.append(os.getcwd())
 
 def custom_auto_wrap_policy(module, recurse, unwrapped_params, **kwargs):
     cls_name = module.__class__.__name__
-    if "Qwen2DecoderLayer" in cls_name or "ModernBertLayer" in cls_name or "ModernBertBlock" in cls_name:
+    if any(name in cls_name for name in [
+        "Qwen2DecoderLayer", "ModernBertLayer", "ModernBertBlock",
+        "FeatureProjector", "InputProjector", "Qwen2RMSNorm", 
+        "Embedding", "Linear", "LayerNorm"
+    ]):
         return True
     return False
 
