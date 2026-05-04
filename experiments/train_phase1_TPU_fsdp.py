@@ -112,6 +112,17 @@ def train():
         if rank == 0:
             print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
 
+    # Загрузка последнего чекпоинта (если есть) ДО обертки FSDP
+    if os.path.exists("latest_checkpoint.pt"):
+        ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
+        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+        if rank == 0: 
+            print(f"--- [RESUME] Чекпоинт загружен ---")
+            if len(incompatible_keys.missing_keys) > 0:
+                print(f"--- [RESUME WARNING] Missing keys (first 10): {incompatible_keys.missing_keys[:10]}")
+            if len(incompatible_keys.unexpected_keys) > 0:
+                print(f"--- [RESUME WARNING] Unexpected keys (first 10): {incompatible_keys.unexpected_keys[:10]}")
+
     # Оборачиваем модель в SpmdFullyShardedDataParallel
     distiller = FSDP(
         distiller,
@@ -120,13 +131,6 @@ def train():
         shard_output=custom_shard_output
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута в XlaFullyShardedDataParallel ---")
-
-    # Загрузка последнего чекпоинта (если есть)
-    if os.path.exists("latest_checkpoint.pt"):
-        ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
-        # Для FSDP load_state_dict работает прозрачно, если стейт был сохранен так же (консолидирован)
-        distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
-        if rank == 0: print(f"--- [RESUME] Чекпоинт загружен ---")
 
     # Настройка
     from torch.optim import AdamW
@@ -198,7 +202,7 @@ def train():
                         
                 wandb.log(log_dict)
                 
-            if global_step % 200 == 0:
+            if global_step % 500 == 0:
                 if rank == 0: print(f"\n--- [RANK 0] Валидация (Шаг {global_step}) ---")
                 distiller.eval()
                 val_loss_sum = 0.0
