@@ -272,9 +272,10 @@ if __name__ == "__main__":
             time.sleep(2)
 
     # Инициализируем распределенное окружение для torchrun (привязка PJRT к топологии torchrun)
-    import torch.distributed as dist
-    import torch_xla.distributed.xla_backend
-    dist.init_process_group("xla", init_method="xla://")
+    # Для SPMD FSDPv2 инициализация process_group с xla backend больше не нужна!
+    # import torch.distributed as dist
+    # import torch_xla.distributed.xla_backend
+    # dist.init_process_group("xla", init_method="xla://")
 
     # Инициализируем XLA только после скачивания, чтобы избежать проблем с fork() и gsutil
     import torch_xla.core.xla_model as xm
