@@ -248,25 +248,35 @@ def train():
                 
                 # Сохраняем ТОЛЬКО веса Ученика (чекпоинт ~1ГБ вместо 15ГБ)
                 full_sd = distiller.state_dict()
-                trainable_sd = {k: v for k, v in full_sd.items() if not k.startswith("teacher")}
+                trainable_sd = {k: v for k, v in full_sd.items() if "teacher" not in k}
                 
                 save_data = {
                     'model_state_dict': trainable_sd,
                     'scheduler_state_dict': scheduler.state_dict(),
                     'global_step': global_step
                 }
-                xm.save(save_data, "latest_checkpoint.pt")
+                local_ckpt_name = f"ckpt_{global_step}.pt"
+                xm.save(save_data, local_ckpt_name)
                 
                 if rank == 0:
-                    print(f"--- [SAVE] Легкий чекпоинт (~1GB) сохранен. Отправка в GCS... ---")
-                    # Отправляем в фоновом режиме с многопоточностью (-m)
-                    subprocess.Popen(["gsutil", "-m", "cp", "latest_checkpoint.pt", f"gs://bebladii-weigths/checkpoints/ckpt_{global_step}.pt"])
-                    subprocess.Popen(["gsutil", "-m", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt"])
+                    import shutil
+                    # Обновляем latest_checkpoint.pt локально
+                    shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
+                    
+                    # Удаляем предыдущий локальный чекпоинт, чтобы не забивать диск TPU
+                    prev_ckpt = f"ckpt_{global_step - 500}.pt"
+                    if os.path.exists(prev_ckpt):
+                        os.remove(prev_ckpt)
+                        
+                    print(f"--- [SAVE] Легкий чекпоинт {local_ckpt_name} сохранен. Отправка в GCS... ---")
+                    # Отправляем уникальный файл в фоновом режиме, чтобы избежать перезаписи при медленном интернете
+                    subprocess.Popen(f"gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/ && gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/latest_checkpoint.pt", shell=True)
 
             if global_step % 500 == 0:
                 if rank == 0: print(f"\n--- [RANK 0] Валидация (Шаг {global_step}) ---")
                 distiller.eval()
                 val_loss_sum = 0.0
+                val_metrics_sums = {}
                 val_steps = 0
                 max_val_steps = 50
                 
@@ -279,15 +289,28 @@ def train():
                             v_batch[k] = v
                             
                         v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
-                        v_loss, _ = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
+                        v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
                         xm.mark_step()
+                        
                         val_loss_sum += v_loss.item()
+                        for k, v in v_metrics.items():
+                            val = v.item() if torch.is_tensor(v) else v
+                            val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + val
                         val_steps += 1
                 
                 if rank == 0:
                     avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
                     print(f"[{global_step}] Validation - Loss: {avg_val_loss:.4f}")
-                    wandb.log({"val/loss": avg_val_loss, "global_step": global_step})
+                    
+                    val_log_dict = {"val/loss": avg_val_loss, "global_step": global_step}
+                    for k, v_sum in val_metrics_sums.items():
+                        avg_val = v_sum / val_steps
+                        if k.startswith("l") and ("_mse" in k or "_cos" in k):
+                            val_log_dict[f"val/layers/{k}"] = avg_val
+                        else:
+                            val_log_dict[f"val/{k}"] = avg_val
+                    
+                    wandb.log(val_log_dict, step=global_step)
                 
                 distiller.train()
 
