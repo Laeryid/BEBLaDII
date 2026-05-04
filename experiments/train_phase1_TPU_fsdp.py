@@ -102,14 +102,13 @@ def train():
     xs.set_global_mesh(mesh)
     
     # Включаем градиентный чекпоинтинг для экономии памяти TPU (иначе OOM на seq_len=4096)
-    if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
-        # Для XLA критически важно отключить preserve_rng_state, так как torch.utils.checkpoint
-        # пытается вызвать getattr(torch, "xla"), что приводит к AttributeError.
-        distiller.student.model.gradient_checkpointing_enable(
-            gradient_checkpointing_kwargs={'preserve_rng_state': False, 'use_reentrant': True}
-        )
-        if rank == 0:
-            print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
+    # ОТКЛЮЧЕНО: GC в XLA вызывает параллельную рематериализацию 20 матриц ModernBERT!
+    # if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
+    #     distiller.student.model.gradient_checkpointing_enable(
+    #         gradient_checkpointing_kwargs={'preserve_rng_state': False, 'use_reentrant': True}
+    #     )
+    #     if rank == 0:
+    #         print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
 
     # Загрузка последнего чекпоинта (если есть) ДО обертки FSDP
     # Явная заморозка Учителя, чтобы XLA не строил графы активаций для него
