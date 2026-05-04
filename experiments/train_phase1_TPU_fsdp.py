@@ -246,20 +246,22 @@ def train():
                 xm.mark_step() # Синхронизация перед сохранением
                 if rank == 0: print(f"--- [RANK 0] Подготовка чекпоинта на шаге {global_step}... ---")
                 
-                # Сохраняем веса, оптимизатор и планировщик
+                # Сохраняем ТОЛЬКО веса Ученика (чекпоинт ~1ГБ вместо 15ГБ)
+                full_sd = distiller.state_dict()
+                trainable_sd = {k: v for k, v in full_sd.items() if not k.startswith("teacher")}
+                
                 save_data = {
-                    'model_state_dict': distiller.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
+                    'model_state_dict': trainable_sd,
                     'scheduler_state_dict': scheduler.state_dict(),
                     'global_step': global_step
                 }
-                xm.save(save_data, "latest_checkpoint.pt") # master_only=True внутри xm.save по умолчанию для файлов
+                xm.save(save_data, "latest_checkpoint.pt")
                 
                 if rank == 0:
-                    print(f"--- [SAVE] Чекпоинт сохранен. Отправка в GCS... ---")
-                    # Отправляем в фоновом режиме
-                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", f"gs://bebladii-weigths/checkpoints/ckpt_{global_step}.pt"])
-                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt"])
+                    print(f"--- [SAVE] Легкий чекпоинт (~1GB) сохранен. Отправка в GCS... ---")
+                    # Отправляем в фоновом режиме с многопоточностью (-m)
+                    subprocess.Popen(["gsutil", "-m", "cp", "latest_checkpoint.pt", f"gs://bebladii-weigths/checkpoints/ckpt_{global_step}.pt"])
+                    subprocess.Popen(["gsutil", "-m", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt"])
 
             if global_step % 500 == 0:
                 if rank == 0: print(f"\n--- [RANK 0] Валидация (Шаг {global_step}) ---")
