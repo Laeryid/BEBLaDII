@@ -161,6 +161,11 @@
             "description": "ADR: Ограничения SPMD FSDP на TPU: шардинг батча, загрузка весов и лимиты HBM.",
             "covers": ["Knowledge Infrastructure"],
             "depends_on": ["experiments/train_phase1_TPU_fsdp.py"]
+        },
+        "decisions/005_modernbert_xla_gradient_checkpointing.md": {
+            "description": "ADR: Отказ от Gradient Checkpointing для ModernBERT на XLA (TPU) из-за OOM (Sliding Window Attention).",
+            "covers": ["Knowledge Infrastructure"],
+            "depends_on": ["experiments/train_phase1_TPU_fsdp.py", "src/beb_la_dii/model/dus.py"]
         }
     },
     "knowledge_system": {
