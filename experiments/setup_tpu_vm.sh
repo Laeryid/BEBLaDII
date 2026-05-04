@@ -26,7 +26,7 @@ if [ -f "pyproject.toml" ]; then
     pip install -e .
 else
     # Фоллбэк если установка через -e невозможна
-    pip install transformers datasets accelerate wandb
+    pip install transformers datasets accelerate wandb indexed-parquet-dataset
 fi
 pip install jupyter
 

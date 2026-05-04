@@ -97,13 +97,16 @@ pip install torch==2.4.0 torchvision torchaudio --no-cache-dir
 pip install torch_xla==2.4.0 -f https://storage.googleapis.com/tpu-pytorch/releases/tpuvm/release-2.4.html --no-cache-dir
 
 # 3. Установка зависимостей TPU и JAX вручную (решает ошибку libtpu-nightly)
-pip install cloud-tpu-client>=0.10.0
+pip install cloud-tpu-client>=0.10.0 indexed-parquet-dataset
 pip install jax==0.4.31 jaxlib==0.4.31 --no-cache-dir
 pip install libtpu-nightly==0.1.dev20240912+nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html --no-cache-dir
 
 # 4. Создание системной ссылки на библиотеку (решает ошибку "libtpu.so not found")
 sudo ln -sf $(pwd)/.venv/lib/python3.10/site-packages/libtpu/libtpu.so /usr/lib/libtpu.so
 sudo ldconfig
+
+# 5. Исправление возможных ошибок wandb (ImportError: cannot import name 'Imports')
+pip install --force-reinstall wandb
 ```
 
 ---
@@ -115,6 +118,8 @@ sudo ldconfig
 ```python
 import os
 os.environ["PJRT_DEVICE"] = "TPU"
+os.environ["XLA_USE_BF16"] = "1"
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 # Сетка для v6e-4 (4 чипа на хосте)
 os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "2,2,1" 
 ```
@@ -148,18 +153,20 @@ jupyter notebook \
 **ВАЖНО**: Не используйте Jupyter для запуска основной тренировки на TPU. Разделение кода по ячейкам ломает механизмы инициализации XLA/PJRT. Используйте чистый Python скрипт.
 
 
-### Команда запуска:
+### Команда запуска (Standard DDP):
 ```bash
-# Убедитесь, что вы в корне проекта и .venv активирован
-export PJRT_DEVICE=TPU
-export TPU_CHIPS_PER_HOST_BOUNDS=2,2,1
-
 python experiments/train_phase1_TPU.py
+```
+
+### Команда запуска (FSDP - Рекомендуется для v6e):
+```bash
+# Позволяет использовать batch_size=4 и seq_len=4096 без OOM
+python experiments/train_phase1_TPU_fsdp.py
 ```
 
 Если нужно запустить в фоне (рекомендуется для Spot):
 ```bash
-nohup python experiments/train_phase1_TPU.py > training.log 2>&1 &
+nohup python experiments/train_phase1_TPU_fsdp.py > training.log 2>&1 &
 tail -f training.log
 ```
 

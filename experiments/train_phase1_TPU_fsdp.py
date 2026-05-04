@@ -35,7 +35,7 @@ if not hasattr(torch, "xla"):
 # Добавляем путь к src
 sys.path.append(os.getcwd())
 
-def custom_auto_wrap_policy(module, recurse, nonwrapped_numel, wrapped_module_classes=None):
+def custom_auto_wrap_policy(module, recurse, unwrapped_params, **kwargs):
     cls_name = module.__class__.__name__
     if "Qwen2DecoderLayer" in cls_name or "ModernBertLayer" in cls_name or "ModernBertBlock" in cls_name:
         return True
