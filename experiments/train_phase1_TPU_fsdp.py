@@ -69,6 +69,10 @@ def train():
         if rank == 0:
             print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
 
+    # ВАЖНО: XlaFullyShardedDataParallel требует, чтобы параметры были в FP32.
+    # Мы переводим модель в FP32 и временно на CPU, чтобы избежать OOM на одном ядре.
+    distiller.cpu().float()
+
     # Оборачиваем модель в FSDP
     # Важно: это распределит веса (и учителя, и ученика) по TPU ядрам.
     distiller = FSDP(
