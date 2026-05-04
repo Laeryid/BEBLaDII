@@ -170,8 +170,8 @@ def train():
             if rank == 0: print(f"--- [RESUME] Продолжаем с шага {global_step} ---")
 
     # Данные
-    train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='val')
+    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
     if rank == 0:
