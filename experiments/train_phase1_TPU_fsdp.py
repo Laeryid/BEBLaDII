@@ -15,13 +15,19 @@ os.environ["XLA_USE_BF16"] = "1"
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader
+from tqdm import tqdm
 import wandb
 import torch_xla.core.xla_model as xm
+import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
+import torch_xla.runtime as xr
+import torch_xla.experimental.xla_sharding as xs
+from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel as FSDP
+import numpy as np
 import subprocess, re
 from tqdm.auto import tqdm
-
-from torch_xla.distributed.fsdp import XlaFullyShardedDataParallel as FSDP
 
 # ХАК: monkey-patch torch.xla для починки gradient checkpointing
 if not hasattr(torch, "xla"):
@@ -63,6 +69,13 @@ def train():
         student_base_id="answerdotai/ModernBERT-large",
         version="v1.0", weights_map={}, device_map={"": device}, student_device=device
     )
+    # Настройка SPMD Mesh
+    num_devices = xr.global_runtime_device_count()
+    mesh_shape = (num_devices, 1)
+    device_ids = np.array(range(num_devices))
+    mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'model'))
+    xs.set_global_mesh(mesh)
+    
     # Включаем градиентный чекпоинтинг для экономии памяти TPU (иначе OOM на seq_len=4096)
     if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
         # Для XLA критически важно отключить preserve_rng_state, так как torch.utils.checkpoint
@@ -73,14 +86,10 @@ def train():
         if rank == 0:
             print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
 
-    # ВАЖНО: XlaFullyShardedDataParallel требует, чтобы параметры были в FP32.
-    # Мы переводим модель в FP32 и временно на CPU, чтобы избежать OOM на одном ядре.
-    distiller.cpu().float()
-
-    # Оборачиваем модель в FSDP
-    # Важно: это распределит веса (и учителя, и ученика) по TPU ядрам.
+    # Оборачиваем модель в SpmdFullyShardedDataParallel
     distiller = FSDP(
         distiller,
+        mesh=mesh,
         auto_wrap_policy=custom_auto_wrap_policy,
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута в XlaFullyShardedDataParallel ---")
@@ -135,8 +144,10 @@ def train():
             # Отключаем gradient_accumulation_steps для стабильности.
             loss.backward()
             
-            xm.optimizer_step(optimizer)
+            # Для SPMD FSDP используется стандартный optimizer.step()
+            optimizer.step()
             optimizer.zero_grad()
+            xm.mark_step()
             
             global_step += 1
 
