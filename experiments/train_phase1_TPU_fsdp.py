@@ -288,6 +288,20 @@ def train():
                 # Шаг оптимизатора (с встроенным глобальным clip_threshold=1.0)
                 # Внешний clip_grad_norm_ отключен во избежание RESOURCE_EXHAUSTED (sflag)
                 xm.optimizer_step(optimizer, barrier=True)
+                
+                # # --- [DEBUG ACTIVATIONS] --- (Закомментировано для экономии sflag)
+                # # if global_step == 0 and rank == 0:
+                # #     print("--- [DEBUG ACTIVATIONS] ---")
+                # #     print(f"Teacher Embeds Norm: {torch.norm(teacher_hidden[0]).item():.2f}")
+                # #     for l_idx in [20, 30, 40]:
+                # #         print(f"Teacher Target L{l_idx} Norm: {torch.norm(teacher_hidden[l_idx]).item():.2f}")
+                # #     for l_idx in [20, 30, 40]:
+                # #         print(f"Student Hidden L{l_idx} Norm (Pre-Proj): {torch.norm(student_hidden[l_idx]).item():.2f}")
+                # #     print(f"Student Input Projector Norm: {torch.norm(distiller.student_proj.input_norm.weight).item():.2f}")
+                # #     for l_idx in [20, 30, 40]:
+                # #         proj_out = distiller.student_proj.projectors[str(l_idx)](student_hidden[l_idx])
+                # #         print(f"Student Projector L{l_idx} Output Norm: {torch.norm(proj_out).item():.2f}")
+                
                 scheduler.step()
                 
                 # Локальный warmup множитель для предотвращения Optimizer Shock (ADR 002 update)
