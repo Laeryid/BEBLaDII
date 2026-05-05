@@ -191,6 +191,10 @@ def train():
         filter(lambda p: p.requires_grad, distiller.parameters()), 
         lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False
     )
+    # Сохраняем начальный LR для корректного локального вармапа
+    for param_group in optimizer.param_groups:
+        param_group['initial_lr'] = 5e-5
+
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
     criterion = DistillationLoss(cos_weight=20.0)
 
@@ -279,16 +283,17 @@ def train():
             loss.backward()
             
             if (global_step + 1) % accumulation_steps == 0:
-                # Для SPMD FSDP используется стандартный optimizer.step()
-                optimizer.step()
+                # Для SPMD FSDP используется xm.optimizer_step с Gradient Clipping
+                # clip_norm=1.0 - критически важно для bfloat16
+                xm.optimizer_step(optimizer, barrier=True, clip_norm=1.0)
                 scheduler.step()
                 
                 # Локальный warmup множитель для предотвращения Optimizer Shock (ADR 002 update)
+                # Даже если мы продолжаем с шага 14500, нам нужен плавный вход на первые 200 локальных шагов
                 if local_step < warmup_steps:
                     lr_multiplier = (local_step + 1) / warmup_steps
                     for param_group in optimizer.param_groups:
-                        # Умножаем LR, выданный шедулером, на коэффициент прогрева
-                        param_group['lr'] *= lr_multiplier
+                        param_group['lr'] = param_group.get('initial_lr', 5e-5) * lr_multiplier
                 
                 optimizer.zero_grad()
                 local_step += 1
