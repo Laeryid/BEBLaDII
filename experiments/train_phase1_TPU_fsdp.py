@@ -84,17 +84,25 @@ def debug_model_norms(model, tag, rank):
     # Получаем state_dict (в FSDP это может вызвать gather, но для пары слоев это не критично)
     sd = model.state_dict()
     
-    # Ищем веса через фильтрацию, так как префиксы могут меняться (_orig_module, _fsdp_wrapped_module и т.д.)
-    s_keys = [k for k in sd.keys() if "student.model.layers.39.mlp.Wo.weight" in k]
-    p_keys = [k for k in sd.keys() if "feature_projectors.40.proj.2.weight" in k]
-    
-    s_norm = torch.norm(sd[s_keys[0]].float()).item() if s_keys else -1.0
-    p_norm = torch.norm(sd[p_keys[0]].float()).item() if p_keys else -1.0
-    
+    # Ищем веса через фильтрацию
+    layers_to_check = [20, 30, 39]
     print(f"--- [DEBUG NORMS] {tag} ---")
-    print(f"Student L39 Wo Norm: {s_norm:.4f}")
-    print(f"Projector L40 Norm: {p_norm:.4f}")
-    if s_keys: print(f"  (Key used: {s_keys[0]})")
+    
+    for l_idx in layers_to_check:
+        # MLP Weight
+        wo_keys = [k for k in sd.keys() if f"student.model.layers.{l_idx}.mlp.Wo.weight" in k]
+        wo_norm = torch.norm(sd[wo_keys[0]].float()).item() if wo_keys else -1.0
+        
+        # LayerNorm Weight (Gamma)
+        ln_keys = [k for k in sd.keys() if f"student.model.layers.{l_idx}.attn_norm.weight" in k]
+        ln_norm = torch.norm(sd[ln_keys[0]].float()).item() if ln_keys else -1.0
+        
+        print(f"Layer {l_idx}: Wo Norm = {wo_norm:.2f}, LN Norm = {ln_norm:.2f} (Ref: 32.0)")
+
+    # Projector
+    p_keys = [k for k in sd.keys() if "feature_projectors.40.proj.2.weight" in k]
+    p_norm = torch.norm(sd[p_keys[0]].float()).item() if p_keys else -1.0
+    print(f"Projector L40 Norm: {p_norm:.2f}")
 
 def train():
     # Импорты модулей проекта
