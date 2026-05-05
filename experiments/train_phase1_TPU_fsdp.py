@@ -187,9 +187,11 @@ def train():
     from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
     
     # Используем Adafactor для HBM оптимизации
+    # clip_threshold=1.0 заменяет внешний clip_grad_norm_, разгружая компилятор XLA
     optimizer = Adafactor(
         filter(lambda p: p.requires_grad, distiller.parameters()), 
-        lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False
+        lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False,
+        clip_threshold=1.0
     )
     # Сохраняем начальный LR для корректного локального вармапа
     for param_group in optimizer.param_groups:
@@ -252,6 +254,18 @@ def train():
     # Обучение
     distiller.train()
     
+    # Собираем список "взрывоопасных" параметров ОДИН РАЗ перед циклом
+    explosive_params = []
+    for name, param in distiller.named_parameters():
+        if param.requires_grad:
+            # Студент (слои после 30) или проектор 40-го слоя
+            if (".layers." in name and any(f".layers.{i}." in name for i in range(31, 40))) or \
+                ("feature_projectors.40" in name):
+                explosive_params.append(param)
+    
+    if rank == 0:
+        print(f"--- [INFO] Выборочный клиппинг включен для {len(explosive_params)} тензоров (слои > 30) ---")
+
     local_step = 0
     warmup_steps = 200
     
@@ -283,9 +297,11 @@ def train():
             loss.backward()
             
             if (global_step + 1) % accumulation_steps == 0:
-                # Для SPMD FSDP используется xm.optimizer_step. 
-                # Клиппинг градиентов делается ПЕРЕД шагом через стандартный API.
-                torch.nn.utils.clip_grad_norm_(distiller.parameters(), 1.0)
+                # ВЫБОРОЧНЫЙ КЛИППИНГ (для обхода RESOURCE_EXHAUSTED sflag)
+                if explosive_params:
+                    torch.nn.utils.clip_grad_norm_(explosive_params, 1.0)
+                
+                # Шаг оптимизатора (с встроенным глобальным clip_threshold=1.0)
                 xm.optimizer_step(optimizer, barrier=True)
                 scheduler.step()
                 
