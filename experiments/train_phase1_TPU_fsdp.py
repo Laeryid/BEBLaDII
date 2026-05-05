@@ -12,7 +12,7 @@ os.environ["WANDB_START_METHOD"] = "thread"
 
 # 1. УСТАНОВКА ПЕРЕМЕННЫХ
 os.environ["PJRT_DEVICE"] = "TPU"
-os.environ["XLA_USE_BF16"] = "1"
+# os.environ["XLA_USE_BF16"] = "1"
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
@@ -99,7 +99,12 @@ def debug_model_norms(model, tag, rank):
         
         print(f"Layer {l_idx}: Wo Norm = {wo_norm:.2f}, LN Norm = {ln_norm:.2f} (Ref: 32.0)")
 
-    # Projector
+    # Input Projector
+    ip_keys = [k for k in sd.keys() if "input_projector.proj.0.weight" in k]
+    ip_norm = torch.norm(sd[ip_keys[0]].float()).item() if ip_keys else -1.0
+    print(f"InputProjector Norm: {ip_norm:.2f}")
+
+    # Feature Projector
     p_keys = [k for k in sd.keys() if "feature_projectors.40.proj.2.weight" in k]
     p_norm = torch.norm(sd[p_keys[0]].float()).item() if p_keys else -1.0
     print(f"Projector L40 Norm: {p_norm:.2f}")
