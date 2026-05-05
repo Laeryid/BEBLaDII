@@ -283,9 +283,10 @@ def train():
             loss.backward()
             
             if (global_step + 1) % accumulation_steps == 0:
-                # Для SPMD FSDP используется xm.optimizer_step с Gradient Clipping
-                # clip_norm=1.0 - критически важно для bfloat16
-                xm.optimizer_step(optimizer, barrier=True, clip_norm=1.0)
+                # Для SPMD FSDP используется xm.optimizer_step. 
+                # Клиппинг градиентов делается ПЕРЕД шагом через стандартный API.
+                torch.nn.utils.clip_grad_norm_(distiller.parameters(), 1.0)
+                xm.optimizer_step(optimizer, barrier=True)
                 scheduler.step()
                 
                 # Локальный warmup множитель для предотвращения Optimizer Shock (ADR 002 update)
