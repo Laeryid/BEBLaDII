@@ -389,6 +389,11 @@ if __name__ == "__main__":
         os.makedirs("./data", exist_ok=True)
         subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets/data/", "./data"], check=True)
 
+        # Скачиваем пребилт 40-слойной модели (структура)
+        os.makedirs("storage/prebuilt/latentBERT/v1.0", exist_ok=True)
+        print("--- [RANK 0] Скачивание пребилта 40-слойной модели... ---")
+        subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-weigths/prebuilt/latentBERT/v1.0/", "storage/prebuilt/latentBERT/v1.0/"], check=True)
+
         # Скачиваем чекпоинт
         try:
             # Сначала проверяем TPU чекпоинт
