@@ -145,13 +145,13 @@ class ReasoningDistiller(nn.Module):
             for idx, t in teacher_targets.items():
                 pass # self._check_nan(t, f"Teacher Target Layer {idx}")
             
-            # [DEBUG] Нормы активаций на первом шаге
-            if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
-                print(f"--- [DEBUG ACTIVATIONS] ---")
-                print(f"Teacher Embeds Norm: {torch.norm(teacher_embeddings.float()).item():.2f}")
-                for s_idx in self.layer_mapping.keys():
-                    t_norm = torch.norm(teacher_targets[s_idx].float()).item()
-                    print(f"Teacher Target L{s_idx} Norm: {t_norm:.2f}")
+            # [DEBUG] Нормы активаций на первом шаге (Закомментировано для sflag)
+            # if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
+            #     print(f"--- [DEBUG ACTIVATIONS] ---")
+            #     print(f"Teacher Embeds Norm: {torch.norm(teacher_embeddings.float()).item():.2f}")
+            #     for s_idx in self.layer_mapping.keys():
+            #         t_norm = torch.norm(teacher_targets[s_idx].float()).item()
+            #         print(f"Teacher Target L{s_idx} Norm: {t_norm:.2f}")
             
         # 2. Подготовка входа для Student
         student_inputs_embeds, mu, logvar = self.input_projector(teacher_embeddings)
@@ -170,19 +170,19 @@ class ReasoningDistiller(nn.Module):
         # 4. Проецирование состояний ученика обратно в пространство Qwen
         projected_student_states = {}
         for idx, h_state in {idx: student_outputs.hidden_states[idx] for idx in self.layer_mapping.keys()}.items():
-            if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
-                print(f"Student Hidden L{idx} Norm (Pre-Proj): {torch.norm(h_state.float()).item():.2f}")
+            # if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
+            #     print(f"Student Hidden L{idx} Norm (Pre-Proj): {torch.norm(h_state.float()).item():.2f}")
 
             proj = self.feature_projectors[str(idx)](h_state)
             # self._check_nan(proj, f"FeatureProjector {idx} Output")
             projected_student_states[idx] = proj
 
-        if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
-            print(f"Student Input Projector Norm: {torch.norm(student_inputs_embeds.float()).item():.2f}")
-            for s_idx in self.layer_mapping.keys():
-                p_norm = torch.norm(projected_student_states[s_idx].float()).item()
-                print(f"Student Projector L{s_idx} Output Norm: {p_norm:.2f}")
-            self._debug_first_step = False
+        # if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
+        #     print(f"Student Input Projector Norm: {torch.norm(student_inputs_embeds.float()).item():.2f}")
+        #     for s_idx in self.layer_mapping.keys():
+        #         p_norm = torch.norm(projected_student_states[s_idx].float()).item()
+        #         print(f"Student Projector L{s_idx} Output Norm: {p_norm:.2f}")
+        #     self._debug_first_step = False
 
         return projected_student_states, teacher_targets, mu, logvar
 
