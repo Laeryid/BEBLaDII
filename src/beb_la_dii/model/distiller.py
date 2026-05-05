@@ -125,6 +125,9 @@ class ReasoningDistiller(nn.Module):
             
         t_input_ids = input_ids.to(teacher_device)
         t_attention_mask = attention_mask.to(teacher_device) if attention_mask is not None else None
+        
+        # ГАРАНТИРУЕМ, что учитель в eval режиме (FSDP может переключить его в train рекурсивно)
+        self.teacher.eval()
 
         with torch.no_grad():
             teacher_outputs = self.teacher(

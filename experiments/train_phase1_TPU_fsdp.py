@@ -78,6 +78,24 @@ def custom_shard_output(output, mesh):
         xs.mark_sharding(logvar, mesh, ('fsdp',) + (None,) * (logvar.dim() - 1))
     return None
 
+def debug_model_norms(model, tag, rank):
+    """Выводит нормы весов для отладки загрузки и FSDP."""
+    if rank != 0: return
+    # Получаем state_dict (в FSDP это может вызвать gather, но для пары слоев это не критично)
+    sd = model.state_dict()
+    
+    # Ищем веса через фильтрацию, так как префиксы могут меняться (_orig_module, _fsdp_wrapped_module и т.д.)
+    s_keys = [k for k in sd.keys() if "student.model.layers.39.mlp.Wo.weight" in k]
+    p_keys = [k for k in sd.keys() if "feature_projectors.40.proj.2.weight" in k]
+    
+    s_norm = torch.norm(sd[s_keys[0]].float()).item() if s_keys else -1.0
+    p_norm = torch.norm(sd[p_keys[0]].float()).item() if p_keys else -1.0
+    
+    print(f"--- [DEBUG NORMS] {tag} ---")
+    print(f"Student L39 Wo Norm: {s_norm:.4f}")
+    print(f"Projector L40 Norm: {p_norm:.4f}")
+    if s_keys: print(f"  (Key used: {s_keys[0]})")
+
 def train():
     # Импорты модулей проекта
     from src.beb_la_dii.model.assembler import ModelAssembler
@@ -113,29 +131,31 @@ def train():
     #     if rank == 0:
     #         print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
 
-    # Загрузка последнего чекпоинта (если есть) ДО обертки FSDP
-    # Явная заморозка Учителя, чтобы XLA не строил графы активаций для него
-    for name, param in distiller.named_parameters():
-        if "teacher" in name:
-            param.requires_grad = False
+    # Оборачиваем модель в SpmdFullyShardedDataParallel
+    # 0. Нормы ДО загрузки
+    debug_model_norms(distiller, "BEFORE LOADING", rank)
 
     if os.path.exists("latest_checkpoint.pt"):
         ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
         
-        # Очищаем префикс _orig_module. и исключаем веса учителя из загрузки
+        # Очищаем префиксы и приводим к единому формату .model
         cleaned_sd = {}
         for k, v in ckpt['model_state_dict'].items():
             new_k = k.replace("_orig_module.", "")
+            # Схлопываем двойной .model.model в одинарный .model (совместимость с Kaggle 5400)
+            new_k = new_k.replace("student.model.model.", "student.model.")
+            
             if "teacher" not in new_k:
                 cleaned_sd[new_k] = v
                 
         incompatible_keys = distiller.load_state_dict(cleaned_sd, strict=False)
         if rank == 0: 
-            print(f"--- [RESUME] Чекпоинт загружен (только веса студента) ---")
+            print(f"--- [RESUME] Чекпоинт загружен (Robust key mapping applied) ---")
             if len(incompatible_keys.missing_keys) > 0:
                 print(f"--- [RESUME WARNING] Missing keys (first 10): {incompatible_keys.missing_keys[:10]}")
-            if len(incompatible_keys.unexpected_keys) > 0:
-                print(f"--- [RESUME WARNING] Unexpected keys (first 10): {incompatible_keys.unexpected_keys[:10]}")
+
+        # 1. Нормы ПОСЛЕ загрузки (CPU state)
+        debug_model_norms(distiller, "AFTER LOADING (CPU)", rank)
 
     # Оборачиваем модель в SpmdFullyShardedDataParallel
     distiller = FSDP(
@@ -145,6 +165,9 @@ def train():
         shard_output=custom_shard_output
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута в XlaFullyShardedDataParallel ---")
+    
+    # 2. Нормы ПОСЛЕ FSDP (Sharded/TPU state)
+    debug_model_norms(distiller, "AFTER FSDP WRAP (TPU)", rank)
 
     # Настройка оптимизатора и планировщика (согласно ADR 002)
     from transformers.optimization import Adafactor
