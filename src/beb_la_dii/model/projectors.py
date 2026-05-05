@@ -78,11 +78,9 @@ class FeatureProjector(BEComponent):
     """
     def __init__(self, component_id="bert_to_qwen_feature", version="v1.0", config=None):
         input_dim = config.get("input_dim", 1024) if config else 1024
+        # DeepSeek-R1-Distill-Qwen-7B is based on Qwen2.5, hidden_size=3584
         output_dim = config.get("output_dim", 3584) if config else 3584
         super().__init__(component_id, version, {"input_dim": input_dim, "output_dim": output_dim})
-        
-        # Input stabilization
-        self.input_norm = nn.LayerNorm(input_dim, eps=1e-6)
         
         # Linear approximation for residual connection
         self.residual_proj = nn.Linear(input_dim, output_dim)
@@ -90,11 +88,9 @@ class FeatureProjector(BEComponent):
         self.proj = nn.Sequential(
             nn.Linear(input_dim, input_dim * 2),
             nn.GELU(),
-            nn.Linear(input_dim * 2, output_dim)
+            nn.Linear(input_dim * 2, output_dim),
+            nn.LayerNorm(output_dim, eps=1e-6)
         )
-        # Final stabilization after residual
-        self.final_norm = nn.LayerNorm(output_dim, eps=1e-6)
-        
         self._init_weights()
 
     def _init_weights(self):
@@ -121,8 +117,6 @@ class FeatureProjector(BEComponent):
         return instance
         
     def forward(self, x):
-        x = self.input_norm(x)
         res = self.residual_proj(x)
         out = self.proj(x)
-        # Apply normalization AFTER adding residual to keep values in bfloat16 safe range
-        return self.final_norm(out + res)
+        return out + res

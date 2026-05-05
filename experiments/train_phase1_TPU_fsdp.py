@@ -8,11 +8,10 @@ torch._dynamo.config.disable = True
 
 # Устанавливаем ключ W&B напрямую
 os.environ["WANDB_API_KEY"] = "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"
-os.environ["WANDB_START_METHOD"] = "thread"
 
 # 1. УСТАНОВКА ПЕРЕМЕННЫХ
 os.environ["PJRT_DEVICE"] = "TPU"
-# os.environ["XLA_USE_BF16"] = "1"
+os.environ["XLA_USE_BF16"] = "1"
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 
 import torch
@@ -20,7 +19,6 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import wandb
-wandb.require("core")
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
@@ -78,37 +76,6 @@ def custom_shard_output(output, mesh):
         xs.mark_sharding(logvar, mesh, ('fsdp',) + (None,) * (logvar.dim() - 1))
     return None
 
-def debug_model_norms(model, tag, rank):
-    """Выводит нормы весов для отладки загрузки и FSDP."""
-    if rank != 0: return
-    # Получаем state_dict (в FSDP это может вызвать gather, но для пары слоев это не критично)
-    sd = model.state_dict()
-    
-    # Ищем веса через фильтрацию
-    layers_to_check = [20, 30, 39]
-    print(f"--- [DEBUG NORMS] {tag} ---")
-    
-    for l_idx in layers_to_check:
-        # MLP Weight
-        wo_keys = [k for k in sd.keys() if f"student.model.layers.{l_idx}.mlp.Wo.weight" in k]
-        wo_norm = torch.norm(sd[wo_keys[0]].float()).item() if wo_keys else -1.0
-        
-        # LayerNorm Weight (Gamma)
-        ln_keys = [k for k in sd.keys() if f"student.model.layers.{l_idx}.attn_norm.weight" in k]
-        ln_norm = torch.norm(sd[ln_keys[0]].float()).item() if ln_keys else -1.0
-        
-        print(f"Layer {l_idx}: Wo Norm = {wo_norm:.2f}, LN Norm = {ln_norm:.2f} (Ref: 32.0)")
-
-    # Input Projector
-    ip_keys = [k for k in sd.keys() if "input_projector.proj.0.weight" in k]
-    ip_norm = torch.norm(sd[ip_keys[0]].float()).item() if ip_keys else -1.0
-    print(f"InputProjector Norm: {ip_norm:.2f}")
-
-    # Feature Projector
-    p_keys = [k for k in sd.keys() if "feature_projectors.40.proj.2.weight" in k]
-    p_norm = torch.norm(sd[p_keys[0]].float()).item() if p_keys else -1.0
-    print(f"Projector L40 Norm: {p_norm:.2f}")
-
 def train():
     # Импорты модулей проекта
     from src.beb_la_dii.model.assembler import ModelAssembler
@@ -120,13 +87,12 @@ def train():
     rank = xm.get_local_ordinal()
     print(f"[{rank}] Запущено на ядре: {device}")
 
-    # Сборка модели с использованием локального 40-слойного пребилта
-    student_prebuilt = "storage/prebuilt/latentBERT/v1.0"
+    # Сборка модели
     assembler = ModelAssembler()
     distiller = assembler.assemble_phase1_distiller(
         teacher_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-        student_base_id=student_prebuilt,
-        version="v1.0", weights_map=None, device_map={"": device}, student_device=device
+        student_base_id="answerdotai/ModernBERT-large",
+        version="v1.0", weights_map={}, device_map={"": device}, student_device=device
     )
     # Настройка SPMD Mesh
     num_devices = xr.global_runtime_device_count()
@@ -144,31 +110,21 @@ def train():
     #     if rank == 0:
     #         print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
 
-    # Оборачиваем модель в SpmdFullyShardedDataParallel
-    # 0. Нормы ДО загрузки (ОТКЛЮЧЕНО ДЛЯ ЭКОНОМИИ sflag)
-    # debug_model_norms(distiller, "BEFORE LOADING", rank)
+    # Загрузка последнего чекпоинта (если есть) ДО обертки FSDP
+    # Явная заморозка Учителя, чтобы XLA не строил графы активаций для него
+    for name, param in distiller.named_parameters():
+        if "teacher" in name:
+            param.requires_grad = False
 
     if os.path.exists("latest_checkpoint.pt"):
         ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
-        
-        # Очищаем префиксы и приводим к единому формату .model
-        cleaned_sd = {}
-        for k, v in ckpt['model_state_dict'].items():
-            new_k = k.replace("_orig_module.", "")
-            # Схлопываем двойной .model.model в одинарный .model (совместимость с Kaggle 5400)
-            new_k = new_k.replace("student.model.model.", "student.model.")
-            
-            if "teacher" not in new_k:
-                cleaned_sd[new_k] = v
-                
-        incompatible_keys = distiller.load_state_dict(cleaned_sd, strict=False)
+        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
         if rank == 0: 
-            print(f"--- [RESUME] Чекпоинт загружен (Robust key mapping applied) ---")
+            print(f"--- [RESUME] Чекпоинт загружен ---")
             if len(incompatible_keys.missing_keys) > 0:
                 print(f"--- [RESUME WARNING] Missing keys (first 10): {incompatible_keys.missing_keys[:10]}")
-
-        # 1. Нормы ПОСЛЕ загрузки (ОТКЛЮЧЕНО ДЛЯ ЭКОНОМИИ sflag)
-        # debug_model_norms(distiller, "AFTER LOADING (CPU)", rank)
+            if len(incompatible_keys.unexpected_keys) > 0:
+                print(f"--- [RESUME WARNING] Unexpected keys (first 10): {incompatible_keys.unexpected_keys[:10]}")
 
     # Оборачиваем модель в SpmdFullyShardedDataParallel
     distiller = FSDP(
@@ -178,38 +134,33 @@ def train():
         shard_output=custom_shard_output
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута в XlaFullyShardedDataParallel ---")
-    
-    # 2. Нормы ПОСЛЕ FSDP (ОТКЛЮЧЕНО ДЛЯ ЭКОНОМИИ sflag)
-    # debug_model_norms(distiller, "AFTER FSDP WRAP (TPU)", rank)
 
     # Настройка оптимизатора и планировщика (согласно ADR 002)
     from transformers.optimization import Adafactor
     from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
     
     # Используем Adafactor для HBM оптимизации
-    # clip_threshold=1.0 заменяет внешний clip_grad_norm_, разгружая компилятор XLA
     optimizer = Adafactor(
         filter(lambda p: p.requires_grad, distiller.parameters()), 
         lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False,
         clip_threshold=1.0
     )
-    # Сохраняем начальный LR для корректного локального вармапа
-    for param_group in optimizer.param_groups:
-        param_group['initial_lr'] = 5e-5
-
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
     criterion = DistillationLoss(cos_weight=20.0)
 
     global_step = 0
-    # Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)
+    # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
     if os.path.exists("latest_checkpoint.pt"):
-        # Используем уже загруженный в память ckpt (или загружаем заново, если он был удален)
+        # Загружаем на CPU, чтобы не забивать HBM
         ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
         if rank == 0:
             print(f"--- [DEBUG] Ключи в чекпоинте: {list(ckpt.keys())} ---")
         
-        # Веса загружать здесь НЕЛЬЗЯ, так как модель уже обернута в FSDP, 
-        # и это сломает шардирование (xs.mark_sharding), что приведет к OOM!
+        # 1. Веса
+        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+        if rank == 0: 
+            print(f"--- [RESUME] Веса загружены ---")
+            if incompatible_keys.missing_keys: print(f"Missing: {len(incompatible_keys.missing_keys)}")
         
         # 2. Оптимизатор
         if 'optimizer_state_dict' in ckpt:
@@ -237,10 +188,10 @@ def train():
             global_step = 5400
             if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
 
-    # Данные (Используем SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
-    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
-    accumulation_steps = 1
+    # Данные (Уменьшаем батч для HBM, добавляем накопление)
+    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
+    val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='val')
+    accumulation_steps = 4
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
     if rank == 0:
@@ -253,9 +204,6 @@ def train():
 
     # Обучение
     distiller.train()
-    
-    local_step = 0
-    warmup_steps = 200
     
     for epoch in range(1):
         progress_bar = tqdm(train_loader, disable=(rank != 0), desc=f"Epoch {epoch}")
@@ -285,34 +233,10 @@ def train():
             loss.backward()
             
             if (global_step + 1) % accumulation_steps == 0:
-                # Шаг оптимизатора (с встроенным глобальным clip_threshold=1.0)
-                # Внешний clip_grad_norm_ отключен во избежание RESOURCE_EXHAUSTED (sflag)
+                # Для SPMD FSDP используется стандартный optimizer.step()
                 xm.optimizer_step(optimizer, barrier=True)
-                
-                # # --- [DEBUG ACTIVATIONS] --- (Закомментировано для экономии sflag)
-                # # if global_step == 0 and rank == 0:
-                # #     print("--- [DEBUG ACTIVATIONS] ---")
-                # #     print(f"Teacher Embeds Norm: {torch.norm(teacher_targets[0]).item():.2f}")
-                # #     for l_idx in [20, 30, 40]:
-                # #         print(f"Teacher Target L{l_idx} Norm: {torch.norm(teacher_targets[l_idx]).item():.2f}")
-                # #     for l_idx in [20, 30, 40]:
-                # #         print(f"Student Hidden L{l_idx} Norm (Pre-Proj): {torch.norm(student_states[l_idx]).item():.2f}")
-                # #     print(f"Student Input Projector Norm: {torch.norm(distiller.student_proj.input_norm.weight).item():.2f}")
-                # #     for l_idx in [20, 30, 40]:
-                # #         proj_out = distiller.student_proj.projectors[str(l_idx)](student_states[l_idx])
-                # #         print(f"Student Projector L{l_idx} Output Norm: {torch.norm(proj_out).item():.2f}")
-                
                 scheduler.step()
-                
-                # Локальный warmup множитель для предотвращения Optimizer Shock (ADR 002 update)
-                # Даже если мы продолжаем с шага 14500, нам нужен плавный вход на первые 200 локальных шагов
-                if local_step < warmup_steps:
-                    lr_multiplier = (local_step + 1) / warmup_steps
-                    for param_group in optimizer.param_groups:
-                        param_group['lr'] = param_group.get('initial_lr', 5e-5) * lr_multiplier
-                
                 optimizer.zero_grad()
-                local_step += 1
             
             # Извлекаем скаляры, чтобы не держать тензоры в HBM как выходы графа
             if rank == 0 and (global_step + 1) % 10 == 0:
@@ -338,11 +262,10 @@ def train():
                         "train/lr": lr,
                         "global_step": global_step,
                     }
-                    # Послойное логирование только для контрольных точек (20, 30, 40)
                     for k, val in loss_scalars.items():
-                        if any(f"l{i}_" in k for i in [20, 30, 40]):
+                        if k.startswith("l") and ("_mse" in k or "_cos" in k):
                             log_dict[f"train/layers/{k}"] = val
-                        elif not k.startswith("l"):
+                        else:
                             log_dict[f"train/{k}"] = val
                     wandb.log(log_dict, step=global_step)
                 
@@ -374,13 +297,13 @@ def train():
                         os.remove(prev_ckpt)
                         
                     print(f"--- [SAVE] Легкий чекпоинт {local_ckpt_name} сохранен. Отправка в GCS... ---")
-                    # Отправляем синхронно (без Popen), чтобы избежать зависаний XLA процессов
-                    subprocess.run(f"gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/ && gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/latest_checkpoint.pt", shell=True, check=False)
+                    # Отправляем уникальный файл в фоновом режиме, чтобы избежать перезаписи при медленном интернете
+                    subprocess.Popen(f"gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/ && gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/latest_checkpoint.pt", shell=True)
 
             if global_step % 500 == 0:
                 if rank == 0: print(f"\n--- [RANK 0] Валидация (Шаг {global_step}) ---")
                 distiller.eval()
-                val_loss_sum = None
+                val_loss_sum = 0.0
                 val_metrics_sums = {}
                 val_steps = 0
                 max_val_steps = 50
@@ -396,34 +319,26 @@ def train():
                         v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
                         v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
                         
-                        # Аккумулируем тензоры напрямую на TPU (без блокирующих .item())
-                        v_loss_det = v_loss.detach()
-                        if val_loss_sum is None:
-                            val_loss_sum = v_loss_det
-                        else:
-                            val_loss_sum += v_loss_det
-                            
-                        for k, v in v_metrics.items():
-                            v_det = v.detach() if torch.is_tensor(v) else torch.tensor(v, device=device)
-                            if k not in val_metrics_sums:
-                                val_metrics_sums[k] = v_det
-                            else:
-                                val_metrics_sums[k] += v_det
+                        v_loss_scalar = v_loss.item()
+                        v_metrics_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in v_metrics.items()}
                         
                         # Удаляем тензоры до компиляции
-                        del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics, v_loss_det
+                        del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics
                         
                         xm.mark_step()
+                        
+                        val_loss_sum += v_loss_scalar
+                        for k, val in v_metrics_scalars.items():
+                            val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + val
                         val_steps += 1
                 
                 if rank == 0:
-                    # Извлекаем все метрики на CPU ровно один раз
-                    avg_val_loss = (val_loss_sum.item() / val_steps) if val_steps > 0 and val_loss_sum is not None else 0
+                    avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
                     print(f"[{global_step}] Validation - Loss: {avg_val_loss:.4f}")
                     
                     val_log_dict = {"val/loss": avg_val_loss, "global_step": global_step}
                     for k, v_sum in val_metrics_sums.items():
-                        avg_val = (v_sum.item() / val_steps) if torch.is_tensor(v_sum) else (v_sum / val_steps)
+                        avg_val = v_sum / val_steps
                         if k.startswith("l") and ("_mse" in k or "_cos" in k):
                             val_log_dict[f"val/layers/{k}"] = avg_val
                         else:
@@ -446,11 +361,6 @@ if __name__ == "__main__":
         
         os.makedirs("./data", exist_ok=True)
         subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets/data/", "./data"], check=True)
-
-        # Скачиваем пребилт 40-слойной модели (структура)
-        os.makedirs("storage/prebuilt/latentBERT/v1.0", exist_ok=True)
-        print("--- [RANK 0] Скачивание пребилта 40-слойной модели... ---")
-        subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-weigths/prebuilt/latentBERT/v1.0/", "storage/prebuilt/latentBERT/v1.0/"], check=True)
 
         # Скачиваем чекпоинт
         try:

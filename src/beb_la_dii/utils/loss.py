@@ -47,16 +47,14 @@ class DistillationLoss(nn.Module):
                     
                     # 2. Cosine Similarity Loss (Masked)
                     cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
-                    avg_cos = (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
-                    cos_l = 1.0 - avg_cos
+                    cos_l = 1.0 - (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
                 else:
                     # 1. MSE Loss
                     mse_l = self.mse(s_h, t_h)
                     
                     # 2. Cosine Similarity Loss
                     cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
-                    avg_cos = cos_sim.mean()
-                    cos_l = 1.0 - avg_cos
+                    cos_l = 1.0 - cos_sim.mean()
                 
                 # Накопление по компонентам
                 mse_total += weight * mse_l
@@ -70,6 +68,7 @@ class DistillationLoss(nn.Module):
                 layer_l = self.mse_weight * mse_l + self.cos_weight * cos_l
                 total_loss += weight * layer_l
         
+        metrics["mse"] = mse_total.detach() if torch.is_tensor(mse_total) else mse_total
         metrics["cosine"] = cos_total.detach() if torch.is_tensor(cos_total) else cos_total
         
         # Вычисление KL-Divergence, если переданы параметры головки

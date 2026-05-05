@@ -50,8 +50,8 @@ class ReasoningDistiller(nn.Module):
             load_path,
             torch_dtype=torch.bfloat16,
             device_map=device_map if not XLA_AVAILABLE else None,
-            trust_remote_code=True
-            # attn_implementation="sdpa" - Removed for stability on TPU
+            trust_remote_code=True,
+            attn_implementation="sdpa"
         )
         for param in self.teacher.parameters():
             param.requires_grad = False
@@ -98,7 +98,7 @@ class ReasoningDistiller(nn.Module):
         self.layer_mapping = {
             20: 14, # Middle
             30: 21, # 3/4
-            40: 28  # Last (Output of final block)
+            40: 28  # Last
         }
 
     def _check_nan(self, tensor, name):
@@ -125,9 +125,6 @@ class ReasoningDistiller(nn.Module):
             
         t_input_ids = input_ids.to(teacher_device)
         t_attention_mask = attention_mask.to(teacher_device) if attention_mask is not None else None
-        
-        # ГАРАНТИРУЕМ, что учитель в eval режиме (FSDP может переключить его в train рекурсивно)
-        self.teacher.eval()
 
         with torch.no_grad():
             teacher_outputs = self.teacher(
@@ -144,14 +141,6 @@ class ReasoningDistiller(nn.Module):
             }
             for idx, t in teacher_targets.items():
                 pass # self._check_nan(t, f"Teacher Target Layer {idx}")
-            
-            # [DEBUG] Нормы активаций на первом шаге (Закомментировано для sflag)
-            # if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
-            #     print(f"--- [DEBUG ACTIVATIONS] ---")
-            #     print(f"Teacher Embeds Norm: {torch.norm(teacher_embeddings.float()).item():.2f}")
-            #     for s_idx in self.layer_mapping.keys():
-            #         t_norm = torch.norm(teacher_targets[s_idx].float()).item()
-            #         print(f"Teacher Target L{s_idx} Norm: {t_norm:.2f}")
             
         # 2. Подготовка входа для Student
         student_inputs_embeds, mu, logvar = self.input_projector(teacher_embeddings)
@@ -170,20 +159,9 @@ class ReasoningDistiller(nn.Module):
         # 4. Проецирование состояний ученика обратно в пространство Qwen
         projected_student_states = {}
         for idx, h_state in {idx: student_outputs.hidden_states[idx] for idx in self.layer_mapping.keys()}.items():
-            # if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
-            #     print(f"Student Hidden L{idx} Norm (Pre-Proj): {torch.norm(h_state.float()).item():.2f}")
-
             proj = self.feature_projectors[str(idx)](h_state)
             # self._check_nan(proj, f"FeatureProjector {idx} Output")
             projected_student_states[idx] = proj
-
-        # if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
-        #     print(f"Student Input Projector Norm: {torch.norm(student_inputs_embeds.float()).item():.2f}")
-        #     for s_idx in self.layer_mapping.keys():
-        #         p_norm = torch.norm(projected_student_states[s_idx].float()).item()
-        #         print(f"Student Projector L{s_idx} Output Norm: {p_norm:.2f}")
-        #     self._debug_first_step = False
-
         return projected_student_states, teacher_targets, mu, logvar
 
     def state_dict(self, *args, destination=None, prefix='', keep_vars=False):
