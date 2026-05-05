@@ -145,8 +145,8 @@ def train():
     #         print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
 
     # Оборачиваем модель в SpmdFullyShardedDataParallel
-    # 0. Нормы ДО загрузки
-    debug_model_norms(distiller, "BEFORE LOADING", rank)
+    # 0. Нормы ДО загрузки (ОТКЛЮЧЕНО ДЛЯ ЭКОНОМИИ sflag)
+    # debug_model_norms(distiller, "BEFORE LOADING", rank)
 
     if os.path.exists("latest_checkpoint.pt"):
         ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
@@ -167,8 +167,8 @@ def train():
             if len(incompatible_keys.missing_keys) > 0:
                 print(f"--- [RESUME WARNING] Missing keys (first 10): {incompatible_keys.missing_keys[:10]}")
 
-        # 1. Нормы ПОСЛЕ загрузки (CPU state)
-        debug_model_norms(distiller, "AFTER LOADING (CPU)", rank)
+        # 1. Нормы ПОСЛЕ загрузки (ОТКЛЮЧЕНО ДЛЯ ЭКОНОМИИ sflag)
+        # debug_model_norms(distiller, "AFTER LOADING (CPU)", rank)
 
     # Оборачиваем модель в SpmdFullyShardedDataParallel
     distiller = FSDP(
@@ -179,8 +179,8 @@ def train():
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута в XlaFullyShardedDataParallel ---")
     
-    # 2. Нормы ПОСЛЕ FSDP (Sharded/TPU state)
-    debug_model_norms(distiller, "AFTER FSDP WRAP (TPU)", rank)
+    # 2. Нормы ПОСЛЕ FSDP (ОТКЛЮЧЕНО ДЛЯ ЭКОНОМИИ sflag)
+    # debug_model_norms(distiller, "AFTER FSDP WRAP (TPU)", rank)
 
     # Настройка оптимизатора и планировщика (согласно ADR 002)
     from transformers.optimization import Adafactor
@@ -324,10 +324,11 @@ def train():
                         "train/lr": lr,
                         "global_step": global_step,
                     }
+                    # Послойное логирование только для контрольных точек (20, 30, 40)
                     for k, val in loss_scalars.items():
-                        if k.startswith("l") and ("_mse" in k or "_cos" in k):
+                        if any(f"l{i}_" in k for i in [20, 30, 40]):
                             log_dict[f"train/layers/{k}"] = val
-                        else:
+                        elif not k.startswith("l"):
                             log_dict[f"train/{k}"] = val
                     wandb.log(log_dict, step=global_step)
                 
