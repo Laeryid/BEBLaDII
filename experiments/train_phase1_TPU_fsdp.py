@@ -196,9 +196,9 @@ def train():
             global_step = 5400
             if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
 
-    # Данные (МНОГОПРОЦЕССОРНЫЙ torchrun: батч 1 на каждое ядро = суммарно 4)
-    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=2048, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=2048, split='val')
+    # Данные (ОДНОПРОЦЕССОРНЫЙ SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
+    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='train')
+    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val')
     accumulation_steps = 4
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
