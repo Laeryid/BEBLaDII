@@ -89,12 +89,13 @@ def train():
     rank = xm.get_local_ordinal()
     print(f"[{rank}] Запущено на ядре: {device}")
 
-    # Сборка модели
+    # Сборка модели с использованием локального 40-слойного пребилта
+    student_prebuilt = "storage/prebuilt/latentBERT/v1.0"
     assembler = ModelAssembler()
     distiller = assembler.assemble_phase1_distiller(
         teacher_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
-        student_base_id="answerdotai/ModernBERT-large",
-        version="v1.0", weights_map={}, device_map={"": device}, student_device=device
+        student_base_id=student_prebuilt,
+        version="v1.0", weights_map=None, device_map={"": device}, student_device=device
     )
     # Настройка SPMD Mesh
     num_devices = xr.global_runtime_device_count()
@@ -230,16 +231,6 @@ def train():
                 batch[k] = v
             
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
-            
-            # DEBUG: Проверка норм тензоров на первом шаге
-            if global_step == 14500 and rank == 0:
-                print("\n--- [DEBUG] Tensor Norms at Step 14500 ---")
-                for idx in [20, 30, 40]:
-                    s_norm = student_states[idx].norm().item()
-                    t_norm = teacher_targets[idx].norm().item()
-                    print(f"Layer {idx}: Student Norm = {s_norm:.4f}, Teacher Norm = {t_norm:.4f}")
-                print("------------------------------------------\n")
-
             loss, loss_metrics = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
             
             # Делим лосс на шаги накопления

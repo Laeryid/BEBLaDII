@@ -98,7 +98,7 @@ class ReasoningDistiller(nn.Module):
         self.layer_mapping = {
             20: 14, # Middle
             30: 21, # 3/4
-            40: 28  # Last
+            40: 27  # Last (Pre-norm)
         }
 
     def _check_nan(self, tensor, name):
