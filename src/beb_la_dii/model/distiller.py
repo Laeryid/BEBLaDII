@@ -50,8 +50,8 @@ class ReasoningDistiller(nn.Module):
             load_path,
             torch_dtype=torch.bfloat16,
             device_map=device_map if not XLA_AVAILABLE else None,
-            trust_remote_code=True,
-            attn_implementation="sdpa"
+            trust_remote_code=True
+            # attn_implementation="sdpa" - Removed for stability on TPU
         )
         for param in self.teacher.parameters():
             param.requires_grad = False
@@ -98,7 +98,7 @@ class ReasoningDistiller(nn.Module):
         self.layer_mapping = {
             20: 14, # Middle
             30: 21, # 3/4
-            40: 27  # Last (Pre-norm)
+            40: 28  # Last (Output of final block)
         }
 
     def _check_nan(self, tensor, name):
@@ -170,6 +170,9 @@ class ReasoningDistiller(nn.Module):
         # 4. Проецирование состояний ученика обратно в пространство Qwen
         projected_student_states = {}
         for idx, h_state in {idx: student_outputs.hidden_states[idx] for idx in self.layer_mapping.keys()}.items():
+            if getattr(self, "_debug_first_step", True) and XLA_AVAILABLE and xm.get_local_ordinal() == 0:
+                print(f"Student Hidden L{idx} Norm (Pre-Proj): {torch.norm(h_state.float()).item():.2f}")
+
             proj = self.feature_projectors[str(idx)](h_state)
             # self._check_nan(proj, f"FeatureProjector {idx} Output")
             projected_student_states[idx] = proj

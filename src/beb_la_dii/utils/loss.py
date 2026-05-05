@@ -47,14 +47,16 @@ class DistillationLoss(nn.Module):
                     
                     # 2. Cosine Similarity Loss (Masked)
                     cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
-                    cos_l = 1.0 - (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+                    avg_cos = (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+                    cos_l = 1.0 - avg_cos
                 else:
                     # 1. MSE Loss
                     mse_l = self.mse(s_h, t_h)
                     
                     # 2. Cosine Similarity Loss
                     cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
-                    cos_l = 1.0 - cos_sim.mean()
+                    avg_cos = cos_sim.mean()
+                    cos_l = 1.0 - avg_cos
                 
                 # Накопление по компонентам
                 mse_total += weight * mse_l
@@ -73,7 +75,7 @@ class DistillationLoss(nn.Module):
                     try:
                         import torch_xla.core.xla_model as xm
                         if xm.get_local_ordinal() == 0:
-                            print(f"--- [DEBUG LOSS Layer {layer_idx}] MSE: {mse_l.item():.4f}, Cosine: {cos_l.item():.4f}, Student Norm: {torch.norm(s_h).item():.2f}")
+                            print(f"--- [DEBUG LOSS Layer {layer_idx}] MSE: {mse_l.item():.4f}, Raw Cosine: {avg_cos.item():.4f}, Student Norm: {torch.norm(s_h).item():.2f}")
                     except ImportError:
                         pass
         
