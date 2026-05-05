@@ -67,8 +67,18 @@ class DistillationLoss(nn.Module):
                 # Комбинированный лосс для слоя с учетом балансировки
                 layer_l = self.mse_weight * mse_l + self.cos_weight * cos_l
                 total_loss += weight * layer_l
+
+                # [DEBUG] Детализация первого шага
+                if getattr(self, "_debug_loss", True):
+                    try:
+                        import torch_xla.core.xla_model as xm
+                        if xm.get_local_ordinal() == 0:
+                            print(f"--- [DEBUG LOSS Layer {layer_idx}] MSE: {mse_l.item():.4f}, Cosine: {cos_l.item():.4f}, Student Norm: {torch.norm(s_h).item():.2f}")
+                    except ImportError:
+                        pass
         
-        metrics["mse"] = mse_total.detach() if torch.is_tensor(mse_total) else mse_total
+        if getattr(self, "_debug_loss", True):
+            self._debug_loss = False
         metrics["cosine"] = cos_total.detach() if torch.is_tensor(cos_total) else cos_total
         
         # Вычисление KL-Divergence, если переданы параметры головки
