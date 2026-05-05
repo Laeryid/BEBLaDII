@@ -13,6 +13,9 @@ os.environ["WANDB_API_KEY"] = "wandb_v1_N3L7wim44bEpL8Q5ENi5uxddDct_IbDFljuVVeMV
 os.environ["PJRT_DEVICE"] = "TPU"
 os.environ["XLA_USE_BF16"] = "1"
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+# Для v6e-4 критично указать топологию для PJRT
+os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "2,2,1" 
+os.environ["TPU_NUM_DEVICES"] = "4"
 
 import torch
 import torch.nn as nn
@@ -193,9 +196,9 @@ def train():
             global_step = 5400
             if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
 
-    # Данные (ОДНОПРОЦЕССОРНЫЙ SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
-    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val')
+    # Данные (МНОГОПРОЦЕССОРНЫЙ torchrun: батч 1 на каждое ядро = суммарно 4)
+    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=2048, split='train')
+    val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=2048, split='val')
     accumulation_steps = 4
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
@@ -204,8 +207,8 @@ def train():
             wandb.init(project="BEBLaDII", name="tpu-v6e-spmd", resume="allow")
         except Exception as e:
             print(f"--- [WANDB ERROR] Ошибка инициализации: {e} ---")
-            print("--- Переключение W&B в offline режим ---")
-            wandb.init(project="BEBLaDII", name="tpu-v6e-spmd", mode="offline", resume="allow")
+            print("--- Включение W&B ---")
+            wandb.init(project="BEBLaDII", name="tpu-v6e-spmd", mode="online", resume="allow")
 
     # Обучение
     distiller.train()
@@ -233,7 +236,7 @@ def train():
             
             # ВАЖНО: Удаляем огромные тензоры до градиентного шага и компиляции графа!
             del student_states, teacher_targets, mu, logvar
-            import gc; gc.collect()
+            # gc.collect() удален - это тормозит TPU
             
             loss.backward()
             
@@ -243,25 +246,16 @@ def train():
                 scheduler.step()
                 optimizer.zero_grad()
             
-            # Извлекаем скаляры, чтобы не держать тензоры в HBM как выходы графа
-            if rank == 0 and (global_step + 1) % 10 == 0:
-                loss_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_metrics.items()}
-                loss_val = loss.item()
-            else:
-                loss_scalars = {}
-                loss_val = loss.item() if rank == 0 else 0.0
-                
-            del loss_metrics, loss
-            
             xm.mark_step()
             
             global_step += 1
             
             if rank == 0:
-                lr = optimizer.param_groups[0]['lr']
-                progress_bar.set_postfix({"loss": f"{loss_val:.4f}", "step": global_step, "lr": f"{lr:.1e}"})
-                
-                if global_step % 10 == 0:
+                if global_step % 50 == 0:
+                    lr = optimizer.param_groups[0]['lr']
+                    loss_val = loss.item()
+                    loss_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_metrics.items()}
+                    
                     log_dict = {
                         "train/loss": loss_val,
                         "train/lr": lr,
@@ -273,6 +267,10 @@ def train():
                         else:
                             log_dict[f"train/{k}"] = val
                     wandb.log(log_dict, step=global_step)
+                    progress_bar.set_postfix({"loss": f"{loss_val:.4f}", "step": global_step})
+                
+                if global_step % 10 == 0:
+                    progress_bar.set_description(f"Step {global_step}")
                 
             # Сохранение (раз в 500 шагов, так как модель тяжелая)
             if global_step % 500 == 0:
