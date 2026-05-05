@@ -215,6 +215,16 @@ Implementation of the task-specific operational index. The model learns to utili
 * Phase 1
   * [Phase 1 Awakening Report](reports/phase1_awakening_report.md)
 
+## Acknowledgments
+
+This project builds upon the foundational work of the open-source AI community:
+* **ModernBERT** (Reasoning engine base architecture) is released under the **Apache 2.0 License**.
+* **DeepSeek-R1-Distill-Qwen** (Teacher model for logical distillation) is released under the **MIT License**. The underlying Qwen-2.5 architecture is released under the **Apache 2.0 License**.
+
+Special thanks to:
+* **Google** for providing the **Cloud TPU** computational resources that made the large-scale training and distillation of this model possible.
+* **Antigravity** (AI IDE) for invaluable pair-programming assistance, debugging, and continuous code generation support throughout the development of BEBLaDII.
+
 ## Citation
 
 > [!IMPORTANT]

@@ -8,6 +8,7 @@ torch._dynamo.config.disable = True
 
 # Устанавливаем ключ W&B напрямую
 os.environ["WANDB_API_KEY"] = "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"
+os.environ["WANDB_START_METHOD"] = "thread"
 
 # 1. УСТАНОВКА ПЕРЕМЕННЫХ
 os.environ["PJRT_DEVICE"] = "TPU"
@@ -19,6 +20,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import wandb
+wandb.require("core")
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
@@ -209,6 +211,9 @@ def train():
     # Обучение
     distiller.train()
     
+    local_step = 0
+    warmup_steps = 200
+    
     for epoch in range(1):
         progress_bar = tqdm(train_loader, disable=(rank != 0), desc=f"Epoch {epoch}")
         
@@ -240,7 +245,16 @@ def train():
                 # Для SPMD FSDP используется стандартный optimizer.step()
                 optimizer.step()
                 scheduler.step()
+                
+                # Локальный warmup множитель для предотвращения Optimizer Shock (ADR 002 update)
+                if local_step < warmup_steps:
+                    lr_multiplier = (local_step + 1) / warmup_steps
+                    for param_group in optimizer.param_groups:
+                        # Умножаем LR, выданный шедулером, на коэффициент прогрева
+                        param_group['lr'] *= lr_multiplier
+                
                 optimizer.zero_grad()
+                local_step += 1
             
             # Извлекаем скаляры, чтобы не держать тензоры в HBM как выходы графа
             if rank == 0 and (global_step + 1) % 10 == 0:
@@ -301,13 +315,13 @@ def train():
                         os.remove(prev_ckpt)
                         
                     print(f"--- [SAVE] Легкий чекпоинт {local_ckpt_name} сохранен. Отправка в GCS... ---")
-                    # Отправляем уникальный файл в фоновом режиме, чтобы избежать перезаписи при медленном интернете
-                    subprocess.Popen(f"gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/ && gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/latest_checkpoint.pt", shell=True)
+                    # Отправляем синхронно (без Popen), чтобы избежать зависаний XLA процессов
+                    subprocess.run(f"gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/ && gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/latest_checkpoint.pt", shell=True, check=False)
 
             if global_step % 500 == 0:
                 if rank == 0: print(f"\n--- [RANK 0] Валидация (Шаг {global_step}) ---")
                 distiller.eval()
-                val_loss_sum = 0.0
+                val_loss_sum = None
                 val_metrics_sums = {}
                 val_steps = 0
                 max_val_steps = 50
@@ -323,26 +337,34 @@ def train():
                         v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
                         v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
                         
-                        v_loss_scalar = v_loss.item()
-                        v_metrics_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in v_metrics.items()}
+                        # Аккумулируем тензоры напрямую на TPU (без блокирующих .item())
+                        v_loss_det = v_loss.detach()
+                        if val_loss_sum is None:
+                            val_loss_sum = v_loss_det
+                        else:
+                            val_loss_sum += v_loss_det
+                            
+                        for k, v in v_metrics.items():
+                            v_det = v.detach() if torch.is_tensor(v) else torch.tensor(v, device=device)
+                            if k not in val_metrics_sums:
+                                val_metrics_sums[k] = v_det
+                            else:
+                                val_metrics_sums[k] += v_det
                         
                         # Удаляем тензоры до компиляции
-                        del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics
+                        del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics, v_loss_det
                         
                         xm.mark_step()
-                        
-                        val_loss_sum += v_loss_scalar
-                        for k, val in v_metrics_scalars.items():
-                            val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + val
                         val_steps += 1
                 
                 if rank == 0:
-                    avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
+                    # Извлекаем все метрики на CPU ровно один раз
+                    avg_val_loss = (val_loss_sum.item() / val_steps) if val_steps > 0 and val_loss_sum is not None else 0
                     print(f"[{global_step}] Validation - Loss: {avg_val_loss:.4f}")
                     
                     val_log_dict = {"val/loss": avg_val_loss, "global_step": global_step}
                     for k, v_sum in val_metrics_sums.items():
-                        avg_val = v_sum / val_steps
+                        avg_val = (v_sum.item() / val_steps) if torch.is_tensor(v_sum) else (v_sum / val_steps)
                         if k.startswith("l") and ("_mse" in k or "_cos" in k):
                             val_log_dict[f"val/layers/{k}"] = avg_val
                         else:

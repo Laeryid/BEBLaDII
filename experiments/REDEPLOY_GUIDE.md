@@ -51,20 +51,6 @@ cd BEBLaDII
 
 ---
 
-## 2. Запуск скрипта настройки на TPU
-
-После того как вы скопировали файл и подключились по SSH, выполните **на удаленной машине**:
-
-```bash
-# Сделать скрипт исполняемым
-chmod +x ~/setup_tpu_vm.sh
-
-# Запустить процесс настройки
-~/setup_tpu_vm.sh
-```
-
----
-
 ## 2. Настройка ОС и Лимитов (КРИТИЧНО)
 
 Без этих правок XLA не сможет выделить память. Выполните на TPU VM:
@@ -79,34 +65,36 @@ echo "* hard memlock unlimited" | sudo tee -a /etc/security/limits.conf
 
 ---
 
-## 3. Установка ПО ("Золотая пара" v6e)
+## 3. Создание окружения и установка ПО
 
-**ВАЖНО**: Всегда работайте внутри `.venv`:
+**ВАЖНО**: Сначала создаем окружение, затем ставим всё остальное.
+
 ```bash
+# 1. Создание и активация venv
 python3 -m venv .venv
 source .venv/bin/activate
-```
+pip install -U pip wheel
 
-Выполните установку:
-```bash
-# 1. Очистка старых конфликтующих пакетов
+# 2. Очистка старых пакетов (ВАЖНО для v6e)
 pip uninstall -y libtpu-nightly jax jaxlib torch-xla torch
 
-# 2. Установка PyTorch 2.4 и XLA (без автоматических зависимостей TPU)
+# 3. Установка зависимостей проекта (Transformers, Datasets и др.)
+pip install -e .
+pip install --force-reinstall wandb
+
+# 4. Установка PyTorch 2.4 и XLA (специфично для v6e)
 pip install torch==2.4.0 torchvision torchaudio --no-cache-dir
 pip install torch_xla==2.4.0 -f https://storage.googleapis.com/tpu-pytorch/releases/tpuvm/release-2.4.html --no-cache-dir
 
-# 3. Установка зависимостей TPU и JAX вручную (решает ошибку libtpu-nightly)
+# 4. Установка JAX и libtpu (решает ошибки совместимости)
 pip install cloud-tpu-client>=0.10.0 indexed-parquet-dataset
 pip install jax==0.4.31 jaxlib==0.4.31 --no-cache-dir
 pip install libtpu-nightly==0.1.dev20240912+nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html --no-cache-dir
 
-# 4. Создание системной ссылки на библиотеку (решает ошибку "libtpu.so not found")
+# 5. Создание системной ссылки на библиотеку
 sudo ln -sf $(pwd)/.venv/lib/python3.10/site-packages/libtpu/libtpu.so /usr/lib/libtpu.so
 sudo ldconfig
 
-# 5. Исправление возможных ошибок wandb (ImportError: cannot import name 'Imports')
-pip install --force-reinstall wandb
 ```
 
 ---
