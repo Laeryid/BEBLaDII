@@ -230,6 +230,16 @@ def train():
                 batch[k] = v
             
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
+            
+            # DEBUG: Проверка норм тензоров на первом шаге
+            if global_step == 14500 and rank == 0:
+                print("\n--- [DEBUG] Tensor Norms at Step 14500 ---")
+                for idx in [20, 30, 40]:
+                    s_norm = student_states[idx].norm().item()
+                    t_norm = teacher_targets[idx].norm().item()
+                    print(f"Layer {idx}: Student Norm = {s_norm:.4f}, Teacher Norm = {t_norm:.4f}")
+                print("------------------------------------------\n")
+
             loss, loss_metrics = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
             
             # Делим лосс на шаги накопления
