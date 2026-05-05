@@ -118,9 +118,17 @@ def train():
 
     if os.path.exists("latest_checkpoint.pt"):
         ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
-        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+        
+        # Очищаем префикс _orig_module. и исключаем веса учителя из загрузки
+        cleaned_sd = {}
+        for k, v in ckpt['model_state_dict'].items():
+            new_k = k.replace("_orig_module.", "")
+            if "teacher" not in new_k:
+                cleaned_sd[new_k] = v
+                
+        incompatible_keys = distiller.load_state_dict(cleaned_sd, strict=False)
         if rank == 0: 
-            print(f"--- [RESUME] Чекпоинт загружен ---")
+            print(f"--- [RESUME] Чекпоинт загружен (только веса студента) ---")
             if len(incompatible_keys.missing_keys) > 0:
                 print(f"--- [RESUME WARNING] Missing keys (first 10): {incompatible_keys.missing_keys[:10]}")
             if len(incompatible_keys.unexpected_keys) > 0:
@@ -149,18 +157,15 @@ def train():
     criterion = DistillationLoss(cos_weight=20.0)
 
     global_step = 0
-    # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
+    # Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)
     if os.path.exists("latest_checkpoint.pt"):
-        # Загружаем на CPU, чтобы не забивать HBM
+        # Используем уже загруженный в память ckpt (или загружаем заново, если он был удален)
         ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
         if rank == 0:
             print(f"--- [DEBUG] Ключи в чекпоинте: {list(ckpt.keys())} ---")
         
-        # 1. Веса
-        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
-        if rank == 0: 
-            print(f"--- [RESUME] Веса загружены ---")
-            if incompatible_keys.missing_keys: print(f"Missing: {len(incompatible_keys.missing_keys)}")
+        # Веса загружать здесь НЕЛЬЗЯ, так как модель уже обернута в FSDP, 
+        # и это сломает шардирование (xs.mark_sharding), что приведет к OOM!
         
         # 2. Оптимизатор
         if 'optimizer_state_dict' in ckpt:
@@ -188,10 +193,10 @@ def train():
             global_step = 5400
             if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
 
-    # Данные (Уменьшаем батч для HBM, добавляем накопление)
-    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='val')
-    accumulation_steps = 4
+    # Данные (Используем SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
+    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+    accumulation_steps = 1
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
     if rank == 0:

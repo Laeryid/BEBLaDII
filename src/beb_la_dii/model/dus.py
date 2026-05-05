@@ -78,7 +78,8 @@ def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40)
     current_layers = len(base_model.layers)
     if current_layers == target_layers:
         print(f"Model already has {target_layers} layers. Skipping DUS logic.")
-        base_model.gradient_checkpointing_enable()
+        # см. ADR 005: На TPU XLA это вызывает HLO temp OOM из-за распараллеливания рематериализации
+        # base_model.gradient_checkpointing_enable()
         return base_model
 
     layers = base_model.layers
@@ -96,7 +97,7 @@ def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40)
     base_model.layers = new_layers
     base_model.config.num_hidden_layers = target_layers
     
-    # Enable Gradient Checkpointing for memory efficiency
-    base_model.gradient_checkpointing_enable()
+    # см. ADR 005: На TPU XLA это вызывает HLO temp OOM из-за распараллеливания рематериализации
+    # base_model.gradient_checkpointing_enable()
     
     return base_model
