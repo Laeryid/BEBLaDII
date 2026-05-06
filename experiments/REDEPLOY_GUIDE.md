@@ -81,7 +81,6 @@ pip uninstall -y libtpu-nightly jax jaxlib torch-xla torch
 
 # 3. Установка зависимостей проекта (Transformers, Datasets и др.)
 pip install -e .
-pip install --force-reinstall wandb
 
 # 4. Установка PyTorch 2.4 и XLA (специфично для v6e)
 pip install torch==2.4.0 torchvision torchaudio --no-cache-dir
@@ -91,6 +90,8 @@ pip install torch_xla==2.4.0 -f https://storage.googleapis.com/tpu-pytorch/relea
 pip install cloud-tpu-client>=0.10.0 indexed-parquet-dataset
 pip install jax==0.4.31 jaxlib==0.4.31 --no-cache-dir
 pip install libtpu-nightly==0.1.dev20240912+nightly -f https://storage.googleapis.com/jax-releases/libtpu_releases.html --no-cache-dir
+
+pip install --force-reinstall wandb
 
 # 5. Создание системной ссылки на библиотеку
 sudo ln -sf $(pwd)/.venv/lib/python3.10/site-packages/libtpu/libtpu.so /usr/lib/libtpu.so

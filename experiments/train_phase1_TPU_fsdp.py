@@ -160,6 +160,7 @@ def train():
     criterion = DistillationLoss(cos_weight=20.0)
 
     global_step = 0
+    start_epoch = 0
     # Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)
     if os.path.exists("latest_checkpoint.pt"):
         # Используем уже загруженный в память ckpt (или загружаем заново, если он был удален)
@@ -195,11 +196,16 @@ def train():
             # Если ключа нет (бывает в Kaggle-снапшотах), ставим 5400 вручную
             global_step = 5400
             if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
+            
+        # 5. Эпоха
+        if 'epoch' in ckpt:
+            start_epoch = ckpt['epoch']
+            if rank == 0: print(f"--- [RESUME] Возобновляем с эпохи {start_epoch} ---")
 
     # Данные (ОДНОПРОЦЕССОРНЫЙ SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
-    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
-    accumulation_steps = 1
+    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='train')
+    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val')
+    accumulation_steps = 4
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
     if rank == 0:
@@ -213,7 +219,7 @@ def train():
     # Обучение
     distiller.train()
     
-    for epoch in range(1):
+    for epoch in range(start_epoch, 3):
         progress_bar = tqdm(train_loader, disable=(rank != 0), desc=f"Epoch {epoch}")
         
         if rank == 0:
@@ -284,7 +290,8 @@ def train():
                 save_data = {
                     'model_state_dict': trainable_sd,
                     'scheduler_state_dict': scheduler.state_dict(),
-                    'global_step': global_step
+                    'global_step': global_step,
+                    'epoch': epoch
                 }
                 local_ckpt_name = f"ckpt_{global_step}.pt"
                 xm.save(save_data, local_ckpt_name)
