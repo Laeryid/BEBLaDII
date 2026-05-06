@@ -6,8 +6,10 @@ torch._dynamo.disable()
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.disable = True
 
-# Устанавливаем ключ W&B напрямую
-os.environ["WANDB_API_KEY"] = "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"
+# Пытаемся прочитать ключ W&B из файла
+if os.path.exists("wandb_key.txt"):
+    with open("wandb_key.txt", "r") as f:
+        os.environ["WANDB_API_KEY"] = f.read().strip()
 
 # 1. УСТАНОВКА ПЕРЕМЕННЫХ
 os.environ["PJRT_DEVICE"] = "TPU"
@@ -47,37 +49,6 @@ if not hasattr(torch, "xla"):
 # Добавляем путь к src
 sys.path.append(os.getcwd())
 
-def custom_auto_wrap_policy(module, recurse, unwrapped_params, **kwargs):
-    cls_name = module.__class__.__name__
-    if any(name in cls_name for name in [
-        "Qwen2DecoderLayer", "ModernBertLayer", "ModernBertBlock",
-        "FeatureProjector", "InputProjector"
-    ]):
-        return True
-    return False
-
-def custom_shard_output(output, mesh):
-    import torch_xla.experimental.xla_sharding as xs
-    # выход имеет вид: (student_states, teacher_targets, mu, logvar)
-    student_states, teacher_targets, mu, logvar = output
-    
-    # Шардируем выходные состояния ученика (batch_size находится на 0-й оси)
-    if isinstance(student_states, dict):
-        for v in student_states.values():
-            if v is not None:
-                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
-                
-    # Шардируем целевые состояния учителя
-    if isinstance(teacher_targets, dict):
-        for v in teacher_targets.values():
-            if v is not None:
-                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
-                
-    if mu is not None:
-        xs.mark_sharding(mu, mesh, ('fsdp',) + (None,) * (mu.dim() - 1))
-    if logvar is not None:
-        xs.mark_sharding(logvar, mesh, ('fsdp',) + (None,) * (logvar.dim() - 1))
-    return None
 
 def train():
     # Импорты модулей проекта
@@ -138,13 +109,17 @@ def train():
                 print(f"--- [RESUME WARNING] Unexpected keys (first 10): {incompatible_keys.unexpected_keys[:10]}")
 
     # Оборачиваем модель в SpmdFullyShardedDataParallel
+    # Выносим политику враппинга прямо сюда для чистоты
+    def auto_wrap_policy(module, recurse, unwrapped_params, **kwargs):
+        cls_name = module.__class__.__name__
+        return any(name in cls_name for name in ["ModernBertLayer", "ModernBertBlock", "FeatureProjector", "InputProjector"])
+
     distiller = FSDP(
         distiller,
         mesh=mesh,
-        auto_wrap_policy=custom_auto_wrap_policy,
-        shard_output=custom_shard_output
+        auto_wrap_policy=auto_wrap_policy
     )
-    if rank == 0: print("--- [FSDP] Модель успешно обернута в XlaFullyShardedDataParallel ---")
+    if rank == 0: print("--- [FSDP] Модель успешно обернута (SPMD) ---")
 
     # Настройка оптимизатора и планировщика (согласно ADR 002)
     from transformers.optimization import Adafactor
@@ -306,9 +281,10 @@ def train():
                     if os.path.exists(prev_ckpt):
                         os.remove(prev_ckpt)
                         
-                    print(f"--- [SAVE] Легкий чекпоинт {local_ckpt_name} сохранен. Отправка в GCS... ---")
-                    # Отправляем уникальный файл в фоновом режиме, чтобы избежать перезаписи при медленном интернете
-                    subprocess.Popen(f"gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/ && gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/latest_checkpoint.pt", shell=True)
+                    print(f"--- [SAVE] Легкий чекпоинт {local_ckpt_name} сохранен. ---")
+                    # ВАЖНО: gsutil внутри цикла может вызвать дедлок из-за fork()
+                    # Рекомендуется синхронизировать веса после завершения эпохи или через SDK
+                    # subprocess.Popen(f"gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/", shell=True)
 
             if global_step % 500 == 0:
                 if rank == 0: print(f"\n--- [RANK 0] Валидация (Шаг {global_step}) ---")

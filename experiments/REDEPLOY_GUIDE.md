@@ -7,12 +7,12 @@
 ### А. Копирование скриптов сетапа
 Выполните с локальной машины (из корня проекта), чтобы перебросить необходимые файлы на TPU VM:
 ```powershell
-# Копирование скрипта настройки
-gcloud compute tpus tpu-vm scp C:\Experiments\BEBLaDII\experiments\setup_tpu_vm.sh bebladii-v6e-4:/home/hp/  --zone europe-west4-a
+# Копирование ключа WANDB
+gcloud compute tpus tpu-vm scp C:\Experiments\BEBLaDII\wandb_key.txt bebladii-v6e-4:/home/hp/  --zone europe-west4-a
 
 # Копирование исходного кода (если нужно быстро обновить без git)
 gcloud compute tpus tpu-vm scp --recurse src bebladii-v6e-4:~/BEBLaDII/ --zone europe-west4-a
-```
+
 
 ### Б. Подключение по SSH с пробросом порта и SSH-агента
 Для работы с Jupyter и автоматической авторизации в Git (без генерации ключей на каждом новом Spot-инстансе) используйте **SSH Agent Forwarding**:
