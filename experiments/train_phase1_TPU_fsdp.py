@@ -301,7 +301,7 @@ def train():
                 val_loss_sum = 0.0
                 val_metrics_sums = {}
                 val_steps = 0
-                max_val_steps = 500
+                max_val_steps = 200
                 
                 with torch.no_grad():
                     for v_step, v_batch in enumerate(val_loader):
