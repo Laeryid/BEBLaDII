@@ -52,6 +52,11 @@ if not hasattr(torch, "xla"):
 # Добавляем путь к src
 sys.path.append(os.getcwd())
 
+def shard_output(output, mesh):
+    # FSDP требует этот callable для не-тензорных выходов (tuple/dict)
+    # Мы просто возвращаем его как есть, так как SPMD прокидывает sharding автоматически
+    return None
+
 
 def train():
     # Импорты модулей проекта
@@ -120,7 +125,8 @@ def train():
     distiller = FSDP(
         distiller,
         mesh=mesh,
-        auto_wrap_policy=auto_wrap_policy
+        auto_wrap_policy=auto_wrap_policy,
+        shard_output=shard_output
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута (SPMD) ---")
 
