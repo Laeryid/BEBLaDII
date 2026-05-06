@@ -137,10 +137,10 @@ def train():
     # Используем Adafactor для HBM оптимизации
     optimizer = Adafactor(
         filter(lambda p: p.requires_grad, distiller.parameters()), 
-        lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False,
+        lr=1e-4, scale_parameter=False, relative_step=False, warmup_init=False,
         clip_threshold=1.0
     )
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=1.1, eta_min=2e-5)
     criterion = DistillationLoss(cos_weight=20.0)
 
     global_step = 0
@@ -285,6 +285,7 @@ def train():
                 if rank == 0: print(f"--- [RANK 0] Валидация... ---")
                 distiller.eval()
                 val_loss_sum, val_steps = 0.0, 0
+                val_metrics_sums = {}
                 max_val_steps = 200
                 
                 with torch.no_grad():
@@ -296,6 +297,12 @@ def train():
                             v_batch[k] = v
                             
                         v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
+                        v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
+                        
+                        # Извлекаем скаляры до удаления тензоров
+                        v_loss_scalar = v_loss.item()
+                        v_metrics_scalars = {k: v.item() if torch.is_tensor(v) else v for k, v in v_metrics.items()}
+                        
                         del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics
                         
                         xm.mark_step()
