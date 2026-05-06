@@ -164,13 +164,13 @@ def train():
             except Exception as e:
                 if rank == 0: print(f"--- [RESUME WARNING] Ошибка оптимизатора: {e} ---")
         
-        # 3. Планировщик
-        if 'scheduler_state_dict' in ckpt:
-            try:
-                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
-                if rank == 0: print("--- [RESUME] Состояние планировщика восстановлено ---")
-            except Exception as e:
-                if rank == 0: print(f"--- [RESUME WARNING] Ошибка планировщика: {e} ---")
+        # 3. Планировщик - ОТКЛЮЧЕНО для применения новой стратегии LR
+        # if 'scheduler_state_dict' in ckpt:
+        #     try:
+        #         scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+        #         if rank == 0: print("--- [RESUME] Состояние планировщика восстановлено ---")
+        #     except Exception as e:
+        #         if rank == 0: print(f"--- [RESUME WARNING] Ошибка планировщика: {e} ---")
         
         # 4. Глобальный шаг
         if 'global_step' in ckpt:
@@ -289,7 +289,8 @@ def train():
                 max_val_steps = 200
                 
                 with torch.no_grad():
-                    for v_step, v_batch in enumerate(val_loader):
+                    val_progress = tqdm(val_loader, total=max_val_steps, disable=(rank != 0), desc="Validation", leave=False)
+                    for v_step, v_batch in enumerate(val_progress):
                         if v_step >= max_val_steps: break
                         for k, v in v_batch.items():
                             v = v.to(device)
