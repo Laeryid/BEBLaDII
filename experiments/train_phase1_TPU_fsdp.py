@@ -243,31 +243,19 @@ def train():
             if rank == 0:
                 if global_step % 50 == 0:
                     lr = optimizer.param_groups[0]['lr']
-                    loss_val = loss.item()
-                    loss_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_metrics.items()}
-                    
-                    log_dict = {
-                        "train/loss": loss_val,
-                        "train/lr": lr,
-                        "global_step": global_step,
-                    }
-                    for k, val in loss_scalars.items():
-                        if k.startswith("l") and ("_mse" in k or "_cos" in k):
-                            log_dict[f"train/layers/{k}"] = val
-                        else:
-                            log_dict[f"train/{k}"] = val
+                    loss_val = loss.item() * accumulation_steps
+                    log_dict = {"train/loss": loss_val, "train/lr": lr, "global_step": global_step}
+                    for k, v in loss_metrics.items():
+                        log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
                     wandb.log(log_dict, step=global_step)
                     progress_bar.set_postfix({"loss": f"{loss_val:.4f}", "step": global_step})
-                
-                if global_step % 10 == 0:
-                    progress_bar.set_description(f"Step {global_step}")
-                
-            # Сохранение (раз в 500 шагов, так как модель тяжелая)
+
+            # ОБЪЕДИНЕННЫЙ БЛОК: СОХРАНЕНИЕ И ВАЛИДАЦИЯ
             if global_step % 500 == 0:
-                xm.mark_step() # Синхронизация перед сохранением
-                if rank == 0: print(f"--- [RANK 0] Подготовка чекпоинта на шаге {global_step}... ---")
+                # 1. Сохранение (всегда перед валидацией)
+                xm.mark_step()
+                if rank == 0: print(f"\n--- [RANK 0] Создание снапшота на шаге {global_step}... ---")
                 
-                # Сохраняем ТОЛЬКО веса Ученика (чекпоинт ~1ГБ вместо 15ГБ)
                 full_sd = distiller.state_dict()
                 trainable_sd = {k: v for k, v in full_sd.items() if "teacher" not in k}
                 
@@ -281,26 +269,22 @@ def train():
                 xm.save(save_data, local_ckpt_name)
                 
                 if rank == 0:
-                    import shutil
-                    # Обновляем latest_checkpoint.pt локально
-                    shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
-                    
-                    # Удаляем предыдущий локальный чекпоинт, чтобы не забивать диск TPU
-                    prev_ckpt = f"ckpt_{global_step - 500}.pt"
-                    if os.path.exists(prev_ckpt):
-                        os.remove(prev_ckpt)
+                    try:
+                        import shutil
+                        shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
+                        print(f"--- [GCS] Загрузка {local_ckpt_name} в Cloud Storage... ---")
+                        subprocess.run(["gsutil", "cp", local_ckpt_name, "gs://bebladii-weigths/checkpoints/"], check=True)
+                        subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"], check=True)
                         
-                    print(f"--- [SAVE] Легкий чекпоинт {local_ckpt_name} сохранен. ---")
-                    # ВАЖНО: gsutil внутри цикла может вызвать дедлок из-за fork()
-                    # Рекомендуется синхронизировать веса после завершения эпохи или через SDK
-                    # subprocess.Popen(f"gsutil -m cp {local_ckpt_name} gs://bebladii-weigths/checkpoints/", shell=True)
+                        prev_ckpt = f"ckpt_{global_step - 500}.pt"
+                        if os.path.exists(prev_ckpt): os.remove(prev_ckpt)
+                    except Exception as e:
+                        print(f"--- [GCS ERROR] Ошибка: {e} ---")
 
-            if global_step % 500 == 0:
-                if rank == 0: print(f"\n--- [RANK 0] Валидация (Шаг {global_step}) ---")
+                # 2. Валидация
+                if rank == 0: print(f"--- [RANK 0] Валидация... ---")
                 distiller.eval()
-                val_loss_sum = 0.0
-                val_metrics_sums = {}
-                val_steps = 0
+                val_loss_sum, val_steps = 0.0, 0
                 max_val_steps = 200
                 
                 with torch.no_grad():
@@ -312,12 +296,6 @@ def train():
                             v_batch[k] = v
                             
                         v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
-                        v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
-                        
-                        v_loss_scalar = v_loss.item()
-                        v_metrics_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in v_metrics.items()}
-                        
-                        # Удаляем тензоры до компиляции
                         del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics
                         
                         xm.mark_step()
