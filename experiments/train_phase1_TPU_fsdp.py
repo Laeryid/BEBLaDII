@@ -7,9 +7,13 @@ torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.disable = True
 
 # Пытаемся прочитать ключ W&B из файла
-if os.path.exists("wandb_key.txt"):
-    with open("wandb_key.txt", "r") as f:
-        os.environ["WANDB_API_KEY"] = f.read().strip()
+if os.path.exists("/home/hp/wandb_key.txt"):
+    with open("/home/hp/wandb_key.txt", "r") as f:
+        _key = f.read().strip()
+        if _key:
+            import wandb
+            wandb.login(key=_key)
+            os.environ["WANDB_API_KEY"] = _key
 
 # 1. УСТАНОВКА ПЕРЕМЕННЫХ
 os.environ["PJRT_DEVICE"] = "TPU"
@@ -23,7 +27,6 @@ import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
 from tqdm import tqdm
-import wandb
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.xla_multiprocessing as xmp
 import torch_xla.distributed.parallel_loader as pl
