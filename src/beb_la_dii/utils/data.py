@@ -1,6 +1,19 @@
 import torch
 from torch.utils.data import Dataset, DataLoader, random_split
 from indexed_parquet_dataset import IndexedParquetDataset
+import collections
+
+# Хак/Monkey-patch: Исправляем баг в IndexedParquetDataset при multiprocessing (spawn/fork), 
+# где _file_handles восстанавливается как обычный dict без метода move_to_end.
+_original_setstate = getattr(IndexedParquetDataset, '__setstate__', None)
+def _patched_setstate(self, state):
+    if _original_setstate:
+        _original_setstate(self, state)
+    else:
+        self.__dict__.update(state)
+    self._file_handles = collections.OrderedDict()
+IndexedParquetDataset.__setstate__ = _patched_setstate
+
 from .tokenizer import get_tokenizer
 import os
 
