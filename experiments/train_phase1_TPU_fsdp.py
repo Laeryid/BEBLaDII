@@ -98,26 +98,31 @@ def train():
         if "teacher" in name:
             param.requires_grad = False
 
-    if os.path.exists("latest_checkpoint.pt"):
-        ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
+    ckpt_path = "latest_checkpoint.pt"
+    if not os.path.exists(ckpt_path) and os.path.exists("AWAKENED_WEIGHTS_FINAL.pt"):
+        ckpt_path = "AWAKENED_WEIGHTS_FINAL.pt"
+        if rank == 0: print(f"--- [INIT] Используем базовые веса пробуждения: {ckpt_path} ---")
+
+    ckpt = None
+    if os.path.exists(ckpt_path):
+        ckpt = torch.load(ckpt_path, map_location='cpu')
         
         # Очищаем префикс _orig_module. и исключаем веса учителя из загрузки
+        # Поддерживаем как плоский state_dict, так и вложенный в 'model_state_dict'
+        raw_sd = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
         cleaned_sd = {}
-        for k, v in ckpt['model_state_dict'].items():
+        for k, v in raw_sd.items():
             new_k = k.replace("_orig_module.", "")
             if "teacher" not in new_k:
                 cleaned_sd[new_k] = v
                 
         incompatible_keys = distiller.load_state_dict(cleaned_sd, strict=False)
         if rank == 0: 
-            print(f"--- [RESUME] Чекпоинт загружен (только веса студента) ---")
+            print(f"--- [RESUME] Веса загружены из {ckpt_path} ---")
             if len(incompatible_keys.missing_keys) > 0:
                 print(f"--- [RESUME WARNING] Missing keys (first 10): {incompatible_keys.missing_keys[:10]}")
-            if len(incompatible_keys.unexpected_keys) > 0:
-                print(f"--- [RESUME WARNING] Unexpected keys (first 10): {incompatible_keys.unexpected_keys[:10]}")
 
     # Оборачиваем модель в SpmdFullyShardedDataParallel
-    # Выносим политику враппинга прямо сюда для чистоты
     def auto_wrap_policy(module, recurse, unwrapped_params, **kwargs):
         cls_name = module.__class__.__name__
         return any(name in cls_name for name in ["ModernBertLayer", "ModernBertBlock", "FeatureProjector", "InputProjector"])
@@ -130,11 +135,10 @@ def train():
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута (SPMD) ---")
 
-    # Настройка оптимизатора и планировщика (согласно ADR 002)
+    # Настройка оптимизатора и планировщика
     from transformers.optimization import Adafactor
     from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
     
-    # Используем Adafactor для HBM оптимизации
     optimizer = Adafactor(
         filter(lambda p: p.requires_grad, distiller.parameters()), 
         lr=1e-4, scale_parameter=False, relative_step=False, warmup_init=False,
@@ -145,112 +149,106 @@ def train():
 
     global_step = 0
     start_epoch = 0
-    # Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)
-    if os.path.exists("latest_checkpoint.pt"):
-        # Используем уже загруженный в память ckpt (или загружаем заново, если он был удален)
-        ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
-        if rank == 0:
-            print(f"--- [DEBUG] Ключи в чекпоинте: {list(ckpt.keys())} ---")
-        
-        # Веса загружать здесь НЕЛЬЗЯ, так как модель уже обернута в FSDP, 
-        # и это сломает шардирование (xs.mark_sharding), что приведет к OOM!
-        
-        # 2. Оптимизатор
+    wandb_run_id = None
+
+    # Восстановление состояний (ПОСЛЕ обертки FSDP)
+    if ckpt:
+        # 1. Оптимизатор
         if 'optimizer_state_dict' in ckpt:
             try:
-                # Временно отключаем загрузку оптимизатора при смене AdamW -> Adafactor
-                # optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-                if rank == 0: print("--- [RESUME WARNING] Загрузка оптимизатора пропущена (переход на Adafactor) ---")
+                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+                if rank == 0: print("--- [RESUME] Состояние оптимизатора восстановлено ---")
             except Exception as e:
                 if rank == 0: print(f"--- [RESUME WARNING] Ошибка оптимизатора: {e} ---")
         
-        # 3. Планировщик - ОТКЛЮЧЕНО для применения новой стратегии LR
-        # if 'scheduler_state_dict' in ckpt:
-        #     try:
-        #         scheduler.load_state_dict(ckpt['scheduler_state_dict'])
-        #         if rank == 0: print("--- [RESUME] Состояние планировщика восстановлено ---")
-        #     except Exception as e:
-        #         if rank == 0: print(f"--- [RESUME WARNING] Ошибка планировщика: {e} ---")
+        # 2. Планировщик
+        if 'scheduler_state_dict' in ckpt:
+            try:
+                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+                if rank == 0: print("--- [RESUME] Состояние планировщика восстановлено ---")
+            except Exception as e:
+                if rank == 0: print(f"--- [RESUME WARNING] Ошибка планировщика: {e} ---")
         
-        # 4. Глобальный шаг
-        if 'global_step' in ckpt:
-            global_step = ckpt['global_step']
-            if rank == 0: print(f"--- [RESUME] Продолжаем с шага {global_step} ---")
-        else:
-            # Если ключа нет (бывает в Kaggle-снапшотах), ставим 5400 вручную
-            global_step = 5400
-            if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
-            
-        # 5. Эпоха
-        if 'epoch' in ckpt:
-            start_epoch = ckpt['epoch']
-            if rank == 0: print(f"--- [RESUME] Возобновляем с эпохи {start_epoch} ---")
+        # 3. Шаги и Эпоха
+        global_step = ckpt.get('global_step', 0)
+        start_epoch = ckpt.get('epoch', 0)
+        wandb_run_id = ckpt.get('wandb_run_id', None)
+        if rank == 0: print(f"--- [RESUME] Продолжаем: Эпоха {start_epoch}, Шаг {global_step} ---")
 
-    # Данные (Используем физически разделенные папки train/val в Reasoning)
+    # Данные
     train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='train', val_ratio=0.0)
     val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=2048, split='val', val_ratio=0.0)
     accumulation_steps = 4
-    # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
     if rank == 0:
+        wandb_kwargs = {
+            "project": "BEBLaDII",
+            "name": "tpu-v6e-spmd",
+            "resume": "allow",
+            "id": wandb_run_id
+        }
         try:
-            wandb.init(project="BEBLaDII", name="tpu-v6e-spmd", resume="allow")
+            wandb.init(**wandb_kwargs)
         except Exception as e:
-            print(f"--- [WANDB ERROR] Ошибка инициализации: {e} ---")
-            print("--- Включение W&B ---")
-            wandb.init(project="BEBLaDII", name="tpu-v6e-spmd", mode="online", resume="allow")
+            print(f"--- [WANDB ERROR] Ошибка: {e}. Пробуем форсировать онлайн... ---")
+            wandb.init(**wandb_kwargs, mode="online")
+        
+        # Сохраняем текущий ID для будущих чекпоинтов
+        wandb_run_id = wandb.run.id
 
     # Обучение
     distiller.train()
     
-    for epoch in range(start_epoch, 3):
-        progress_bar = tqdm(train_loader, disable=(rank != 0), desc=f"Epoch {epoch}")
+    for epoch in range(start_epoch, 10):
+        # Рассчитываем, сколько батчей пропустить внутри текущей эпохи
+        batches_per_epoch = len(train_loader)
+        batches_to_skip = global_step % batches_per_epoch if epoch == start_epoch else 0
         
-        if rank == 0:
-            print(f"--- [RANK 0] Начинаем итерации. ---")
+        progress_bar = tqdm(train_loader, disable=(rank != 0), initial=batches_to_skip, total=batches_per_epoch, desc=f"Epoch {epoch}")
+        
+        if rank == 0 and batches_to_skip > 0:
+            print(f"--- [RESUME] Пропускаем {batches_to_skip} батчей в эпохе {epoch}... ---")
             
         optimizer.zero_grad()
-        for batch in progress_bar:
+        for i, batch in enumerate(progress_bar):
+            if i < batches_to_skip:
+                continue
+                
             # Ручной перенос на устройство и SPMD Data Parallel шардинг
             for k, v in batch.items():
                 v = v.to(device)
-                # Критично: сообщаем XLA, что батч нужно разрезать по ядрам ('fsdp')
                 xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
                 batch[k] = v
             
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
             loss, loss_metrics = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
             
-            # Делим лосс на шаги накопления
             loss = loss / accumulation_steps
-            
-            # ВАЖНО: Удаляем огромные тензоры до градиентного шага и компиляции графа!
-            del student_states, teacher_targets, mu, logvar
-            # gc.collect() удален - это тормозит TPU
-            
             loss.backward()
             
+            # Очистка памяти
+            del student_states, teacher_targets, mu, logvar
+            
             if (global_step + 1) % accumulation_steps == 0:
-                # Для SPMD FSDP используется стандартный optimizer.step()
                 xm.optimizer_step(optimizer, barrier=True)
                 scheduler.step()
                 optimizer.zero_grad()
                 
-                # ОБЪЕДИНЕННЫЙ БЛОК: СОХРАНЕНИЕ И ВАЛИДАЦИЯ
-                # Синхронизируем с T_0=500 планировщика: (global_step + 1) // 4 % 500 == 0
+                # Сохранение и валидация каждые 500 шагов оптимизатора
                 if ((global_step + 1) // accumulation_steps) % 500 == 0:
-                    # 1. Сохранение (всегда перед валидацией)
                     xm.mark_step()
-                    if rank == 0: print(f"\n--- [RANK 0] Создание снапшота на шаге {global_step} (конец цикла LR)... ---")
+                    if rank == 0: print(f"\n--- [RANK 0] Снапшот на шаге {global_step}... ---")
                     
                     full_sd = distiller.state_dict()
                     trainable_sd = {k: v for k, v in full_sd.items() if "teacher" not in k}
                     
                     save_data = {
                         'model_state_dict': trainable_sd,
+                        'optimizer_state_dict': optimizer.state_dict(),
                         'scheduler_state_dict': scheduler.state_dict(),
                         'global_step': global_step,
-                        'epoch': epoch
+                        'epoch': epoch,
+                        'wandb_run_id': wandb_run_id
                     }
                     local_ckpt_name = f"ckpt_{global_step}.pt"
                     xm.save(save_data, local_ckpt_name)
@@ -259,27 +257,23 @@ def train():
                         try:
                             import shutil
                             shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
-                            print(f"--- [GCS] Загрузка {local_ckpt_name} в Cloud Storage... ---")
                             subprocess.run(["gsutil", "cp", local_ckpt_name, "gs://bebladii-weigths/checkpoints/"], check=True)
                             subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"], check=True)
                             
-                            # Удаляем старый чекпоинт (500 шагов назад по оптимизатору = 2000 по глобал степ)
                             prev_step = global_step - (500 * accumulation_steps)
                             prev_ckpt = f"ckpt_{prev_step}.pt"
                             if os.path.exists(prev_ckpt): os.remove(prev_ckpt)
                         except Exception as e:
-                            print(f"--- [GCS ERROR] Ошибка: {e} ---")
+                            print(f"--- [GCS ERROR] {e} ---")
 
-                    # 2. Валидация
-                    if rank == 0: print(f"--- [RANK 0] Валидация на минимуме LR... ---")
+                    # Валидация
                     distiller.eval()
                     val_loss_sum, val_steps = 0.0, 0
                     val_metrics_sums = {}
-                    max_val_steps = 200
+                    max_val_steps = 100
                     
                     with torch.no_grad():
-                        val_progress = tqdm(val_loader, total=max_val_steps, disable=(rank != 0), desc="Validation", leave=False)
-                        for v_step, v_batch in enumerate(val_progress):
+                        for v_step, v_batch in enumerate(val_loader):
                             if v_step >= max_val_steps: break
                             for k, v in v_batch.items():
                                 v = v.to(device)
@@ -289,46 +283,31 @@ def train():
                             v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
                             v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
                             
-                            v_loss_scalar = v_loss.item()
-                            v_metrics_scalars = {k: v.item() if torch.is_tensor(v) else v for k, v in v_metrics.items()}
-                            
-                            del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics
-                            xm.mark_step()
-                            
-                            val_loss_sum += v_loss_scalar
-                            for k, val in v_metrics_scalars.items():
-                                val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + val
+                            val_loss_sum += v_loss.item()
+                            for k, val in v_metrics.items():
+                                val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + (val.item() if torch.is_tensor(val) else val)
                             val_steps += 1
+                            xm.mark_step()
                     
                     if rank == 0:
-                        avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
-                        print(f"[{global_step}] Validation - Loss: {avg_val_loss:.4f}")
-                        
-                        val_log_dict = {"val/loss": avg_val_loss, "global_step": global_step}
+                        avg_val_loss = val_loss_sum / val_steps
+                        val_log = {"val/loss": avg_val_loss, "global_step": global_step}
                         for k, v_sum in val_metrics_sums.items():
-                            avg_val = v_sum / val_steps
-                            if k.startswith("l") and ("_mse" in k or "_cos" in k):
-                                val_log_dict[f"val/layers/{k}"] = avg_val
-                            else:
-                                val_log_dict[f"val/{k}"] = avg_val
-                        
-                        wandb.log(val_log_dict, step=global_step)
+                            val_log[f"val/{k}"] = v_sum / val_steps
+                        wandb.log(val_log, step=global_step)
                     
                     distiller.train()
             
             xm.mark_step()
             global_step += 1
             
-            if rank == 0:
-                # В 10 раз чаще: 50 * accumulation_steps // 10 = 20 шагов
-                if global_step % 20 == 0:
-                    lr = optimizer.param_groups[0]['lr']
-                    loss_val = loss.item() * accumulation_steps
-                    log_dict = {"train/loss": loss_val, "train/lr": lr, "global_step": global_step}
-                    for k, v in loss_metrics.items():
-                        log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
-                    wandb.log(log_dict, step=global_step)
-                    progress_bar.set_postfix({"loss": f"{loss_val:.4f}", "step": global_step})
+            if rank == 0 and global_step % 20 == 0:
+                lr = optimizer.param_groups[0]['lr']
+                log_dict = {"train/loss": loss.item() * accumulation_steps, "train/lr": lr, "global_step": global_step}
+                for k, v in loss_metrics.items():
+                    log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
+                wandb.log(log_dict, step=global_step)
+                progress_bar.set_postfix({"loss": f"{log_dict['train/loss']:.4f}", "step": global_step})
 
 if __name__ == "__main__":
     import time
@@ -336,51 +315,28 @@ if __name__ == "__main__":
 
     if rank == 0:
         print("--- [RANK 0] Подготовка ресурсов ---")
-        if not os.path.exists("src"):
-            subprocess.run(["git", "init"], check=True)
-            subprocess.run(["git", "remote", "add", "origin", "https://github.com/Laeryid/BEBLaDII"], check=True)
-            subprocess.run(["git", "pull", "origin", "main"], check=True)
-        
         os.makedirs("./data", exist_ok=True)
         subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets/data/", "./data"], check=True)
 
-        # Скачиваем чекпоинт
+        # Скачивание чекпоинтов
         try:
-            # Сначала проверяем TPU чекпоинт
+            # 1. Проверяем свежий чекпоинт
             res = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt"], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip():
-                print("--- [RANK 0] Найден TPU чекпоинт. Скачиваем... ---")
+            if res.returncode == 0:
                 subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt", "latest_checkpoint.pt"], check=True)
-            else:
-                # Если TPU чекпоинта нет, скачиваем Kaggle чекпоинт
-                print("--- [RANK 0] TPU чекпоинт не найден. Ищем Kaggle чекпоинт... ---")
-                res = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths/kaggle_upload_1_4/RESUME_PHASE1_STEP_5400.pt"], capture_output=True, text=True)
-                if res.returncode == 0 and res.stdout.strip():
-                    print("--- [RANK 0] Скачиваем Kaggle чекпоинт RESUME_PHASE1_STEP_5400.pt ---")
-                    subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/kaggle_upload_1_4/RESUME_PHASE1_STEP_5400.pt", "latest_checkpoint.pt"], check=True)
+            
+            # 2. Скачиваем базовые веса Awakening (всегда, как запасной вариант)
+            if not os.path.exists("latest_checkpoint.pt"):
+                print("--- [RANK 0] Свежий чекпоинт не найден, скачиваем AWAKENED_WEIGHTS_FINAL.pt ---")
+                subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt", "AWAKENED_WEIGHTS_FINAL.pt"], check=True)
         except Exception as e:
-            print(f"--- [RANK 0] Ошибка при загрузке чекпоинта: {e} ---")
+            print(f"--- [RANK 0] Ошибка загрузки весов: {e} ---")
         
-        # Сигнализируем, что загрузка завершена
         with open("/tmp/resources_prepared.flag", "w") as f: f.write("ok")
     else:
-        # Процессы 1-3 ждут, пока процесс 0 скачает файлы, ПЕРЕД инициализацией XLA
-        print(f"--- [RANK {rank}] Ожидание загрузки ресурсов... ---")
         while not os.path.exists("/tmp/resources_prepared.flag"):
             time.sleep(2)
 
-    # Инициализируем распределенное окружение для torchrun (привязка PJRT к топологии torchrun)
-    # Для SPMD FSDPv2 инициализация process_group с xla backend больше не нужна!
-    # import torch.distributed as dist
-    # import torch_xla.distributed.xla_backend
-    # dist.init_process_group("xla", init_method="xla://")
-
-    # Инициализируем XLA только после скачивания, чтобы избежать проблем с fork() и gsutil
     import torch_xla.core.xla_model as xm
-    device = xm.xla_device()
-    
-    # Синхронизация на уровне XLA (на всякий случай)
     xm.rendezvous("init_done")
-
-    # Запускаем само обучение
     train()
