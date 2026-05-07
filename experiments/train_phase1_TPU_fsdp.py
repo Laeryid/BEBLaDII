@@ -188,7 +188,7 @@ def train():
 
     # Данные (ОДНОПРОЦЕССОРНЫЙ SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
     train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val')
+    val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=2048, split='val')
     accumulation_steps = 4
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 
@@ -235,13 +235,93 @@ def train():
                 xm.optimizer_step(optimizer, barrier=True)
                 scheduler.step()
                 optimizer.zero_grad()
+                
+                # ОБЪЕДИНЕННЫЙ БЛОК: СОХРАНЕНИЕ И ВАЛИДАЦИЯ
+                # Синхронизируем с T_0=500 планировщика: (global_step + 1) // 4 % 500 == 0
+                if ((global_step + 1) // accumulation_steps) % 500 == 0:
+                    # 1. Сохранение (всегда перед валидацией)
+                    xm.mark_step()
+                    if rank == 0: print(f"\n--- [RANK 0] Создание снапшота на шаге {global_step} (конец цикла LR)... ---")
+                    
+                    full_sd = distiller.state_dict()
+                    trainable_sd = {k: v for k, v in full_sd.items() if "teacher" not in k}
+                    
+                    save_data = {
+                        'model_state_dict': trainable_sd,
+                        'scheduler_state_dict': scheduler.state_dict(),
+                        'global_step': global_step,
+                        'epoch': epoch
+                    }
+                    local_ckpt_name = f"ckpt_{global_step}.pt"
+                    xm.save(save_data, local_ckpt_name)
+                    
+                    if rank == 0:
+                        try:
+                            import shutil
+                            shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
+                            print(f"--- [GCS] Загрузка {local_ckpt_name} в Cloud Storage... ---")
+                            subprocess.run(["gsutil", "cp", local_ckpt_name, "gs://bebladii-weigths/checkpoints/"], check=True)
+                            subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"], check=True)
+                            
+                            # Удаляем старый чекпоинт (500 шагов назад по оптимизатору = 2000 по глобал степ)
+                            prev_step = global_step - (500 * accumulation_steps)
+                            prev_ckpt = f"ckpt_{prev_step}.pt"
+                            if os.path.exists(prev_ckpt): os.remove(prev_ckpt)
+                        except Exception as e:
+                            print(f"--- [GCS ERROR] Ошибка: {e} ---")
+
+                    # 2. Валидация
+                    if rank == 0: print(f"--- [RANK 0] Валидация на минимуме LR... ---")
+                    distiller.eval()
+                    val_loss_sum, val_steps = 0.0, 0
+                    val_metrics_sums = {}
+                    max_val_steps = 200
+                    
+                    with torch.no_grad():
+                        val_progress = tqdm(val_loader, total=max_val_steps, disable=(rank != 0), desc="Validation", leave=False)
+                        for v_step, v_batch in enumerate(val_progress):
+                            if v_step >= max_val_steps: break
+                            for k, v in v_batch.items():
+                                v = v.to(device)
+                                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
+                                v_batch[k] = v
+                                
+                            v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
+                            v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
+                            
+                            v_loss_scalar = v_loss.item()
+                            v_metrics_scalars = {k: v.item() if torch.is_tensor(v) else v for k, v in v_metrics.items()}
+                            
+                            del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics
+                            xm.mark_step()
+                            
+                            val_loss_sum += v_loss_scalar
+                            for k, val in v_metrics_scalars.items():
+                                val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + val
+                            val_steps += 1
+                    
+                    if rank == 0:
+                        avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
+                        print(f"[{global_step}] Validation - Loss: {avg_val_loss:.4f}")
+                        
+                        val_log_dict = {"val/loss": avg_val_loss, "global_step": global_step}
+                        for k, v_sum in val_metrics_sums.items():
+                            avg_val = v_sum / val_steps
+                            if k.startswith("l") and ("_mse" in k or "_cos" in k):
+                                val_log_dict[f"val/layers/{k}"] = avg_val
+                            else:
+                                val_log_dict[f"val/{k}"] = avg_val
+                        
+                        wandb.log(val_log_dict, step=global_step)
+                    
+                    distiller.train()
             
             xm.mark_step()
-            
             global_step += 1
             
             if rank == 0:
-                if global_step % 50 == 0:
+                # В 10 раз чаще: 50 * accumulation_steps // 10 = 20 шагов
+                if global_step % 20 == 0:
                     lr = optimizer.param_groups[0]['lr']
                     loss_val = loss.item() * accumulation_steps
                     log_dict = {"train/loss": loss_val, "train/lr": lr, "global_step": global_step}
@@ -249,85 +329,6 @@ def train():
                         log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
                     wandb.log(log_dict, step=global_step)
                     progress_bar.set_postfix({"loss": f"{loss_val:.4f}", "step": global_step})
-
-            # ОБЪЕДИНЕННЫЙ БЛОК: СОХРАНЕНИЕ И ВАЛИДАЦИЯ
-            if global_step % 500 == 0:
-                # 1. Сохранение (всегда перед валидацией)
-                xm.mark_step()
-                if rank == 0: print(f"\n--- [RANK 0] Создание снапшота на шаге {global_step}... ---")
-                
-                full_sd = distiller.state_dict()
-                trainable_sd = {k: v for k, v in full_sd.items() if "teacher" not in k}
-                
-                save_data = {
-                    'model_state_dict': trainable_sd,
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'global_step': global_step,
-                    'epoch': epoch
-                }
-                local_ckpt_name = f"ckpt_{global_step}.pt"
-                xm.save(save_data, local_ckpt_name)
-                
-                if rank == 0:
-                    try:
-                        import shutil
-                        shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
-                        print(f"--- [GCS] Загрузка {local_ckpt_name} в Cloud Storage... ---")
-                        subprocess.run(["gsutil", "cp", local_ckpt_name, "gs://bebladii-weigths/checkpoints/"], check=True)
-                        subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"], check=True)
-                        
-                        prev_ckpt = f"ckpt_{global_step - 500}.pt"
-                        if os.path.exists(prev_ckpt): os.remove(prev_ckpt)
-                    except Exception as e:
-                        print(f"--- [GCS ERROR] Ошибка: {e} ---")
-
-                # 2. Валидация
-                if rank == 0: print(f"--- [RANK 0] Валидация... ---")
-                distiller.eval()
-                val_loss_sum, val_steps = 0.0, 0
-                val_metrics_sums = {}
-                max_val_steps = 200
-                
-                with torch.no_grad():
-                    val_progress = tqdm(val_loader, total=max_val_steps, disable=(rank != 0), desc="Validation", leave=False)
-                    for v_step, v_batch in enumerate(val_progress):
-                        if v_step >= max_val_steps: break
-                        for k, v in v_batch.items():
-                            v = v.to(device)
-                            xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
-                            v_batch[k] = v
-                            
-                        v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
-                        v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
-                        
-                        # Извлекаем скаляры до удаления тензоров
-                        v_loss_scalar = v_loss.item()
-                        v_metrics_scalars = {k: v.item() if torch.is_tensor(v) else v for k, v in v_metrics.items()}
-                        
-                        del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics
-                        
-                        xm.mark_step()
-                        
-                        val_loss_sum += v_loss_scalar
-                        for k, val in v_metrics_scalars.items():
-                            val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + val
-                        val_steps += 1
-                
-                if rank == 0:
-                    avg_val_loss = val_loss_sum / val_steps if val_steps > 0 else 0
-                    print(f"[{global_step}] Validation - Loss: {avg_val_loss:.4f}")
-                    
-                    val_log_dict = {"val/loss": avg_val_loss, "global_step": global_step}
-                    for k, v_sum in val_metrics_sums.items():
-                        avg_val = v_sum / val_steps
-                        if k.startswith("l") and ("_mse" in k or "_cos" in k):
-                            val_log_dict[f"val/layers/{k}"] = avg_val
-                        else:
-                            val_log_dict[f"val/{k}"] = avg_val
-                    
-                    wandb.log(val_log_dict, step=global_step)
-                
-                distiller.train()
 
 if __name__ == "__main__":
     import time
