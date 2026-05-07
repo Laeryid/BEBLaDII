@@ -238,14 +238,48 @@ def train():
                             print(f"--- [GCS ERROR] {e} ---")
 
                     distiller.eval()
-                    # (Логика валидации здесь)
+                    val_loss_sum, val_steps = 0.0, 0
+                    val_metrics_sums = {}
+                    max_val_steps = 50 # Ограничиваем для скорости
+                    
+                    with torch.no_grad():
+                        for v_step, v_batch in enumerate(val_loader):
+                            if v_step >= max_val_steps: break
+                            for k, v in v_batch.items():
+                                v = v.to(device)
+                                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
+                                v_batch[k] = v
+                                
+                            v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
+                            v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
+                            
+                            val_loss_sum += v_loss.item()
+                            for k, val in v_metrics.items():
+                                val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + (val.item() if torch.is_tensor(val) else val)
+                            val_steps += 1
+                            xm.mark_step()
+                    
+                    if rank == 0:
+                        avg_val_loss = val_loss_sum / val_steps
+                        val_log = {"val/loss": avg_val_loss, "global_step": global_step}
+                        for k, v_sum in val_metrics_sums.items():
+                            val_log[f"val/{k}"] = v_sum / val_steps
+                        import wandb
+                        wandb.log(val_log, step=global_step)
+                        print(f"--- [VAL] Step {global_step}: Loss {avg_val_loss:.4f} ---")
+                    
                     distiller.train()
             
             if (i + 1) % accumulation_steps == 0:
                 global_step += 1
                 if xm.is_master_ordinal() and global_step % 20 == 0:
                     import wandb
-                    wandb.log({"train/loss": loss.item() * accumulation_steps, "global_step": global_step}, step=global_step)
+                    log_dict = {"train/loss": loss.item() * accumulation_steps, "global_step": global_step}
+                    # Возвращаем метрики по слоям и другие компоненты лосса
+                    if 'loss_metrics' in locals():
+                        for k, v in loss_metrics.items():
+                            log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
+                    wandb.log(log_dict, step=global_step)
 
             xm.mark_step()
 
