@@ -186,9 +186,9 @@ def train():
             start_epoch = ckpt['epoch']
             if rank == 0: print(f"--- [RESUME] Возобновляем с эпохи {start_epoch} ---")
 
-    # Данные (ОДНОПРОЦЕССОРНЫЙ SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
-    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='train')
-    val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=2048, split='val')
+    # Данные (Используем физически разделенные папки train/val в Reasoning)
+    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='train', val_ratio=0.0)
+    val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=2048, split='val', val_ratio=0.0)
     accumulation_steps = 4
     # Строго без MpDeviceLoader, иначе возникает дедлок с PyArrow при чтении Parquet!
 

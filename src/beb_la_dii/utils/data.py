@@ -110,28 +110,30 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
     
     # 1. Если есть папка стадии (Kaggle или подготовленный локальный запуск)
     if os.path.exists(stage_path):
-        print(f"Loading merged dataset from: {stage_path}")
-        # Рекурсивно сканируем подпапки
-        try:
-            from indexed_parquet import IndexedParquetDataset
-        except ImportError:
-            from indexed_parquet_dataset import IndexedParquetDataset
-            
-        dataset_obj = IndexedParquetDataset.from_folder(stage_path)
+        print(f"Loading dataset from: {stage_path}")
+        
+        # Проверяем наличие физического разделения на train/val
+        physical_split_path = os.path.join(stage_path, split)
+        if os.path.exists(physical_split_path) and os.path.isdir(physical_split_path):
+            print(f"Found physical split folder: {physical_split_path}")
+            current_scan_path = physical_split_path
+            # Если мы нашли физический сплит, отключаем внутренний val_ratio, 
+            # так как данные уже разделены
+            val_ratio = 0 
+        else:
+            current_scan_path = stage_path
+
         # Нам нужно обернуть это в DistillationDataset для маппинга текстов
-        # Для простоты мы можем создать конфиги на лету из подпапок
-        # Сканируем содержимое папки (файлы или подпапки)
         configs = []
-        print(f"DEBUG DATA: Scanning directory: {stage_path}")
+        print(f"DEBUG DATA: Scanning directory: {current_scan_path}")
         try:
-            items = os.listdir(stage_path)
-            print(f"DEBUG DATA: Found items: {items}")
+            items = os.listdir(current_scan_path)
         except Exception as e:
             print(f"DEBUG DATA: Error listing directory: {e}")
             items = []
         
         for item in items:
-            item_path = os.path.join(stage_path, item)
+            item_path = os.path.join(current_scan_path, item)
             
             # Определяем тип данных по имени
             dtype = 'raw'
@@ -139,22 +141,20 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
             if 'magpie' in name_lower: dtype = 'magpie'
             elif 'open_thoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
             
-            # В Kaggle это могут быть симлинки, проверяем существование и расширение
-            is_parquet = item.endswith('.parquet')
-            
-            if is_parquet:
-                # Если это файл в корне, используем родительскую папку + паттерн имени файла
-                print(f"DEBUG DATA: Registering file: {item} as {dtype}")
-                configs.append({'path': stage_path, 'type': dtype, 'pattern': item})
+            if item.endswith('.parquet'):
+                configs.append({'path': current_scan_path, 'type': dtype, 'pattern': item})
             elif os.path.isdir(item_path):
-                # Если это подпапка, используем её как базовый путь
-                print(f"DEBUG DATA: Registering folder: {item} as {dtype}")
+                # Пропускаем служебные папки, если мы в корне
+                if item in ['train', 'val', '_source_backup', '_source_original']:
+                    continue
                 configs.append({'path': item_path, 'type': dtype})
         
         if not configs:
-            print(f"Warning: No valid data found in {stage_path}. Falling back to default local configs.")
-            # Используем флаг 'default', чтобы избежать бесконечной рекурсии
-            return get_dataloader(stage='default', batch_size=batch_size, max_length=max_length)
+            print(f"Warning: No valid data found in {current_scan_path}.")
+            # Если мы пытались найти физический сплит и не нашли ничего, 
+            # возможно стоит попробовать корень
+            if current_scan_path != stage_path:
+                 return get_dataloader(stage=stage, batch_size=batch_size, max_length=max_length, split=split, val_ratio=val_ratio)
             
         dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
     else:
