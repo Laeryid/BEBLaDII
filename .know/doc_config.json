@@ -1,15 +1,51 @@
 {
     "coverage_settings": {
         "tracked_modules": [
-            ["src/beb_la_dii/model", "Model Core", 10],
-            ["src/beb_la_dii/rag", "RAG Engine", 10],
-            ["ideas", "Architecture & Training Phases", 10],
-            ["src/beb_la_dii/utils", "Utilities", 5],
-            ["src/beb_la_dii", "Core Package", 2],
-            ["tests", "Tests", 4],
-            ["experiments", "Experiments", 4],
-            [".know", "Knowledge Infrastructure", 8],
-            ["scripts", "Data & Ops Scripts", 3]
+            [
+                "src/beb_la_dii/model",
+                "Model Core",
+                10
+            ],
+            [
+                "src/beb_la_dii/rag",
+                "RAG Engine",
+                10
+            ],
+            [
+                "ideas",
+                "Architecture & Training Phases",
+                10
+            ],
+            [
+                "src/beb_la_dii/utils",
+                "Utilities",
+                5
+            ],
+            [
+                "src/beb_la_dii",
+                "Core Package",
+                2
+            ],
+            [
+                "tests",
+                "Tests",
+                4
+            ],
+            [
+                "experiments",
+                "Experiments",
+                4
+            ],
+            [
+                ".know",
+                "Knowledge Infrastructure",
+                8
+            ],
+            [
+                "scripts",
+                "Data & Ops Scripts",
+                3
+            ]
         ],
         "thresholds": {
             "density": 50.0,
@@ -19,17 +55,26 @@
     "artifacts": {
         "README.md": {
             "description": "General documentation and project overview.",
-            "depends_on": ["src/", "tests/", "pyproject.toml"]
+            "depends_on": [
+                "src/",
+                "tests/",
+                "pyproject.toml"
+            ]
         },
         "AGENTS.md": {
             "description": "Instructions and context for AI agents.",
-            "depends_on": [".know/knowledge/", ".know/doc_config.json"]
+            "depends_on": [
+                ".know/knowledge/",
+                ".know/doc_config.json"
+            ]
         }
     },
     "knowledge_items": {
         "KI_model_core.md": {
             "description": "Model logic, Depth Up-Scaling (DUS), projectors, and inference.",
-            "covers": ["Model Core"],
+            "covers": [
+                "Model Core"
+            ],
             "depends_on": [
                 "src/beb_la_dii/model/base.py",
                 "src/beb_la_dii/model/component_registry.py",
@@ -41,7 +86,9 @@
         },
         "KI_architecture.md": {
             "description": "Central description of architecture (System 1/2) and training phases.",
-            "covers": ["Architecture & Training Phases"],
+            "covers": [
+                "Architecture & Training Phases"
+            ],
             "depends_on": [
                 "ideas/Architecture.md",
                 "ideas/Training phases.md",
@@ -51,7 +98,9 @@
         },
         "KI_rag_engine.md": {
             "description": "RAG system, indexing, and knowledge search.",
-            "covers": ["RAG Engine"],
+            "covers": [
+                "RAG Engine"
+            ],
             "depends_on": [
                 "src/beb_la_dii/rag/",
                 "ideas/Architecture.md"
@@ -59,7 +108,9 @@
         },
         "KI_utilities.md": {
             "description": "Tokenizer integration, training optimization, and loss calculation.",
-            "covers": ["Utilities"],
+            "covers": [
+                "Utilities"
+            ],
             "depends_on": [
                 "src/beb_la_dii/utils/data.py",
                 "src/beb_la_dii/utils/experiment_manager.py",
@@ -71,7 +122,9 @@
         },
         "KI_tests.md": {
             "description": "Testing strategy for DUS, alignment, and gradient stability.",
-            "covers": ["Tests"],
+            "covers": [
+                "Tests"
+            ],
             "depends_on": [
                 "tests/test_constructor_logic.py",
                 "tests/test_dus_stability.py",
@@ -82,7 +135,9 @@
         },
         "KI_experiments.md": {
             "description": "Experiments with DUS Mapping, hyperparameters, and language data.",
-            "covers": ["Experiments"],
+            "covers": [
+                "Experiments"
+            ],
             "depends_on": [
                 "experiments/train_phase1_kaggle.py",
                 "experiments/train_phase1_kaggle.ipynb"
@@ -90,7 +145,9 @@
         },
         "KI_knowledge_management.md": {
             "description": "Knowledge management system: MCP server, audit, and documentation version control.",
-            "covers": ["Knowledge Infrastructure"],
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
             "depends_on": [
                 ".know/scripts/knowledge_mcp.py",
                 ".know/scripts/knowledge_engine.py",
@@ -119,12 +176,18 @@
         },
         "KI_kaggle.md": {
             "description": "Instructions for Kaggle CLI: API configuration, creation, and updating of datasets.",
-            "covers": ["Data & Ops Scripts"],
-            "depends_on": ["scripts/prepare_kaggle_data.py"]
+            "covers": [
+                "Data & Ops Scripts"
+            ],
+            "depends_on": [
+                "scripts/prepare_kaggle_data.py"
+            ]
         },
         "KI_operations.md": {
             "description": "Technical and debugging scripts: smoke tests, NaN debugging, synchronization.",
-            "covers": ["Data & Ops Scripts"],
+            "covers": [
+                "Data & Ops Scripts"
+            ],
             "depends_on": [
                 "scripts/smoke_test_forward.py",
                 "scripts/debug_nan_kaggle.py",
@@ -144,33 +207,54 @@
         },
         "decisions/001_kaggle_phase1_retrospective.md": {
             "description": "ADR: Kaggle Phase 1 deployment retrospective (reasons for choosing FP32, Mirror-Load, Arrow_Schema).",
-            "covers": ["Knowledge Infrastructure"],
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
             "depends_on": []
         },
         "decisions/002_phase1_training_optimization.md": {
             "description": "ADR: Оптимизация стабильности и ресурсов Phase 1 (AdamW8bit, Persistence, Cosine Annealing).",
-            "covers": ["Knowledge Infrastructure"],
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
             "depends_on": []
         },
         "decisions/003_fsdp_tpu_transition.md": {
             "description": "ADR: Переход на FSDP для обучения на TPU v6e (решение проблем OOM).",
-            "covers": ["Knowledge Infrastructure"],
-            "depends_on": ["experiments/train_phase1_TPU_fsdp.py"]
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                "experiments/train_phase1_TPU_fsdp.py"
+            ]
         },
         "decisions/004_spmd_fsdp_tpu_constraints.md": {
             "description": "ADR: Ограничения SPMD FSDP на TPU: шардинг батча, загрузка весов и лимиты HBM.",
-            "covers": ["Knowledge Infrastructure"],
-            "depends_on": ["experiments/train_phase1_TPU_fsdp.py"]
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                "experiments/train_phase1_TPU_fsdp.py"
+            ]
         },
         "decisions/005_modernbert_xla_gradient_checkpointing.md": {
             "description": "ADR: Отказ от Gradient Checkpointing для ModernBERT на XLA (TPU) из-за OOM (Sliding Window Attention).",
-            "covers": ["Knowledge Infrastructure"],
-            "depends_on": ["experiments/train_phase1_TPU_fsdp.py", "src/beb_la_dii/model/dus.py"]
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                "experiments/train_phase1_TPU_fsdp.py",
+                "src/beb_la_dii/model/dus.py"
+            ]
         },
         "decisions/006_fsdp_checkpoint_loading_fix.md": {
             "description": "ADR: Исправление логики загрузки весов в FSDP на TPU (устранение OOM и проблем с префиксами).",
-            "covers": ["Knowledge Infrastructure"],
-            "depends_on": ["experiments/train_phase1_TPU_fsdp.py"]
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                "experiments/train_phase1_TPU_fsdp.py"
+            ]
         }
     },
     "knowledge_system": {
@@ -215,7 +299,11 @@
                 "description": "Read file inside .know.",
                 "method": "read_file",
                 "args": [
-                    {"name": "rel_path", "type": "string", "description": "Path relative to .know/"}
+                    {
+                        "name": "rel_path",
+                        "type": "string",
+                        "description": "Path relative to .know/"
+                    }
                 ]
             },
             {
@@ -223,8 +311,16 @@
                 "description": "Safely create or overwrite file inside .know.",
                 "method": "write_file",
                 "args": [
-                    {"name": "rel_path", "type": "string", "description": "Path relative to .know/"},
-                    {"name": "content", "type": "string", "description": "File content"}
+                    {
+                        "name": "rel_path",
+                        "type": "string",
+                        "description": "Path relative to .know/"
+                    },
+                    {
+                        "name": "content",
+                        "type": "string",
+                        "description": "File content"
+                    }
                 ]
             },
             {
@@ -232,9 +328,21 @@
                 "description": "Safely edit file inside .know via text replacement.",
                 "method": "edit_file",
                 "args": [
-                    {"name": "rel_path", "type": "string", "description": "Path relative to .know/"},
-                    {"name": "old_text", "type": "string", "description": "Text to replace (must be unique)"},
-                    {"name": "new_text", "type": "string", "description": "New text"}
+                    {
+                        "name": "rel_path",
+                        "type": "string",
+                        "description": "Path relative to .know/"
+                    },
+                    {
+                        "name": "old_text",
+                        "type": "string",
+                        "description": "Text to replace (must be unique)"
+                    },
+                    {
+                        "name": "new_text",
+                        "type": "string",
+                        "description": "New text"
+                    }
                 ]
             },
             {
@@ -242,7 +350,11 @@
                 "description": "Create new directory inside .know.",
                 "method": "make_dir",
                 "args": [
-                    {"name": "rel_path", "type": "string", "description": "Path relative to .know/"}
+                    {
+                        "name": "rel_path",
+                        "type": "string",
+                        "description": "Path relative to .know/"
+                    }
                 ]
             }
         ]

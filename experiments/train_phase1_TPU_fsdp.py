@@ -12,6 +12,8 @@ if os.path.exists("/home/hp/wandb_key.txt"):
         _key = f.read().strip()
         if _key:
             import wandb
+            import json
+            import datetime
             wandb.login(key=_key)
             os.environ["WANDB_API_KEY"] = _key
 
@@ -257,9 +259,20 @@ def train():
                         try:
                             import shutil
                             shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
+                            
+                            # Отправка весов
                             subprocess.run(["gsutil", "cp", local_ckpt_name, "gs://bebladii-weigths/checkpoints/"], check=True)
                             subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"], check=True)
                             
+                            # Работа с логами
+                            if os.path.exists("history.jsonl"):
+                                history_version = f"history_{global_step}.jsonl"
+                                shutil.copy("history.jsonl", history_version)
+                                # Отправка актуального и версионного лога
+                                subprocess.run(["gsutil", "cp", "history.jsonl", "gs://bebladii-weigths/checkpoints/history.jsonl"], check=True)
+                                subprocess.run(["gsutil", "cp", history_version, f"gs://bebladii-weigths/checkpoints/{history_version}"], check=True)
+                                os.remove(history_version)
+
                             prev_step = global_step - (500 * accumulation_steps)
                             prev_ckpt = f"ckpt_{prev_step}.pt"
                             if os.path.exists(prev_ckpt): os.remove(prev_ckpt)
@@ -295,6 +308,10 @@ def train():
                         for k, v_sum in val_metrics_sums.items():
                             val_log[f"val/{k}"] = v_sum / val_steps
                         wandb.log(val_log, step=global_step)
+                        
+                        # Запись в локальный файл истории
+                        with open("history.jsonl", "a", encoding="utf-8") as f:
+                            f.write(json.dumps(val_log, ensure_ascii=False) + "\n")
                     
                     distiller.train()
             
@@ -307,6 +324,11 @@ def train():
                 for k, v in loss_metrics.items():
                     log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
                 wandb.log(log_dict, step=global_step)
+                
+                # Запись в локальный файл истории
+                with open("history.jsonl", "a", encoding="utf-8") as f:
+                    f.write(json.dumps(log_dict, ensure_ascii=False) + "\n")
+                
                 progress_bar.set_postfix({"loss": f"{log_dict['train/loss']:.4f}", "step": global_step})
 
 if __name__ == "__main__":
@@ -329,8 +351,17 @@ if __name__ == "__main__":
             if not os.path.exists("latest_checkpoint.pt"):
                 print("--- [RANK 0] Свежий чекпоинт не найден, скачиваем AWAKENED_WEIGHTS_FINAL.pt ---")
                 subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt", "AWAKENED_WEIGHTS_FINAL.pt"], check=True)
+            
+            # 3. Скачиваем файл истории
+            res_h = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths/checkpoints/history.jsonl"], capture_output=True, text=True)
+            if res_h.returncode == 0:
+                print("--- [RANK 0] Загрузка существующей истории из CS ---")
+                subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/checkpoints/history.jsonl", "history.jsonl"], check=True)
+            else:
+                # Создаем пустой файл, если его нет
+                with open("history.jsonl", "w") as f: pass
         except Exception as e:
-            print(f"--- [RANK 0] Ошибка загрузки весов: {e} ---")
+            print(f"--- [RANK 0] Ошибка загрузки ресурсов: {e} ---")
         
         with open("/tmp/resources_prepared.flag", "w") as f: f.write("ok")
     else:
