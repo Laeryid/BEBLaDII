@@ -147,7 +147,7 @@ def train():
         clip_threshold=1.0
     )
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=1, eta_min=2e-5)
-    criterion = DistillationLoss(cos_weight=20.0)
+    criterion = DistillationLoss()
 
     global_step = 0
     start_epoch = 0
