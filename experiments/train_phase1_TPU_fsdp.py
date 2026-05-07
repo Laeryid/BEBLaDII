@@ -6,8 +6,8 @@ torch._dynamo.disable()
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.disable = True
 
-# Пытаемся прочитать ключ W&B из файла
-if os.path.exists("/home/hp/wandb_key.txt"):
+# Пытаемся прочитать ключ W&B из файла (только для главного процесса)
+if os.environ.get("LOCAL_RANK", "0") == "0" and os.path.exists("/home/hp/wandb_key.txt"):
     with open("/home/hp/wandb_key.txt", "r") as f:
         _key = f.read().strip()
         if _key:
@@ -16,6 +16,12 @@ if os.path.exists("/home/hp/wandb_key.txt"):
             import datetime
             wandb.login(key=_key)
             os.environ["WANDB_API_KEY"] = _key
+elif os.path.exists("/home/hp/wandb_key.txt"):
+    # Для остальных процессов просто ставим переменную окружения, чтобы wandb не ругался, 
+    # но логин не вызываем.
+    with open("/home/hp/wandb_key.txt", "r") as f:
+        _key = f.read().strip()
+        if _key: os.environ["WANDB_API_KEY"] = _key
 
 # 1. УСТАНОВКА ПЕРЕМЕННЫХ
 os.environ["PJRT_DEVICE"] = "TPU"
