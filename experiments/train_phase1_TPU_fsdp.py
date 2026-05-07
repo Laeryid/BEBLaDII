@@ -232,15 +232,43 @@ def train():
                     
                     if rank == 0:
                         try:
+                            # Локальное сохранение
                             shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
+                            
+                            # Отправка в GCS
                             subprocess.run(["gsutil", "cp", local_ckpt_name, "gs://bebladii-weigths/checkpoints/"], check=True)
+                            subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"], check=True)
+                            
+                            # Работа с логами тренировки
+                            if os.path.exists("history.jsonl"):
+                                th_ver = f"history_{global_step}.jsonl"
+                                shutil.copy("history.jsonl", th_ver)
+                                subprocess.run(["gsutil", "cp", "history.jsonl", "gs://bebladii-weigths/checkpoints/history.jsonl"], check=True)
+                                subprocess.run(["gsutil", "cp", th_ver, f"gs://bebladii-weigths/checkpoints/{th_ver}"], check=True)
+                                os.remove(th_ver)
+
+                            # Работа с логами валидации
+                            if os.path.exists("history_val.jsonl"):
+                                h_ver = f"history_val_{global_step}.jsonl"
+                                shutil.copy("history_val.jsonl", h_ver)
+                                subprocess.run(["gsutil", "cp", "history_val.jsonl", "gs://bebladii-weigths/checkpoints/history_val.jsonl"], check=True)
+                                subprocess.run(["gsutil", "cp", h_ver, f"gs://bebladii-weigths/checkpoints/{h_ver}"], check=True)
+                                os.remove(h_ver)
+
+                            # Очистка старых локальных чекпоинтов (храним только последние 500 шагов)
+                            prev_step = global_step - (500 * accumulation_steps)
+                            prev_ckpt = f"ckpt_{prev_step}.pt"
+                            if os.path.exists(prev_ckpt): os.remove(prev_ckpt)
                         except Exception as e:
                             print(f"--- [GCS ERROR] {e} ---")
+                    
+                    # Барьер 1: Синхронизация после работы с GCS
+                    xm.rendezvous("gcs_sync_done")
 
                     distiller.eval()
                     val_loss_sum, val_steps = 0.0, 0
                     val_metrics_sums = {}
-                    max_val_steps = 50 # Ограничиваем для скорости
+                    max_val_steps = 50 
                     
                     with torch.no_grad():
                         for v_step, v_batch in enumerate(val_loader):
@@ -268,18 +296,30 @@ def train():
                         wandb.log(val_log, step=global_step)
                         print(f"--- [VAL] Step {global_step}: Loss {avg_val_loss:.4f} ---")
                     
+                    # Барьер 2: Синхронизация после валидации
+                    xm.rendezvous("validation_done")
                     distiller.train()
             
             if (i + 1) % accumulation_steps == 0:
                 global_step += 1
                 if xm.is_master_ordinal() and global_step % 20 == 0:
                     import wandb
-                    log_dict = {"train/loss": loss.item() * accumulation_steps, "global_step": global_step}
-                    # Возвращаем метрики по слоям и другие компоненты лосса
-                    if 'loss_metrics' in locals():
-                        for k, v in loss_metrics.items():
-                            log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
+                    log_dict = {
+                        "train/loss": loss.item() * accumulation_steps, 
+                        "train/lr": optimizer.param_groups[0]['lr'],
+                        "global_step": global_step
+                    }
+                    for k, v in loss_metrics.items():
+                        log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
+                    
                     wandb.log(log_dict, step=global_step)
+                    
+                    # Сохранение в локальный файл истории
+                    with open("history.jsonl", "a", encoding="utf-8") as f:
+                        f.write(json.dumps(log_dict, ensure_ascii=False) + "\n")
+                    
+                    if global_step % 50 == 0:
+                        print(f"--- [LOG] Step {global_step}: Loss {log_dict['train/loss']:.4f} ---")
 
             xm.mark_step()
 
@@ -298,6 +338,14 @@ if __name__ == "__main__":
         os.makedirs("./data", exist_ok=True)
         try:
             subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets/data/", "./data"], check=True)
+            # 2. Поиск и скачивание весов
+            for weight_file in ["latest_checkpoint.pt", "AWAKENED_WEIGHTS_FINAL.pt"]:
+                res = subprocess.run(["gsutil", "ls", f"gs://bebladii-weigths/checkpoints/{weight_file}"], capture_output=True, text=True)
+                if res.returncode == 0:
+                    print(f"--- [RANK 0] Загрузка {weight_file} из GCS ---")
+                    subprocess.run(["gsutil", "cp", f"gs://bebladii-weigths/checkpoints/{weight_file}", weight_file], check=True)
+
+            # 3. Синхронизация истории
             for h_file in ["history.jsonl", "history_val.jsonl"]:
                 res_h = subprocess.run(["gsutil", "ls", f"gs://bebladii-weigths/checkpoints/{h_file}"], capture_output=True, text=True)
                 if res_h.returncode == 0:
