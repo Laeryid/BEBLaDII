@@ -309,26 +309,50 @@ def train():
                             val_log[f"val/{k}"] = v_sum / val_steps
                         wandb.log(val_log, step=global_step)
                         
-                        # Запись в локальный файл истории
-                        with open("history.jsonl", "a", encoding="utf-8") as f:
+                        # Запись в локальный файл истории валидации
+                        with open("history_val.jsonl", "a", encoding="utf-8") as f:
                             f.write(json.dumps(val_log, ensure_ascii=False) + "\n")
                     
                     distiller.train()
             
-            global_step += 1
-            
-            if rank == 0 and global_step % 20 == 0:
-                lr = optimizer.param_groups[0]['lr']
-                log_dict = {"train/loss": loss.item() * accumulation_steps, "train/lr": lr, "global_step": global_step}
-                for k, v in loss_metrics.items():
-                    log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
-                wandb.log(log_dict, step=global_step)
+            # Шаг оптимизатора
+            if (i + 1) % accumulation_steps == 0:
+                optimizer.step()
+                xm.optimizer_step(optimizer, barrier=True)
+                optimizer.zero_grad()
+                global_step += 1
                 
-                # Запись в локальный файл истории
-                with open("history.jsonl", "a", encoding="utf-8") as f:
-                    f.write(json.dumps(log_dict, ensure_ascii=False) + "\n")
-                
-                progress_bar.set_postfix({"loss": f"{log_dict['train/loss']:.4f}", "step": global_step})
+                # Логирование и запись истории
+                if xm.is_master_ordinal() and global_step % 20 == 0:
+                    lr = optimizer.param_groups[0]['lr']
+                    log_dict = {"train/loss": loss.item() * accumulation_steps, "train/lr": lr, "global_step": global_step}
+                    for k, v in loss_metrics.items():
+                        log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
+                    wandb.log(log_dict, step=global_step)
+                    
+                    with open("history.jsonl", "a", encoding="utf-8") as f:
+                        f.write(json.dumps(log_dict, ensure_ascii=False) + "\n")
+                    
+                    progress_bar.set_postfix({"loss": f"{log_dict['train/loss']:.4f}", "step": global_step})
+
+                # Сохранение чекпоинта
+                if global_step % 500 == 0:
+                    if xm.is_master_ordinal():
+                        print(f"--- [RANK 0] Сохранение чекпоинта на шаге {global_step} ---")
+                        save_model_spmd(distiller, "AWAKENED_WEIGHTS_FINAL.pt")
+                        subprocess.run(["gsutil", "cp", "AWAKENED_WEIGHTS_FINAL.pt", "gs://bebladii-weigths/checkpoints/AWAKENED_WEIGHTS_FINAL.pt"], check=True)
+                        
+                        # Синхронизация истории
+                        for h_file in ["history.jsonl", "history_val.jsonl"]:
+                            if os.path.exists(h_file):
+                                h_ver = h_file.replace(".jsonl", f"_{global_step}.jsonl")
+                                shutil.copy(h_file, h_ver)
+                                subprocess.run(["gsutil", "cp", h_file, f"gs://bebladii-weigths/checkpoints/{h_file}"], check=True)
+                                subprocess.run(["gsutil", "cp", h_ver, f"gs://bebladii-weigths/checkpoints/{h_ver}"], check=True)
+                                os.remove(h_ver)
+
+            # Критически важно для TPU: завершаем микробатч
+            xm.mark_step()
 
 if __name__ == "__main__":
     import time
@@ -339,26 +363,17 @@ if __name__ == "__main__":
         os.makedirs("./data", exist_ok=True)
         subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets/data/", "./data"], check=True)
 
-        # Скачивание чекпоинтов
+        # Скачивание чекпоинтов и истории
         try:
-            # 1. Проверяем свежий чекпоинт
-            res = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt"], capture_output=True, text=True)
-            if res.returncode == 0:
-                subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt", "latest_checkpoint.pt"], check=True)
+            # ... (предыдущий код скачивания весов) ...
             
-            # 2. Скачиваем базовые веса Awakening (всегда, как запасной вариант)
-            if not os.path.exists("latest_checkpoint.pt"):
-                print("--- [RANK 0] Свежий чекпоинт не найден, скачиваем AWAKENED_WEIGHTS_FINAL.pt ---")
-                subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt", "AWAKENED_WEIGHTS_FINAL.pt"], check=True)
-            
-            # 3. Скачиваем файл истории
-            res_h = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths/checkpoints/history.jsonl"], capture_output=True, text=True)
-            if res_h.returncode == 0:
-                print("--- [RANK 0] Загрузка существующей истории из CS ---")
-                subprocess.run(["gsutil", "cp", "gs://bebladii-weigths/checkpoints/history.jsonl", "history.jsonl"], check=True)
-            else:
-                # Создаем пустой файл, если его нет
-                with open("history.jsonl", "w") as f: pass
+            for h_file in ["history.jsonl", "history_val.jsonl"]:
+                res_h = subprocess.run(["gsutil", "ls", f"gs://bebladii-weigths/checkpoints/{h_file}"], capture_output=True, text=True)
+                if res_h.returncode == 0:
+                    print(f"--- [RANK 0] Загрузка {h_file} из CS ---")
+                    subprocess.run(["gsutil", "cp", f"gs://bebladii-weigths/checkpoints/{h_file}", h_file], check=True)
+                else:
+                    with open(h_file, "w") as f: pass
         except Exception as e:
             print(f"--- [RANK 0] Ошибка загрузки ресурсов: {e} ---")
         
