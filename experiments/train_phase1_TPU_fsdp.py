@@ -315,7 +315,6 @@ def train():
                     
                     distiller.train()
             
-            xm.mark_step()
             global_step += 1
             
             if rank == 0 and global_step % 20 == 0:

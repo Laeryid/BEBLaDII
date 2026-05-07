@@ -211,11 +211,16 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
         except Exception as e:
             print(f"Warning: Failed to initialize DistributedSampler: {e}")
 
+    # Используем spawn для избежания дедлоков с Parquet/PyArrow
+    import multiprocessing as mp
+    ctx = mp.get_context('spawn') if hasattr(mp, 'get_context') else None
+    
     return DataLoader(
         dataset, 
         batch_size=batch_size, 
         shuffle=shuffle, 
         sampler=sampler,
-        num_workers=0, # Устанавливаем 0, чтобы избежать зависаний (deadlocks) с parquet в дочерних процессах
-        pin_memory=False # Для XLA pin_memory не так важен
+        num_workers=4,
+        multiprocessing_context=ctx,
+        pin_memory=False
     )
