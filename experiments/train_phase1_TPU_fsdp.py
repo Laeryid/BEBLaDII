@@ -247,6 +247,7 @@ def train():
             global_step = ckpt.get('global_step', 0)
             start_epoch = ckpt.get('epoch', 0)
             wandb_run_id = ckpt.get('wandb_run_id', None)
+            current_beta = ckpt.get('current_beta', 0.0) # Загружаем сохраненную beta
         else:
             if rank == 0:
                 print("--- [INIT] Базовые веса загружены. Начинаем обучение с 0 шага. ---")
@@ -290,9 +291,15 @@ def train():
             # Targeted Loss Masking support
             actual_mask = batch['loss_mask'] if 'loss_mask' in batch else batch['attention_mask']
             
-            # Global KL-Annealing (Resume-safe)
+            # Anti-Phase Beta Scheduler (ADR-011)
+            # Beta в противофазе с CosineAnnealingWarmRestarts (T_0=2000)
+            import math
+            rel_step = global_step % 2000
+            BETA_MAX = 0.1
             warmup_steps = 1000.0
-            current_beta = min(0.0001, 0.0001 * (global_step / warmup_steps))
+            warmup_factor = min(1.0, global_step / warmup_steps)
+            # Максимум Beta (BETA_MAX) на середине цикла LR (1000-й шаг)
+            current_beta = (BETA_MAX * (1 - math.cos(2 * math.pi * rel_step / 2000)) / 2) * warmup_factor
 
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
             loss, loss_metrics = criterion(student_states, teacher_targets, actual_mask, mu, logvar, beta=current_beta)
@@ -307,10 +314,10 @@ def train():
                 scheduler.step()
                 
                 # Manual Warmup (up to 1000 global steps)
-                if global_step <= 1000:
-                    warmup_factor = max(0.01, global_step / 1000.0)
+                if global_step <= warmup_steps:
+                    lr_warmup_factor = max(0.01, global_step / warmup_steps)
                     for param_group in optimizer.param_groups:
-                        param_group['lr'] = param_group['lr'] * warmup_factor
+                        param_group['lr'] = param_group['lr'] * lr_warmup_factor
                 
                 optimizer.zero_grad()
                 
@@ -325,7 +332,8 @@ def train():
                         'scheduler_state_dict': scheduler.state_dict(),
                         'global_step': global_step,
                         'epoch': epoch,
-                        'wandb_run_id': wandb_run_id
+                        'wandb_run_id': wandb_run_id,
+                        'current_beta': current_beta
                     }
                     local_ckpt_name = f"ckpt_{global_step}.pt"
                     xm.save(save_data, local_ckpt_name)
@@ -335,9 +343,9 @@ def train():
                             # Локальное сохранение
                             shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
                             
-                            # Отправка в GCS
-                            subprocess.run(["gsutil", "cp", local_ckpt_name, "gs://bebladii-weigths/checkpoints/"], check=True)
-                            subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"], check=True)
+                            # Отправка в GCS (возвращено к синхронному для стабильности графов)
+                            subprocess.run(["gsutil", "-q", "cp", local_ckpt_name, "gs://bebladii-weigths/checkpoints/"], check=True)
+                            subprocess.run(["gsutil", "-q", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"], check=True)
                             
                             # Работа с логами тренировки
                             if os.path.exists("history.jsonl"):
@@ -362,9 +370,13 @@ def train():
                         except Exception as e:
                             print(f"--- [GCS ERROR] {e} ---")
                     
+                    # ПРИНУДИТЕЛЬНЫЙ сброс графа перед барьером, чтобы Rank 0 не тормозил
+                    xm.mark_step()
                     # Барьер 1: Синхронизация после работы с GCS
                     xm.rendezvous("gcs_sync_done")
 
+                # Валидация каждые 100 шагов (сдвигаем на +10, чтобы не пересекаться с CKPT % 500)
+                if (((global_step + 1) // accumulation_steps) + 10) % 100 == 0:
                     distiller.eval()
                     val_loss_sum, val_steps = 0.0, 0
                     val_metrics_sums = {}
@@ -398,6 +410,10 @@ def train():
                         import wandb
                         wandb.log(val_log, step=global_step)
                         print(f"--- [VAL] Step {global_step}: Loss {avg_val_loss:.4f} ---")
+                        
+                        # Сохранение в локальный файл истории валидации
+                        with open("history_val.jsonl", "a", encoding="utf-8") as f:
+                            f.write(json.dumps(val_log, ensure_ascii=False) + "\n")
                     
                     # Барьер 2: Синхронизация после валидации
                     xm.rendezvous("validation_done")
@@ -410,6 +426,7 @@ def train():
                     log_dict = {
                         "train/loss": loss.item() * accumulation_steps, 
                         "train/lr": optimizer.param_groups[0]['lr'],
+                        "train/beta": current_beta,
                         "global_step": global_step
                     }
                     for k, v in loss_metrics.items():
@@ -421,8 +438,12 @@ def train():
                     with open("history.jsonl", "a", encoding="utf-8") as f:
                         f.write(json.dumps(log_dict, ensure_ascii=False) + "\n")
                     
-                    if global_step % 50 == 0:
-                        print(f"--- [LOG] Step {global_step}: Loss {log_dict['train/loss']:.4f} ---")
+                    # Обновление прогресс-бара (вместо принта)
+                    progress_bar.set_postfix({
+                        "loss": f"{log_dict['train/loss']:.4f}",
+                        "kl": f"{log_dict.get('train/kl', 0):.4f}",
+                        "beta": f"{current_beta:.6f}"
+                    })
 
             xm.mark_step()
 

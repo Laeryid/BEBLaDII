@@ -76,14 +76,22 @@ class DistillationLoss(nn.Module):
             # Принудительно в float32 для точности накопления (план: KL Precision Fix)
             mu_f = mu.float()
             logvar_f = logvar.float()
-            kl_loss_raw = -0.5 * torch.sum(1 + logvar_f - mu_f.pow(2) - logvar_f.exp(), dim=-1)
+            # Mean вместо sum для масштабируемости (ADR-011)
+            kl_loss_raw = -0.5 * torch.mean(1 + logvar_f - mu_f.pow(2) - logvar_f.exp(), dim=-1)
+            
+            # Free Bits (0.5 nat/dim) для предотвращения коллапса
+            FREE_BITS = 0.5
+            kl_loss_clamped = torch.clamp(kl_loss_raw, min=FREE_BITS)
+            
             if attention_mask is not None:
-                kl_loss = (kl_loss_raw * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+                kl_loss = (kl_loss_clamped * attention_mask).sum() / (attention_mask.sum() + 1e-6)
             else:
-                kl_loss = kl_loss_raw.mean()
+                kl_loss = kl_loss_clamped.mean()
                 
             total_loss = total_loss + beta * kl_loss
             metrics["kl"] = kl_loss.detach()
+            metrics["mu_norm"] = mu_f.norm(dim=-1).mean().detach()
+            metrics["logvar_mean"] = logvar_f.mean().detach()
                 
         return total_loss, metrics
 
