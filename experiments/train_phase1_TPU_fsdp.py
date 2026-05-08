@@ -117,9 +117,13 @@ def train():
         if "latentBERT_state_dict" in sd:
             l_sd = sd["latentBERT_state_dict"]
             for k, v in l_sd.items():
-                target_k = f"student.model.{k}"
+                # В файле ключи 'model.layers...', в модели 'student.model.layers...'
+                target_k = k.replace("model.", "student.model.", 1)
                 if target_k in model_sd:
                     new_sd[target_k] = v
+                    matched += 1
+                elif f"student.{k}" in model_sd:
+                    new_sd[f"student.{k}"] = v
                     matched += 1
         
         # 2. Input Projector
