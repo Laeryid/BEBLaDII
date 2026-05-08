@@ -100,40 +100,75 @@ def train():
         if "teacher" in name:
             param.requires_grad = False
 
+    def load_awakening_weights(model, sd, rank=0):
+        """
+        Специализированная загрузка для AWAKENED_WEIGHTS_FINAL.pt.
+        Распаковывает вложенные словари: latentBERT_state_dict, input_projector, feature_projectors.
+        """
+        model_sd = model.state_dict()
+        new_sd = {}
+        matched = 0
+        
+        # Маппинг ключей из файла на атрибуты ReasoningDistiller
+        # AWAKENED файл: {latentBERT_state_dict: {...}, input_projector: {...}, ...}
+        # Наша модель: {student.model...., input_projector...., feature_projectors....}
+        
+        # 1. Студент (ModernBERT)
+        if "latentBERT_state_dict" in sd:
+            l_sd = sd["latentBERT_state_dict"]
+            for k, v in l_sd.items():
+                target_k = f"student.model.{k}"
+                if target_k in model_sd:
+                    new_sd[target_k] = v
+                    matched += 1
+        
+        # 2. Input Projector
+        if "input_projector" in sd:
+            ip_sd = sd["input_projector"]
+            for k, v in ip_sd.items():
+                target_k = f"input_projector.{k}"
+                if target_k in model_sd:
+                    new_sd[target_k] = v
+                    matched += 1
+                    
+        # 3. Feature Projectors
+        if "feature_projectors" in sd:
+            fp_sd = sd["feature_projectors"]
+            for k, v in fp_sd.items():
+                target_k = f"feature_projectors.{k}"
+                if target_k in model_sd:
+                    new_sd[target_k] = v
+                    matched += 1
+
+        model.load_state_dict(new_sd, strict=False)
+        if rank == 0:
+            print(f"--- [INIT] Awakening Load: Matched {matched} params ---")
+
     def smart_load_weights(model, sd, rank=0):
         """
-        Умная загрузка весов: сопоставляет ключи по суффиксам, 
-        игнорируя 'teacher.' и '_orig_module.'.
+        Умная загрузка весов для обычных чекпоинтов: сопоставляет ключи по суффиксам.
         """
         model_sd = model.state_dict()
         new_sd = {}
         matched = 0
         total_trainable = 0
         
-        # Очищаем ключи в state_dict (от префиксов компиляции/fsdp)
         clean_sd = {}
         for k, v in sd.items():
             clean_k = k.replace("_orig_module.", "").replace("module.", "")
             clean_sd[clean_k] = v
 
         for k, v in model_sd.items():
-            if "teacher" in k:
-                continue
-            
+            if "teacher" in k: continue
             total_trainable += 1
-            # Пытаемся найти точное совпадение или совпадение по суффиксу
-            found = False
             if k in clean_sd:
                 new_sd[k] = clean_sd[k]
                 matched += 1
-                found = True
             else:
-                # Поиск по суффиксу (для случаев смены вложенности)
                 for ck in clean_sd.keys():
                     if k.endswith(ck) or ck.endswith(k):
                         new_sd[k] = clean_sd[ck]
                         matched += 1
-                        found = True
                         break
             
         model.load_state_dict(new_sd, strict=False)
@@ -149,7 +184,12 @@ def train():
     if os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location='cpu')
         raw_sd = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-        smart_load_weights(distiller, raw_sd, rank=rank)
+        
+        if ckpt_path == "AWAKENED_WEIGHTS_FINAL.pt":
+            load_awakening_weights(distiller, raw_sd, rank=rank)
+        else:
+            smart_load_weights(distiller, raw_sd, rank=rank)
+            
         if rank == 0: 
             print(f"--- [RESUME] Веса загружены из {ckpt_path} ---")
 
