@@ -73,7 +73,10 @@ class DistillationLoss(nn.Module):
         
         # Вычисление KL-Divergence, если переданы параметры головки
         if mu is not None and logvar is not None:
-            kl_loss_raw = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=-1)
+            # Принудительно в float32 для точности накопления (план: KL Precision Fix)
+            mu_f = mu.float()
+            logvar_f = logvar.float()
+            kl_loss_raw = -0.5 * torch.sum(1 + logvar_f - mu_f.pow(2) - logvar_f.exp(), dim=-1)
             if attention_mask is not None:
                 kl_loss = (kl_loss_raw * attention_mask).sum() / (attention_mask.sum() + 1e-6)
             else:

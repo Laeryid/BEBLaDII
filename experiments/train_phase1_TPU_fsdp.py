@@ -100,6 +100,46 @@ def train():
         if "teacher" in name:
             param.requires_grad = False
 
+    def smart_load_weights(model, sd, rank=0):
+        """
+        Умная загрузка весов: сопоставляет ключи по суффиксам, 
+        игнорируя 'teacher.' и '_orig_module.'.
+        """
+        model_sd = model.state_dict()
+        new_sd = {}
+        matched = 0
+        total_trainable = 0
+        
+        # Очищаем ключи в state_dict (от префиксов компиляции/fsdp)
+        clean_sd = {}
+        for k, v in sd.items():
+            clean_k = k.replace("_orig_module.", "").replace("module.", "")
+            clean_sd[clean_k] = v
+
+        for k, v in model_sd.items():
+            if "teacher" in k:
+                continue
+            
+            total_trainable += 1
+            # Пытаемся найти точное совпадение или совпадение по суффиксу
+            found = False
+            if k in clean_sd:
+                new_sd[k] = clean_sd[k]
+                matched += 1
+                found = True
+            else:
+                # Поиск по суффиксу (для случаев смены вложенности)
+                for ck in clean_sd.keys():
+                    if k.endswith(ck) or ck.endswith(k):
+                        new_sd[k] = clean_sd[ck]
+                        matched += 1
+                        found = True
+                        break
+            
+        model.load_state_dict(new_sd, strict=False)
+        if rank == 0:
+            print(f"--- [INIT] Smart Load: Matched {matched}/{total_trainable} trainable params ---")
+
     ckpt_path = "latest_checkpoint.pt"
     if not os.path.exists(ckpt_path) and os.path.exists("AWAKENED_WEIGHTS_FINAL.pt"):
         ckpt_path = "AWAKENED_WEIGHTS_FINAL.pt"
@@ -109,13 +149,7 @@ def train():
     if os.path.exists(ckpt_path):
         ckpt = torch.load(ckpt_path, map_location='cpu')
         raw_sd = ckpt['model_state_dict'] if 'model_state_dict' in ckpt else ckpt
-        cleaned_sd = {}
-        for k, v in raw_sd.items():
-            new_k = k.replace("_orig_module.", "")
-            if "teacher" not in new_k:
-                cleaned_sd[new_k] = v
-                
-        distiller.load_state_dict(cleaned_sd, strict=False)
+        smart_load_weights(distiller, raw_sd, rank=rank)
         if rank == 0: 
             print(f"--- [RESUME] Веса загружены из {ckpt_path} ---")
 
@@ -141,7 +175,8 @@ def train():
         lr=1e-4, scale_parameter=False, relative_step=False, warmup_init=False,
         clip_threshold=1.0
     )
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=1, eta_min=2e-5)
+    # T_0=2000, eta_min=1e-6 согласно плану
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=2000, T_mult=1, eta_min=1e-6)
     criterion = DistillationLoss()
 
     global_step = 0
@@ -149,21 +184,28 @@ def train():
     wandb_run_id = None
 
     if ckpt:
-        if 'optimizer_state_dict' in ckpt:
-            try:
-                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
-            except Exception as e:
-                if rank == 0: print(f"--- [RESUME WARNING] Ошибка оптимизатора: {e} ---")
+        # Загружаем прогресс только если это полноценный чекпоинт обучения, а не базовые веса
+        is_full_checkpoint = (ckpt_path == "latest_checkpoint.pt")
         
-        if 'scheduler_state_dict' in ckpt:
-            try:
-                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
-            except Exception as e:
-                if rank == 0: print(f"--- [RESUME WARNING] Ошибка планировщика: {e} ---")
-        
-        global_step = ckpt.get('global_step', 0)
-        start_epoch = ckpt.get('epoch', 0)
-        wandb_run_id = ckpt.get('wandb_run_id', None)
+        if is_full_checkpoint:
+            if 'optimizer_state_dict' in ckpt:
+                try:
+                    optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+                except Exception as e:
+                    if rank == 0: print(f"--- [RESUME WARNING] Ошибка оптимизатора: {e} ---")
+            
+            if 'scheduler_state_dict' in ckpt:
+                try:
+                    scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+                except Exception as e:
+                    if rank == 0: print(f"--- [RESUME WARNING] Ошибка планировщика: {e} ---")
+            
+            global_step = ckpt.get('global_step', 0)
+            start_epoch = ckpt.get('epoch', 0)
+            wandb_run_id = ckpt.get('wandb_run_id', None)
+        else:
+            if rank == 0:
+                print("--- [INIT] Базовые веса загружены. Начинаем обучение с 0 шага. ---")
 
     # Данные
     train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='train', val_ratio=0.0)
@@ -201,8 +243,15 @@ def train():
                 xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
                 batch[k] = v
             
+            # Targeted Loss Masking support
+            actual_mask = batch['loss_mask'] if 'loss_mask' in batch else batch['attention_mask']
+            
+            # Global KL-Annealing (Resume-safe)
+            warmup_steps = 1000.0
+            current_beta = min(0.0001, 0.0001 * (global_step / warmup_steps))
+
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
-            loss, loss_metrics = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
+            loss, loss_metrics = criterion(student_states, teacher_targets, actual_mask, mu, logvar, beta=current_beta)
             
             loss = loss / accumulation_steps
             loss.backward()
@@ -212,6 +261,13 @@ def train():
             if (global_step + 1) % accumulation_steps == 0:
                 xm.optimizer_step(optimizer, barrier=True)
                 scheduler.step()
+                
+                # Manual Warmup (up to 1000 global steps)
+                if global_step <= 1000:
+                    warmup_factor = max(0.01, global_step / 1000.0)
+                    for param_group in optimizer.param_groups:
+                        param_group['lr'] = param_group['lr'] * warmup_factor
+                
                 optimizer.zero_grad()
                 
                 if ((global_step + 1) // accumulation_steps) % 500 == 0:
@@ -278,8 +334,11 @@ def train():
                                 xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
                                 v_batch[k] = v
                                 
+                            # Validation also uses targeted mask if available
+                            v_actual_mask = v_batch['loss_mask'] if 'loss_mask' in v_batch else v_batch['attention_mask']
+                            
                             v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
-                            v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
+                            v_loss, v_metrics = criterion(v_st, v_tgt, v_actual_mask, v_mu, v_logvar, beta=0.0001)
                             
                             val_loss_sum += v_loss.item()
                             for k, val in v_metrics.items():
