@@ -193,6 +193,10 @@ The training lifecycle is divided into five strictly separated phases, moving fr
 
 **Phase 1: Alignment & DUS (Depth Up-Scaling)**
 Extending the ModernBERT architecture to 40 layers and aligning its semantic capacity. We distill abstract logical reasoning from a powerful teacher (e.g., DeepSeek-R1-7B) into the ModernBERT core, ignoring linguistic formatting and focusing purely on matching the latent thought representations. Here we try to give the model the ability to think abstractly and logically.
+- **Evaluation**: 
+    - **Semantic Anchor Test**: High cosine similarity between synonyms/paraphrases.
+    - **Distillation Fidelity**: MSE loss below threshold (e.g., 1e-4).
+    - **Latent Space Topology**: Analysis of L2-norms to prevent space collapse (anisotropy).
 
 **Phase 2: Adapter Training (Decoder Bridge)**
 Connecting the "intellect" with the "voice". All components are frozen except the Adapter, which is trained via Direct Cross-Entropy to correctly project diffusion vectors into the frozen Qwen LM-head, ensuring perfect textual reconstruction of concepts. Here we try to give the model the ability to speak.
@@ -200,8 +204,12 @@ Connecting the "intellect" with the "voice". All components are frozen except th
 **Phase 3: CLM-Pooling (Semantic Indexing)**
 Training the mechanism that forms queries to the external database. We teach the model to reliably compress long latent chunk sequences into robust single query vectors that can successfully identify their related chunks in a FAISS index. Here we try to give the model the ability to remember.
 
-**Phase 4: Denoiser & Iterative Crystallization**
-Training the Uncertainty Head (Sigmoid classifier) to accurately predict confidence maps. We additionally train initial Cross-Attention layers to properly integrate the input prompt alongside a trainable `gamma` balancing parameter. During this phase, we apply **Saliency-based Diffusion** to teach the model a Curriculum: construct a high-level **Response Plan** (semantic skeleton) in the early, noisy steps of the diffusion process (large $t$), and then gradually crystallize these abstract thoughts into concrete grammar and syntax in the later steps (small $t$). Here we try to give the model the ability to plan and to crystallize its thoughts.
+**Phase 4.1: Uncertainty Head (Entropy Sensor)**
+Training the "Entropy Sensor" of the latent space. We train the Uncertainty Head (Sigmoid classifier) to accurately predict confidence maps based on space geometry (detecting noise, semantic forks, and dead-ends). It acts as a mathematical sensor rather than a semantic critic.
+- **Dataset**: Synthetic mixture of dictionary embeddings (Conf=1.0), interpolations (Conf=0.5), and Gaussian noise (Conf=0.0).
+
+**Phase 4.2: Denoiser & Prompt-CA (Instruction Alignment)**
+Training the iterative process of meaning refinement under prompt guidance. We train initial Cross-Attention layers to properly integrate the input prompt alongside a trainable `gamma` balancing parameter. During this phase, we apply **Saliency-based Diffusion** to teach the model a Curriculum: construct a high-level **Response Plan** (semantic skeleton) in the early steps (large $t$), and then gradually crystallize these abstract thoughts into concrete grammar and syntax (small $t$).
 
 **Phase 5: CLM Integration**
 The final assembly of the system. Cross-Attention layers are embedded throughout the ModernBERT architecture to dynamically pull in the retrieved latent knowledge chunks exactly when and where the Denoiser flags uncertainty, completing the complementary latent memory loop. Here we try to give the model the ability to use its memory.

@@ -255,6 +255,27 @@
             "depends_on": [
                 "experiments/train_phase1_TPU_fsdp.py"
             ]
+        },
+        "KI_training_infrastructure.md": {
+            "description": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler.",
+            "covers": [
+                "Experiments",
+                "Data & Ops Scripts"
+            ],
+            "depends_on": [
+                "experiments/train_phase1_TPU_fsdp.py",
+                "src/beb_la_dii/utils/experiment_manager.py"
+            ]
+        },
+        "KI_phase4_training.md": {
+            "description": "Alignment & Confidence training, Phase 4.1/4.2 separation, and Orchestrator logic.",
+            "covers": [
+                "Architecture & Training Phases",
+                "Model Core"
+            ],
+            "depends_on": [
+                "ideas/Phase 4 разделение.md"
+            ]
         }
     },
     "knowledge_system": {
