@@ -136,6 +136,8 @@ def train():
                     matched += 1
                     
         # 3. Feature Projectors
+        # Примечание: output_scale (nn.Parameter) включён в state_dict автоматически.
+        # Если чекпоинт старый (без output_scale) — параметр останется на init=0.1 (strict=False).
         if "feature_projectors" in sd:
             fp_sd = sd["feature_projectors"]
             for k, v in fp_sd.items():
@@ -431,6 +433,14 @@ def train():
                     }
                     for k, v in loss_metrics.items():
                         log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
+                    
+                    # Мониторинг output_scale: ожидаемый рост 0.1 → ~0.4 за первые тысячи шагов
+                    for name, param in distiller.named_parameters():
+                        if "output_scale" in name:
+                            for proj_key in ["20", "30", "40"]:
+                                if f".{proj_key}." in name or f"_{proj_key}." in name:
+                                    log_dict[f"train/scale_l{proj_key}"] = param.detach().float().mean().item()
+                                    break
                     
                     wandb.log(log_dict, step=global_step)
                     

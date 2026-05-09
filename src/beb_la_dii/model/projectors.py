@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 import torch.nn as nn
 from .base import BEComponent
 
@@ -91,6 +92,12 @@ class FeatureProjector(BEComponent):
             nn.Linear(input_dim * 2, output_dim),
             nn.LayerNorm(output_dim, eps=1e-6)
         )
+        
+        # Learnable per-dim scale: позволяет proj-ветке выучить правильный
+        # масштаб активаций (~24) вместо потолка LayerNorm (~60).
+        # Init=0.1 → начальная норма proj-ветки ≈ 6, суммарная ≈ 18 (ближе к target)
+        self.output_scale = nn.Parameter(torch.full((output_dim,), 0.1))
+        
         self._init_weights()
 
     def _init_weights(self):
@@ -118,5 +125,5 @@ class FeatureProjector(BEComponent):
         
     def forward(self, x):
         res = self.residual_proj(x)
-        out = self.proj(x)
+        out = self.proj(x) * self.output_scale  # масштабируем до суммирования с residual
         return out + res
