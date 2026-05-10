@@ -84,9 +84,10 @@ class FeatureProjector(BEComponent):
         super().__init__(component_id, version, {"input_dim": input_dim, "output_dim": output_dim})
         
         # Скейлы для балансировки вклада веток.
-        # residual_scale - скаляр, output_scale - вектор (per-dim).
+        # residual_scale - 1D тензор размера 1 (НЕ скаляр! 0-dim тензоры ломают XLA FSDP partition_spec).
+        # output_scale - вектор (per-dim).
         # Инициализация 0.5 и 0.4 дает суммарную норму около 25 (близко к таргету учителя ~24).
-        self.residual_scale = nn.Parameter(torch.tensor(0.5))
+        self.residual_scale = nn.Parameter(torch.ones(1) * 0.5)
         self.output_scale = nn.Parameter(torch.full((output_dim,), 0.4))
         
         self._init_weights()

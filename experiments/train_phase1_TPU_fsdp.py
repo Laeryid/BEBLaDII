@@ -103,8 +103,16 @@ def train():
     def load_awakening_weights(model, sd, rank=0):
         """
         Специализированная загрузка для AWAKENED_WEIGHTS_FINAL.pt.
-        Распаковывает вложенные словари: latentBERT_state_dict, input_projector, feature_projectors.
+        Если чекпоинт в плоском FSDP-формате (ключи с _orig_module.) — делегируем в smart_load_weights.
+        Иначе распаковываем вложенные словари: latentBERT_state_dict, input_projector, feature_projectors.
         """
+        # Определяем формат чекпоинта по первому ключу
+        first_key = next(iter(sd.keys()), "")
+        if first_key.startswith("_orig_module.") or first_key.startswith("module."):
+            if rank == 0:
+                print(f"--- [INIT] Detected flat FSDP checkpoint, delegating to smart_load_weights ---")
+            return smart_load_weights(model, sd, rank=rank)
+        
         model_sd = model.state_dict()
         new_sd = {}
         matched = 0
@@ -214,7 +222,7 @@ def train():
         distiller,
         mesh=mesh,
         auto_wrap_policy=auto_wrap_policy,
-        shard_output=None # Изменено с callable на None, так как SPMD справится сам
+        shard_output=shard_output
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута (SPMD) ---")
 
