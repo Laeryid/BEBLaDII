@@ -81,22 +81,29 @@ class FeatureProjector(BEComponent):
         input_dim = config.get("input_dim", 1024) if config else 1024
         # DeepSeek-R1-Distill-Qwen-7B is based on Qwen2.5, hidden_size=3584
         output_dim = config.get("output_dim", 3584) if config else 3584
-        super().__init__(component_id, version, {"input_dim": input_dim, "output_dim": output_dim})
+        use_prior_norm = config.get("use_prior_norm", False) if config else False
+        
+        super().__init__(component_id, version, {
+            "input_dim": input_dim, 
+            "output_dim": output_dim,
+            "use_prior_norm": use_prior_norm
+        })
+        
+        self.use_prior_norm = use_prior_norm
+        
+        # Если включен prior_norm, мы отключаем bias, чтобы проектор не мог компенсировать 
+        # смещение среднего (mean shift) студента своими весами.
+        bias = not use_prior_norm
         
         # Linear approximation for residual connection
-        self.residual_proj = nn.Linear(input_dim, output_dim)
+        self.residual_proj = nn.Linear(input_dim, output_dim, bias=bias)
         
-        self.proj = nn.Sequential(
-            nn.Linear(input_dim, input_dim * 2),
-            nn.GELU(),
-            nn.Linear(input_dim * 2, output_dim),
-            nn.LayerNorm(output_dim, eps=1e-6)
-        )
+        # Основная ветка MLP
+        self.proj_in = nn.Linear(input_dim, input_dim * 2, bias=bias)
+        self.proj_out = nn.Linear(input_dim * 2, output_dim, bias=bias)
+        self.norm = nn.LayerNorm(output_dim, eps=1e-6)
         
         # Скейлы для балансировки вклада веток.
-        # residual_scale - 1D тензор размера 1 (НЕ скаляр! 0-dim тензоры ломают XLA FSDP partition_spec).
-        # output_scale - вектор (per-dim).
-        # Инициализация 0.5 и 0.4 дает суммарную норму около 25 (близко к таргету учителя ~24).
         self.residual_scale = nn.Parameter(torch.ones(1) * 0.5)
         self.output_scale = nn.Parameter(torch.full((output_dim,), 0.4))
         
@@ -120,12 +127,22 @@ class FeatureProjector(BEComponent):
         Создаёт FeatureProjector с нуля.
         weights_path: путь к weights.pt; если None — случайная инициализация.
         """
-        config = kwargs.get("config", {"input_dim": 1024, "output_dim": 3584})
+        config = kwargs.get("config", {"input_dim": 1024, "output_dim": 3584, "use_prior_norm": False})
         instance = cls(component_id=component_id, version=version, config=config)
         instance.load_weights(weights_path)
         return instance
         
     def forward(self, x):
+        # Если включен prior_norm, мы ДОПОЛНИТЕЛЬНО можем добавить статистику в логи (через буферы),
+        # но главное — отсутствие bias уже заставляет x центрироваться.
+        
+        # Проход через MLP
+        h = self.proj_in(x)
+        h = F.gelu(h)
+        out = self.proj_out(h)
+        out = self.norm(out) * self.output_scale
+        
+        # Проход через Residual
         res = self.residual_proj(x) * self.residual_scale
-        out = self.proj(x) * self.output_scale
+        
         return out + res

@@ -317,8 +317,12 @@ def train():
             # Максимум Beta (BETA_MAX) на середине цикла LR (1000-й шаг)
             current_beta = (BETA_MAX * (1 - math.cos(2 * math.pi * rel_step / 2000)) / 2) * warmup_factor
 
-            student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
-            loss, loss_metrics = criterion(student_states, teacher_targets, actual_mask, mu, logvar, beta=current_beta)
+            student_states, teacher_targets, mu, logvar, raw_st = distiller(batch['input_ids'], batch['attention_mask'])
+            loss, loss_metrics = criterion(
+                student_states, teacher_targets, actual_mask, 
+                mu, logvar, beta=current_beta,
+                raw_student_states=raw_st, lambda_prior=0.1
+            )
             
             # Balance Regularization (ADR-011 + User Request)
             loss_bal = distiller.compute_balance_loss(lambda_balance=1.0)
@@ -414,8 +418,12 @@ def train():
                             # Validation also uses targeted mask if available
                             v_actual_mask = v_batch['loss_mask'] if 'loss_mask' in v_batch else v_batch['attention_mask']
                             
-                            v_st, v_tgt, v_mu, v_logvar = distiller(v_batch['input_ids'], v_batch['attention_mask'])
-                            v_loss, v_metrics = criterion(v_st, v_tgt, v_actual_mask, v_mu, v_logvar, beta=0.0001)
+                            v_st, v_tgt, v_mu, v_logvar, v_raw = distiller(v_batch['input_ids'], v_batch['attention_mask'])
+                            v_loss, v_metrics = criterion(
+                                v_st, v_tgt, v_actual_mask, 
+                                v_mu, v_logvar, beta=0.0001,
+                                raw_student_states=v_raw, lambda_prior=0.1
+                            )
                             
                             val_loss_sum += v_loss.item()
                             for k, val in v_metrics.items():

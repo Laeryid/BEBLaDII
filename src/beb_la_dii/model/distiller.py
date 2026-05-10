@@ -67,7 +67,10 @@ class ReasoningDistiller(nn.Module):
             self.feature_projectors = nn.ModuleDict({
                 "20": FeatureProjector(component_id="feat_proj_20"),
                 "30": FeatureProjector(component_id="feat_proj_30"),
-                "40": FeatureProjector(component_id="feat_proj_40")
+                "40": FeatureProjector(
+                    component_id="feat_proj_40", 
+                    config={"input_dim": 1024, "output_dim": 3584, "use_prior_norm": True}
+                )
             })
         
         # 3. Явный перенос обучаемых компонентов на нужный device.
@@ -158,11 +161,13 @@ class ReasoningDistiller(nn.Module):
         
         # 4. Проецирование состояний ученика обратно в пространство Qwen
         projected_student_states = {}
+        raw_student_states = {}
         for idx, h_state in {idx: student_outputs.hidden_states[idx] for idx in self.layer_mapping.keys()}.items():
+            raw_student_states[idx] = h_state
             proj = self.feature_projectors[str(idx)](h_state)
             # self._check_nan(proj, f"FeatureProjector {idx} Output")
             projected_student_states[idx] = proj
-        return projected_student_states, teacher_targets, mu, logvar
+        return projected_student_states, teacher_targets, mu, logvar, raw_student_states
 
     def compute_balance_loss(self, lambda_balance=1.0):
         """
