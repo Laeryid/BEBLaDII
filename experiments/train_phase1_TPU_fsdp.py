@@ -2,6 +2,7 @@ import os, sys
 import torch._dynamo
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 import numpy as np
@@ -39,6 +40,57 @@ def setup_wandb(rank, run_id=None):
         wandb.login(key=_key)
         return wandb
     return None
+
+def calculate_isotropy(x):
+    """
+    Вычисляет изотропию латентного пространства через сингулярные числа.
+    I(X) = [sum(sigma_i)]^2 / [d * sum(sigma_i^2)]
+    """
+    if x.ndim == 3: # (B, T, D) -> (B*T, D)
+        x = x.reshape(-1, x.size(-1))
+    
+    # Центрируем данные
+    x = x - x.mean(dim=0, keepdim=True)
+    
+    try:
+        # SVD в bfloat16 может быть нестабилен, переходим в float32
+        _, s, _ = torch.linalg.svd(x.float(), full_matrices=False)
+        isotropy = (s.sum()**2) / (len(s) * (s**2).sum() + 1e-8)
+        return isotropy.item()
+    except Exception:
+        return 0.0
+
+def calculate_neighbor_recall(student_h, teacher_h, k=5):
+    """
+    Насколько топ-k соседей в пространстве ученика совпадают с учителем.
+    Работает на уровне одного батча (B*T примеров).
+    """
+    if student_h.ndim == 3:
+        student_h = student_h.reshape(-1, student_h.size(-1))
+        teacher_h = teacher_h.reshape(-1, teacher_h.size(-1))
+        
+    # Берем случайное подмножество, если токенов слишком много (для скорости)
+    num_samples = min(256, student_h.size(0))
+    indices = torch.randperm(student_h.size(0))[:num_samples]
+    s_sub = F.normalize(student_h[indices].float(), dim=-1)
+    t_sub = F.normalize(teacher_h[indices].float(), dim=-1)
+    
+    # Матрицы сходства (N x N)
+    s_sim = s_sub @ s_sub.T
+    t_sim = t_sub @ t_sub.T
+    
+    # Топ-k индексов (исключая самого себя, поэтому k+1)
+    s_topk = s_sim.topk(k + 1, dim=-1).indices[:, 1:]
+    t_topk = t_sim.topk(k + 1, dim=-1).indices[:, 1:]
+    
+    # Подсчет пересечений
+    recall = 0.0
+    for i in range(num_samples):
+        s_set = set(s_topk[i].tolist())
+        t_set = set(t_topk[i].tolist())
+        recall += len(s_set.intersection(t_set)) / k
+        
+    return recall / num_samples
 
 # ХАК: Dummy XLA для сред без установленного torch_xla
 if not hasattr(torch, "xla"):
@@ -428,6 +480,20 @@ def train():
                             val_loss_sum += v_loss.item()
                             for k, val in v_metrics.items():
                                 val_metrics_sums[k] = val_metrics_sums.get(k, 0.0) + (val.item() if torch.is_tensor(val) else val)
+                            
+                            # Дополнительные метрики для l40 (считаем на первом батче для скорости)
+                            if v_step == 0:
+                                l40_student = v_st[40]
+                                l40_teacher = v_tgt[40]
+                                val_metrics_sums["l40_isotropy"] = calculate_isotropy(l40_student)
+                                val_metrics_sums["l40_neighbor_recall"] = calculate_neighbor_recall(l40_student, l40_teacher)
+                                
+                                # Метрика дрейфа (для нового проектора)
+                                mu_l40 = l40_student.mean(dim=(0, 1))
+                                std_l40 = l40_student.std(dim=(0, 1))
+                                val_metrics_sums["l40_mu_drift"] = mu_l40.pow(2).mean().item()
+                                val_metrics_sums["l40_std_drift"] = (std_l40 - 1.0).pow(2).mean().item()
+
                             val_steps += 1
                             xm.mark_step()
                     
