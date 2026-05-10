@@ -306,6 +306,11 @@ def train():
             student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
             loss, loss_metrics = criterion(student_states, teacher_targets, actual_mask, mu, logvar, beta=current_beta)
             
+            # Balance Regularization (ADR-011 + User Request)
+            loss_bal = distiller.compute_balance_loss(lambda_balance=1.0)
+            loss = loss + loss_bal
+            loss_metrics["balance_reg"] = loss_bal.detach()
+            
             loss = loss / accumulation_steps
             loss.backward()
             
@@ -434,12 +439,13 @@ def train():
                     for k, v in loss_metrics.items():
                         log_dict[f"train/{k}"] = v.item() if torch.is_tensor(v) else v
                     
-                    # Мониторинг output_scale: ожидаемый рост 0.1 → ~0.4 за первые тысячи шагов
+                    # Мониторинг скейлов: output_scale и residual_scale
                     for name, param in distiller.named_parameters():
-                        if "output_scale" in name:
+                        if "output_scale" in name or "residual_scale" in name:
                             for proj_key in ["20", "30", "40"]:
                                 if f".{proj_key}." in name or f"_{proj_key}." in name:
-                                    log_dict[f"train/scale_l{proj_key}"] = param.detach().float().mean().item()
+                                    s_type = "out" if "output_scale" in name else "res"
+                                    log_dict[f"train/scale_{s_type}_l{proj_key}"] = param.detach().float().mean().item()
                                     break
                     
                     wandb.log(log_dict, step=global_step)

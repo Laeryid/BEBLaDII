@@ -164,6 +164,20 @@ class ReasoningDistiller(nn.Module):
             projected_student_states[idx] = proj
         return projected_student_states, teacher_targets, mu, logvar
 
+    def compute_balance_loss(self, lambda_balance=1.0):
+        """
+        Регуляризация для балансировки вклада MLP и Residual веток в FeatureProjector.
+        Стремимся к тому, чтобы средние значения output_scale и residual_scale были близки.
+        """
+        loss_bal = 0.0
+        for proj in self.feature_projectors.values():
+            # Обеспечиваем симметричность: (mean(output) - mean(residual))^2
+            # Так как residual_scale - скаляр, его mean() это он сам.
+            diff = proj.output_scale.mean() - proj.residual_scale.mean()
+            loss_bal += diff**2
+            
+        return lambda_balance * loss_bal
+
     def state_dict(self, *args, destination=None, prefix='', keep_vars=False):
         """Переопределяем state_dict, чтобы ИСКЛЮЧИТЬ веса учителя из сохранения."""
         full_dict = super().state_dict(*args, destination=destination, prefix=prefix, keep_vars=keep_vars)

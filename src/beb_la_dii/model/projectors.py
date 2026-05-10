@@ -83,20 +83,11 @@ class FeatureProjector(BEComponent):
         output_dim = config.get("output_dim", 3584) if config else 3584
         super().__init__(component_id, version, {"input_dim": input_dim, "output_dim": output_dim})
         
-        # Linear approximation for residual connection
-        self.residual_proj = nn.Linear(input_dim, output_dim)
-        
-        self.proj = nn.Sequential(
-            nn.Linear(input_dim, input_dim * 2),
-            nn.GELU(),
-            nn.Linear(input_dim * 2, output_dim),
-            nn.LayerNorm(output_dim, eps=1e-6)
-        )
-        
-        # Learnable per-dim scale: позволяет proj-ветке выучить правильный
-        # масштаб активаций (~24) вместо потолка LayerNorm (~60).
-        # Init=0.1 → начальная норма proj-ветки ≈ 6, суммарная ≈ 18 (ближе к target)
-        self.output_scale = nn.Parameter(torch.full((output_dim,), 0.1))
+        # Скейлы для балансировки вклада веток.
+        # residual_scale - скаляр, output_scale - вектор (per-dim).
+        # Инициализация 0.5 и 0.4 дает суммарную норму около 25 (близко к таргету учителя ~24).
+        self.residual_scale = nn.Parameter(torch.tensor(0.5))
+        self.output_scale = nn.Parameter(torch.full((output_dim,), 0.4))
         
         self._init_weights()
 
@@ -124,6 +115,6 @@ class FeatureProjector(BEComponent):
         return instance
         
     def forward(self, x):
-        res = self.residual_proj(x)
-        out = self.proj(x) * self.output_scale  # масштабируем до суммирования с residual
+        res = self.residual_proj(x) * self.residual_scale
+        out = self.proj(x) * self.output_scale
         return out + res
