@@ -90,7 +90,7 @@ def train():
     
     # Настройка SPMD Mesh
     num_devices = xr.global_runtime_device_count()
-    mesh_shape = (num_devices, 1)
+    mesh_shape = (num_devices, 1) # Это уже кортеж
     device_ids = np.array(range(num_devices))
     mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'model'))
     xs.set_global_mesh(mesh)
@@ -117,31 +117,32 @@ def train():
         if "latentBERT_state_dict" in sd:
             l_sd = sd["latentBERT_state_dict"]
             for k, v in l_sd.items():
-                # В файле ключи 'model.layers...', в модели 'student.model.layers...'
-                target_k = k.replace("model.", "student.model.", 1)
-                if target_k in model_sd:
-                    new_sd[target_k] = v
-                    matched += 1
-                elif f"student.{k}" in model_sd:
-                    new_sd[f"student.{k}"] = v
-                    matched += 1
+                # Пробуем разные варианты префиксов
+                possible_keys = [
+                    k.replace("model.", "student.model.", 1),
+                    f"student.{k}",
+                    k if k.startswith("student.") else None
+                ]
+                for target_k in filter(None, possible_keys):
+                    if target_k in model_sd:
+                        new_sd[target_k] = v
+                        matched += 1
+                        break
         
         # 2. Input Projector
         if "input_projector" in sd:
             ip_sd = sd["input_projector"]
             for k, v in ip_sd.items():
-                target_k = f"input_projector.{k}"
+                target_k = f"input_projector.{k}" if not k.startswith("input_projector.") else k
                 if target_k in model_sd:
                     new_sd[target_k] = v
                     matched += 1
                     
         # 3. Feature Projectors
-        # Примечание: output_scale (nn.Parameter) включён в state_dict автоматически.
-        # Если чекпоинт старый (без output_scale) — параметр останется на init=0.1 (strict=False).
         if "feature_projectors" in sd:
             fp_sd = sd["feature_projectors"]
             for k, v in fp_sd.items():
-                target_k = f"feature_projectors.{k}"
+                target_k = f"feature_projectors.{k}" if not k.startswith("feature_projectors.") else k
                 if target_k in model_sd:
                     new_sd[target_k] = v
                     matched += 1
@@ -149,6 +150,11 @@ def train():
         model.load_state_dict(new_sd, strict=False)
         if rank == 0:
             print(f"--- [INIT] Awakening Load: Matched {matched} params ---")
+            if matched == 0:
+                print(f"DEBUG: Keys in checkpoint: {list(sd.keys())[:5]}")
+                if "latentBERT_state_dict" in sd:
+                    print(f"DEBUG: Sample student keys: {list(sd['latentBERT_state_dict'].keys())[:5]}")
+                print(f"DEBUG: Sample model keys: {list(model_sd.keys())[:5]}")
 
     def smart_load_weights(model, sd, rank=0):
         """
@@ -208,7 +214,7 @@ def train():
         distiller,
         mesh=mesh,
         auto_wrap_policy=auto_wrap_policy,
-        shard_output=shard_output
+        shard_output=None # Изменено с callable на None, так как SPMD справится сам
     )
     if rank == 0: print("--- [FSDP] Модель успешно обернута (SPMD) ---")
 
