@@ -83,6 +83,16 @@ class FeatureProjector(BEComponent):
         output_dim = config.get("output_dim", 3584) if config else 3584
         super().__init__(component_id, version, {"input_dim": input_dim, "output_dim": output_dim})
         
+        # Linear approximation for residual connection
+        self.residual_proj = nn.Linear(input_dim, output_dim)
+        
+        self.proj = nn.Sequential(
+            nn.Linear(input_dim, input_dim * 2),
+            nn.GELU(),
+            nn.Linear(input_dim * 2, output_dim),
+            nn.LayerNorm(output_dim, eps=1e-6)
+        )
+        
         # Скейлы для балансировки вклада веток.
         # residual_scale - 1D тензор размера 1 (НЕ скаляр! 0-dim тензоры ломают XLA FSDP partition_spec).
         # output_scale - вектор (per-dim).
