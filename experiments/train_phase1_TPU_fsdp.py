@@ -490,9 +490,9 @@ def train():
                                 
                                 # Метрика дрейфа (для нового проектора)
                                 mu_l40 = l40_student.mean(dim=(0, 1))
-                                std_l40 = l40_student.std(dim=(0, 1))
+                                var_l40 = l40_student.var(dim=(0, 1), unbiased=False)
                                 val_metrics_sums["l40_mu_drift"] = mu_l40.pow(2).mean().item()
-                                val_metrics_sums["l40_std_drift"] = (std_l40 - 1.0).pow(2).mean().item()
+                                val_metrics_sums["l40_var_drift"] = (var_l40 - 1.0).pow(2).mean().item()
 
                             val_steps += 1
                             xm.mark_step()

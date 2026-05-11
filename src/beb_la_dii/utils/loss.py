@@ -73,12 +73,15 @@ class DistillationLoss(nn.Module):
         # 3. Prior Loss для l40 (Принуждение к N(0,1) напрямую в скрытом пространстве)
         if raw_student_states is not None and 40 in raw_student_states:
             raw_40 = raw_student_states[40].float()
-            # Считаем среднее и дисперсию по батчу и токенам
-            # Мы хотим, чтобы среднее было 0, а дисперсия 1.
+            # Считаем среднее и дисперсию по батчу и токенам (dim=(0, 1))
+            # На TPU torch.std(dim=(0,1)) может не иметь autograd-ядра, 
+            # используем дисперсию напрямую для стабильности XLA.
             m_40 = raw_40.mean(dim=(0, 1))
-            s_40 = raw_40.std(dim=(0, 1))
+            v_40 = raw_40.var(dim=(0, 1), unbiased=False)
             
-            prior_loss = m_40.pow(2).mean() + (s_40 - 1.0).pow(2).mean()
+            # Мы хотим, чтобы среднее было 0, а дисперсия 1.
+            # Используем разность дисперсии с 1.0 (стабильнее, чем sqrt(var) для градиентов).
+            prior_loss = m_40.pow(2).mean() + (v_40 - 1.0).pow(2).mean()
             total_loss += lambda_prior * prior_loss
             metrics["l40_prior"] = prior_loss.detach()
 
