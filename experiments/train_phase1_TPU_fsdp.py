@@ -484,11 +484,17 @@ def train():
                             # Дополнительные метрики для l40 (считаем на первом батче для скорости)
                             if v_step == 0:
                                 xm.mark_step()
+                                if rank == 0: print("--- [VAL] Calculating heavy metrics (l40)... ---")
+                                
                                 # Переносим на CPU для стабильности SVD и Recall
+                                if rank == 0: print("    -> Transferring to CPU...")
                                 l40_student_cpu = v_st[40].detach().cpu()
                                 l40_teacher_cpu = v_tgt[40].detach().cpu()
                                 
+                                if rank == 0: print("    -> Calculating isotropy (SVD)...")
                                 val_metrics_sums["l40_isotropy"] = calculate_isotropy(l40_student_cpu)
+                                
+                                if rank == 0: print("    -> Calculating neighbor recall...")
                                 val_metrics_sums["l40_neighbor_recall"] = calculate_neighbor_recall(l40_student_cpu, l40_teacher_cpu)
                                 
                                 # Метрика дрейфа (для нового проектора)
@@ -496,6 +502,7 @@ def train():
                                 var_l40 = l40_student_cpu.var(dim=(0, 1), unbiased=False)
                                 val_metrics_sums["l40_mu_drift"] = mu_l40.pow(2).mean().item()
                                 val_metrics_sums["l40_var_drift"] = (var_l40 - 1.0).pow(2).mean().item()
+                                if rank == 0: print("--- [VAL] Heavy metrics done. ---")
 
                             val_steps += 1
                             xm.mark_step()
