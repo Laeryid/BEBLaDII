@@ -630,10 +630,16 @@ if __name__ == "__main__":
             subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets/data/", "./data"], check=True)
             # 2. Поиск и скачивание весов
             for weight_file in ["latest_checkpoint.pt", "AWAKENED_WEIGHTS_FINAL.pt"]:
-                res = subprocess.run(["gsutil", "ls", f"gs://bebladii-weigths/checkpoints/{weight_file}"], capture_output=True, text=True)
+                # Пытаемся найти файл в checkpoints/ (для latest_checkpoint) 
+                # или в kaggle_upload_1_2/ (для AWAKENED)
+                gcs_path = f"gs://bebladii-weigths/checkpoints/{weight_file}"
+                if weight_file == "AWAKENED_WEIGHTS_FINAL.pt":
+                    gcs_path = f"gs://bebladii-weigths/kaggle_upload_1_2/{weight_file}"
+
+                res = subprocess.run(["gsutil", "ls", gcs_path], capture_output=True, text=True)
                 if res.returncode == 0:
-                    print(f"--- [RANK 0] Загрузка {weight_file} из GCS ---")
-                    subprocess.run(["gsutil", "cp", f"gs://bebladii-weigths/checkpoints/{weight_file}", weight_file], check=True)
+                    print(f"--- [RANK 0] Загрузка {weight_file} из {gcs_path} ---")
+                    subprocess.run(["gsutil", "cp", gcs_path, weight_file], check=True)
 
             # 3. Синхронизация истории
             for h_file in ["history.jsonl", "history_val.jsonl"]:
