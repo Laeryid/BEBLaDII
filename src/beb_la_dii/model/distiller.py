@@ -114,20 +114,24 @@ class ReasoningDistiller(nn.Module):
             return True
         return False
 
-    def forward(self, input_ids, attention_mask=None):
+    def forward(self, input_ids, attention_mask=None, teacher_input_ids=None, teacher_attention_mask=None):
         """
-        Прямой проход для дистилляции с отладкой.
+        Прямой проход для дистилляции.
+        Если teacher_input_ids передан, учитель (каузальная модель) обрабатывает только их (например, полные тексты).
+        Затем его выходы размножаются (repeat) под размер батча студента (input_ids).
+        Это решает проблему OOM при использовании Growing Masks (когда у студента батч 4x).
         """
         # 1. Проход Teacher
-        # Определяем устройство учителя (обычно первая видеокарта в device_map)
         try:
             teacher_device = next(self.teacher.parameters()).device
         except StopIteration:
-            # XLA FSDP может скрывать параметры под FlatParameter wrapper'ами
             teacher_device = getattr(self, "student_device", input_ids.device)
             
-        t_input_ids = input_ids.to(teacher_device)
-        t_attention_mask = attention_mask.to(teacher_device) if attention_mask is not None else None
+        t_input_ids = teacher_input_ids if teacher_input_ids is not None else input_ids
+        t_attention_mask = teacher_attention_mask if teacher_attention_mask is not None else attention_mask
+        
+        t_input_ids = t_input_ids.to(teacher_device)
+        t_attention_mask = t_attention_mask.to(teacher_device) if t_attention_mask is not None else None
 
         with torch.no_grad():
             teacher_outputs = self.teacher(
@@ -136,14 +140,21 @@ class ReasoningDistiller(nn.Module):
                 output_hidden_states=True
             )
             teacher_embeddings = teacher_outputs.hidden_states[0].to(self.student_device).to(torch.bfloat16)
-            # self._check_nan(teacher_embeddings, "Teacher Embeddings")
             
             teacher_targets = {
                 s_idx: teacher_outputs.hidden_states[t_idx].to(self.student_device).to(torch.bfloat16)
                 for s_idx, t_idx in self.layer_mapping.items()
             }
-            for idx, t in teacher_targets.items():
-                pass # self._check_nan(t, f"Teacher Target Layer {idx}")
+            
+        # Размножение (Repeat) выходов учителя, если батч студента больше (Growing Masks)
+        s_batch_size = input_ids.shape[0]
+        t_batch_size = t_input_ids.shape[0]
+        if s_batch_size > t_batch_size and s_batch_size % t_batch_size == 0:
+            repeats = s_batch_size // t_batch_size
+            # Повторяем по первому измерению (батч): [A, B] -> [A, B, A, B]
+            teacher_embeddings = teacher_embeddings.repeat(repeats, 1, 1)
+            for idx in teacher_targets:
+                teacher_targets[idx] = teacher_targets[idx].repeat(repeats, 1, 1)
             
         # 2. Подготовка входа для Student
         student_inputs_embeds, mu, logvar = self.input_projector(teacher_embeddings)

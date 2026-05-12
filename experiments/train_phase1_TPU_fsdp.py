@@ -323,7 +323,7 @@ def train():
 
     # Данные
     train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='train', val_ratio=0.0)
-    val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=2048, split='val', val_ratio=0.0)
+    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val', val_ratio=0.0)
     accumulation_steps = 4
 
     if rank == 0:
@@ -376,8 +376,19 @@ def train():
             xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))
             xs.mark_sharding(v_attn_mask, mesh, ('fsdp', None))
             
+            # Учителю нужен только 1 (полный) вариант, чтобы избежать OOM
+            t_input_ids = variants[3]["input_ids"]
+            t_attn_mask = variants[3]["attention_mask"]
+            xs.mark_sharding(t_input_ids, mesh, ('fsdp', None))
+            xs.mark_sharding(t_attn_mask, mesh, ('fsdp', None))
+            
             # 3. Единый forward проход
-            v_student_states, v_teacher_targets, v_mu, v_logvar, v_raw_st = distiller(v_input_ids, v_attn_mask)
+            v_student_states, v_teacher_targets, v_mu, v_logvar, v_raw_st = distiller(
+                input_ids=v_input_ids, 
+                attention_mask=v_attn_mask,
+                teacher_input_ids=t_input_ids,
+                teacher_attention_mask=t_attn_mask
+            )
             
             # 4. Разрезаем выходы обратно на 4 варианта
             B_orig = batch['input_ids'].shape[0]
