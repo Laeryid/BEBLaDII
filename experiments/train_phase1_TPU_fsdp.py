@@ -368,17 +368,22 @@ def train():
             # 1. Генерация 4 вариантов масок
             variants = make_mask_variants(batch)
             
-            # 2. Объединяем в один большой батч (4*B, T) для XLA-эффективности
-            v_input_ids = torch.cat([v["input_ids"] for v in variants], dim=0)
-            v_attn_mask = torch.cat([v["attention_mask"] for v in variants], dim=0)
+            # 2. Объединяем в один большой батч (4*B, T)
+            B_orig = batch['input_ids'].shape[0]
+            T = batch['input_ids'].shape[1]
             
-            # SPMD Sharding для объединенного батча
-            xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))
-            xs.mark_sharding(v_attn_mask, mesh, ('fsdp', None))
+            # Interleaving: [S0V0, S0V1, S0V2, S0V3, S1V0...]
+            # Это гарантирует, что все маски одного семпла попадут на одно XLA-устройство при шардинге
+            v_input_ids = torch.stack([v["input_ids"] for v in variants], dim=1).view(-1, T)
+            v_attn_mask = torch.stack([v["attention_mask"] for v in variants], dim=1).view(-1, T)
             
             # Учителю нужен только 1 (полный) вариант, чтобы избежать OOM
             t_input_ids = variants[3]["input_ids"]
             t_attn_mask = variants[3]["attention_mask"]
+            
+            # SPMD Sharding для объединенного батча
+            xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))
+            xs.mark_sharding(v_attn_mask, mesh, ('fsdp', None))
             xs.mark_sharding(t_input_ids, mesh, ('fsdp', None))
             xs.mark_sharding(t_attn_mask, mesh, ('fsdp', None))
             
@@ -390,21 +395,21 @@ def train():
                 teacher_attention_mask=t_attn_mask
             )
             
-            # 4. Разрезаем выходы обратно на 4 варианта
-            B_orig = batch['input_ids'].shape[0]
+            # 4. Разделяем выходы обратно на 4 варианта с помощью view
+            # Поскольку батч interleaved, h[:, idx] оставляет вычисления локальными на TPU ядрах
             s_variants = []
             t_variants = []
             for idx in range(4):
-                s_variants.append({l: h[idx*B_orig : (idx+1)*B_orig] for l, h in v_student_states.items()})
-                t_variants.append({l: h[idx*B_orig : (idx+1)*B_orig] for l, h in v_teacher_targets.items()})
+                s_variants.append({l: h.view(B_orig, 4, T, -1)[:, idx] for l, h in v_student_states.items()})
+                t_variants.append({l: h.view(B_orig, 4, T, -1)[:, idx] for l, h in v_teacher_targets.items()})
             
             # 5. Вычисление L_state (взвешенная сумма по всем маскам)
             total_l_state = 0
             loss_metrics = {}
             for idx in range(4):
-                v_mu_p = v_mu[idx*B_orig : (idx+1)*B_orig] if v_mu is not None else None
-                v_logvar_p = v_logvar[idx*B_orig : (idx+1)*B_orig] if v_logvar is not None else None
-                v_raw_p = {l: h[idx*B_orig : (idx+1)*B_orig] for l, h in v_raw_st.items()} if v_raw_st is not None else None
+                v_mu_p = v_mu.view(B_orig, 4, -1)[:, idx] if v_mu is not None else None
+                v_logvar_p = v_logvar.view(B_orig, 4, -1)[:, idx] if v_logvar is not None else None
+                v_raw_p = {l: h.view(B_orig, 4, T, -1)[:, idx] for l, h in v_raw_st.items()} if v_raw_st is not None else None
                 
                 l_state, m_state = criterion(
                     s_variants[idx], t_variants[idx], variants[idx]["attention_mask"],

@@ -151,10 +151,10 @@ class ReasoningDistiller(nn.Module):
         t_batch_size = t_input_ids.shape[0]
         if s_batch_size > t_batch_size and s_batch_size % t_batch_size == 0:
             repeats = s_batch_size // t_batch_size
-            # Повторяем по первому измерению (батч): [A, B] -> [A, B, A, B]
-            teacher_embeddings = teacher_embeddings.repeat(repeats, 1, 1)
+            # Повторяем по первому измерению: [A, B] -> [A, A, B, B] (interleave!)
+            teacher_embeddings = teacher_embeddings.repeat_interleave(repeats, dim=0)
             for idx in teacher_targets:
-                teacher_targets[idx] = teacher_targets[idx].repeat(repeats, 1, 1)
+                teacher_targets[idx] = teacher_targets[idx].repeat_interleave(repeats, dim=0)
             
         # 2. Подготовка входа для Student
         student_inputs_embeds, mu, logvar = self.input_projector(teacher_embeddings)
