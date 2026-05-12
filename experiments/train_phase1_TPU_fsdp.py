@@ -407,8 +407,8 @@ def train():
             total_l_state = 0
             loss_metrics = {}
             for idx in range(4):
-                v_mu_p = v_mu.view(B_orig, 4, -1)[:, idx] if v_mu is not None else None
-                v_logvar_p = v_logvar.view(B_orig, 4, -1)[:, idx] if v_logvar is not None else None
+                v_mu_p = v_mu.view(B_orig, 4, T, -1)[:, idx] if v_mu is not None else None
+                v_logvar_p = v_logvar.view(B_orig, 4, T, -1)[:, idx] if v_logvar is not None else None
                 v_raw_p = {l: h.view(B_orig, 4, T, -1)[:, idx] for l, h in v_raw_st.items()} if v_raw_st is not None else None
                 
                 l_state, m_state = criterion(
