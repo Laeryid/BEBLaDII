@@ -121,6 +121,7 @@ def train():
     from src.beb_la_dii.model.assembler import ModelAssembler
     from src.beb_la_dii.utils.loss import DistillationLoss
     from src.beb_la_dii.utils.data import get_dataloader
+    from src.beb_la_dii.data.mask_variants import make_mask_variants, MASK_WEIGHTS
 
     # Определяем наше ядро
     device = xm.xla_device()
@@ -353,38 +354,89 @@ def train():
                 
             for k, v in batch.items():
                 v = v.to(device)
-                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
                 batch[k] = v
-            
-            # Targeted Loss Masking support
-            actual_mask = batch['loss_mask'] if 'loss_mask' in batch else batch['attention_mask']
-            
+
             # Anti-Phase Beta Scheduler (ADR-011)
-            # Beta в противофазе с CosineAnnealingWarmRestarts (T_0=2000)
             import math
             rel_step = global_step % 2000
             BETA_MAX = 0.1
             warmup_steps = 1000.0
             warmup_factor = min(1.0, global_step / warmup_steps)
-            # Максимум Beta (BETA_MAX) на середине цикла LR (1000-й шаг)
             current_beta = (BETA_MAX * (1 - math.cos(2 * math.pi * rel_step / 2000)) / 2) * warmup_factor
 
-            student_states, teacher_targets, mu, logvar, raw_st = distiller(batch['input_ids'], batch['attention_mask'])
-            loss, loss_metrics = criterion(
-                student_states, teacher_targets, actual_mask, 
-                mu, logvar, beta=current_beta,
-                raw_student_states=raw_st, lambda_prior=0.1
-            )
+            # --- [Trajectory-Aware Distillation] ---
+            # 1. Генерация 4 вариантов масок
+            variants = make_mask_variants(batch)
             
-            # Balance Regularization (ADR-011 + User Request)
+            # 2. Объединяем в один большой батч (4*B, T) для XLA-эффективности
+            v_input_ids = torch.cat([v["input_ids"] for v in variants], dim=0)
+            v_attn_mask = torch.cat([v["attention_mask"] for v in variants], dim=0)
+            
+            # SPMD Sharding для объединенного батча
+            xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))
+            xs.mark_sharding(v_attn_mask, mesh, ('fsdp', None))
+            
+            # 3. Единый forward проход
+            v_student_states, v_teacher_targets, v_mu, v_logvar, v_raw_st = distiller(v_input_ids, v_attn_mask)
+            
+            # 4. Разрезаем выходы обратно на 4 варианта
+            B_orig = batch['input_ids'].shape[0]
+            s_variants = []
+            t_variants = []
+            for idx in range(4):
+                s_variants.append({l: h[idx*B_orig : (idx+1)*B_orig] for l, h in v_student_states.items()})
+                t_variants.append({l: h[idx*B_orig : (idx+1)*B_orig] for l, h in v_teacher_targets.items()})
+            
+            # 5. Вычисление L_state (взвешенная сумма по всем маскам)
+            total_l_state = 0
+            loss_metrics = {}
+            for idx in range(4):
+                v_mu_p = v_mu[idx*B_orig : (idx+1)*B_orig] if v_mu is not None else None
+                v_logvar_p = v_logvar[idx*B_orig : (idx+1)*B_orig] if v_logvar is not None else None
+                v_raw_p = {l: h[idx*B_orig : (idx+1)*B_orig] for l, h in v_raw_st.items()} if v_raw_st is not None else None
+                
+                l_state, m_state = criterion(
+                    s_variants[idx], t_variants[idx], variants[idx]["attention_mask"],
+                    mu=v_mu_p, logvar=v_logvar_p, beta=current_beta,
+                    raw_student_states=v_raw_p, lambda_prior=0.1
+                )
+                total_l_state += MASK_WEIGHTS[idx] * l_state
+                
+                # Логируем метрики полной маски (idx=3)
+                if idx == 3:
+                    for k, v in m_state.items():
+                        loss_metrics[f"full_{k}"] = v
+            
+            # 6. Вычисление L_delta (Semantic Gradients)
+            # gamma растет с обучением (0.3 -> 0.5 за 10к шагов)
+            current_gamma = min(0.5, 0.3 + (global_step / 10000.0) * 0.2)
+            total_l_delta = 0
+            for idx in range(3): # Переходы 0->1, 1->2, 2->3
+                l_delta, m_delta = criterion.compute_delta_loss(
+                    s_variants[idx], s_variants[idx+1],
+                    t_variants[idx], t_variants[idx+1],
+                    variants[idx+1]["attention_mask"]
+                )
+                total_l_delta += l_delta
+                # Логируем только последний переход для мониторинга
+                if idx == 2:
+                    loss_metrics.update(m_delta)
+            
+            loss = total_l_state + current_gamma * total_l_delta
+            
+            # 7. Balance Regularization (ADR-011)
             loss_bal = distiller.compute_balance_loss(lambda_balance=1.0)
             loss = loss + loss_bal
+            
+            loss_metrics["l_state_total"] = total_l_state.detach()
+            loss_metrics["l_delta_total"] = total_l_delta.detach()
+            loss_metrics["gamma"] = current_gamma
             loss_metrics["balance_reg"] = loss_bal.detach()
             
             loss = loss / accumulation_steps
             loss.backward()
             
-            del student_states, teacher_targets, mu, logvar
+            del v_student_states, v_teacher_targets, v_mu, v_logvar, s_variants, t_variants
             
             if (global_step + 1) % accumulation_steps == 0:
                 xm.optimizer_step(optimizer, barrier=True)
