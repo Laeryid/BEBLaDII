@@ -144,7 +144,7 @@
             ]
         },
         "KI_knowledge_infrastructure.md": {
-            "description": "Technical implementation of the knowledge system: hashing, state tracking, and MCP tools.",
+            "description": "Technical implementation: SHA-256 hashing, state tracking, and MCP tools logic.",
             "covers": [
                 "Knowledge Infrastructure"
             ],
@@ -155,24 +155,43 @@
                 ".know/scripts/ki_dependency_analyzer.py",
                 ".know/scripts/ki_utils.py",
                 ".know/scripts/generate_dir_index.py",
-                ".know/scripts/sync_agents_md.py"
+                ".know/scripts/sync_agents_md.py",
+                ".know/doc_config.json"
             ]
         },
         "KI_knowledge_management.md": {
-            "description": "Knowledge management system: MCP server, audit, and documentation version control.",
+            "description": "Knowledge management methodology: standards, metrics, and quality control.",
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": []
+        },
+        "KI_architectural_decisions.md": {
+            "description": "Archive of architectural decisions (ADRs) and retrospectives.",
             "covers": [
                 "Knowledge Infrastructure"
             ],
             "depends_on": [
-                ".know/scripts/knowledge_mcp.py",
-                ".know/scripts/knowledge_engine.py",
-                ".know/scripts/audit_coverage.py",
-                ".know/doc_config.json",
-                ".know/scripts/sync_agents_md.py",
-                ".know/scripts/generate_dir_index.py",
-                ".know/scripts/add_ki_to_config.py",
-                ".know/scripts/init_ki_system.py",
-                ".know/scripts/ki_utils.py",
+                ".know/decisions/001_kaggle_phase1_retrospective.md",
+                ".know/decisions/002_phase1_training_optimization.md",
+                ".know/decisions/003_fsdp_tpu_transition.md",
+                ".know/decisions/004_spmd_fsdp_tpu_constraints.md",
+                ".know/decisions/005_modernbert_xla_gradient_checkpointing.md",
+                ".know/decisions/006_fsdp_checkpoint_loading_fix.md",
+                ".know/decisions/007_tpu_v6e_launch_stabilization.md",
+                ".know/decisions/008_single_process_spmd_victory.md",
+                ".know/decisions/009_phase1_lr_aggressive_strategy.md",
+                ".know/decisions/010_spmd_fsdp_reasoning_restart.md",
+                ".know/decisions/011_projector_scale_optimization.md",
+                ".know/decisions/012_latent_space_isotropization.md"
+            ]
+        },
+        "KI_knowledge_testing.md": {
+            "description": "Integration and security tests for the knowledge infrastructure.",
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
                 ".know/tests/conftest.py",
                 ".know/tests/test_audit_coverage.py",
                 ".know/tests/test_generate_dir_index.py",
@@ -181,12 +200,19 @@
                 ".know/tests/test_knowledge_engine.py",
                 ".know/tests/test_knowledge_engine_extra.py",
                 ".know/tests/test_mcp_security.py",
-                ".know/tests/test_sync_and_add_ki.py",
+                ".know/tests/test_sync_and_add_ki.py"
+            ]
+        },
+        "KI_knowledge_workflows.md": {
+            "description": "Executable instructions (Workflows) for agents and maintenance procedures.",
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
                 ".know/workflows/create-adr.md",
                 ".know/workflows/expand-knowledge.md",
                 ".know/workflows/sync-knowledge.md",
-                ".know/decisions/001_kaggle_phase1_retrospective.md",
-                ".know/decisions/002_phase1_training_optimization.md"
+                ".know/workflows/update-knowledge.md"
             ]
         },
         "KI_data_preparation.md": {
