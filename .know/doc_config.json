@@ -189,35 +189,55 @@
                 ".know/decisions/002_phase1_training_optimization.md"
             ]
         },
-        "KI_kaggle.md": {
-            "description": "Instructions for Kaggle CLI: API configuration, creation, and updating of datasets.",
+        "KI_data_preparation.md": {
+            "description": "Dataset engineering: tokenization, downsampling, and infrastructure initialization.",
             "covers": [
                 "Data & Ops Scripts"
             ],
             "depends_on": [
-                "scripts/prepare_kaggle_data.py"
+                "scripts/prepare_phase1_data_v2.py",
+                "scripts/prepare_kaggle_data.py",
+                "scripts/downsample_magpie.py",
+                "scripts/download_datasets.py",
+                "scripts/build_prebuilt_latentbert.py",
+                "scripts/download_teacher.py"
+            ]
+        },
+        "KI_kaggle_ops.md": {
+            "description": "Kaggle-specific operations: synchronization, emergency saves, and TPU validation.",
+            "covers": [
+                "Data & Ops Scripts"
+            ],
+            "depends_on": [
+                "scripts/sync_to_kaggle.ps1",
+                "scripts/kaggle_emergency_save.py",
+                "scripts/debug_nan_kaggle.py",
+                "scripts/check_tpu_nprocs.py"
+            ]
+        },
+        "KI_model_inspection.md": {
+            "description": "Deep weight inspection, key matching, and loading validation.",
+            "covers": [
+                "Data & Ops Scripts"
+            ],
+            "depends_on": [
+                "scripts/deep_inspect_weights.py",
+                "scripts/check_model_keys.py",
+                "scripts/find_weights.py",
+                "scripts/verify_loading.py",
+                "scripts/test_missing_keys.py"
             ]
         },
         "KI_operations.md": {
-            "description": "Technical and debugging scripts: smoke tests, NaN debugging, synchronization.",
+            "description": "General operations: smoke tests, system diagnostics, and length evaluation.",
             "covers": [
                 "Data & Ops Scripts"
             ],
             "depends_on": [
                 "scripts/smoke_test_forward.py",
-                "scripts/debug_nan_kaggle.py",
-                "scripts/build_prebuilt_latentbert.py",
-                "scripts/download_teacher.py",
-                "scripts/download_datasets.py",
-                "scripts/downsample_magpie.py",
-                "scripts/prepare_kaggle_data.py",
-                "scripts/prepare_phase1_data_v2.py",
-                "scripts/sync_to_kaggle.ps1",
-                "scripts/deep_inspect_weights.py",
-                "scripts/check_model_keys.py",
-                "scripts/inspect_best_model.py",
-                "evaluate_lengths.py",
-                "scratch_check_hf.py"
+                "scripts/verify_new_tpu.py",
+                "scripts/inspect_system.py",
+                "evaluate_lengths.py"
             ]
         },
         "decisions/001_kaggle_phase1_retrospective.md": {
