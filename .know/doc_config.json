@@ -143,6 +143,21 @@
                 "experiments/train_phase1_kaggle.ipynb"
             ]
         },
+        "KI_knowledge_infrastructure.md": {
+            "description": "Technical implementation of the knowledge system: hashing, state tracking, and MCP tools.",
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                ".know/scripts/knowledge_mcp.py",
+                ".know/scripts/knowledge_engine.py",
+                ".know/scripts/audit_coverage.py",
+                ".know/scripts/ki_dependency_analyzer.py",
+                ".know/scripts/ki_utils.py",
+                ".know/scripts/generate_dir_index.py",
+                ".know/scripts/sync_agents_md.py"
+            ]
+        },
         "KI_knowledge_management.md": {
             "description": "Knowledge management system: MCP server, audit, and documentation version control.",
             "covers": [
