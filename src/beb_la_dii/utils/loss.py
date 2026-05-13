@@ -130,51 +130,42 @@ class DistillationLoss(nn.Module):
                            student_states_k1: dict,
                            teacher_states_k:  dict,
                            teacher_states_k1: dict,
+                           mask_k: torch.Tensor,
                            mask_k1: torch.Tensor) -> tuple:
         """
         L_delta: выравнивает семантические градиенты между соседними вариантами масок.
 
-        Для каждого контрольного слоя:
-            ds = pool(h_S[mask_k+1]) - pool(h_S[mask_k])
-            dt = pool(h_T[mask_k+1]) - pool(h_T[mask_k])
-            L = MSE(ds, dt.detach())
-
-        Оба набора состояний должны быть в одном пространстве (projected, Qwen-dim).
-
         Args:
-            student_states_k:  {layer_idx: (B, T_k,  D)}
-            student_states_k1: {layer_idx: (B, T_k1, D)}
-            teacher_states_k:  {layer_idx: (B, T_k,  D)}
-            teacher_states_k1: {layer_idx: (B, T_k1, D)}
-            mask_k1: (B, T_k1) — маска более длинного варианта
-
-        Returns:
-            (loss, metrics_dict)
+            student_states_k:  {layer_idx: (B, T, D)}
+            student_states_k1: {layer_idx: (B, T, D)}
+            teacher_states_k:  {layer_idx: (B, T, D)}
+            teacher_states_k1: {layer_idx: (B, T, D)}
+            mask_k:  (B, T) - маска предыдущего варианта
+            mask_k1: (B, T) - маска текущего варианта
         """
         loss = torch.tensor(0.0, device=mask_k1.device)
         metrics = {}
 
-        m = mask_k1.unsqueeze(-1).float()       # (B, T_k1, 1)
-        n = m.sum(dim=1).clamp(min=1.0)         # (B, 1)
-        T_k1 = mask_k1.shape[1]
+        m_k = mask_k.unsqueeze(-1).float()
+        n_k = m_k.sum(dim=1).clamp(min=1.0)
+        
+        m_k1 = mask_k1.unsqueeze(-1).float()
+        n_k1 = m_k1.sum(dim=1).clamp(min=1.0)
 
-        def masked_pool(h: torch.Tensor) -> torch.Tensor:
-            """Mean pooling по активным токенам маски k+1."""
-            return (h[:, :T_k1, :].float() * m).sum(dim=1) / n  # (B, D)
+        def pool(h: torch.Tensor, m: torch.Tensor, n: torch.Tensor) -> torch.Tensor:
+            return (h.float() * m).sum(dim=1) / n
 
         for layer_idx, weight in self.layer_weights.items():
             if (layer_idx not in student_states_k  or layer_idx not in student_states_k1 or
                     layer_idx not in teacher_states_k  or layer_idx not in teacher_states_k1):
                 continue
 
-            ds = masked_pool(student_states_k1[layer_idx]) - masked_pool(student_states_k[layer_idx])
-            dt = masked_pool(teacher_states_k1[layer_idx]) - masked_pool(teacher_states_k[layer_idx])
+            ds = pool(student_states_k1[layer_idx], m_k1, n_k1) - pool(student_states_k[layer_idx], m_k, n_k)
+            dt = pool(teacher_states_k1[layer_idx], m_k1, n_k1) - pool(teacher_states_k[layer_idx], m_k, n_k)
 
-            # .detach() на учителе — не пропускаем градиент через teacher
             layer_delta_loss = F.mse_loss(ds, dt.detach())
             loss = loss + weight * layer_delta_loss
 
-            # Диагностика
             dcos = F.cosine_similarity(ds, dt.detach(), dim=-1).mean()
             dmag = (ds.norm(dim=-1) / dt.norm(dim=-1).clamp(min=1e-6)).mean()
             metrics[f"delta_cos_l{layer_idx}"]       = dcos.detach()
@@ -199,12 +190,13 @@ if __name__ == "__main__":
     # --- Тест compute_delta_loss ---
     T2 = T * 2
     sk  = {l: torch.randn(B, T,  D) for l in [20, 30, 40]}
-    sk1 = {l: torch.randn(B, T2, D) for l in [20, 30, 40]}
+    sk1 = {l: torch.randn(B, T, D) for l in [20, 30, 40]}
     tk  = {l: torch.randn(B, T,  D) for l in [20, 30, 40]}
-    tk1 = {l: torch.randn(B, T2, D) for l in [20, 30, 40]}
-    mask_k1 = torch.ones(B, T2)
+    tk1 = {l: torch.randn(B, T, D) for l in [20, 30, 40]}
+    mask_k = torch.ones(B, T)
+    mask_k1 = torch.ones(B, T)
 
-    delta_loss, delta_metrics = criterion.compute_delta_loss(sk, sk1, tk, tk1, mask_k1)
+    delta_loss, delta_metrics = criterion.compute_delta_loss(sk, sk1, tk, tk1, mask_k, mask_k1)
     print(f"L_delta: {delta_loss.item():.6f}  |  metrics: {delta_metrics}")
     assert delta_loss.requires_grad, "L_delta не имеет градиента!"
     print("Все тесты пройдены ✓")

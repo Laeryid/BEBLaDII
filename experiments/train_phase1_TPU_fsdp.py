@@ -345,7 +345,7 @@ def train():
     
     for epoch in range(start_epoch, 10):
         batches_per_epoch = len(train_loader)
-        batches_to_skip = global_step % batches_per_epoch if epoch == start_epoch else 0
+        batches_to_skip = (global_step * accumulation_steps) % batches_per_epoch if epoch == start_epoch else 0
         progress_bar = tqdm(train_loader, disable=(rank != 0), initial=batches_to_skip, total=batches_per_epoch, desc=f"Epoch {epoch}")
         
         optimizer.zero_grad()
@@ -433,6 +433,7 @@ def train():
                 l_delta, m_delta = criterion.compute_delta_loss(
                     s_variants[idx], s_variants[idx+1],
                     t_variants[idx], t_variants[idx+1],
+                    variants[idx]["attention_mask"],
                     variants[idx+1]["attention_mask"]
                 )
                 total_l_delta += l_delta
@@ -456,19 +457,21 @@ def train():
             
             del v_student_states, v_teacher_targets, v_mu, v_logvar, s_variants, t_variants
             
-            if (global_step + 1) % accumulation_steps == 0:
+            if (i + 1) % accumulation_steps == 0:
                 xm.optimizer_step(optimizer, barrier=True)
                 scheduler.step()
                 
                 # Manual Warmup (up to 1000 global steps)
-                if global_step <= warmup_steps:
-                    lr_warmup_factor = max(0.01, global_step / warmup_steps)
-                    for param_group in optimizer.param_groups:
-                        param_group['lr'] = param_group['lr'] * lr_warmup_factor
+                current_optim_step = global_step + 1
+                if current_optim_step <= warmup_steps:
+                    lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+                    # Корректно устанавливаем LR относительно начального значения
+                    for idx_p, param_group in enumerate(optimizer.param_groups):
+                        param_group['lr'] = scheduler.base_lrs[idx_p] * lr_warmup_factor
                 
                 optimizer.zero_grad()
                 
-                if ((global_step + 1) // accumulation_steps) % 500 == 0:
+                if current_optim_step % 500 == 0:
                     xm.mark_step()
                     full_sd = distiller.state_dict()
                     trainable_sd = {k: v for k, v in full_sd.items() if "teacher" not in k}
@@ -477,12 +480,12 @@ def train():
                         'model_state_dict': trainable_sd,
                         'optimizer_state_dict': optimizer.state_dict(),
                         'scheduler_state_dict': scheduler.state_dict(),
-                        'global_step': global_step,
+                        'global_step': current_optim_step,
                         'epoch': epoch,
                         'wandb_run_id': wandb_run_id,
                         'current_beta': current_beta
                     }
-                    local_ckpt_name = f"ckpt_{global_step}.pt"
+                    local_ckpt_name = f"ckpt_{current_optim_step}.pt"
                     xm.save(save_data, local_ckpt_name)
                     
                     if rank == 0:
@@ -496,7 +499,7 @@ def train():
                             
                             # Работа с логами тренировки
                             if os.path.exists("history.jsonl"):
-                                th_ver = f"history_{global_step}.jsonl"
+                                th_ver = f"history_{current_optim_step}.jsonl"
                                 shutil.copy("history.jsonl", th_ver)
                                 subprocess.run(["gsutil", "cp", "history.jsonl", "gs://bebladii-weigths/checkpoints/history.jsonl"], check=True)
                                 subprocess.run(["gsutil", "cp", th_ver, f"gs://bebladii-weigths/checkpoints/{th_ver}"], check=True)
@@ -504,14 +507,14 @@ def train():
 
                             # Работа с логами валидации
                             if os.path.exists("history_val.jsonl"):
-                                h_ver = f"history_val_{global_step}.jsonl"
+                                h_ver = f"history_val_{current_optim_step}.jsonl"
                                 shutil.copy("history_val.jsonl", h_ver)
                                 subprocess.run(["gsutil", "cp", "history_val.jsonl", "gs://bebladii-weigths/checkpoints/history_val.jsonl"], check=True)
                                 subprocess.run(["gsutil", "cp", h_ver, f"gs://bebladii-weigths/checkpoints/{h_ver}"], check=True)
                                 os.remove(h_ver)
 
                             # Очистка старых локальных чекпоинтов (храним только последние 500 шагов)
-                            prev_step = global_step - (500 * accumulation_steps)
+                            prev_step = current_optim_step - (500 * accumulation_steps)
                             prev_ckpt = f"ckpt_{prev_step}.pt"
                             if os.path.exists(prev_ckpt): os.remove(prev_ckpt)
                         except Exception as e:
@@ -522,8 +525,8 @@ def train():
                     # Барьер 1: Синхронизация после работы с GCS
                     xm.rendezvous("gcs_sync_done")
 
-                # Валидация каждые 100 шагов (сдвигаем на +10, чтобы не пересекаться с CKPT % 500)
-                if (((global_step + 1) // accumulation_steps) + 10) % 100 == 0:
+                # Валидация каждые 50 шагов (учащаем с 100)
+                if (current_optim_step + 10) % 50 == 0:
                     distiller.eval()
                     val_loss_sum, val_steps = 0.0, 0
                     val_metrics_sums = {}
@@ -579,12 +582,12 @@ def train():
                     
                     if rank == 0:
                         avg_val_loss = val_loss_sum / val_steps
-                        val_log = {"val/loss": avg_val_loss, "global_step": global_step}
+                        val_log = {"val/loss": avg_val_loss, "global_step": current_optim_step}
                         for k, v_sum in val_metrics_sums.items():
                             val_log[f"val/{k}"] = v_sum / val_steps
                         import wandb
-                        wandb.log(val_log, step=global_step)
-                        print(f"--- [VAL] Step {global_step}: Loss {avg_val_loss:.4f} ---")
+                        wandb.log(val_log, step=current_optim_step)
+                        print(f"--- [VAL] Step {current_optim_step}: Loss {avg_val_loss:.4f} ---")
                         
                         # Сохранение в локальный файл истории валидации
                         with open("history_val.jsonl", "a", encoding="utf-8") as f:
@@ -593,9 +596,10 @@ def train():
                     # Барьер 2: Синхронизация после валидации
                     xm.rendezvous("validation_done")
                     distiller.train()
-            
-            if (i + 1) % accumulation_steps == 0:
-                global_step += 1
+                
+                # Update global_step at the very end of accumulation block
+                global_step = current_optim_step
+
                 if xm.is_master_ordinal() and global_step % 20 == 0:
                     import wandb
                     log_dict = {
