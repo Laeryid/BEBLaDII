@@ -75,24 +75,45 @@ class DistillationLoss(nn.Module):
         # 3. Prior Loss — только по активным токенам (attention_mask учитывается)
         if raw_student_states is not None and 40 in raw_student_states:
             raw_40 = raw_student_states[40].float()
+            # raw_40: (B, T, D)
+            B, T, D = raw_40.shape
+            
             if attention_mask is not None:
-                # Маскированные среднее и дисперсия по активным токенам
-                mask_3d = attention_mask.unsqueeze(-1).float()       # (B, T, 1)
-                n = mask_3d.sum(dim=(0, 1)).clamp(min=1.0)          # (D,)
-                m_40 = (raw_40 * mask_3d).sum(dim=(0, 1)) / n
-                sq_diff = (raw_40 - m_40.unsqueeze(0).unsqueeze(0)) ** 2
-                v_40 = (sq_diff * mask_3d).sum(dim=(0, 1)) / n
+                mask_flat = attention_mask.view(-1, 1).float() # (B*T, 1)
+                raw_flat = raw_40.view(-1, D) # (B*T, D)
+                
+                N = mask_flat.sum().clamp(min=1.0)
+                
+                # Mean
+                m_40 = (raw_flat * mask_flat).sum(dim=0) / N # (D,)
+                
+                # Centered
+                z = raw_flat - m_40.unsqueeze(0) # (B*T, D)
+                z_masked = z * mask_flat # Zero out padding tokens
+                
+                # Variance
+                v_40 = (z_masked ** 2).sum(dim=0) / N.clamp(min=2.0) # (D,)
+                
+                # Covariance matrix (D, D) - VICReg style for isotropy
+                # z_masked.T is (D, B*T), z_masked is (B*T, D)
+                cov = (z_masked.T @ z_masked) / N.clamp(min=2.0)
             else:
-                # На TPU torch.std(dim=(0,1)) может не иметь autograd-ядра,
-                # используем var напрямую для стабильности XLA.
                 m_40 = raw_40.mean(dim=(0, 1))
                 v_40 = raw_40.var(dim=(0, 1), unbiased=False)
+                z = raw_40 - m_40.view(1, 1, -1)
+                z_flat = z.view(-1, D)
+                cov = (z_flat.T @ z_flat) / (z_flat.size(0) - 1)
 
-            # Целевое распределение: mean=0, var=1.
-            # Используем (var - 1)^2 — стабильнее, чем sqrt(var) для XLA-градиентов.
-            prior_loss = m_40.pow(2).mean() + (v_40 - 1.0).pow(2).mean()
+            # Off-diagonal elements of covariance matrix
+            cov_off_diag = cov - torch.diag(torch.diag(cov))
+            # Штраф за корреляцию (изотропия). Масштабируем по D.
+            cov_loss = cov_off_diag.pow(2).sum() / D
+
+            # Целевое распределение: mean=0, var=1 + Covariance penalty
+            prior_loss = m_40.pow(2).mean() + (v_40 - 1.0).pow(2).mean() + 0.1 * cov_loss
             total_loss += lambda_prior * prior_loss
             metrics["l40_prior"] = prior_loss.detach()
+            metrics["l40_cov_loss"] = cov_loss.detach()
 
         metrics["mse"] = mse_total.detach() if torch.is_tensor(mse_total) else mse_total
         metrics["cosine"] = cos_total.detach() if torch.is_tensor(cos_total) else cos_total
@@ -134,14 +155,6 @@ class DistillationLoss(nn.Module):
                            mask_k1: torch.Tensor) -> tuple:
         """
         L_delta: выравнивает семантические градиенты между соседними вариантами масок.
-
-        Args:
-            student_states_k:  {layer_idx: (B, T, D)}
-            student_states_k1: {layer_idx: (B, T, D)}
-            teacher_states_k:  {layer_idx: (B, T, D)}
-            teacher_states_k1: {layer_idx: (B, T, D)}
-            mask_k:  (B, T) - маска предыдущего варианта
-            mask_k1: (B, T) - маска текущего варианта
         """
         loss = torch.tensor(0.0, device=mask_k1.device)
         metrics = {}
@@ -163,10 +176,17 @@ class DistillationLoss(nn.Module):
             ds = pool(student_states_k1[layer_idx], m_k1, n_k1) - pool(student_states_k[layer_idx], m_k, n_k)
             dt = pool(teacher_states_k1[layer_idx], m_k1, n_k1) - pool(teacher_states_k[layer_idx], m_k, n_k)
 
-            layer_delta_loss = F.mse_loss(ds, dt.detach())
+            if layer_idx == 40:
+                # Используем косинусное сходство для L40 (согласно ADR-012)
+                # Это отвязывает дельту от масштаба учителя и фокусируется на направлении.
+                cos_sim = F.cosine_similarity(ds, dt.detach(), dim=-1, eps=1e-6)
+                layer_delta_loss = 1.0 - cos_sim.mean()
+            else:
+                layer_delta_loss = F.mse_loss(ds, dt.detach())
+
             loss = loss + weight * layer_delta_loss
 
-            dcos = F.cosine_similarity(ds, dt.detach(), dim=-1).mean()
+            dcos = F.cosine_similarity(ds, dt.detach(), dim=-1, eps=1e-6).mean()
             dmag = (ds.norm(dim=-1) / dt.norm(dim=-1).clamp(min=1e-6)).mean()
             metrics[f"delta_cos_l{layer_idx}"]       = dcos.detach()
             metrics[f"delta_mag_ratio_l{layer_idx}"] = dmag.detach()

@@ -1,0 +1,17 @@
+{
+    "mcpServers": {
+        "knowledge-manager-BEBLaDII": {
+            "command": "C:/Experiments/BEBLaDII/.venv/Scripts/python.exe",
+            "args": [
+                "-u",
+                "C:/Experiments/BEBLaDII/.know/scripts/knowledge_mcp.py",
+                "--config",
+                "C:/Experiments/BEBLaDII/.know/ki_config.json"
+            ],
+            "cwd": "C:/Experiments/BEBLaDII",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        }
+    }
+}
