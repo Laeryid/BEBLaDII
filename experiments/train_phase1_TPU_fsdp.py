@@ -561,8 +561,10 @@ def train():
                                 
                                 # Переносим на CPU для стабильности SVD и Recall
                                 if rank == 0: print("    -> Transferring to CPU...")
-                                l40_student_cpu = v_st[40].detach().cpu()
-                                l40_teacher_cpu = v_tgt[40].detach().cpu()
+                                v_actual_mask_cpu = v_actual_mask.detach().cpu().bool()
+                                # Применяем маску, получая плоский тензор активных токенов (N, D)
+                                l40_student_cpu = v_st[40].detach().cpu()[v_actual_mask_cpu]
+                                l40_teacher_cpu = v_tgt[40].detach().cpu()[v_actual_mask_cpu]
                                 
                                 if rank == 0: print("    -> Calculating isotropy (SVD)...")
                                 val_metrics_sums["l40_isotropy"] = calculate_isotropy(l40_student_cpu)
@@ -571,8 +573,9 @@ def train():
                                 val_metrics_sums["l40_neighbor_recall"] = calculate_neighbor_recall(l40_student_cpu, l40_teacher_cpu)
                                 
                                 # Метрика дрейфа (для нового проектора)
-                                mu_l40 = l40_student_cpu.mean(dim=(0, 1))
-                                var_l40 = l40_student_cpu.var(dim=(0, 1), unbiased=False)
+                                # Так как тензор теперь (N, D), считаем mean и var по нулевому измерению
+                                mu_l40 = l40_student_cpu.mean(dim=0)
+                                var_l40 = l40_student_cpu.var(dim=0, unbiased=False)
                                 val_metrics_sums["l40_mu_drift"] = mu_l40.pow(2).mean().item()
                                 val_metrics_sums["l40_var_drift"] = (var_l40 - 1.0).pow(2).mean().item()
                                 if rank == 0: print("--- [VAL] Heavy metrics done. ---")

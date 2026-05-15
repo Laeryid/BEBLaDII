@@ -180,7 +180,13 @@ class DistillationLoss(nn.Module):
                 # Используем косинусное сходство для L40 (согласно ADR-012)
                 # Это отвязывает дельту от масштаба учителя и фокусируется на направлении.
                 cos_sim = F.cosine_similarity(ds, dt.detach(), dim=-1, eps=1e-6)
-                layer_delta_loss = 1.0 - cos_sim.mean()
+                
+                # Добавляем штраф за коллапс магнитуды дельты (ADR-013)
+                s_mag = ds.norm(dim=-1)
+                t_mag = dt.norm(dim=-1).detach()
+                mag_loss = F.mse_loss(s_mag, t_mag)
+                
+                layer_delta_loss = 1.0 - cos_sim.mean() + 0.1 * mag_loss
             else:
                 layer_delta_loss = F.mse_loss(ds, dt.detach())
 
