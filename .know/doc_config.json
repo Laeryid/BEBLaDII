@@ -311,6 +311,16 @@
             "depends_on": [
                 "ideas/Phase 4 разделение.md"
             ]
+        },
+        "decisions/014_metrics_fix_and_delta_recovery.md": {
+            "description": "ADR: Исправление метрик (паддинг) и штраф за магнитуду дельты для предотвращения Collapse of Delta.",
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                "experiments/train_phase1_TPU_fsdp.py",
+                "src/beb_la_dii/utils/loss.py"
+            ]
         }
     },
     "knowledge_system": {
