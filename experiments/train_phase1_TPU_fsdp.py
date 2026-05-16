@@ -331,15 +331,14 @@ def train():
     if rank == 0:
         wandb_kwargs = {
             "project": "BEBLaDII",
-            "name": "tpu-v6e-spmd",
-            "resume": "allow",
-            "id": wandb_run_id
+            "name": f"tpu-v6e-spmd-resumed-{global_step}"
         }
         try:
             import wandb
             wandb.init(**wandb_kwargs)
             wandb_run_id = wandb.run.id
-            if rank == 0: print(f"--- [WANDB] Resumed run: {wandb_run_id} ---")
+            if rank == 0: 
+                print(f"--- [WANDB] Started NEW run: {wandb_run_id} ---")
         except Exception as e:
             if rank == 0: print(f"--- [WANDB ERROR] {e} ---")
 
@@ -622,16 +621,7 @@ def train():
                 # Update global_step at the very end of accumulation block
                 global_step = current_optim_step
 
-                # ОТЛАДКА: Печатаем всегда на первом шаге
-                if not first_log_done:
-                    print(f"--- [DEBUG] Rank {rank} reached logging point at step {global_step} ---", flush=True)
-                    if rank == 0:
-                        print(f"--- [DEBUG] Rank 0 is trying to log to WandB... ---", flush=True)
-
-                if xm.is_master_ordinal() and (global_step % 20 == 0 or not first_log_done):
-                    if not first_log_done:
-                        first_log_done = True
-                    
+                if xm.is_master_ordinal() and global_step % 20 == 0:
                     import wandb
                     log_dict = {
                         "train/loss": loss.item() * accumulation_steps, 
