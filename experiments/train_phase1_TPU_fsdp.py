@@ -347,7 +347,11 @@ def train():
     
     for epoch in range(start_epoch, 10):
         batches_per_epoch = len(train_loader)
-        batches_to_skip = (global_step * accumulation_steps) % batches_per_epoch if epoch == start_epoch else 0
+        
+        # Обнуляем пропуск батчей, чтобы не ждать 9 часов. Данные начнутся с начала эпохи,
+        # но LR, Beta и Gamma будут считаться для global_step = 4500.
+        batches_to_skip = 0 
+        
         progress_bar = tqdm(train_loader, disable=(rank != 0), initial=batches_to_skip, total=batches_per_epoch, desc=f"Epoch {epoch}")
         
         optimizer.zero_grad()
