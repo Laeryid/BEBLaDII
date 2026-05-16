@@ -331,14 +331,15 @@ def train():
     if rank == 0:
         wandb_kwargs = {
             "project": "BEBLaDII",
-            "name": f"tpu-v6e-spmd-resumed-{global_step}",
-            "resume": "allow"
+            "name": "tpu-v6e-spmd",
+            "resume": "allow",
+            "id": wandb_run_id
         }
         try:
             import wandb
             wandb.init(**wandb_kwargs)
             wandb_run_id = wandb.run.id
-            if rank == 0: print(f"--- [WANDB] Started NEW run: {wandb_run_id} ---")
+            if rank == 0: print(f"--- [WANDB] Resumed run: {wandb_run_id} ---")
         except Exception as e:
             if rank == 0: print(f"--- [WANDB ERROR] {e} ---")
 
