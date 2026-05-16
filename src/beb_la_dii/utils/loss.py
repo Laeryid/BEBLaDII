@@ -48,11 +48,26 @@ class DistillationLoss(nn.Module):
                 t_h = teacher_hidden_states[layer_idx].float()
 
                 # 1. Cosine Similarity Loss
-                cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
-                if attention_mask is not None:
+                if layer_idx == 40 and attention_mask is not None:
+                    # Центрированный косинус (Pearson Correlation) для l40
+                    # Это заставляет студента учить структуру, а не просто средний вектор
+                    m = attention_mask.unsqueeze(-1).float()
+                    n = m.sum(dim=1, keepdim=True).clamp(min=1e-6)
+                    
+                    s_mean = (s_h * m).sum(dim=1, keepdim=True) / n
+                    t_mean = (t_h * m).sum(dim=1, keepdim=True) / n
+                    
+                    s_centered = (s_h - s_mean) * m
+                    t_centered = (t_h - t_mean) * m
+                    
+                    cos_sim = F.cosine_similarity(s_centered, t_centered, dim=-1, eps=1e-6)
                     cos_l = 1.0 - (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
                 else:
-                    cos_l = 1.0 - cos_sim.mean()
+                    cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
+                    if attention_mask is not None:
+                        cos_l = 1.0 - (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+                    else:
+                        cos_l = 1.0 - cos_sim.mean()
 
                 # 2. MSE Loss (для l40 не считаем — там no-bias проектор, важна только семантика)
                 if layer_idx == 40:
