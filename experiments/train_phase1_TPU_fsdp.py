@@ -437,9 +437,9 @@ def train():
                     variants[idx+1]["attention_mask"]
                 )
                 total_l_delta += l_delta
-                # Логируем только последний переход для мониторинга
-                if idx == 2:
-                    loss_metrics.update(m_delta)
+                # Логируем каждый переход (t01, t12, t23)
+                for k, v in m_delta.items():
+                    loss_metrics[f"{k}_t{idx}{idx+1}"] = v
             
             loss = total_l_state + current_gamma * total_l_delta
             
@@ -572,6 +572,18 @@ def train():
                                 if rank == 0: print("    -> Calculating neighbor recall...")
                                 val_metrics_sums["l40_neighbor_recall"] = calculate_neighbor_recall(l40_student_cpu, l40_teacher_cpu)
                                 
+                                if rank == 0: print("    -> Calculating noise sensitivity...")
+                                def compute_noise_sensitivity(latent, sigmas=(0.1, 0.3, 0.5, 1.0)):
+                                    results = {}
+                                    for sigma in sigmas:
+                                        noise = torch.randn_like(latent) * sigma
+                                        noisy = latent + noise
+                                        cos = F.cosine_similarity(latent, noisy, dim=-1)
+                                        results[f"l40_ns_sigma_{str(sigma).replace('.','_')}"] = (1 - cos).mean().item()
+                                    return results
+                                
+                                val_metrics_sums.update(compute_noise_sensitivity(l40_student_cpu))
+
                                 # Метрика дрейфа (для нового проектора)
                                 # Так как тензор теперь (N, D), считаем mean и var по нулевому измерению
                                 mu_l40 = l40_student_cpu.mean(dim=0)
