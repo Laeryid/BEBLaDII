@@ -133,6 +133,8 @@ def train():
     if rank == 0:
         print(f"--- [RANK 0] Инициализация на TPU (v6e)... ---")
 
+    first_log_done = False # Флаг для отладки логирования
+
     # Сборка модели
     assembler = ModelAssembler()
     distiller = assembler.assemble_phase1_distiller(
@@ -615,11 +617,15 @@ def train():
                 # Update global_step at the very end of accumulation block
                 global_step = current_optim_step
 
-                # Логируем каждые 20 шагов ИЛИ на самом первом шаге после запуска для теста
-                if xm.is_master_ordinal() and (global_step % 20 == 0 or 'first_log_done' not in locals()):
-                    if 'first_log_done' not in locals():
+                # ОТЛАДКА: Печатаем всегда на первом шаге
+                if not first_log_done:
+                    print(f"--- [DEBUG] Rank {rank} reached logging point at step {global_step} ---", flush=True)
+                    if rank == 0:
+                        print(f"--- [DEBUG] Rank 0 is trying to log to WandB... ---", flush=True)
+
+                if xm.is_master_ordinal() and (global_step % 20 == 0 or not first_log_done):
+                    if not first_log_done:
                         first_log_done = True
-                        print(f"--- [DEBUG] Performing FIRST log at step {global_step} ---", flush=True)
                     
                     import wandb
                     log_dict = {
