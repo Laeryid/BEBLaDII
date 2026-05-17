@@ -26,3 +26,7 @@
 - **XLA Graph Breaks**: Операции `print` или обращение к тензорам вне `xm.mark_step()` замедляют TPU.
 - **GCS Permission**: Ошибки `gsutil` возникают, если на инстансе TPU не настроен `gcloud auth` или права доступа к бакету.
 - **Weights Mismatch**: Если `matched params` при загрузке значительно меньше общего числа параметров — проверьте маппинг имен в `smart_load_weights`.
+
+## Related KIs
+- [[KI_model_core.md]] (via `src/beb_la_dii/model/component_registry.py`)
+

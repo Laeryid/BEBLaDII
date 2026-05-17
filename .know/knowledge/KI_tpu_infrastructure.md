@@ -19,6 +19,6 @@
 - **XLA OOM**: Многие стандартные оптимизации (например, Gradient Checkpointing) могут вызывать OOM на XLA из-за статической компиляции графа.
 - **Single Process**: Однопроцессный режим SPMD значительно упрощает отладку и исключает рассинхронизацию между процессами на одном хосте.
 
+
 ## Related KIs
-- [Architectural Decisions](KI_architectural_decisions.md)
-- [Training Infrastructure](KI_training_infrastructure.md)
+

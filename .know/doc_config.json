@@ -321,6 +321,16 @@
                 "experiments/train_phase1_TPU_fsdp.py",
                 "src/beb_la_dii/utils/loss.py"
             ]
+        },
+        "decisions/015_centered_cosine_similarity.md": {
+            "description": "ADR: Внедрение центрированного косинусного сходства (Pearson Correlation) для устранения Rank-1 коллапса в слое 40.",
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                "experiments/train_phase1_TPU_fsdp.py",
+                "src/beb_la_dii/utils/loss.py"
+            ]
         }
     },
     "knowledge_system": {

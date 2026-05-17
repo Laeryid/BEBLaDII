@@ -21,8 +21,6 @@
 2. **Density**: Достаточно ли деталей в KI относительно объема кода (цель > 50 B/KB).
 3. **Freshness**: Соответствует ли содержимое KI текущему состоянию кода.
 
+
 ## Related KIs
-- [Knowledge Infrastructure](KI_knowledge_infrastructure.md)
-- [Knowledge Workflows](KI_knowledge_workflows.md)
-- [Knowledge Testing](KI_knowledge_testing.md)
-- [Architectural Decisions](KI_architectural_decisions.md)
+

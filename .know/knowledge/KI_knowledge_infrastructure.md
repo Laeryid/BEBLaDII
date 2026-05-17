@@ -30,6 +30,6 @@
 ## Common Pitfalls
 - **Mtime Desync**: Некоторые редакторы не обновляют время модификации файла при сохранении идентичного контента, что может обмануть оптимизацию движка. Используйте `save_state` принудительно.
 
+
 ## Related KIs
-- [Knowledge Management](KI_knowledge_management.md)
-- [Knowledge Testing](KI_knowledge_testing.md)
+

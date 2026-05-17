@@ -22,6 +22,7 @@
 | `download_teacher.py` | Загрузка учителя. | Скачивание Qwen-7B и его токенизатора. |
 
 
+
 ## Related KIs
 
 ## Non-obvious Details

@@ -50,3 +50,6 @@ component = MyComponent.from_scratch(
 - **Weights Path Mismatch**: `build_weights_map()` выводит статус `[found]`/`[random init]` для каждого компонента — проверяй логи перед запуском обучения.
 - **Smart Loading**: В Kaggle-скриптах используется `smart_load_weights`, которая автоматически сопоставляет ключи вне зависимости от глубины вложенности (например, корректно обрабатывает `student.model.layers` vs `student.model.model.layers`).
 - **Gradient Checkpointing**: В `create_latentbert` принудительно включается Checkpointing через `base_model.gradient_checkpointing_enable()`. Если его отключить при 40 слоях, возникнет `OutOfMemory` на GPU с <24GB VRAM.
+
+## Related KIs
+
