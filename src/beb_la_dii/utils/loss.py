@@ -47,9 +47,9 @@ class DistillationLoss(nn.Module):
                 s_h = student_hidden_states[layer_idx].float()
                 t_h = teacher_hidden_states[layer_idx].float()
 
-                # 1. Cosine Similarity Loss
-                if layer_idx == 40 and attention_mask is not None:
-                    # Центрированный косинус (Pearson Correlation) для l40
+                # 1. Cosine Similarity Loss (Centered for ALL layers if masked)
+                if attention_mask is not None:
+                    # Центрированный косинус (Pearson Correlation) для всех слоев
                     # Это заставляет студента учить структуру, а не просто средний вектор
                     m = attention_mask.unsqueeze(-1).float()
                     n = m.sum(dim=1, keepdim=True).clamp(min=1e-6)
@@ -64,22 +64,11 @@ class DistillationLoss(nn.Module):
                     cos_l = 1.0 - (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
                 else:
                     cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
-                    if attention_mask is not None:
-                        cos_l = 1.0 - (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
-                    else:
-                        cos_l = 1.0 - cos_sim.mean()
+                    cos_l = 1.0 - cos_sim.mean()
 
-                # 2. MSE Loss (для l40 не считаем — там no-bias проектор, важна только семантика)
-                if layer_idx == 40:
-                    mse_l = torch.tensor(0.0, device=s_h.device)
-                    layer_l = self.cos_weight * cos_l
-                else:
-                    if attention_mask is not None:
-                        diff = (s_h - t_h) ** 2
-                        mse_l = (diff * mask).sum() / (num_active_elements * s_h.size(-1) + 1e-6)
-                    else:
-                        mse_l = self.mse(s_h, t_h)
-                    layer_l = self.mse_weight * mse_l + self.cos_weight * cos_l
+                # 2. MSE Loss (отключен для всех слоев, оставляем 0.0 для обратной совместимости метрик)
+                mse_l = torch.tensor(0.0, device=s_h.device)
+                layer_l = self.cos_weight * cos_l
 
                 mse_total += weight * mse_l
                 cos_total += weight * cos_l
@@ -191,19 +180,16 @@ class DistillationLoss(nn.Module):
             ds = pool(student_states_k1[layer_idx], m_k1, n_k1) - pool(student_states_k[layer_idx], m_k, n_k)
             dt = pool(teacher_states_k1[layer_idx], m_k1, n_k1) - pool(teacher_states_k[layer_idx], m_k, n_k)
 
-            if layer_idx == 40:
-                # Используем косинусное сходство для L40 (согласно ADR-012)
-                # Это отвязывает дельту от масштаба учителя и фокусируется на направлении.
-                cos_sim = F.cosine_similarity(ds, dt.detach(), dim=-1, eps=1e-6)
-                
-                # Добавляем штраф за коллапс магнитуды дельты (ADR-013)
-                s_mag = ds.norm(dim=-1)
-                t_mag = dt.norm(dim=-1).detach()
-                mag_loss = F.mse_loss(s_mag, t_mag)
-                
-                layer_delta_loss = 1.0 - cos_sim.mean() + 0.1 * mag_loss
-            else:
-                layer_delta_loss = F.mse_loss(ds, dt.detach())
+            # Используем косинусное сходство для всех слоев
+            # Это отвязывает дельту от масштаба учителя и фокусируется на направлении.
+            cos_sim = F.cosine_similarity(ds, dt.detach(), dim=-1, eps=1e-6)
+            
+            # Добавляем штраф за коллапс магнитуды дельты (ADR-014)
+            s_mag = ds.norm(dim=-1)
+            t_mag = dt.norm(dim=-1).detach()
+            mag_loss = F.mse_loss(s_mag, t_mag)
+            
+            layer_delta_loss = 1.0 - cos_sim.mean() + 0.1 * mag_loss
 
             loss = loss + weight * layer_delta_loss
 
