@@ -167,3 +167,10 @@ tail -f training.log
 `python scripts/verify_new_tpu.py`
 
 Если JAX видит 4 устройства, а PyTorch проходит тест умножения матриц — сервер готов.
+
+
+## 10. Убить предыдущие процессы Training Phase 1
+
+```bash
+pkill -9 -f train_phase1_TPU_fsdp.py
+```
