@@ -20,6 +20,7 @@
 | `test_sync_and_add_ki.py` | Тест управления. | Валидация процессов добавления новых KI и синхронизации с `doc_config.json`. |
 
 
+
 ## Related KIs
 
 ## Non-obvious Details

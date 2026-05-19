@@ -331,6 +331,15 @@
                 "experiments/train_phase1_TPU_fsdp.py",
                 "src/beb_la_dii/utils/loss.py"
             ]
+        },
+        "decisions/016_decoupling_absolute_space.md": {
+            "description": "ADR: Полный отказ от MSE на промежуточных слоях в пользу Centered Cosine для всей цепочки latentBERT.",
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py"
+            ]
         }
     },
     "knowledge_system": {

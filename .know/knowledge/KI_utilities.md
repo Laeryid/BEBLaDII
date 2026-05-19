@@ -30,6 +30,7 @@
 - **Loss Explosion**: Ошибка при несовпадении размерностей `hidden_states` учителя и ученика.
 - **PermissionError (Windows)**: Возникает при работе с `history.jsonl` или при попытке создать симлинки во время скачивания датасетов.
 
+
 ## Related KIs
 - [[KI_model_core.md]] (via `src/beb_la_dii/model/component_registry.py`)
 
