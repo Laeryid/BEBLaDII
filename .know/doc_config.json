@@ -341,6 +341,16 @@
             "depends_on": [
                 "src/beb_la_dii/utils/loss.py"
             ]
+        },
+        "decisions/017_new_loss_terms_and_metrics.md": {
+            "description": "ADR: Внедрение новых слагаемых потерь (RKD и Norm Correlation) для топологического выравнивания латентных пространств.",
+            "covers": [
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py",
+                "tests/test_loss.py"
+            ]
         }
     },
     "knowledge_system": {
