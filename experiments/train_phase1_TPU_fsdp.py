@@ -151,9 +151,28 @@ def train():
     xs.set_global_mesh(mesh)
     
     # Загрузка последнего чекпоинта (если есть) ДО обертки FSDP
-    for name, param in distiller.named_parameters():
-        if "teacher" in name:
-            param.requires_grad = False
+    # 1. Замораживаем учителя полностью
+    for param in distiller.teacher.parameters():
+        param.requires_grad = False
+    distiller.teacher.eval()
+
+    # 2. Размораживаем студента полностью
+    for param in distiller.student.parameters():
+        param.requires_grad = True
+
+    # 3. Размораживаем FeatureProjectors полностью (включая скейлы)
+    for param in distiller.feature_projectors.parameters():
+        param.requires_grad = True
+
+    # 4. Размораживаем InputProjector полностью
+    for param in distiller.input_projector.parameters():
+        param.requires_grad = True
+
+    if rank == 0:
+        trainable_params = sum(p.numel() for p in distiller.parameters() if p.requires_grad)
+        frozen_params = sum(p.numel() for p in distiller.parameters() if not p.requires_grad)
+        print(f"--- [INIT] Trainable parameters: {trainable_params:,} ---")
+        print(f"--- [INIT] Frozen parameters: {frozen_params:,} ---")
 
     def load_awakening_weights(model, sd, rank=0):
         """
@@ -268,10 +287,10 @@ def train():
         if rank == 0: 
             print(f"--- [RESUME] Веса загружены из {ckpt_path} ---")
 
-    # Оборачиваем модель в SpmdFullyShardedDataParallel
+    # Оборачиваем в FSDP только тяжелые слои ModernBERT
     def auto_wrap_policy(module, recurse, unwrapped_params, **kwargs):
         cls_name = module.__class__.__name__
-        return any(name in cls_name for name in ["ModernBertLayer", "ModernBertBlock", "FeatureProjector", "InputProjector"])
+        return any(name in cls_name for name in ["ModernBertLayer", "ModernBertBlock"])
 
     distiller = FSDP(
         distiller,
@@ -536,6 +555,7 @@ def train():
                     distiller.eval()
                     val_loss_sum, val_steps = 0.0, 0
                     val_metrics_sums = {}
+                    val_heavy_metrics = {}
                     max_val_steps = 50 
                     
                     with torch.no_grad():
@@ -568,15 +588,20 @@ def train():
                                 # Переносим на CPU для стабильности SVD и Recall
                                 if rank == 0: print("    -> Transferring to CPU...")
                                 v_actual_mask_cpu = v_actual_mask.detach().cpu().bool()
-                                # Применяем маску, получая плоский тензор активных токенов (N, D)
-                                l40_student_cpu = v_st[40].detach().cpu()[v_actual_mask_cpu]
+                                
+                                # BERT-пространство студента (1024d)
+                                l40_raw_cpu = v_raw[40].detach().cpu()[v_actual_mask_cpu]
+                                # Проектированное пространство студента (3584d, Qwen)
+                                l40_projected_cpu = v_st[40].detach().cpu()[v_actual_mask_cpu]
+                                # Пространство учителя (3584d, Qwen)
                                 l40_teacher_cpu = v_tgt[40].detach().cpu()[v_actual_mask_cpu]
                                 
                                 if rank == 0: print("    -> Calculating isotropy (SVD)...")
-                                val_metrics_sums["l40_isotropy"] = calculate_isotropy(l40_student_cpu)
+                                val_heavy_metrics["l40_isotropy"] = calculate_isotropy(l40_raw_cpu)
+                                val_heavy_metrics["l40_projected_isotropy"] = calculate_isotropy(l40_projected_cpu)
                                 
                                 if rank == 0: print("    -> Calculating neighbor recall...")
-                                val_metrics_sums["l40_neighbor_recall"] = calculate_neighbor_recall(l40_student_cpu, l40_teacher_cpu)
+                                val_heavy_metrics["l40_neighbor_recall"] = calculate_neighbor_recall(l40_raw_cpu, l40_teacher_cpu)
                                 
                                 if rank == 0: print("    -> Calculating noise sensitivity...")
                                 def compute_noise_sensitivity(latent, sigmas=(0.1, 0.3, 0.5, 1.0)):
@@ -588,14 +613,14 @@ def train():
                                         results[f"l40_ns_sigma_{str(sigma).replace('.','_')}"] = (1 - cos).mean().item()
                                     return results
                                 
-                                val_metrics_sums.update(compute_noise_sensitivity(l40_student_cpu))
+                                val_heavy_metrics.update(compute_noise_sensitivity(l40_raw_cpu))
 
-                                # Метрика дрейфа (для нового проектора)
+                                # Метрика дрейфа (для нового проектора) в BERT-пространстве
                                 # Так как тензор теперь (N, D), считаем mean и var по нулевому измерению
-                                mu_l40 = l40_student_cpu.mean(dim=0)
-                                var_l40 = l40_student_cpu.var(dim=0, unbiased=False)
-                                val_metrics_sums["l40_mu_drift"] = mu_l40.pow(2).mean().item()
-                                val_metrics_sums["l40_var_drift"] = (var_l40 - 1.0).pow(2).mean().item()
+                                mu_l40 = l40_raw_cpu.mean(dim=0)
+                                var_l40 = l40_raw_cpu.var(dim=0, unbiased=False)
+                                val_heavy_metrics["l40_mu_drift"] = mu_l40.pow(2).mean().item()
+                                val_heavy_metrics["l40_var_drift"] = (var_l40 - 1.0).pow(2).mean().item()
                                 if rank == 0: print("--- [VAL] Heavy metrics done. ---")
 
                             val_steps += 1
@@ -606,6 +631,8 @@ def train():
                         val_log = {"val/loss": avg_val_loss, "global_step": current_optim_step}
                         for k, v_sum in val_metrics_sums.items():
                             val_log[f"val/{k}"] = v_sum / val_steps
+                        for k, val in val_heavy_metrics.items():
+                            val_log[f"val/{k}"] = val
                         import wandb
                         wandb.log(val_log, step=current_optim_step)
                         print(f"--- [VAL] Step {current_optim_step}: Loss {avg_val_loss:.4f} ---")

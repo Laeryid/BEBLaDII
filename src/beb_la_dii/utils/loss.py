@@ -13,11 +13,15 @@ class DistillationLoss(nn.Module):
     - L_kl: KL-дивергенция для InputProjector (VAE) с учетом attention_mask.
     - compute_delta_loss: L_delta для обучения на семантических градиентах между масками.
     """
-    def __init__(self, layer_weights={20: 0.5, 30: 0.7, 40: 1.0}, mse_weight=1.0, cos_weight=1.0):
+    def __init__(self, layer_weights={20: 0.5, 30: 0.7, 40: 1.0}, mse_weight=1.0, cos_weight=1.0,
+                 lambda_scale=0.1, lambda_rkd=0.01, lambda_norm=0.05):
         super().__init__()
         self.layer_weights = layer_weights
         self.mse_weight = mse_weight
         self.cos_weight = cos_weight
+        self.lambda_scale = lambda_scale
+        self.lambda_rkd = lambda_rkd
+        self.lambda_norm = lambda_norm
         self.mse = nn.MSELoss()
 
     def forward(self, student_hidden_states, teacher_hidden_states, attention_mask=None,
@@ -32,6 +36,9 @@ class DistillationLoss(nn.Module):
         total_loss = 0.0
         mse_total = 0.0
         cos_total = 0.0
+        scale_total = 0.0
+        rkd_total = 0.0
+        norm_total = 0.0
         metrics = {}
 
         # Подготовка маски
@@ -68,12 +75,86 @@ class DistillationLoss(nn.Module):
 
                 # 2. MSE Loss (отключен для всех слоев, оставляем 0.0 для обратной совместимости метрик)
                 mse_l = torch.tensor(0.0, device=s_h.device)
-                layer_l = self.cos_weight * cos_l
+                
+                # 3. Scale Alignment Loss
+                if attention_mask is not None:
+                    m_scale = attention_mask.unsqueeze(-1).float()
+                    n_scale = m_scale.sum(dim=1, keepdim=True).clamp(min=2.0)
+                    
+                    s_mean_scale = (s_h * m_scale).sum(dim=1, keepdim=True) / n_scale
+                    s_centered_scale = (s_h - s_mean_scale) * m_scale
+                    s_var_scale = (s_centered_scale ** 2).sum(dim=1, keepdim=True) / (n_scale - 1).clamp(min=1.0)
+                    s_std = torch.sqrt(s_var_scale + 1e-8)
+                    
+                    t_mean_scale = (t_h * m_scale).sum(dim=1, keepdim=True) / n_scale
+                    t_centered_scale = (t_h - t_mean_scale) * m_scale
+                    t_var_scale = (t_centered_scale ** 2).sum(dim=1, keepdim=True) / (n_scale - 1).clamp(min=1.0)
+                    t_std = torch.sqrt(t_var_scale + 1e-8)
+                else:
+                    s_std = s_h.std(dim=1, keepdim=True, unbiased=True)
+                    t_std = t_h.std(dim=1, keepdim=True, unbiased=True)
+                
+                scale_l = F.mse_loss(s_std, t_std.detach())
+
+                # 4. Relational Knowledge Distillation (RKD) - Pairwise Similarity Correlation
+                s_normed = s_h / s_h.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                t_normed = t_h / t_h.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                
+                # Попарные косинусные сходства токенов в последовательности: (B, T, T)
+                s_dist = torch.bmm(s_normed, s_normed.transpose(1, 2))
+                t_dist = torch.bmm(t_normed, t_normed.transpose(1, 2))
+                
+                if attention_mask is not None:
+                    mask_2d = attention_mask.unsqueeze(1) * attention_mask.unsqueeze(2)  # (B, T, T)
+                    diff = (s_dist - t_dist.detach()) * mask_2d
+                    rkd_l = (diff ** 2).sum() / (mask_2d.sum() + 1e-6)
+                else:
+                    diff = s_dist - t_dist.detach()
+                    rkd_l = (diff ** 2).mean()
+
+                # 5. Norm Correlation Loss (Pearson Correlation of token norms)
+                s_norms = s_h.norm(dim=-1)  # (B, T)
+                t_norms = t_h.norm(dim=-1)  # (B, T)
+                
+                if attention_mask is not None:
+                    n_norm = attention_mask.sum(dim=1, keepdim=True).clamp(min=1e-6)
+                    s_norms_mean = (s_norms * attention_mask).sum(dim=1, keepdim=True) / n_norm
+                    t_norms_mean = (t_norms * attention_mask).sum(dim=1, keepdim=True) / n_norm
+                    
+                    s_norms_centered = (s_norms - s_norms_mean) * attention_mask
+                    t_norms_centered = (t_norms - t_norms_mean) * attention_mask
+                    
+                    norm_cos = F.cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
+                    active_seq_mask = (attention_mask.sum(dim=1) > 0).float()
+                    norm_l = 1.0 - (norm_cos * active_seq_mask).sum() / (active_seq_mask.sum() + 1e-6)
+                else:
+                    s_norms_mean = s_norms.mean(dim=1, keepdim=True)
+                    t_norms_mean = t_norms.mean(dim=1, keepdim=True)
+                    
+                    s_norms_centered = s_norms - s_norms_mean
+                    t_norms_centered = t_norms - t_norms_mean
+                    
+                    norm_cos = F.cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
+                    norm_l = 1.0 - norm_cos.mean()
+
+                layer_l = (
+                    self.cos_weight * cos_l +
+                    self.lambda_scale * scale_l +
+                    self.lambda_rkd * rkd_l +
+                    self.lambda_norm * norm_l
+                )
 
                 mse_total += weight * mse_l
                 cos_total += weight * cos_l
+                scale_total += weight * scale_l
+                rkd_total += weight * rkd_l
+                norm_total += weight * norm_l
+                
                 metrics[f"l{layer_idx}_mse"] = mse_l.detach()
                 metrics[f"l{layer_idx}_cos"] = cos_l.detach()
+                metrics[f"l{layer_idx}_scale_align"] = scale_l.detach()
+                metrics[f"l{layer_idx}_rkd"] = rkd_l.detach()
+                metrics[f"l{layer_idx}_norm_corr"] = norm_l.detach()
                 total_loss += weight * layer_l
 
         # 3. Prior Loss — только по активным токенам (attention_mask учитывается)
@@ -121,6 +202,9 @@ class DistillationLoss(nn.Module):
 
         metrics["mse"] = mse_total.detach() if torch.is_tensor(mse_total) else mse_total
         metrics["cosine"] = cos_total.detach() if torch.is_tensor(cos_total) else cos_total
+        metrics["scale_align"] = scale_total.detach() if torch.is_tensor(scale_total) else scale_total
+        metrics["rkd"] = rkd_total.detach() if torch.is_tensor(rkd_total) else rkd_total
+        metrics["norm_corr"] = norm_total.detach() if torch.is_tensor(norm_total) else norm_total
 
         # 4. KL-Divergence для InputProjector — зануляем padding перед вычислением
         if mu is not None and logvar is not None:
@@ -213,12 +297,15 @@ if __name__ == "__main__":
 
     loss, metrics = criterion(s_states, t_states, attention_mask=amask, raw_student_states=raw_s)
     print(f"L_state: {loss.item():.6f}  |  l40_prior: {metrics.get('l40_prior', 'N/A')}")
+    print(f"Metrics details: rkd={metrics.get('rkd', 'N/A'):.6f}, norm_corr={metrics.get('norm_corr', 'N/A'):.6f}")
+    for l in [20, 30, 40]:
+        print(f"  Layer {l} | rkd: {metrics.get(f'l{l}_rkd', 'N/A'):.6f} | norm_corr: {metrics.get(f'l{l}_norm_corr', 'N/A'):.6f}")
 
     # --- Тест compute_delta_loss ---
     T2 = T * 2
-    sk  = {l: torch.randn(B, T,  D) for l in [20, 30, 40]}
-    sk1 = {l: torch.randn(B, T, D) for l in [20, 30, 40]}
-    tk  = {l: torch.randn(B, T,  D) for l in [20, 30, 40]}
+    sk  = {l: torch.randn(B, T, D, requires_grad=True) for l in [20, 30, 40]}
+    sk1 = {l: torch.randn(B, T, D, requires_grad=True) for l in [20, 30, 40]}
+    tk  = {l: torch.randn(B, T, D) for l in [20, 30, 40]}
     tk1 = {l: torch.randn(B, T, D) for l in [20, 30, 40]}
     mask_k = torch.ones(B, T)
     mask_k1 = torch.ones(B, T)
@@ -226,4 +313,4 @@ if __name__ == "__main__":
     delta_loss, delta_metrics = criterion.compute_delta_loss(sk, sk1, tk, tk1, mask_k, mask_k1)
     print(f"L_delta: {delta_loss.item():.6f}  |  metrics: {delta_metrics}")
     assert delta_loss.requires_grad, "L_delta не имеет градиента!"
-    print("Все тесты пройдены ✓")
+    print("All tests passed!")
