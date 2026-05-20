@@ -130,6 +130,7 @@
                 "tests/test_dus_stability.py",
                 "tests/test_inference.py",
                 "tests/test_infrastructure.py",
+                "tests/test_loss.py",
                 "tests/test_vae_components.py"
             ]
         },

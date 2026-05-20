@@ -11,7 +11,8 @@
 | **DUS Stability** | [test_dus_stability.py](file:///c:/Experiments/BEBLaDII/tests/test_dus_stability.py) | Тестирование логики расширения слоев (Depth Up-Scaling). Проверка корректности итогового количества слоев в `ModernBERT`. |
 | **Projector & Wrapper Tests** | [test_constructor_logic.py](file:///c:/Experiments/BEBLaDII/tests/test_constructor_logic.py) | Проверка размерностей тензоров в `InputProjector`/`FeatureProjector` и инициализации `DUSModel`. |
 | **Inference Smoke Test** | [test_inference.py](file:///c:/Experiments/BEBLaDII/tests/test_inference.py) | Сквозная проверка (Smoke Test) процесса инференса через `MockDistiller`. Верификация 1024-мерных тензоров. |
-| **VAE & Loss Logic** | [test_vae_components.py](file:///c:/Experiments/BEBLaDII/tests/test_vae_components.py) | Верификация стохастической логики `InputProjector` (VAE) и математической корректности `DistillationLoss` (KL-дивергенция, маскирование внимание). |
+| **VAE & Loss Logic** | [test_vae_components.py](file:///c:/Experiments/BEBLaDII/tests/test_vae_components.py) | Верификация стохастической логики `InputProjector` (VAE) и математической корректности `DistillationLoss` (KL-дивергенция, маскирование внимания). |
+| **Relational & Norm Loss** | [test_loss.py](file:///c:/Experiments/BEBLaDII/tests/test_loss.py) | Проверка RKD (Relational Knowledge Distillation) и Norm Correlation лоссов. Проверка изоляции градиентов и маскирования паддинга. |
 | **temp_storage** (fixture) | [test_infrastructure.py](file:///c:/Experiments/BEBLaDII/tests/test_infrastructure.py) | Изолированная временная директория для тестов реестра и экспериментов. Очищается автоматически после завершения тестов. |
 
 ## Неочевидные детали
