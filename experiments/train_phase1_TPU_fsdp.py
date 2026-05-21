@@ -311,7 +311,7 @@ def train():
     )
     # T_0=2000, eta_min=1e-6 согласно плану
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=2000, T_mult=1, eta_min=1e-6)
-    criterion = DistillationLoss()
+    criterion = DistillationLoss(cos_weight=0.0)  # ADR-018: отказ от косинуса абсолютных векторов
 
     global_step = 0
     start_epoch = 0

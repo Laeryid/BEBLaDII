@@ -13,7 +13,7 @@ class DistillationLoss(nn.Module):
     - L_kl: KL-дивергенция для InputProjector (VAE) с учетом attention_mask.
     - compute_delta_loss: L_delta для обучения на семантических градиентах между масками.
     """
-    def __init__(self, layer_weights={20: 0.5, 30: 0.7, 40: 1.0}, mse_weight=1.0, cos_weight=1.0,
+    def __init__(self, layer_weights={20: 0.5, 30: 0.7, 40: 1.0}, mse_weight=1.0, cos_weight=0.0,  # ADR-018: cos отключён
                  lambda_scale=0.1, lambda_rkd=0.01, lambda_norm=0.05):
         super().__init__()
         self.layer_weights = layer_weights
