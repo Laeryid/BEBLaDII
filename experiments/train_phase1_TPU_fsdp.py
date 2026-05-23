@@ -662,7 +662,7 @@ def train():
                     # Мониторинг скейлов: output_scale и residual_scale
                     for name, param in distiller.named_parameters():
                         if "output_scale" in name or "residual_scale" in name:
-                            for proj_key in ["20", "30", "40"]:
+                            for proj_key in ["40"]:
                                 if f".{proj_key}." in name or f"_{proj_key}." in name:
                                     s_type = "out" if "output_scale" in name else "res"
                                     log_dict[f"train/scale_{s_type}_l{proj_key}"] = param.detach().float().mean().item()

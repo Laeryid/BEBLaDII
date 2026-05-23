@@ -66,17 +66,9 @@ class ModelAssembler:
             weights_path=weights_map.get("qwen_to_bert_input"),
         )
 
-        # 3. FeatureProjectors x3
+        # 3. FeatureProjectors x1 (только для 40 слоя как Distillation Projector)
         print("[3/3] Building FeatureProjectors...")
         feature_projectors = nn.ModuleDict({
-            "20": FeatureProjector.from_scratch(
-                component_id="feat_proj_20", version=version,
-                weights_path=weights_map.get("feat_proj_20"),
-            ),
-            "30": FeatureProjector.from_scratch(
-                component_id="feat_proj_30", version=version,
-                weights_path=weights_map.get("feat_proj_30"),
-            ),
             "40": FeatureProjector.from_scratch(
                 component_id="feat_proj_40", version=version,
                 weights_path=weights_map.get("feat_proj_40"),

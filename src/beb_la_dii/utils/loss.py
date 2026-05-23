@@ -13,7 +13,7 @@ class DistillationLoss(nn.Module):
     - L_kl: KL-дивергенция для InputProjector (VAE) с учетом attention_mask.
     - compute_delta_loss: L_delta для обучения на семантических градиентах между масками.
     """
-    def __init__(self, layer_weights={20: 0.5, 30: 0.7, 40: 1.0}, mse_weight=1.0, cos_weight=0.0,  # ADR-018: cos отключён
+    def __init__(self, layer_weights={40: 1.0}, mse_weight=1.0, cos_weight=0.0,  # ADR-018: cos отключён
                  lambda_scale=0.1, lambda_rkd=0.01, lambda_norm=0.05):
         super().__init__()
         self.layer_weights = layer_weights
@@ -157,48 +157,51 @@ class DistillationLoss(nn.Module):
                 metrics[f"l{layer_idx}_norm_corr"] = norm_l.detach()
                 total_loss += weight * layer_l
 
-        # 3. Prior Loss — только по активным токенам (attention_mask учитывается)
-        if raw_student_states is not None and 40 in raw_student_states:
-            raw_40 = raw_student_states[40].float()
-            # raw_40: (B, T, D)
-            B, T, D = raw_40.shape
-            
-            if attention_mask is not None:
-                mask_flat = attention_mask.view(-1, 1).float() # (B*T, 1)
-                raw_flat = raw_40.view(-1, D) # (B*T, D)
+        # 3. Prior Loss & Isotropy Regularization (на сырых BERT-векторах)
+        if raw_student_states is not None:
+            for layer_idx, raw_states in raw_student_states.items():
+                raw_states = raw_states.float()
+                B, T, D = raw_states.shape
                 
-                N = mask_flat.sum().clamp(min=1.0)
-                
-                # Mean
-                m_40 = (raw_flat * mask_flat).sum(dim=0) / N # (D,)
-                
-                # Centered
-                z = raw_flat - m_40.unsqueeze(0) # (B*T, D)
-                z_masked = z * mask_flat # Zero out padding tokens
-                
-                # Variance
-                v_40 = (z_masked ** 2).sum(dim=0) / N.clamp(min=2.0) # (D,)
-                
-                # Covariance matrix (D, D) - VICReg style for isotropy
-                # z_masked.T is (D, B*T), z_masked is (B*T, D)
-                cov = (z_masked.T @ z_masked) / N.clamp(min=2.0)
-            else:
-                m_40 = raw_40.mean(dim=(0, 1))
-                v_40 = raw_40.var(dim=(0, 1), unbiased=False)
-                z = raw_40 - m_40.view(1, 1, -1)
-                z_flat = z.view(-1, D)
-                cov = (z_flat.T @ z_flat) / (z_flat.size(0) - 1)
+                if attention_mask is not None:
+                    mask_flat = attention_mask.view(-1, 1).float() # (B*T, 1)
+                    raw_flat = raw_states.view(-1, D) # (B*T, D)
+                    
+                    N = mask_flat.sum().clamp(min=1.0)
+                    
+                    # Mean
+                    m_state = (raw_flat * mask_flat).sum(dim=0) / N # (D,)
+                    
+                    # Centered
+                    z = raw_flat - m_state.unsqueeze(0) # (B*T, D)
+                    z_masked = z * mask_flat # Zero out padding tokens
+                    
+                    # Variance
+                    v_state = (z_masked ** 2).sum(dim=0) / N.clamp(min=2.0) # (D,)
+                    
+                    # Covariance matrix (D, D) - VICReg style for isotropy
+                    cov = (z_masked.T @ z_masked) / N.clamp(min=2.0)
+                else:
+                    m_state = raw_states.mean(dim=(0, 1))
+                    v_state = raw_states.var(dim=(0, 1), unbiased=False)
+                    z = raw_states - m_state.view(1, 1, -1)
+                    z_flat = z.view(-1, D)
+                    cov = (z_flat.T @ z_flat) / (z_flat.size(0) - 1)
 
-            # Off-diagonal elements of covariance matrix
-            cov_off_diag = cov - torch.diag(torch.diag(cov))
-            # Штраф за корреляцию (изотропия). Масштабируем по D.
-            cov_loss = cov_off_diag.pow(2).sum() / D
+                # Off-diagonal elements of covariance matrix
+                cov_off_diag = cov - torch.diag(torch.diag(cov))
+                # Штраф за корреляцию (изотропия). Масштабируем по D.
+                cov_loss = cov_off_diag.pow(2).sum() / D
+                metrics[f"l{layer_idx}_cov_loss"] = cov_loss.detach()
 
-            # Целевое распределение: mean=0, var=1 + Covariance penalty
-            prior_loss = m_40.pow(2).mean() + (v_40 - 1.0).pow(2).mean() + 0.1 * cov_loss
-            total_loss += lambda_prior * prior_loss
-            metrics["l40_prior"] = prior_loss.detach()
-            metrics["l40_cov_loss"] = cov_loss.detach()
+                if layer_idx == 40:
+                    # Целевое распределение: mean=0, var=1 + Covariance penalty
+                    prior_loss = m_state.pow(2).mean() + (v_state - 1.0).pow(2).mean() + 0.1 * cov_loss
+                    total_loss += lambda_prior * prior_loss
+                    metrics[f"l{layer_idx}_prior"] = prior_loss.detach()
+                else:
+                    # Регуляризация внутренних слоев: только изотропия, вес ниже
+                    total_loss += 0.02 * cov_loss
 
         metrics["mse"] = mse_total.detach() if torch.is_tensor(mse_total) else mse_total
         metrics["cosine"] = cos_total.detach() if torch.is_tensor(cos_total) else cos_total
