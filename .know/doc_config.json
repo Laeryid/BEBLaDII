@@ -351,6 +351,17 @@
                 "src/beb_la_dii/utils/loss.py",
                 "tests/test_loss.py"
             ]
+        },
+        "decisions/019_decoupling_intermediate_layers.md": {
+            "description": "ADR: Полный отказ от привязки промежуточных слоев DUS (l20, l30) к учителю. Удаление feat_proj_20/30, саморегуляризация через cov_loss на сырых BERT-векторах.",
+            "covers": [
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/model/distiller.py",
+                "src/beb_la_dii/model/assembler.py",
+                "src/beb_la_dii/utils/loss.py"
+            ]
         }
     },
     "knowledge_system": {
