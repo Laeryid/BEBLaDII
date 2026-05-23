@@ -173,12 +173,12 @@ class ReasoningDistiller(nn.Module):
         
         # 1. Сбор сырых состояний для изотропизации
         for idx in getattr(self, "regularized_layers", [20, 30, 40]):
-            if idx in student_outputs.hidden_states:
+            if idx < len(student_outputs.hidden_states):
                 raw_student_states[idx] = student_outputs.hidden_states[idx]
                 
         # 2. Проекция для дистилляции (только слой 40)
         for idx, t_idx in self.layer_mapping.items():
-            if idx in student_outputs.hidden_states:
+            if idx < len(student_outputs.hidden_states):
                 h_state = student_outputs.hidden_states[idx]
                 proj = self.feature_projectors[str(idx)](h_state)
                 # self._check_nan(proj, f"FeatureProjector {idx} Output")
