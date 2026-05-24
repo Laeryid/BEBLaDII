@@ -41,10 +41,9 @@ def setup_wandb(rank, run_id=None):
         return wandb
     return None
 
-def calculate_isotropy(x):
+def calculate_isotropy_metrics(x, prefix=""):
     """
-    Вычисляет изотропию латентного пространства через сингулярные числа.
-    I(X) = [sum(sigma_i)]^2 / [d * sum(sigma_i^2)]
+    Вычисляет изотропию латентного пространства и долю первого сингулярного числа.
     """
     if x.ndim == 3: # (B, T, D) -> (B*T, D)
         x = x.reshape(-1, x.size(-1))
@@ -56,9 +55,10 @@ def calculate_isotropy(x):
         # SVD в bfloat16 может быть нестабилен, переходим в float32
         _, s, _ = torch.linalg.svd(x.float(), full_matrices=False)
         isotropy = (s.sum()**2) / (len(s) * (s**2).sum() + 1e-8)
-        return isotropy.item()
+        rank1 = (s[0]**2) / ((s**2).sum() + 1e-8)
+        return {f"{prefix}isotropy": isotropy.item(), f"{prefix}rank1_ratio": rank1.item()}
     except Exception:
-        return 0.0
+        return {f"{prefix}isotropy": 0.0, f"{prefix}rank1_ratio": 0.0}
 
 def calculate_neighbor_recall(student_h, teacher_h, k=5):
     """
@@ -597,8 +597,23 @@ def train():
                                 l40_teacher_cpu = v_tgt[40].detach().cpu()[v_actual_mask_cpu]
                                 
                                 if rank == 0: print("    -> Calculating isotropy (SVD)...")
-                                val_heavy_metrics["l40_isotropy"] = calculate_isotropy(l40_raw_cpu)
-                                val_heavy_metrics["l40_projected_isotropy"] = calculate_isotropy(l40_projected_cpu)
+                                val_heavy_metrics.update(calculate_isotropy_metrics(l40_raw_cpu, prefix="l40_"))
+                                val_heavy_metrics.update(calculate_isotropy_metrics(l40_projected_cpu, prefix="l40_projected_"))
+                                
+                                if 20 in v_raw:
+                                    l20_raw_cpu = v_raw[20].detach().cpu()[v_actual_mask_cpu]
+                                    val_heavy_metrics.update(calculate_isotropy_metrics(l20_raw_cpu, prefix="l20_"))
+                                    mu_l20 = l20_raw_cpu.mean(dim=0)
+                                    var_l20 = l20_raw_cpu.var(dim=0, unbiased=False)
+                                    val_heavy_metrics["l20_mu_drift"] = mu_l20.pow(2).mean().item()
+                                    val_heavy_metrics["l20_var_drift"] = (var_l20 - 1.0).pow(2).mean().item()
+                                if 30 in v_raw:
+                                    l30_raw_cpu = v_raw[30].detach().cpu()[v_actual_mask_cpu]
+                                    val_heavy_metrics.update(calculate_isotropy_metrics(l30_raw_cpu, prefix="l30_"))
+                                    mu_l30 = l30_raw_cpu.mean(dim=0)
+                                    var_l30 = l30_raw_cpu.var(dim=0, unbiased=False)
+                                    val_heavy_metrics["l30_mu_drift"] = mu_l30.pow(2).mean().item()
+                                    val_heavy_metrics["l30_var_drift"] = (var_l30 - 1.0).pow(2).mean().item()
                                 
                                 if rank == 0: print("    -> Calculating neighbor recall...")
                                 val_heavy_metrics["l40_neighbor_recall"] = calculate_neighbor_recall(l40_raw_cpu, l40_teacher_cpu)
