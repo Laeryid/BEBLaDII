@@ -18,13 +18,10 @@ May 2026 was largely spent destroying naive assumptions about hardware, metrics,
 
 ## Attempt 2: Loading and Launch Stabilization
 **Date:** 05.05.2026 (ADRs 006, 007)
-
 **Goal:** Stabilize the checkpoint loading process and multi-process launch (`torchrun`).
-
 **What went wrong:** 
 - Loading weights *after* the FSDP wrapper caused XLA to overwrite sharded parameters with CPU tensors, causing massive OOM. Kaggle checkpoints also had mismatched `_orig_module.` keys.
 - Multi-process PJRT initialization led to fatal `ABORTED` lockfile conflicts and `sflag` memory exhaustion due to the complex ModernBERT HLO graph.
-
 **Correction:** Keys were sanitized and weights strictly loaded *before* the FSDP wrapper. We forced `torchrun --nproc_per_node=4` with batch accumulation to reduce `sflag` load per process, alongside strict PJRT environment variables.
 
 ## Attempt 3: Single-Process Victory and Aggressive LR
