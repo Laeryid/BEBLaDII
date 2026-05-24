@@ -362,6 +362,16 @@
                 "src/beb_la_dii/model/assembler.py",
                 "src/beb_la_dii/utils/loss.py"
             ]
+        },
+        "decisions/021_semantic_metrics_and_denoising_strategy.md": {
+            "description": "ADR: Добавление метрик контроля (rank-1, mu/var drift) для свободных слоев и стратегия семантического зашумления с защитой от катастрофического забывания.",
+            "covers": [
+                "Architecture & Training Phases",
+                "Knowledge Infrastructure"
+            ],
+            "depends_on": [
+                "experiments/train_phase1_TPU_fsdp.py"
+            ]
         }
     },
     "knowledge_system": {
