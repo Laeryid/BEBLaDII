@@ -343,9 +343,9 @@ def train():
                 print("--- [INIT] Базовые веса загружены. Начинаем обучение с 0 шага. ---")
 
     # Данные
-    train_loader = get_dataloader(stage='reasoning', batch_size=2, max_length=4096, split='train', val_ratio=0.0)
-    val_loader = get_dataloader(stage='reasoning', batch_size=2, max_length=4096, split='val', val_ratio=0.0)
-    accumulation_steps = 8
+    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train', val_ratio=0.0)
+    val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='val', val_ratio=0.0)
+    accumulation_steps = 16
 
     if rank == 0:
         wandb_kwargs = {
