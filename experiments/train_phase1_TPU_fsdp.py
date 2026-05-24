@@ -17,7 +17,7 @@ def setup_env():
     os.environ["XLA_USE_BF16"] = "1"
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     # Для v6e-4 (4 TPU)
-    os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "2,2,2" 
+    os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "2,2,1" 
     os.environ["TPU_NUM_DEVICES"] = "4"
     os.environ["XLA_USE_SPMD"] = "1" # Явно включаем через переменную
 
@@ -343,9 +343,9 @@ def train():
                 print("--- [INIT] Базовые веса загружены. Начинаем обучение с 0 шага. ---")
 
     # Данные
-    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=2048, split='train', val_ratio=0.0)
-    val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=2048, split='val', val_ratio=0.0)
-    accumulation_steps = 16
+    train_loader = get_dataloader(stage='reasoning', batch_size=2, max_length=4096, split='train', val_ratio=0.0)
+    val_loader = get_dataloader(stage='reasoning', batch_size=2, max_length=4096, split='val', val_ratio=0.0)
+    accumulation_steps = 8
 
     if rank == 0:
         wandb_kwargs = {
