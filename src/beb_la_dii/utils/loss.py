@@ -200,8 +200,11 @@ class DistillationLoss(nn.Module):
                     total_loss += lambda_prior * prior_loss
                     metrics[f"l{layer_idx}_prior"] = prior_loss.detach()
                 else:
-                    # Регуляризация внутренних слоев: только изотропия, вес ниже
-                    total_loss += 0.02 * cov_loss
+                    # Регуляризация внутренних слоев: центрирование (mu -> 0) + усиленная изотропия
+                    # Мы умышленно не штрафуем дисперсию (v_state), чтобы дать слоям свободу масштаба
+                    intermediate_loss = m_state.pow(2).mean() + 0.1 * cov_loss
+                    total_loss += intermediate_loss
+                    metrics[f"l{layer_idx}_intermediate_reg"] = intermediate_loss.detach()
 
         metrics["mse"] = mse_total.detach() if torch.is_tensor(mse_total) else mse_total
         metrics["cosine"] = cos_total.detach() if torch.is_tensor(cos_total) else cos_total
