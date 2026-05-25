@@ -385,9 +385,10 @@ def train():
             import math
             rel_step = global_step % 2000
             BETA_MAX = 0.1
+            BETA_MIN = 0.02
             warmup_steps = 1000.0
             warmup_factor = min(1.0, global_step / warmup_steps)
-            current_beta = (BETA_MAX * (1 - math.cos(2 * math.pi * rel_step / 2000)) / 2) * warmup_factor
+            current_beta = max(BETA_MIN, (BETA_MAX * (1 - math.cos(2 * math.pi * rel_step / 2000)) / 2) * warmup_factor)
 
             # --- [Trajectory-Aware Distillation] ---
             # 1. Генерация 4 вариантов масок
@@ -441,7 +442,7 @@ def train():
                 l_state, m_state = criterion(
                     s_variants[idx], t_variants[idx], variants[idx]["attention_mask"],
                     mu=v_mu_p, logvar=v_logvar_p, beta=current_beta,
-                    raw_student_states=v_raw_p, lambda_prior=0.1
+                    raw_student_states=v_raw_p, lambda_prior=0.5
                 )
                 total_l_state += MASK_WEIGHTS[idx] * l_state
                 
@@ -486,13 +487,22 @@ def train():
                 xm.optimizer_step(optimizer, barrier=True)
                 scheduler.step()
                 
-                # Manual Warmup (up to 1000 global steps)
+                # Manual Warmup logic (Initial & Restart Warmups)
                 current_optim_step = global_step + 1
                 if current_optim_step <= warmup_steps:
+                    # 1. Начальный прогрев (до warmup_steps = 1000)
                     lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
-                    # Корректно устанавливаем LR относительно начального значения
                     for idx_p, param_group in enumerate(optimizer.param_groups):
                         param_group['lr'] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+                else:
+                    # 2. Прогрев при автоматических рестартах (каждые 2000 шагов)
+                    rel_step = current_optim_step % 2000
+                    restart_warmup_steps = 200
+                    if rel_step < restart_warmup_steps:
+                        lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
+                        for idx_p, param_group in enumerate(optimizer.param_groups):
+                            # Умножаем текущий LR, установленный планировщиком, на фактор прогрева
+                            param_group['lr'] = param_group['lr'] * lr_warmup_factor
                 
                 optimizer.zero_grad()
                 
