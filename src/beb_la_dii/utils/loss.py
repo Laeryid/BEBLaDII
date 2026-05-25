@@ -96,65 +96,18 @@ class DistillationLoss(nn.Module):
                 
                 scale_l = F.mse_loss(s_std, t_std.detach())
 
-                # 4. Relational Knowledge Distillation (RKD) - Pairwise Similarity Correlation
-                s_normed = s_h / s_h.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-                t_normed = t_h / t_h.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-                
-                # Попарные косинусные сходства токенов в последовательности: (B, T, T)
-                s_dist = torch.bmm(s_normed, s_normed.transpose(1, 2))
-                t_dist = torch.bmm(t_normed, t_normed.transpose(1, 2))
-                
-                if attention_mask is not None:
-                    mask_2d = attention_mask.unsqueeze(1) * attention_mask.unsqueeze(2)  # (B, T, T)
-                    diff = (s_dist - t_dist.detach()) * mask_2d
-                    rkd_l = (diff ** 2).sum() / (mask_2d.sum() + 1e-6)
-                else:
-                    diff = s_dist - t_dist.detach()
-                    rkd_l = (diff ** 2).mean()
-
-                # 5. Norm Correlation Loss (Pearson Correlation of token norms)
-                s_norms = s_h.norm(dim=-1)  # (B, T)
-                t_norms = t_h.norm(dim=-1)  # (B, T)
-                
-                if attention_mask is not None:
-                    n_norm = attention_mask.sum(dim=1, keepdim=True).clamp(min=1e-6)
-                    s_norms_mean = (s_norms * attention_mask).sum(dim=1, keepdim=True) / n_norm
-                    t_norms_mean = (t_norms * attention_mask).sum(dim=1, keepdim=True) / n_norm
-                    
-                    s_norms_centered = (s_norms - s_norms_mean) * attention_mask
-                    t_norms_centered = (t_norms - t_norms_mean) * attention_mask
-                    
-                    norm_cos = F.cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
-                    active_seq_mask = (attention_mask.sum(dim=1) > 0).float()
-                    norm_l = 1.0 - (norm_cos * active_seq_mask).sum() / (active_seq_mask.sum() + 1e-6)
-                else:
-                    s_norms_mean = s_norms.mean(dim=1, keepdim=True)
-                    t_norms_mean = t_norms.mean(dim=1, keepdim=True)
-                    
-                    s_norms_centered = s_norms - s_norms_mean
-                    t_norms_centered = t_norms - t_norms_mean
-                    
-                    norm_cos = F.cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
-                    norm_l = 1.0 - norm_cos.mean()
-
                 layer_l = (
                     self.cos_weight * cos_l +
-                    self.lambda_scale * scale_l +
-                    self.lambda_rkd * rkd_l +
-                    self.lambda_norm * norm_l
+                    self.lambda_scale * scale_l
                 )
 
                 mse_total += weight * mse_l
                 cos_total += weight * cos_l
                 scale_total += weight * scale_l
-                rkd_total += weight * rkd_l
-                norm_total += weight * norm_l
                 
                 metrics[f"l{layer_idx}_mse"] = mse_l.detach()
                 metrics[f"l{layer_idx}_cos"] = cos_l.detach()
                 metrics[f"l{layer_idx}_scale_align"] = scale_l.detach()
-                metrics[f"l{layer_idx}_rkd"] = rkd_l.detach()
-                metrics[f"l{layer_idx}_norm_corr"] = norm_l.detach()
                 total_loss += weight * layer_l
 
         # 3. Prior Loss & Isotropy Regularization (на сырых BERT-векторах)
@@ -199,12 +152,68 @@ class DistillationLoss(nn.Module):
                     prior_loss = m_state.pow(2).mean() + (v_state - 1.0).pow(2).mean() + 0.1 * cov_loss
                     total_loss += lambda_prior * prior_loss
                     metrics[f"l{layer_idx}_prior"] = prior_loss.detach()
+                    
+                    # Применяем RKD и Norm Correlation только к слою 40 (отвязанному от проектора)
+                    if 40 in teacher_hidden_states:
+                        t_h = teacher_hidden_states[40].float()
+                        s_h = raw_states
+                        
+                        # 4. Relational Knowledge Distillation (RKD) - Pairwise Similarity Correlation
+                        s_normed = s_h / s_h.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                        t_normed = t_h / t_h.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                        
+                        s_dist = torch.bmm(s_normed, s_normed.transpose(1, 2))
+                        t_dist = torch.bmm(t_normed, t_normed.transpose(1, 2))
+                        
+                        if attention_mask is not None:
+                            mask_2d = attention_mask.unsqueeze(1) * attention_mask.unsqueeze(2)  # (B, T, T)
+                            diff = (s_dist - t_dist.detach()) * mask_2d
+                            rkd_l = (diff ** 2).sum() / (mask_2d.sum() + 1e-6)
+                        else:
+                            diff = s_dist - t_dist.detach()
+                            rkd_l = (diff ** 2).mean()
+                            
+                        # 5. Norm Correlation Loss (Pearson Correlation of token norms)
+                        s_norms = s_h.norm(dim=-1)  # (B, T)
+                        t_norms = t_h.norm(dim=-1)  # (B, T)
+                        
+                        if attention_mask is not None:
+                            n_norm = attention_mask.sum(dim=1, keepdim=True).clamp(min=1e-6)
+                            s_norms_mean = (s_norms * attention_mask).sum(dim=1, keepdim=True) / n_norm
+                            t_norms_mean = (t_norms * attention_mask).sum(dim=1, keepdim=True) / n_norm
+                            
+                            s_norms_centered = (s_norms - s_norms_mean) * attention_mask
+                            t_norms_centered = (t_norms - t_norms_mean) * attention_mask
+                            
+                            norm_cos = F.cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
+                            active_seq_mask = (attention_mask.sum(dim=1) > 0).float()
+                            norm_l = 1.0 - (norm_cos * active_seq_mask).sum() / (active_seq_mask.sum() + 1e-6)
+                        else:
+                            s_norms_mean = s_norms.mean(dim=1, keepdim=True)
+                            t_norms_mean = t_norms.mean(dim=1, keepdim=True)
+                            
+                            s_norms_centered = s_norms - s_norms_mean
+                            t_norms_centered = t_norms - t_norms_mean
+                            
+                            norm_cos = F.cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
+                            norm_l = 1.0 - norm_cos.mean()
+                            
+                        rkd_total += self.layer_weights.get(40, 1.0) * rkd_l
+                        norm_total += self.layer_weights.get(40, 1.0) * norm_l
+                        
+                        total_loss += self.lambda_rkd * rkd_l + self.lambda_norm * norm_l
+                        
+                        metrics[f"l40_rkd_raw"] = rkd_l.detach()
+                        metrics[f"l40_norm_corr_raw"] = norm_l.detach()
+                        
                 else:
                     # Регуляризация внутренних слоев: центрирование (mu -> 0) + усиленная изотропия
-                    # Мы умышленно не штрафуем дисперсию (v_state), чтобы дать слоям свободу масштаба
-                    intermediate_loss = m_state.pow(2).mean() + 0.1 * cov_loss
+                    # Soft Variance Penalty для ограничения взрывного роста (свобода до 1.5)
+                    soft_var_penalty = F.relu(v_state - 1.5).pow(2).mean()
+                    intermediate_loss = m_state.pow(2).mean() + 0.1 * cov_loss + 0.1 * soft_var_penalty
                     total_loss += intermediate_loss
                     metrics[f"l{layer_idx}_intermediate_reg"] = intermediate_loss.detach()
+                    metrics[f"l{layer_idx}_soft_var_penalty"] = soft_var_penalty.detach()
 
         metrics["mse"] = mse_total.detach() if torch.is_tensor(mse_total) else mse_total
         metrics["cosine"] = cos_total.detach() if torch.is_tensor(cos_total) else cos_total
@@ -305,7 +314,11 @@ if __name__ == "__main__":
     print(f"L_state: {loss.item():.6f}  |  l40_prior: {metrics.get('l40_prior', 'N/A')}")
     print(f"Metrics details: rkd={metrics.get('rkd', 'N/A'):.6f}, norm_corr={metrics.get('norm_corr', 'N/A'):.6f}")
     for l in [20, 30, 40]:
-        print(f"  Layer {l} | rkd: {metrics.get(f'l{l}_rkd', 'N/A'):.6f} | norm_corr: {metrics.get(f'l{l}_norm_corr', 'N/A'):.6f}")
+        rkd_val = metrics.get(f'l40_rkd_raw' if l == 40 else f'l{l}_rkd', 'N/A')
+        norm_val = metrics.get(f'l40_norm_corr_raw' if l == 40 else f'l{l}_norm_corr', 'N/A')
+        rkd_str = f"{rkd_val:.6f}" if isinstance(rkd_val, float) or torch.is_tensor(rkd_val) else str(rkd_val)
+        norm_str = f"{norm_val:.6f}" if isinstance(norm_val, float) or torch.is_tensor(norm_val) else str(norm_val)
+        print(f"  Layer {l} | rkd: {rkd_str} | norm_corr: {norm_str}")
 
     # --- Тест compute_delta_loss ---
     T2 = T * 2

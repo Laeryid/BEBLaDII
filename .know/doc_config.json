@@ -381,6 +381,15 @@
             "depends_on": [
                 "src/beb_la_dii/utils/loss.py"
             ]
+        },
+        "decisions/023_layer40_raw_topology_and_variance.md": {
+            "description": "ADR: Формирование топологии сырого 40-го слоя (RKD, Norm Correlation) и введение мягкого штрафа дисперсии для промежуточных слоев.",
+            "covers": [
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py"
+            ]
         }
     },
     "knowledge_system": {
