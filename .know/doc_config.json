@@ -390,6 +390,21 @@
             "depends_on": [
                 "src/beb_la_dii/utils/loss.py"
             ]
+        },
+        "KI_metrics_reference.md": {
+            "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
+            "covers": [
+                "Utilities",
+                "Experiments"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py",
+                "experiments/train_phase1_TPU_fsdp.py",
+                ".know/decisions/014_metrics_fix_and_delta_recovery.md",
+                ".know/decisions/015_centered_cosine_similarity.md",
+                ".know/decisions/017_new_loss_terms_and_metrics.md",
+                ".know/decisions/023_layer40_raw_topology_and_variance.md"
+            ]
         }
     },
     "knowledge_system": {

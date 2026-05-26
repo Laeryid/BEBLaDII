@@ -52,5 +52,7 @@ component = MyComponent.from_scratch(
 - **Gradient Checkpointing**: В `create_latentbert` принудительно включается Checkpointing через `base_model.gradient_checkpointing_enable()`. Если его отключить при 40 слоях, возникнет `OutOfMemory` на GPU с <24GB VRAM.
 
 
+
 ## Related KIs
+- [[decisions/019_decoupling_intermediate_layers.md]] (via `src/beb_la_dii/model/distiller.py`)
 

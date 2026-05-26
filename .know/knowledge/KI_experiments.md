@@ -42,5 +42,6 @@
 - **Device Mixup**: Обязательно использовать `distiller.student_device` для перемещения батчей, так как учитель и студент могут находиться на разных GPU в режиме `device_map`.
 
 
+
 ## Related KIs
 

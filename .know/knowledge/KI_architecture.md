@@ -47,5 +47,6 @@
 - **Заморозка учителя**: Учитель должен быть в режиме `.eval()` и с `requires_grad=False` для экономии VRAM.
 - **weights_map**: При запуске обучения проверяй логи `build_weights_map()` — статус `[found]`/`[random init]` покажет, загружены ли сохранённые веса или инициализированы заново.
 
+
 ## Related KIs
-- `decisions/020_architecture_v2_10_phases.md`
+
