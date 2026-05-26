@@ -1,0 +1,13 @@
+{
+    "mcpServers":  {
+                       "codegraph":  {
+                                         "url":  "http://host.docker.internal:3019/sse"
+                                     },
+                       "host-research":  {
+                                             "url":  "http://host.docker.internal:3020/sse"
+                                         },
+                       "pi-smart-escaping":  {
+                                                 "url":  "http://host.docker.internal:3021/sse"
+                                             }
+                   }
+}

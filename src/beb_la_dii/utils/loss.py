@@ -14,7 +14,7 @@ class DistillationLoss(nn.Module):
     - compute_delta_loss: L_delta для обучения на семантических градиентах между масками.
     """
     def __init__(self, layer_weights={40: 1.0}, mse_weight=1.0, cos_weight=0.0,  # ADR-018: cos отключён
-                 lambda_scale=0.1, lambda_rkd=0.01, lambda_norm=0.05):
+                 lambda_scale=0.1, lambda_rkd=0.01, lambda_norm=0.0): # ADR-024: Norm Correlation отключён
         super().__init__()
         self.layer_weights = layer_weights
         self.mse_weight = mse_weight
