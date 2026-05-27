@@ -307,7 +307,7 @@ def train():
     optimizer = Adafactor(
         filter(lambda p: p.requires_grad, distiller.parameters()), 
         lr=1e-4, scale_parameter=False, relative_step=False, warmup_init=False,
-        clip_threshold=1.0
+        clip_threshold=0.5  # Снижено с 1.0: более консервативный clipping update-norm при взрывах
     )
     # T_0=2000, eta_min=1e-6 согласно плану
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=2000, T_mult=1, eta_min=1e-6)
@@ -434,6 +434,9 @@ def train():
             # 5. Вычисление L_state (взвешенная сумма по всем маскам)
             total_l_state = 0
             loss_metrics = {}
+            # Прогрессивный lambda_prior: стартует с 0.1, достигает 0.5 к концу warmup
+            # Даёт пространству время стабилизироваться естественно до полного давления prior_loss
+            lambda_prior_current = max(0.1, min(0.5, 0.1 + 0.4 * (global_step / warmup_steps)))
             for idx in range(4):
                 v_mu_p = v_mu.view(B_orig, 4, T, -1)[:, idx] if v_mu is not None else None
                 v_logvar_p = v_logvar.view(B_orig, 4, T, -1)[:, idx] if v_logvar is not None else None
@@ -442,7 +445,7 @@ def train():
                 l_state, m_state = criterion(
                     s_variants[idx], t_variants[idx], variants[idx]["attention_mask"],
                     mu=v_mu_p, logvar=v_logvar_p, beta=current_beta,
-                    raw_student_states=v_raw_p, lambda_prior=0.5
+                    raw_student_states=v_raw_p, lambda_prior=lambda_prior_current
                 )
                 total_l_state += MASK_WEIGHTS[idx] * l_state
                 
@@ -450,6 +453,7 @@ def train():
                 if idx == 3:
                     for k, v in m_state.items():
                         loss_metrics[f"full_{k}"] = v
+            loss_metrics["lambda_prior"] = lambda_prior_current  # мониторинг прогресса
             
             # 6. Вычисление L_delta (Semantic Gradients)
             # gamma растет с обучением (0.3 -> 0.5 за 10к шагов)
