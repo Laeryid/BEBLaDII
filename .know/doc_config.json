@@ -390,6 +390,24 @@
             "depends_on": [
                 "src/beb_la_dii/utils/loss.py"
             ]
+        },
+        "decisions/024_spherical_manifold_distillation.md": {
+            "description": "ADR: Формирование сферической топологии (Zen Solution) без Norm Correlation для стабильности перед диффузионной фазой.",
+            "covers": [
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py"
+            ]
+        },
+        "decisions/025_centered_rkd.md": {
+            "description": "ADR: Центрирование векторов перед вычислением RKD для устранения конфликта с prior_loss и предотвращения Rank-1 коллапса.",
+            "covers": [
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py"
+            ]
         }
     },
     "knowledge_system": {

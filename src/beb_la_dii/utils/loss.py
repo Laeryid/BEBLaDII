@@ -159,8 +159,18 @@ class DistillationLoss(nn.Module):
                         s_h = raw_states
                         
                         # 4. Relational Knowledge Distillation (RKD) - Pairwise Similarity Correlation
-                        s_normed = s_h / s_h.norm(dim=-1, keepdim=True).clamp(min=1e-6)
-                        t_normed = t_h / t_h.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                        if attention_mask is not None:
+                            n_rkd = attention_mask.unsqueeze(-1).sum(dim=1, keepdim=True).clamp(min=1e-6)
+                            s_mean_rkd = (s_h * attention_mask.unsqueeze(-1)).sum(dim=1, keepdim=True) / n_rkd
+                            t_mean_rkd = (t_h * attention_mask.unsqueeze(-1)).sum(dim=1, keepdim=True) / n_rkd
+                            s_centered = (s_h - s_mean_rkd) * attention_mask.unsqueeze(-1)
+                            t_centered = (t_h - t_mean_rkd) * attention_mask.unsqueeze(-1)
+                        else:
+                            s_centered = s_h - s_h.mean(dim=1, keepdim=True)
+                            t_centered = t_h - t_h.mean(dim=1, keepdim=True)
+
+                        s_normed = s_centered / s_centered.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                        t_normed = t_centered / t_centered.norm(dim=-1, keepdim=True).clamp(min=1e-6)
                         
                         s_dist = torch.bmm(s_normed, s_normed.transpose(1, 2))
                         t_dist = torch.bmm(t_normed, t_normed.transpose(1, 2))
