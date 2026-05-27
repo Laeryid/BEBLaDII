@@ -162,16 +162,16 @@ class DistillationLoss(nn.Module):
                 # Off-diagonal elements of covariance matrix
                 cov_off_diag = cov - torch.diag(torch.diag(cov))
                 # Штраф за корреляцию (изотропия). Масштабируем по D.
-                cov_loss = cov_off_diag.pow(2).sum() / D
+                # Используем Huber Loss (*2 для совпадения масштаба с pow(2) около нуля), 
+                # чтобы градиент по активациям был O(S) вместо взрывного O(S^3).
+                cov_loss = 2.0 * F.huber_loss(cov_off_diag, torch.zeros_like(cov_off_diag), delta=1.0, reduction='sum') / D
                 metrics[f"l{layer_idx}_cov_loss"] = cov_loss.detach()
 
                 if layer_idx == 40:
                     # Целевое распределение: mean=0, var=1 + Covariance penalty
-                    # Huber вместо MSE: при |m_state| > delta градиент ограничен 2*delta
-                    # (не растёт пропорционально отклонению) — разрывает positive feedback loop
-                    prior_loss = (F.huber_loss(m_state, torch.zeros_like(m_state), delta=1.0)
-                                  + F.huber_loss(v_state, torch.ones_like(v_state), delta=1.0)
-                                  + 0.1 * cov_loss)
+                    # m_state.pow(2) дает стабильный градиент O(S).
+                    # v_state.pow(2) давал бы O(S^3), поэтому используем Huber, получая безопасный O(S).
+                    prior_loss = m_state.pow(2).mean() + 2.0 * F.huber_loss(v_state, torch.ones_like(v_state), delta=1.0) + 0.1 * cov_loss
                     total_loss += lambda_prior * prior_loss
                     metrics[f"l{layer_idx}_prior"] = prior_loss.detach()
                     
@@ -241,10 +241,10 @@ class DistillationLoss(nn.Module):
                 else:
                     # Регуляризация внутренних слоев: центрирование (mu -> 0) + усиленная изотропия
                     # Soft Variance Penalty для ограничения взрывного роста (свобода до 1.5)
-                    soft_var_penalty = F.relu(v_state - 1.5).pow(2).mean()
-                    # Huber для m_state: caps gradient при больших отклонениях mean от 0
-                    intermediate_loss = (F.huber_loss(m_state, torch.zeros_like(m_state), delta=1.0)
-                                         + 0.1 * cov_loss + 0.1 * soft_var_penalty)
+                    # Huber(v_state - 1.5) для стабильного O(S) градиента
+                    soft_var_penalty = 2.0 * F.huber_loss(F.relu(v_state - 1.5), torch.zeros_like(v_state), delta=1.0)
+                    # Huber для m_state убран, возвращен стабильный MSE
+                    intermediate_loss = m_state.pow(2).mean() + 0.1 * cov_loss + 0.1 * soft_var_penalty
                     total_loss += intermediate_loss
                     metrics[f"l{layer_idx}_intermediate_reg"] = intermediate_loss.detach()
                     metrics[f"l{layer_idx}_soft_var_penalty"] = soft_var_penalty.detach()
