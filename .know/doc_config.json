@@ -234,6 +234,36 @@
                 ".know/workflows/update-knowledge.md"
             ]
         },
+        "KI_datasets.md": {
+            "description": "Описание источников данных, используемых для обучения и инференса в проекте BEBLaDII.",
+            "covers": [
+                "Data & Ops Scripts"
+            ],
+            "depends_on": [
+                "scripts/prepare_phase1_data_v2.py",
+                "scripts/prepare_kaggle_data.py",
+                "scripts/downsample_magpie.py",
+                "scripts/download_datasets.py"
+            ]
+        },
+        "KI_kaggle.md": {
+            "description": "Инструкции по интеграции с Kaggle API, команды загрузки датасетов и аварийного сохранения.",
+            "covers": [
+                "Data & Ops Scripts"
+            ],
+            "depends_on": [
+                "scripts/prepare_kaggle_data.py",
+                "scripts/sync_to_kaggle.ps1",
+                "scripts/kaggle_emergency_save.py"
+            ]
+        },
+        "KI_model_storage.md": {
+            "description": "Рекомендации и правила локального и облачного хранения весов моделей, кэша HuggingFace и версионирования.",
+            "covers": [
+                "Data & Ops Scripts"
+            ],
+            "depends_on": []
+        },
         "KI_data_preparation.md": {
             "description": "Dataset engineering: tokenization, downsampling, and infrastructure initialization.",
             "covers": [
@@ -407,6 +437,33 @@
             ],
             "depends_on": [
                 "src/beb_la_dii/utils/loss.py"
+            ]
+        },
+        "decisions/026_gradient_stabilization_rkd_cosine.md": {
+            "description": "ADR: Стабилизация градиентов в RKD и косинусном сходстве через добавление эпсилона под квадратный корень для предотвращения коллапса латентного пространства Студента.",
+            "covers": [
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py"
+            ]
+        },
+        "KI_metrics_reference.md": {
+            "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
+            "covers": [
+                "Utilities",
+                "Experiments"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py",
+                "experiments/train_phase1_TPU_fsdp.py",
+                ".know/decisions/014_metrics_fix_and_delta_recovery.md",
+                ".know/decisions/015_centered_cosine_similarity.md",
+                ".know/decisions/017_new_loss_terms_and_metrics.md",
+                ".know/decisions/023_layer40_raw_topology_and_variance.md",
+                ".know/decisions/024_spherical_manifold_distillation.md",
+                ".know/decisions/025_centered_rkd.md",
+                ".know/decisions/026_gradient_stabilization_rkd_cosine.md"
             ]
         }
     },

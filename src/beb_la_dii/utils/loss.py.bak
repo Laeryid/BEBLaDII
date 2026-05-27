@@ -3,24 +3,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-def safe_normalize(x, dim=-1, eps=1e-6):
-    """
-    Safely normalizes a tensor along a dimension by adding eps inside the square root
-    to prevent gradient explosion and NaN propagation when norm is close to zero.
-    """
-    norm = torch.sqrt(torch.sum(x ** 2, dim=dim, keepdim=True) + eps)
-    return x / norm
-
-
-def safe_cosine_similarity(x1, x2, dim=-1, eps=1e-6):
-    """
-    Safe cosine similarity with eps inside the square root for stable backpropagation.
-    """
-    norm1 = torch.sqrt(torch.sum(x1 ** 2, dim=dim) + eps)
-    norm2 = torch.sqrt(torch.sum(x2 ** 2, dim=dim) + eps)
-    return torch.sum(x1 * x2, dim=dim) / (norm1 * norm2)
-
-
 class DistillationLoss(nn.Module):
     """
     Расчет L_total для выравнивания латентных пространств.
@@ -85,10 +67,10 @@ class DistillationLoss(nn.Module):
                     s_centered = (s_h - s_mean) * m
                     t_centered = (t_h - t_mean) * m
                     
-                    cos_sim = safe_cosine_similarity(s_centered, t_centered, dim=-1, eps=1e-6)
+                    cos_sim = F.cosine_similarity(s_centered, t_centered, dim=-1, eps=1e-6)
                     cos_l = 1.0 - (cos_sim * attention_mask).sum() / (attention_mask.sum() + 1e-6)
                 else:
-                    cos_sim = safe_cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
+                    cos_sim = F.cosine_similarity(s_h, t_h, dim=-1, eps=1e-6)
                     cos_l = 1.0 - cos_sim.mean()
 
                 # 2. MSE Loss (отключен для всех слоев, оставляем 0.0 для обратной совместимости метрик)
@@ -187,8 +169,8 @@ class DistillationLoss(nn.Module):
                             s_centered = s_h - s_h.mean(dim=1, keepdim=True)
                             t_centered = t_h - t_h.mean(dim=1, keepdim=True)
 
-                        s_normed = safe_normalize(s_centered, dim=-1, eps=1e-6)
-                        t_normed = safe_normalize(t_centered, dim=-1, eps=1e-6)
+                        s_normed = s_centered / s_centered.norm(dim=-1, keepdim=True).clamp(min=1e-6)
+                        t_normed = t_centered / t_centered.norm(dim=-1, keepdim=True).clamp(min=1e-6)
                         
                         s_dist = torch.bmm(s_normed, s_normed.transpose(1, 2))
                         t_dist = torch.bmm(t_normed, t_normed.transpose(1, 2))
@@ -213,7 +195,7 @@ class DistillationLoss(nn.Module):
                             s_norms_centered = (s_norms - s_norms_mean) * attention_mask
                             t_norms_centered = (t_norms - t_norms_mean) * attention_mask
                             
-                            norm_cos = safe_cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
+                            norm_cos = F.cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
                             active_seq_mask = (attention_mask.sum(dim=1) > 0).float()
                             norm_l = 1.0 - (norm_cos * active_seq_mask).sum() / (active_seq_mask.sum() + 1e-6)
                         else:
@@ -223,7 +205,7 @@ class DistillationLoss(nn.Module):
                             s_norms_centered = s_norms - s_norms_mean
                             t_norms_centered = t_norms - t_norms_mean
                             
-                            norm_cos = safe_cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
+                            norm_cos = F.cosine_similarity(s_norms_centered, t_norms_centered.detach(), dim=1, eps=1e-6)
                             norm_l = 1.0 - norm_cos.mean()
                             
                         rkd_total += self.layer_weights.get(40, 1.0) * rkd_l
@@ -309,7 +291,7 @@ class DistillationLoss(nn.Module):
 
             # Используем косинусное сходство для всех слоев
             # Это отвязывает дельту от масштаба учителя и фокусируется на направлении.
-            cos_sim = safe_cosine_similarity(ds, dt.detach(), dim=-1, eps=1e-6)
+            cos_sim = F.cosine_similarity(ds, dt.detach(), dim=-1, eps=1e-6)
             
             # Добавляем штраф за коллапс магнитуды дельты (ADR-014)
             s_mag = ds.norm(dim=-1)
@@ -320,7 +302,7 @@ class DistillationLoss(nn.Module):
 
             loss = loss + weight * layer_delta_loss
 
-            dcos = safe_cosine_similarity(ds, dt.detach(), dim=-1, eps=1e-6).mean()
+            dcos = F.cosine_similarity(ds, dt.detach(), dim=-1, eps=1e-6).mean()
             dmag = (ds.norm(dim=-1) / dt.norm(dim=-1).clamp(min=1e-6)).mean()
             metrics[f"delta_cos_l{layer_idx}"]       = dcos.detach()
             metrics[f"delta_mag_ratio_l{layer_idx}"] = dmag.detach()
