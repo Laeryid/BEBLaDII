@@ -218,6 +218,16 @@ class DistillationLoss(nn.Module):
                         s_norms = s_h.norm(dim=-1)  # (B, T)
                         t_norms = t_h.norm(dim=-1)  # (B, T)
                         
+                        # 6. Norm CV (Coefficient of Variation) — метрика сферичности
+                        # CV = std(‖x‖) / mean(‖x‖). CV < 0.05 → практически сфера.
+                        if attention_mask is not None:
+                            active_norms = s_norms[attention_mask.bool()]  # только активные токены
+                        else:
+                            active_norms = s_norms.reshape(-1)
+                        _norm_mean = active_norms.mean().clamp(min=1e-6)
+                        _norm_std  = active_norms.std(unbiased=False)
+                        metrics["norm_cv_l40_raw"] = (_norm_std / _norm_mean).detach()
+                        
                         if attention_mask is not None:
                             n_norm = attention_mask.sum(dim=1, keepdim=True).clamp(min=1e-6)
                             s_norms_mean = (s_norms * attention_mask).sum(dim=1, keepdim=True) / n_norm
@@ -244,8 +254,8 @@ class DistillationLoss(nn.Module):
                         
                         total_loss += self.lambda_rkd * rkd_l + self.lambda_norm * norm_l
                         
-                        metrics[f"l40_rkd_raw"] = rkd_l.detach()
-                        metrics[f"l40_norm_corr_raw"] = norm_l.detach()
+                        metrics["l40_rkd_raw"] = rkd_l.detach()
+                        metrics["l40_norm_corr_raw"] = norm_l.detach()
                         
                 else:
                     # Регуляризация внутренних слоев: центрирование (mu -> 0) + усиленная изотропия
