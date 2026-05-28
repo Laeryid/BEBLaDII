@@ -457,6 +457,18 @@
                 "src/beb_la_dii/utils/loss.py"
             ]
         },
+        "decisions/028_manual_huber_and_norm_cv_metric.md": {
+            "description": "ADR: Ручная реализация Huber Loss через torch.where (устранение лишних аллокаций D×D, XLA-фьюзинг) и добавление метрики Norm CV для диагностики сферичности латентного пространства перед Phase 8.",
+            "covers": [
+                "Architecture & Training Phases",
+                "Utilities"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py",
+                ".know/decisions/027_huber_loss_variance_covariance.md"
+            ]
+        },
+
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
             "covers": [
