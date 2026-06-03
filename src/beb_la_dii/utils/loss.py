@@ -223,11 +223,13 @@ class DistillationLoss(nn.Module):
                         # 6. Norm CV (Coefficient of Variation) — метрика сферичности
                         # CV = std(‖x‖) / mean(‖x‖). CV < 0.05 → практически сфера.
                         if attention_mask is not None:
-                            active_norms = s_norms[attention_mask.bool()]  # только активные токены
+                            n_active = attention_mask.sum().clamp(min=1e-6)
+                            _norm_mean = (s_norms * attention_mask).sum() / n_active
+                            _norm_var = (((s_norms - _norm_mean) * attention_mask) ** 2).sum() / n_active
+                            _norm_std = torch.sqrt(_norm_var + 1e-8)
                         else:
-                            active_norms = s_norms.reshape(-1)
-                        _norm_mean = active_norms.mean().clamp(min=1e-6)
-                        _norm_std  = active_norms.std(unbiased=False)
+                            _norm_mean = s_norms.mean().clamp(min=1e-6)
+                            _norm_std  = s_norms.std(unbiased=False)
                         metrics["norm_cv_l40_raw"] = (_norm_std / _norm_mean).detach()
                         
                         if attention_mask is not None:
