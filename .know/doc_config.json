@@ -468,6 +468,18 @@
                 ".know/decisions/027_huber_loss_variance_covariance.md"
             ]
         },
+        "decisions/029_variance_floor_and_scale_invariant_covariance.md": {
+            "description": "ADR: Добавление нижней границы дисперсии и масштабно-инвариантной ковариации для устранения Shortcut Learning на промежуточных слоях.",
+            "covers": [
+                "Architecture & Training Phases",
+                "Utilities"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py",
+                ".know/decisions/022_intermediate_layers_hybrid_regularization.md",
+                ".know/decisions/027_huber_loss_variance_covariance.md"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",

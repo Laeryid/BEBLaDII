@@ -150,14 +150,16 @@ class DistillationLoss(nn.Module):
                     # Variance
                     v_state = (z_masked ** 2).sum(dim=0) / N.clamp(min=2.0) # (D,)
                     
-                    # Covariance matrix (D, D) - VICReg style for isotropy
-                    cov = (z_masked.T @ z_masked) / N.clamp(min=2.0)
+                    # Scale-invariant Covariance matrix (Correlation Matrix)
+                    z_normed = safe_normalize(z_masked, dim=0, eps=1e-6)
+                    cov = (z_normed.T @ z_normed)
                 else:
                     m_state = raw_states.mean(dim=(0, 1))
                     v_state = raw_states.var(dim=(0, 1), unbiased=False)
                     z = raw_states - m_state.view(1, 1, -1)
                     z_flat = z.view(-1, D)
-                    cov = (z_flat.T @ z_flat) / (z_flat.size(0) - 1)
+                    z_normed = safe_normalize(z_flat, dim=0, eps=1e-6)
+                    cov = (z_normed.T @ z_normed)
 
                 # Off-diagonal elements of covariance matrix
                 cov_off_diag = cov - torch.diag(torch.diag(cov))
@@ -259,12 +261,14 @@ class DistillationLoss(nn.Module):
                         
                 else:
                     # Регуляризация внутренних слоев: центрирование (mu -> 0) + усиленная изотропия
-                    # Soft Variance Penalty для ограничения взрывного роста (свобода до 1.5)
-                    # Huber(relu(v-1.5), 0) без zeros_like: relu гарантирует >=0, поэтому abs=identity.
-                    _svp = F.relu(v_state - 1.5)
-                    soft_var_penalty = 2.0 * torch.where(_svp < 1.0,
-                                                         0.5 * _svp.pow(2),
-                                                         _svp - 0.5).mean()
+                    # Soft Variance Penalty: ограничиваем дисперсию в коридоре [0.5, 1.5]
+                    # Huber для верхней границы (защита от O(S)), квадратичная для нижней.
+                    _svp_ceil = F.relu(v_state - 1.5)
+                    ceil_penalty = 2.0 * torch.where(_svp_ceil < 1.0,
+                                                     0.5 * _svp_ceil.pow(2),
+                                                     _svp_ceil - 0.5).mean()
+                    floor_penalty = F.relu(0.5 - v_state).pow(2).mean()
+                    soft_var_penalty = ceil_penalty + floor_penalty
                     # Huber для m_state убран, возвращен стабильный MSE
                     intermediate_loss = m_state.pow(2).mean() + 0.1 * cov_loss + 0.1 * soft_var_penalty
                     total_loss += intermediate_loss
