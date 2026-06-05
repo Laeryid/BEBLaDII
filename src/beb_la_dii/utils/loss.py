@@ -182,7 +182,7 @@ class DistillationLoss(nn.Module):
                                   + 2.0 * torch.where(_v_abs < 1.0,
                                                       0.5 * _v_diff.pow(2),
                                                       _v_abs - 0.5).mean()
-                                  + 0.1 * cov_loss)
+                                  + 0.3 * cov_loss)
                     total_loss += lambda_prior * prior_loss
                     metrics[f"l{layer_idx}_prior"] = prior_loss.detach()
                     

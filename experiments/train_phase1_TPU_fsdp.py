@@ -533,23 +533,23 @@ def train():
                             shutil.copy(local_ckpt_name, "latest_checkpoint.pt")
                             
                             # Отправка в GCS (возвращено к синхронному для стабильности графов)
-                            subprocess.run(["gsutil", "-q", "cp", local_ckpt_name, "gs://bebladii-weigths/checkpoints/"], check=True)
-                            subprocess.run(["gsutil", "-q", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"], check=True)
+                            subprocess.run(["gsutil", "-q", "cp", local_ckpt_name, "gs://bebladii-weigths-us/checkpoints/"], check=True)
+                            subprocess.run(["gsutil", "-q", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths-us/checkpoints/"], check=True)
                             
                             # Работа с логами тренировки
                             if os.path.exists("history.jsonl"):
                                 th_ver = f"history_{current_optim_step}.jsonl"
                                 shutil.copy("history.jsonl", th_ver)
-                                subprocess.run(["gsutil", "cp", "history.jsonl", "gs://bebladii-weigths/checkpoints/history.jsonl"], check=True)
-                                subprocess.run(["gsutil", "cp", th_ver, f"gs://bebladii-weigths/checkpoints/{th_ver}"], check=True)
+                                subprocess.run(["gsutil", "cp", "history.jsonl", "gs://bebladii-weigths-us/checkpoints/history.jsonl"], check=True)
+                                subprocess.run(["gsutil", "cp", th_ver, f"gs://bebladii-weigths-us/checkpoints/{th_ver}"], check=True)
                                 os.remove(th_ver)
 
                             # Работа с логами валидации
                             if os.path.exists("history_val.jsonl"):
                                 h_ver = f"history_val_{current_optim_step}.jsonl"
                                 shutil.copy("history_val.jsonl", h_ver)
-                                subprocess.run(["gsutil", "cp", "history_val.jsonl", "gs://bebladii-weigths/checkpoints/history_val.jsonl"], check=True)
-                                subprocess.run(["gsutil", "cp", h_ver, f"gs://bebladii-weigths/checkpoints/{h_ver}"], check=True)
+                                subprocess.run(["gsutil", "cp", "history_val.jsonl", "gs://bebladii-weigths-us/checkpoints/history_val.jsonl"], check=True)
+                                subprocess.run(["gsutil", "cp", h_ver, f"gs://bebladii-weigths-us/checkpoints/{h_ver}"], check=True)
                                 os.remove(h_ver)
 
                             # Очистка старых локальных чекпоинтов (храним только последние 500 шагов)
@@ -726,14 +726,14 @@ if __name__ == "__main__":
         print("--- [RANK 0] Подготовка ресурсов ---")
         os.makedirs("./data", exist_ok=True)
         try:
-            subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets/data/", "./data"], check=True)
+            subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets-us/data/", "./data"], check=True)
             # 2. Поиск и скачивание весов
             for weight_file in ["latest_checkpoint.pt", "AWAKENED_WEIGHTS_FINAL.pt"]:
                 # Пытаемся найти файл в checkpoints/ (для latest_checkpoint) 
                 # или в kaggle_upload_1_2/ (для AWAKENED)
-                gcs_path = f"gs://bebladii-weigths/checkpoints/{weight_file}"
+                gcs_path = f"gs://bebladii-weigths-us/checkpoints/{weight_file}"
                 if weight_file == "AWAKENED_WEIGHTS_FINAL.pt":
-                    gcs_path = f"gs://bebladii-weigths/kaggle_upload_1_2/{weight_file}"
+                    gcs_path = f"gs://bebladii-weigths-us/kaggle_upload_1_2/{weight_file}"
 
                 res = subprocess.run(["gsutil", "ls", gcs_path], capture_output=True, text=True)
                 if res.returncode == 0:
@@ -742,10 +742,10 @@ if __name__ == "__main__":
 
             # 3. Синхронизация истории
             for h_file in ["history.jsonl", "history_val.jsonl"]:
-                res_h = subprocess.run(["gsutil", "ls", f"gs://bebladii-weigths/checkpoints/{h_file}"], capture_output=True, text=True)
+                res_h = subprocess.run(["gsutil", "ls", f"gs://bebladii-weigths-us/checkpoints/{h_file}"], capture_output=True, text=True)
                 if res_h.returncode == 0:
                     print(f"--- [RANK 0] Загрузка {h_file} из CS ---")
-                    subprocess.run(["gsutil", "cp", f"gs://bebladii-weigths/checkpoints/{h_file}", h_file], check=True)
+                    subprocess.run(["gsutil", "cp", f"gs://bebladii-weigths-us/checkpoints/{h_file}", h_file], check=True)
                 else:
                     with open(h_file, "w") as f: pass
         except Exception as e:
