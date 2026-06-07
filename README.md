@@ -99,8 +99,8 @@ The training lifecycle is divided into 10 strict atomic phases to ensure perfect
 **Phase 1: Awakening**
 - **Goal**: Initial semantic alignment. Train the Latent Encoder to map 3584-dim Qwen space to 1024-dim ModernBERT space. (✅ Completed)
 
-**Phase 2: Reasoning**
-- **Goal**: DUS Distillation. Distill logical reasoning abilities from a powerful teacher (DeepSeek-R1-7B) into the 40-layer Diffusion Backbone. (🔄 In Progress)
+**Phase 2: Reasoning & Topological Alignment**
+- **Goal**: DUS Distillation. Distill logical reasoning abilities from a powerful teacher (DeepSeek-R1-7B) into the 40-layer Diffusion Backbone by creating a spherical, isotropic latent space via topological alignment. (✅ Completed)
 
 **Phase 3: Output Projection**
 - **Goal**: Train the `Output Projector` to bridge the layer-40 internal backbone manifold back to the base Latent Diffusion Space.
@@ -133,6 +133,7 @@ The training lifecycle is divided into 10 strict atomic phases to ensure perfect
 
 * Phase 2
   * [Phase 2 Reasoning Report: Failures retrospective](reports/phase2_failures_retrospective.md)
+  * [Phase 2 Reasoning and Topology Report](reports/phase2_reasoning_and_topology_report.md)
 
 ## Acknowledgments
 
