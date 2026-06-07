@@ -481,6 +481,21 @@
             ]
         },
 
+        "decisions/030_cov_loss_weight_increase_and_gcs_migration.md": {
+            "description": "ADR: Увеличение коэффициента cov_loss в prior_loss с 0.1 до 0.3 для ускорения снижения rank1_ratio. Миграция GCS bucket'ов в us-central2 для устранения межконтинентального трафика.",
+            "covers": [
+                "Architecture & Training Phases",
+                "Utilities",
+                "Experiments"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/utils/loss.py",
+                "experiments/train_phase1_TPU_fsdp.py",
+                ".know/decisions/029_variance_floor_and_scale_invariant_covariance.md"
+            ]
+        },
+
+
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
             "covers": [
