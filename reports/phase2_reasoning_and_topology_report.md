@@ -3,7 +3,7 @@
 ## 1. Introduction and Overview
 Phase 2 (Reasoning Distillation) was a critical stage in transitioning from classical autoregressive legacy to a latent diffusion architecture. Initially, we planned to naively copy the knowledge (weights and activations) from a strong logical teacher into our 40-layer `Diffusion Backbone` using standard MSE. However, this approach led to a catastrophe: the diffusion manifold was incompatible with the rigid, absolute coordinate grid of the teacher.
 
-The main outcome of this phase was a complete overhaul of the distillation paradigm. We moved from "copying absolute coordinates" to **Topological Alignment**. We successfully formed a spherical, isotropic latent space that preserves the teacher's logic but is fully prepared for the denoising process in the next (8rd) phase. Phase 2 is officially considered successful and fully completed.
+The main outcome of this phase was a complete overhaul of the distillation paradigm. We moved from "copying absolute coordinates" to **Topological Alignment**. We successfully formed a spherical, isotropic latent space that preserves the teacher's logic but is fully prepared for the denoising process in the next phases. Phase 2 is officially considered successful and fully completed.
 
 ## 2. Datasets Used
 As sources of "pure logic" for the Reasoning subset, we formed a strictly curated data mixture:
@@ -25,7 +25,17 @@ Blindly applying `MSE` across all layers caused a gradient conflict with the dif
 1. **Decoupling Intermediate Layers**: Intermediate layers (20, 30) were completely decoupled from the teacher (projectors were removed). The nature of diffusion (one denoising step per pass) and autoregression (deepening semantics per pass) are fundamentally different. We focused the gradient signal exclusively on the raw output of the 40th layer.
 2. **Centered RKD (Relational Knowledge Distillation)**: Instead of matching the absolute coordinates of vectors, we began matching the *angles and distances* between tokens. Pre-centering the vectors saved us from collapsing into a narrow cone (Rank-1 Collapse).
 3. **Huber Loss for Covariance**: Using MSE for covariance caused an O(S³) gradient explosion. Replacing it with an XLA-friendly Huber Loss (manually implemented via `torch.where`) stabilized computations on the TPU.
-4. **Trajectory Delta (L_delta)**: Implemented Growing Masks to simulate the progression of the diffusion process (from noise/void to text). The student learned to predict the semantic *step* (delta), with a severe penalty for cheating (artificially shrinking the step magnitude).
+4. **Trajectory Delta ($L_{\Delta}$)**: This was a highly unconventional and critical move. Because we are distilling an Autoregressive teacher into a Diffusion student, static matching is insufficient—diffusion requires a *trajectory* (from noise to clarity). To simulate this without breaking the rigid static shapes of XLA, we introduced **Growing Masks**. Within a single static batch shape of `[4B, 4096]`, we applied progressive masking (e.g., revealing 25%, 50%, 75%, and 100% of the reasoning text). The student was forced to predict the semantic *step* (the delta vector) from a heavily masked state to a clearer state, effectively learning the "direction of thought." However, the student quickly found a shortcut: outputting a near-zero delta vector to mathematically minimize the error. To counter this, we added a strict **Magnitude Penalty** that penalized any artificial shrinking of the step size, forcing the model to take full, meaningful reasoning steps.
+
+## Mathematical Formulation of the Loss Landscape
+The final topological loss function for the 40th layer is defined as:
+
+$$ \mathcal{L}_{total} = \lambda_{RKD}\mathcal{L}_{RKD} + \lambda_{\Delta}\mathcal{L}_{\Delta} + \lambda_{prior}\mathcal{L}_{prior} $$
+
+Where the components are:
+- **$\mathcal{L}_{RKD}$ (Centered Relational Knowledge Distillation)**: Ensures the student manifold mimics the internal topology (distances and angles between tokens) of the teacher. Vectors are explicitly centered before comparison to prevent conflict with the prior and avoid Rank-1 Collapse.
+- **$\mathcal{L}_{\Delta}$ (Trajectory Delta Loss)**: Controls the semantic trajectory. It consists of a Centered Cosine penalty (ensuring the student's semantic step points in the same direction as the teacher's) plus the Magnitude Penalty (preventing the delta length from collapsing to zero).
+- **$\mathcal{L}_{prior}$ (Prior Loss)**: Enforces the spherical, isotropic nature of the base diffusion space. It is a hybrid regularization containing a Variance Loss (using Huber Loss and a Variance Floor to prevent variance collapse) and a Scale-Invariant Covariance Loss (penalizing correlation between dimensions to ensure isotropy).
 
 ## 4. Target Properties and Achievements
 **Our Goals:**
