@@ -51,15 +51,65 @@ Where the components are:
 ## 5. Two-Stage Training
 The training process proved nonlinear and split into two major stages:
 - **Run 1 (Steps 0 - 18,000)**: We hit a plateau. The `rank1_ratio` metric was dropping extremely slowly. Shortcut Learning emerged: the student learned to "hide" from penalties by shrinking the vector variance to near zero (variance collapse).
-- **Run 2 (Restart from 18,000)**: We introduced a Variance Floor and Scale-Invariant Covariance. To accelerate the isotropization of the space (independent of the anisotropic teacher), the `cov_loss` weight within the prior was increased from 0.1 to 0.3. We also migrated the data from EU GCS buckets to the US region (`us-central2`), which radically accelerated loading and eliminated intercontinental TPU-GCS latency.
+- **Run 2 (Restart from 18,000)**: We introduced a Variance Floor and Scale-Invariant Covariance. To accelerate the isotropization of the space (independent of the anisotropic teacher), the `cov_loss` weight within the prior was increased from 0.1 to 0.3. 
 
-## 6. Required Graphs (Wandb)
-For visual confirmation of the topological alignment and completeness of the report, please download and attach the following Wandb plots as images:
-1. `val/l40_rank1_ratio` — The primary indicator of victory over manifold collapse. Should show a confident decline below 0.40.
-2. `train/loss` — The overall convergence trend (the dynamics after the 18k restart are particularly telling).
-3. `train/delta_cos` — An indicator of the correct "direction" of the prediction step.
-4. `train/full_l40_prior` — An indicator of the "roundness" of the space (penalty for exceeding Gaussian bounds).
-5. `val/l40_norm_cv` — The coefficient of variation for norms, confirming that vectors lie on the surface of a hypersphere.
+## 6. Training Graphs and Metrics
+To visually document the topological alignment and convergence dynamics, the key metrics from both training runs have been exported and are permanently fixed in the repository. The graphs are presented in pairs: **Run 1 (0–18,000 steps)** and **Run 2 (18,000–24,000 steps)**.
+
+### 6.1 Validation Loss
+Validation Loss is the most critical metric for identifying the optimal checkpoint and detecting the exact moment when model degradation (overfitting or structural collapse) begins. 
+<p float="left">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/val%20loss%201.png" width="49%" />
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/val%20loss%202.png" width="49%" />
+</p>
+
+### 6.2 Train Loss
+The overall convergence trend, showing the stabilization after the architecture restart at 18k.
+<p float="left">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20loss%201.png" width="49%" />
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20loss%202.png" width="49%" />
+</p>
+
+### 6.3 Rank-1 Ratio (Manifold Collapse)
+The primary indicator of victory over manifold collapse. A steady decline towards ~0.40 confirms the latent space is isotropic and not collapsed into a single dimension.
+<p float="left">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/l40_rank1_ratio%201.png" width="49%" />
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/l40_rank1_ratio%202.png" width="49%" />
+</p>
+
+### 6.4 Prior Loss (Sphericity Penalty)
+Measures the penalty for deviations from the isotropic Gaussian distribution.
+<p float="left">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/full_l40_prior%201.png" width="49%" />
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/full_l40_prior%202.png" width="49%" />
+</p>
+
+### 6.5 Delta Cosine (Trajectory Tracking)
+Tracks the correctness of the "direction" of the prediction steps across different masking levels ($t_{0 \rightarrow 1}$, $t_{1 \rightarrow 2}$, $t_{2 \rightarrow 3}$).
+
+**Masking Transition $t_{0 \rightarrow 1}$ (25% to 50% clear):**
+<p float="left">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t01%201.png" width="49%" />
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t01%202.png" width="49%" />
+</p>
+
+**Masking Transition $t_{1 \rightarrow 2}$ (50% to 75% clear):**
+<p float="left">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t12%201.png" width="49%" />
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t12%202.png" width="49%" />
+</p>
+
+**Masking Transition $t_{2 \rightarrow 3}$ (75% to 100% clear):**
+<p float="left">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t23%201.png" width="49%" />
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t23%202.png" width="49%" />
+</p>
+
+### 6.6 Norm CV (Surface Distribution)
+The coefficient of variation for vector norms. Confirms that vectors strictly lie on the surface of the hypersphere rather than being scattered randomly in volume. *Note: Introduced during Run 2, hence only one chart is available.*
+<p align="center">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/val%20norm_cv_l40_raw.png" width="60%" />
+</p>
 
 ## 7. Linear Probing (NLI) Test: Evaluating Latent Space Quality
 Because we entirely decoupled `MSE` and abandoned direct language output in Phase 2, we need a metric to confirm that the student actually "understands" the logic, rather than just memorizing the geometry of noise.
