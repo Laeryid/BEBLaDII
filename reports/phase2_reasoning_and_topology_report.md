@@ -63,6 +63,8 @@ Validation Loss is the most critical metric for identifying the optimal checkpoi
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/val%20loss%202.png" width="49%" />
 </p>
 
+**Interpretation:** Expected to strictly decline over time without explosive spikes. A lower final value indicates that the topological alignment and the diffusion priors have harmonized without conflicting.
+
 ### 6.2 Train Loss
 The overall convergence trend, showing the stabilization after the architecture restart at 18k.
 <p float="left">
@@ -70,21 +72,43 @@ The overall convergence trend, showing the stabilization after the architecture 
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20loss%202.png" width="49%" />
 </p>
 
-### 6.3 Rank-1 Ratio (Manifold Collapse)
-The primary indicator of victory over manifold collapse. A steady decline towards ~0.40 confirms the latent space is isotropic and not collapsed into a single dimension.
+**Interpretation:** Expected to steadily decline. The sudden, cyclical drops correspond to the aggressive scheduler cycles (LR/Beta breakthroughs). The final low values confirm structural convergence.
+
+### 6.3 Optimizer Dynamics: Learning Rate and Beta
+Dynamic scheduling was critical for breaking out of local minima and causing the periodic breakthroughs seen across all metrics.
+<p float="left">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/LR%201.png" width="49%" />
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/LR%202.png" width="49%" />
+</p>
+
+**Interpretation (LR):** Follows aggressive cyclic phases. The peaks are designed to "shake" the manifold out of shortcut solutions, while the troughs allow the model to crystallize its representations, directly driving the sudden breakthroughs (vertical drops) in topology metrics.
+
+<p float="left">
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/betha%201.png" width="49%" />
+  <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/betha%202.png" width="49%" />
+</p>
+
+**Interpretation (Beta):** The momentum scheduler (Beta) oscillates in tandem with the LR. By aggressively regulating momentum during high LR phases, it maintains stability and actively orchestrates the synchronized spikes and drops across the entire loss landscape.
+
+### 6.4 Rank-1 Ratio (Manifold Collapse)
+The primary indicator of victory over manifold collapse.
 <p float="left">
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/l40_rank1_ratio%201.png" width="49%" />
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/l40_rank1_ratio%202.png" width="49%" />
 </p>
 
-### 6.4 Prior Loss (Sphericity Penalty)
+**Interpretation:** Expected to drop significantly. A value below 0.40 indicates that the latent space is fully isotropic, uniformly utilizing all dimensions rather than collapsing into a narrow cone (which happens when tokens merely copy each other).
+
+### 6.5 Prior Loss (Sphericity Penalty)
 Measures the penalty for deviations from the isotropic Gaussian distribution.
 <p float="left">
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/full_l40_prior%201.png" width="49%" />
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/full_l40_prior%202.png" width="49%" />
 </p>
 
-### 6.5 Delta Cosine (Trajectory Tracking)
+**Interpretation:** Expected to drop as the student learns to pack its vectors into a spherical, normalized N(0,1) space. A low final value means the manifold is perfectly prepared for Gaussian denoising in Phase 3.
+
+### 6.6 Delta Cosine (Trajectory Tracking)
 Tracks the correctness of the "direction" of the prediction steps across different masking levels ($t_{0 \rightarrow 1}$, $t_{1 \rightarrow 2}$, $t_{2 \rightarrow 3}$).
 
 **Masking Transition $t_{0 \rightarrow 1}$ (25% to 50% clear):**
@@ -93,11 +117,15 @@ Tracks the correctness of the "direction" of the prediction steps across differe
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t01%202.png" width="49%" />
 </p>
 
+**Interpretation:** Expected to grow towards 1.0. A high cosine similarity confirms the student accurately guesses the earliest, most abstract direction of logical thought.
+
 **Masking Transition $t_{1 \rightarrow 2}$ (50% to 75% clear):**
 <p float="left">
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t12%201.png" width="49%" />
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t12%202.png" width="49%" />
 </p>
+
+**Interpretation:** Expected to grow. Confirms directional stability in the middle of the reasoning trajectory.
 
 **Masking Transition $t_{2 \rightarrow 3}$ (75% to 100% clear):**
 <p float="left">
@@ -105,11 +133,15 @@ Tracks the correctness of the "direction" of the prediction steps across differe
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/train%20delta_cos_l40_t23%202.png" width="49%" />
 </p>
 
-### 6.6 Norm CV (Surface Distribution)
+**Interpretation:** Expected to grow. Shows precision in the final semantic refinement step before full clarity. High values across all $t$ transitions prove the model mastered the full diffusion trajectory, not just the endpoints.
+
+### 6.7 Norm CV (Surface Distribution)
 The coefficient of variation for vector norms. Confirms that vectors strictly lie on the surface of the hypersphere rather than being scattered randomly in volume. *Note: Introduced during Run 2, hence only one chart is available.*
 <p align="center">
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/val%20norm_cv_l40_raw.png" width="60%" />
 </p>
+
+**Interpretation:** Expected to drop. A value approaching zero means all vectors have nearly identical norms, forming a perfect hyper-spherical shell geometry required for pure angular (cosine) attention and diffusion priors.
 
 ## 7. Linear Probing (NLI) Test: Evaluating Latent Space Quality
 Because we entirely decoupled `MSE` and abandoned direct language output in Phase 2, we need a metric to confirm that the student actually "understands" the logic, rather than just memorizing the geometry of noise.
