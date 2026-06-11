@@ -75,6 +75,12 @@ Validation Loss is the most critical metric for identifying the optimal checkpoi
 
 **Interpretation:** Expected to strictly decline over time without explosive spikes. A lower final value indicates that the topological alignment and the diffusion priors have harmonized without conflicting.
 
+> **Note on the discontinuity between Run 1 and Run 2:** The validation loss at the end of Run 1 (~18k) and at the start of Run 2 are **not directly comparable** because the loss function itself changed. Two modifications were introduced at the restart (ADR-029, ADR-030):
+> 1. **Variance Floor + Scale-Invariant Covariance (ADR-029):** Added a quadratic penalty `relu(0.5 - v_state)²` to intermediate layers (20, 30) and switched their covariance matrix to Pearson-style (L2-normalized vectors). This closed the shortcut where layers 20/30 could collapse variance to zero. These new penalty terms add to the total loss immediately, causing an apparent upward jump.
+> 2. **`cov_loss` weight 0.1 → 0.3 in `prior_loss` (ADR-030):** The coefficient before `cov_loss` inside `L_prior` (layer 40) was tripled to accelerate isotropization. This alone increases `train/full_l40_prior` by ~1.3–1.5× from step 18k onward.
+>
+> The higher loss at the start of Run 2 is therefore **architecturally expected** — it reflects a stricter and more honest loss landscape, not a regression.
+
 ### 6.2 Train Loss
 The overall convergence trend, showing the stabilization after the architecture restart at 18k.
 <p float="left">
@@ -83,6 +89,8 @@ The overall convergence trend, showing the stabilization after the architecture 
 </p>
 
 **Interpretation:** Expected to steadily decline. The sudden, cyclical drops correspond to the aggressive scheduler cycles (LR/Beta breakthroughs). The final low values confirm structural convergence.
+
+> **Note on the Run 1 → Run 2 discontinuity:** The train loss jump at step 18k has the same cause as described in §6.1 — the loss function was made structurally stricter (ADR-029: Variance Floor for layers 20/30; ADR-030: 3× stronger `cov_loss` weight for layer 40). The cyclical spike pattern within Run 2 reflects the Anti-Phase Beta scheduler (LR peak → momentum drop → manifold shaken → breakthrough drop) which was also active in Run 1 but shows more pronounced effect in Run 2 due to the higher baseline loss.
 
 ### 6.3 Optimizer Dynamics: Learning Rate and Beta
 Dynamic scheduling was critical for breaking out of local minima and causing the periodic breakthroughs seen across all metrics.
@@ -107,7 +115,7 @@ The primary indicator of victory over manifold collapse.
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/l40_rank1_ratio%202.png" width="49%" />
 </p>
 
-**Interpretation:** Expected to drop significantly. The Rank-1 Ratio measures the proportion of variance explained by the first principal component (PCA) of the latent batch. A value of 1.0 implies a catastrophic dimensional collapse (where all token vectors collapse into a single line). The graphs show the manifold steadily expanding throughout Run 2; the precise eval-script measurement at the 36k checkpoint yields **0.62** (see §8.4). While not perfectly isotropic, this confirms the space maintains sufficient dimensional bandwidth to encode distinct semantic concepts rather than suffering a complete rank collapse.
+**Interpretation:** Expected to drop significantly. The Rank-1 Ratio measures the proportion of variance explained by the first principal component (PCA) of the latent batch. A value of 1.0 implies a catastrophic dimensional collapse (where all token vectors collapse into a single line). The graphs show the manifold steadily expanding throughout Run 2; the precise eval-script measurement at the 36k checkpoint yields **0.65** (see §8.4). While not perfectly isotropic, this confirms the space maintains sufficient dimensional bandwidth to encode distinct semantic concepts rather than suffering a complete rank collapse.
 
 ### 6.5 Prior Loss (Sphericity Penalty)
 Measures the penalty for deviations from the isotropic Gaussian distribution.
