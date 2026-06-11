@@ -226,7 +226,7 @@ The results require careful contextual interpretation, as the numbers are not hi
 
 This test will serve as the final bridge between the abstract topology of Phase 2 and the onset of diffusion processes in Phase 3.
 
-## 8. Geometry of the l0 Diffusion Input Space
+## 8. Geometry of the l0 (layer 0) Diffusion Input Space
 
 ### 8.1 Motivation and Context
 
@@ -234,7 +234,7 @@ All the metrics discussed in Sections 6 and 7 concern the **l40 space** — the 
 
 ```
 Qwen embeddings
-    → Input Projector → (mu, logvar) → z = mu + ε·σ  [l0, 1024-dim]
+    → Input Projector → (mu, logvar) → z = mu + ε·σ  [l0, layer 0, 1024-dim]
         → DUS layer 1 → ... → DUS layer 40            [l40, 1024-dim]
                 → Output Projector (3 layers) → back to l0
                   ↑________________________________↑

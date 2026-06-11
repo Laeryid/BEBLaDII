@@ -115,7 +115,7 @@ The primary indicator of victory over manifold collapse.
   <img src="../storage/experiments/20260607%20Phase%202%20Reasoning%20and%20Topology/l40_rank1_ratio%202.png" width="49%" />
 </p>
 
-**Interpretation:** Expected to drop significantly. The Rank-1 Ratio measures the proportion of variance explained by the first principal component (PCA) of the latent batch. A value of 1.0 implies a catastrophic dimensional collapse (where all token vectors collapse into a single line). The graphs show the manifold steadily expanding throughout Run 2; the precise eval-script measurement at the 36k checkpoint yields **0.62** (see §8.4). While not perfectly isotropic, this confirms the space maintains sufficient dimensional bandwidth to encode distinct semantic concepts rather than suffering a complete rank collapse.
+**Interpretation:** Expected to drop significantly. The Rank-1 Ratio measures the proportion of variance explained by the first principal component (PCA) of the latent batch. A value of 1.0 implies a catastrophic dimensional collapse (where all token vectors collapse into a single line). The graphs show the manifold steadily expanding throughout Run 2; the precise eval-script measurement at the 36k checkpoint yields **0.65** (see §8.4). While not perfectly isotropic, this confirms the space maintains sufficient dimensional bandwidth to encode distinct semantic concepts rather than suffering a complete rank collapse.
 
 ### 6.5 Prior Loss (Sphericity Penalty)
 Measures the penalty for deviations from the isotropic Gaussian distribution.
