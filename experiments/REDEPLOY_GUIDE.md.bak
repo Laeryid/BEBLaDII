@@ -26,7 +26,7 @@ ssh-add $HOME\.ssh\id_ed25519
 ```
 2. **Подключение**: добаьте флаг `-A` (проброс агента):
 ```powershell
-gcloud compute tpus tpu-vm ssh bebladii-v4-8 --zone us-central2-b -- -A -L 8888:localhost:8888
+gcloud compute tpus tpu-vm ssh bebladii-v6e-4 --zone europe-west4-a -- -A -L 8888:localhost:8888
 ```
 
 ### В. Клонирование репозитория
