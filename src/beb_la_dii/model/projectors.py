@@ -146,3 +146,63 @@ class FeatureProjector(BEComponent):
         res = self.residual_proj(x) * self.residual_scale
         
         return out + res
+
+
+class OutputProjector(BEComponent):
+    """
+    Projector from ModernBERT latent space (L40) back to L0 diffusion space.
+    Architecture: Linear(1024->2048) -> GELU -> Linear(2048->1024) [-> GELU -> Linear(1024->1024)]
+    Без LayerNorm на входе, чтобы сохранить сигнал norm_cv (0.089).
+    """
+    def __init__(self, component_id="bert_to_diffusion_output", version="v1.0", config=None):
+        input_dim = config.get("input_dim", 1024) if config else 1024
+        hidden_dim = config.get("hidden_dim", 2048) if config else 2048
+        output_dim = config.get("output_dim", 1024) if config else 1024
+        num_layers = config.get("num_layers", 2) if config else 2
+        
+        super().__init__(component_id, version, {
+            "input_dim": input_dim,
+            "hidden_dim": hidden_dim,
+            "output_dim": output_dim,
+            "num_layers": num_layers
+        })
+        
+        layers = []
+        # Слой 1
+        layers.append(nn.Linear(input_dim, hidden_dim))
+        layers.append(nn.GELU())
+        
+        if num_layers == 2:
+            # Слой 2 (финальный)
+            layers.append(nn.Linear(hidden_dim, output_dim))
+        elif num_layers == 3:
+            # Слой 2
+            layers.append(nn.Linear(hidden_dim, output_dim))
+            layers.append(nn.GELU())
+            # Слой 3 (финальный)
+            layers.append(nn.Linear(output_dim, output_dim))
+        else:
+            raise ValueError(f"num_layers={num_layers} не поддерживается (только 2 или 3).")
+            
+        self.proj = nn.Sequential(*layers)
+        self._init_weights()
+
+    def _init_weights(self):
+        """Стабилизированная инициализация."""
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, mean=0.0, std=0.02)
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+                    
+    @classmethod
+    def from_scratch(cls, component_id="bert_to_diffusion_output", version="v1.0",
+                     weights_path=None, **kwargs):
+        """Создаёт OutputProjector с нуля."""
+        config = kwargs.get("config", {"input_dim": 1024, "hidden_dim": 2048, "output_dim": 1024, "num_layers": 2})
+        instance = cls(component_id=component_id, version=version, config=config)
+        instance.load_weights(weights_path)
+        return instance
+        
+    def forward(self, x):
+        return self.proj(x)

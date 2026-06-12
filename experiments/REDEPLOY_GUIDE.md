@@ -164,7 +164,9 @@ tail -f training.log
 
 ## 9. Проверка готовности
 Запустите скрипт верификации:
-`python scripts/verify_new_tpu.py`
+```bash
+python scripts/verify_new_tpu.py
+```
 
 Если JAX видит 4 устройства, а PyTorch проходит тест умножения матриц — сервер готов.
 

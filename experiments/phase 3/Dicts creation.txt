@@ -1,0 +1,167 @@
+PS C:\Experiments\BEBLaDII> .venv\Scripts\python.exe "experiments/phase 3/build_dictionaries.py" --checkpoint "storage/components/model/latentBERT/Phase 2/latest_checkpoint.pt" --batch-size 128 --device cpu --output-dir "storage/experiments/phase3/dictionaries"
+============================================================
+Phase 3: Build Dictionaries
+============================================================
+  Чекпоинт:  storage/components/model/latentBERT/Phase 2/latest_checkpoint.pt
+  Device:    cpu
+  Batch:     128
+  Output:    storage/experiments/phase3/dictionaries
+
+[1/5] Загрузка токенайзера...
+  Vocab size: 151643
+  Строим token_map (id → текст)...
+  thought_token '<|thought|>' → ids=[27, 91, 60565, 91, 29] (5 ток.)
+
+[2/5] Создание DUS (latentBERT) скелета...
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+
+[3/5] Создание InputProjector...
+
+[4/5] Загрузка весов Phase 2...
+  Загрузка чекпоинта: storage/components/model/latentBERT/Phase 2/latest_checkpoint.pt
+  DUS: загружено 0/242 параметров
+  InputProjector: загружено 0/10 параметров
+  WARN: Ни один параметр не загружен! Проверьте формат чекпоинта.
+  Первые 5 ключей в чекпоинте: ['model_state_dict', 'optimizer_state_dict', 'scheduler_state_dict', 'global_step', 'epoch']
+
+  Получение embedding-таблицы Qwen...
+  Поиск embedding-таблицы Qwen в чекпоинте...
+  Embeddings не найдены в чекпоинте. Загружаем из HF: deepseek-ai/DeepSeek-R1-Distill-Qwen-7B
+  (Загружается только embedding layer, ~1.2 GB)
+`torch_dtype` is deprecated! Use `dtype` instead!
+Fetching 2 files:   0%|                                                                                       | 0/2 [00:00<?, ?it/s]Xet Storage is enabled for this repo, but the 'hf_xet' package is not installed. Falling back to regular HTTP download. For better performance, install the package with: `pip install huggingface_hub[hf_xet]` or `pip install hf_xet`
+model-00002-of-000002.safetensors: 100%|███████████████████████████████████████████████████████| 6.62G/6.62G [02:01<00:00, 54.5MB/s]
+C:\Experiments\BEBLaDII\.venv\Lib\site-packages\huggingface_hub\file_download.py:143: UserWarning: `huggingface_hub` cache-system uses symlinks by default to efficiently store duplicated files but your machine does not support them in C:\Users\hp\.cache\huggingface\hub\models--deepseek-ai--DeepSeek-R1-Distill-Qwen-7B. Caching files will still work but in a degraded version that might require more space on your disk. This warning can be disabled by setting the `HF_HUB_DISABLE_SYMLINKS_WARNING` environment variable. For more details, see https://huggingface.co/docs/huggingface_hub/how-to-cache#limitations.
+To support symlinks on Windows, you either need to activate Developer Mode or to run Python as an administrator. In order to activate developer mode, see this article: https://docs.microsoft.com/en-us/windows/apps/get-started/enable-your-device-for-development
+  warnings.warn(message)
+Fetching 2 files: 100%|███████████████████████████████████████████████████████████████████████████████| 2/2 [02:02<00:00, 61.34s/it]
+Loading checkpoint shards: 100%|██████████████████████████████████████████████████████████████████████| 2/2 [01:26<00:00, 43.24s/it]
+generation_config.json: 100%|██████████████████████████████████████████████████████████████████████| 181/181 [00:00<00:00, 1.61MB/s]
+  Embedding table загружена: torch.Size([152064, 3584])
+  Embedding table: torch.Size([152064, 3584])
+
+[5/5] Построение словарей D_X0 и D_L40...
+  Словарь: 152064 токенов | batch_size=128 | device=cpu
+  Шаблон: [27, 91, 60565, 91, 29] + [token_id], seq_len=6, вектор на поз. -1
+  [50/1188] Обработано: 6400/152064 токенов | Прошло: 5.1 мин | ETA: 115.2 мин
+  [100/1188] Обработано: 12800/152064 токенов | Прошло: 9.8 мин | ETA: 106.7 мин
+  [150/1188] Обработано: 19200/152064 токенов | Прошло: 14.5 мин | ETA: 100.7 мин
+  [200/1188] Обработано: 25600/152064 токенов | Прошло: 19.6 мин | ETA: 96.7 мин
+  [250/1188] Обработано: 32000/152064 токенов | Прошло: 24.5 мин | ETA: 91.9 мин
+  [300/1188] Обработано: 38400/152064 токенов | Прошло: 29.8 мин | ETA: 88.1 мин
+  [350/1188] Обработано: 44800/152064 токенов | Прошло: 35.0 мин | ETA: 83.9 мин
+  [400/1188] Обработано: 51200/152064 токенов | Прошло: 40.7 мин | ETA: 80.1 мин
+  [450/1188] Обработано: 57600/152064 токенов | Прошло: 45.6 мин | ETA: 74.9 мин
+  [500/1188] Обработано: 64000/152064 токенов | Прошло: 50.1 мин | ETA: 68.9 мин
+  [550/1188] Обработано: 70400/152064 токенов | Прошло: 54.9 мин | ETA: 63.7 мин
+  [600/1188] Обработано: 76800/152064 токенов | Прошло: 59.7 мин | ETA: 58.5 мин
+  [650/1188] Обработано: 83200/152064 токенов | Прошло: 64.3 мин | ETA: 53.2 мин
+  [700/1188] Обработано: 89600/152064 токенов | Прошло: 68.9 мин | ETA: 48.0 мин
+  [750/1188] Обработано: 96000/152064 токенов | Прошло: 73.9 мин | ETA: 43.1 мин
+  [800/1188] Обработано: 102400/152064 токенов | Прошло: 78.4 мин | ETA: 38.0 мин
+  [850/1188] Обработано: 108800/152064 токенов | Прошло: 83.1 мин | ETA: 33.1 мин
+  [900/1188] Обработано: 115200/152064 токенов | Прошло: 87.7 мин | ETA: 28.1 мин
+  [950/1188] Обработано: 121600/152064 токенов | Прошло: 92.4 мин | ETA: 23.2 мин
+  [1000/1188] Обработано: 128000/152064 токенов | Прошло: 97.1 мин | ETA: 18.3 мин
+  [1050/1188] Обработано: 134400/152064 токенов | Прошло: 101.9 мин | ETA: 13.4 мин
+  [1100/1188] Обработано: 140800/152064 токенов | Прошло: 106.7 мин | ETA: 8.5 мин
+  [1150/1188] Обработано: 147200/152064 токенов | Прошло: 111.5 мин | ETA: 3.7 мин
+Building dictionaries: 100%|███████████████████████████████████████████████████████████████| 1188/1188 [1:55:04<00:00,  5.81s/batch]
+  Готово за 115.2 мин
+  D_X0:  shape=torch.Size([152064, 1024]), norm_cv=0.1600
+  D_L40: shape=torch.Size([152064, 1024]), norm_cv=0.1192
+
+Нормализация D_L40...
+
+--- Sanity Check: alpha-разложения ---
+  tau=0.1, top-k=8
+
+  Запрос: '<' (id=27)
+    ✓ [1] '<'                  α=0.126  (id=27)
+      [2] ' Actress'           α=0.125  (id=78439)
+      [3] ' Arrival'           α=0.125  (id=92098)
+      [4] ' white'             α=0.125  (id=4158)
+      [5] '精准'                 α=0.125  (id=102146)
+      [6] '>To'                α=0.125  (id=93376)
+      [7] '交融'                 α=0.125  (id=116794)
+      [8] '샙'                  α=0.125  (id=150973)
+
+  Запрос: ' the' (id=279)
+    ✓ [1] ' the'               α=0.126  (id=279)
+      [2] 'met'                α=0.125  (id=4059)
+      [3] '.Align'             α=0.125  (id=74222)
+      [4] 'addChild'           α=0.125  (id=44852)
+      [5] 'nodiscard'          α=0.125  (id=82334)
+      [6] '搜狐'                 α=0.125  (id=101591)
+      [7] ' incom'             α=0.125  (id=52890)
+      [8] 'identally'          α=0.125  (id=56122)
+
+  Запрос: ' is' (id=374)
+    ✓ [1] ' is'                α=0.125  (id=374)
+      [2] '下方'                 α=0.125  (id=106937)
+      [3] 'tml'                α=0.125  (id=3864)
+      [4] ' worden'            α=0.125  (id=30179)
+      [5] 'Tôi'                α=0.125  (id=140000)
+      [6] '传播'                 α=0.125  (id=101170)
+      [7] '_ter'               α=0.125  (id=72493)
+      [8] ' tasted'            α=0.125  (id=60480)
+
+  Запрос: ' cat' (id=8251)
+    ✓ [1] ' cat'               α=0.125  (id=8251)
+      [2] ' authorize'         α=0.125  (id=36826)
+      [3] ' Swipe'             α=0.125  (id=63800)
+      [4] '_NEED'              α=0.125  (id=86068)
+      [5] '_NOTIFY'            α=0.125  (id=57614)
+      [6] '�'                  α=0.125  (id=99)
+      [7] ' dio'               α=0.125  (id=64470)
+      [8] '(sem'               α=0.125  (id=83058)
+
+  Запрос: ' math' (id=6888)
+    ✓ [1] ' math'              α=0.831  (id=6888)
+      [2] ' incremented'       α=0.028  (id=87819)
+      [3] 'MERCHANTABILITY'    α=0.025  (id=64769)
+      [4] '塌'                  α=0.025  (id=103464)
+      [5] ' gruesome'          α=0.023  (id=85928)
+      [6] ' Del'               α=0.023  (id=7313)
+      [7] ' nums'              α=0.023  (id=10307)
+      [8] ' vọng'              α=0.022  (id=130949)
+
+  Запрос: ' step' (id=3019)
+    ✓ [1] ' step'              α=0.679  (id=3019)
+      [2] ' chậm'              α=0.055  (id=138117)
+      [3] '】\n\n'              α=0.046  (id=44360)
+      [4] ' Shannon'           α=0.045  (id=53663)
+      [5] ' Hogwarts'          α=0.045  (id=77153)
+      [6] 'śl'                 α=0.045  (id=126693)
+      [7] 'orted'              α=0.044  (id=13595)
+      [8] '进'                  α=0.042  (id=41299)
+
+  Запрос: 'думать' (id=143710)
+    ✓ [1] 'думать'             α=0.128  (id=143710)
+      [2] ' NORTH'             α=0.125  (id=74759)
+      [3] 'elter'              α=0.125  (id=17872)
+      [4] ' blender'           α=0.125  (id=61795)
+      [5] ' Perry'             α=0.125  (id=30321)
+      [6] ' SQLite'            α=0.124  (id=28334)
+      [7] '긴'                  α=0.124  (id=133507)
+      [8] '-material'          α=0.123  (id=67318)
+
+Сохранение словарей...
+  Сохранение token_map (151643 токенов)...
+  D_X0: storage/experiments/phase3/dictionaries\D_X0.pt (297 MB)
+  D_L40: storage/experiments/phase3/dictionaries\D_L40.pt (297 MB)
+  D_L40_norm: storage/experiments/phase3/dictionaries\D_L40_norm.pt (297 MB)
+  token_map: storage/experiments/phase3/dictionaries\token_map.json (1.5 MB)
+
+============================================================
+Итоговые метрики:
+  D_X0  norm_cv: 0.1600  (ожидается ~0.016 как у l0)
+  D_L40 norm_cv: 0.1192  (ожидается ~0.089 как у l40)
+
+Загрузка на GCS:
+  gsutil cp storage/experiments/phase3/dictionaries\D_X0.pt gs://bebladii-weigths/phase3/dictionaries/D_X0.pt
+  gsutil cp storage/experiments/phase3/dictionaries\D_L40.pt gs://bebladii-weigths/phase3/dictionaries/D_L40.pt
+  gsutil cp storage/experiments/phase3/dictionaries\D_L40_norm.pt gs://bebladii-weigths/phase3/dictionaries/D_L40_norm.pt
+  gsutil cp storage/experiments/phase3/dictionaries\token_map.json gs://bebladii-weigths/phase3/dictionaries/token_map.json
+============================================================
