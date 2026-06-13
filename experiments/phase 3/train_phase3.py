@@ -107,8 +107,9 @@ class PretokenizedDataset(Dataset):
         print(f"Loading pre-tokenized data from {data_dir}...")
         # from_folder склеит все parquet файлы в один логический датасет
         self.ds = IndexedParquetDataset.from_folder(data_dir, auto_fill=True)
-        # Оптимизируем чтение
-        self.ds = self.ds.shuffle()
+        # rg_buffer: количество row-groups в буфере памяти.
+        # Сэмпл берётся из буфера, группа заменяется только когда все её элементы выбраны.
+        self.ds = self.ds.shuffle(rg_buffer=32)
         print(f"Total samples: {len(self.ds)}")
 
     def __len__(self):
@@ -137,15 +138,28 @@ class PretokenizedDataset(Dataset):
 # Функции Loss и Metrics
 # =============================================================================
 
-def soft_dictionary_matching(L40_ctx, D_X0, D_L40_norm, tau, k):
+def soft_dictionary_matching(L40_ctx, D_X0, D_L40_norm_sphere, whitening_mu, whitening_sigma, tau, k):
+    """
+    Soft Dictionary Matching с отбеливанием пространства L40.
+    
+    Отбеливание (whitening) устраняет доминирующие компоненты пространства
+    (rank1_ratio ~0.7), не меняя семантической структуры соседей.
+    Веса alpha вычисляются по сферическому пространству, но применяются
+    к оригинальным векторам D_X0 — алгоритм разложения при этом корректен.
+    """
     B, seq_len, D = L40_ctx.shape
     L40_flat = L40_ctx.reshape(-1, D)
-    L40_norm = F.normalize(L40_flat, dim=-1)
     
-    scores = (L40_norm @ D_L40_norm.T) / tau
+    # Отбеливание: сжимаем доминирующие оси до масштаба остальных
+    L40_sphere = (L40_flat - whitening_mu) / whitening_sigma
+    L40_norm = F.normalize(L40_sphere, dim=-1)
+    
+    # Поиск соседей по сферическому пространству
+    scores = (L40_norm @ D_L40_norm_sphere.T) / tau
     topk_scores, topk_idx = torch.topk(scores, k=k, dim=-1)
     alpha = F.softmax(topk_scores, dim=-1)
     
+    # Сборка целевого вектора из ОРИГИНАЛЬНЫХ векторов Qwen (не сферических!)
     top_dx0 = D_X0[topk_idx]
     Z_hat_raw = (alpha.unsqueeze(-1) * top_dx0).sum(dim=1)
     
@@ -156,8 +170,6 @@ def soft_dictionary_matching(L40_ctx, D_X0, D_L40_norm, tau, k):
     eps = 1e-9
     H = -(alpha * torch.log(alpha + eps)).sum(dim=-1)
     k_eff = torch.exp(H).mean().item()
-    
-    # top1-self (доля веса, приходящаяся на top-1 токен)
     top1_self = alpha[:, 0].mean().item()
     
     return Z_hat_target.reshape(B, seq_len, D), k_eff, top1_self
@@ -236,13 +248,26 @@ def train_tpu(args):
     # 3. Словари
     if rank == 0: print("Загрузка словарей...")
     D_X0 = torch.load("./data/phase3/dictionaries/D_X0.pt", map_location="cpu").to(device).float()
-    D_L40_norm = torch.load("./data/phase3/dictionaries/D_L40_norm.pt", map_location="cpu").to(device).float()
+    # D_L40 сырой (ненормализованный) — из него вычисляем параметры отбеливания
+    D_L40_raw = torch.load("./data/phase3/dictionaries/D_L40.pt", map_location="cpu").float()
+    whitening_mu = D_L40_raw.mean(dim=0, keepdim=True).to(device)
+    whitening_sigma = (D_L40_raw.std(dim=0, keepdim=True) + 1e-6).to(device)
+    # Сферический словарь: отбеливаем и нормируем
+    D_L40_sphere = F.normalize((D_L40_raw.to(device) - whitening_mu) / whitening_sigma, dim=-1)
+    del D_L40_raw
+    if rank == 0: print(f"  Whitening: mu_norm={whitening_mu.norm():.3f}, sigma_max={whitening_sigma.max():.3f}, sigma_min={whitening_sigma.min():.6f}")
     
     # 4. Данные
+    from torch_xla.distributed.parallel_loader import MpDeviceLoader
     dataset = PretokenizedDataset("./data/phase3/train_data/")
     from torch.utils.data.distributed import DistributedSampler
     sampler = DistributedSampler(dataset, num_replicas=num_devices, rank=rank, shuffle=True)
-    loader = DataLoader(dataset, batch_size=args.batch_size, sampler=sampler, num_workers=2)
+    loader_raw = DataLoader(
+        dataset, batch_size=args.batch_size, sampler=sampler,
+        num_workers=8, prefetch_factor=4, persistent_workers=True, pin_memory=False
+    )
+    # MpDeviceLoader асинхронно переносит батчи на TPU, не блокируя граф
+    loader = MpDeviceLoader(loader_raw, device)
     
     optimizer = torch.optim.AdamW(output_projector.parameters(), lr=args.learning_rate)
     
@@ -255,9 +280,9 @@ def train_tpu(args):
         for batch in loader:
             if global_step >= args.steps:
                 break
-                
-            input_ids = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
+            
+            input_ids = batch["input_ids"]
+            attention_mask = batch["attention_mask"]
             
             xs.mark_sharding(input_ids, mesh, ('fsdp', None))
             xs.mark_sharding(attention_mask, mesh, ('fsdp', None))
@@ -271,9 +296,9 @@ def train_tpu(args):
                 dus_out = student.model(inputs_embeds=z, attention_mask=attention_mask)
                 L40_ctx = dus_out.last_hidden_state
                 
-                # Soft разложение
+                # Soft разложение с отбеливанием
                 Z_hat_target, k_eff, top1_self = soft_dictionary_matching(
-                    L40_ctx, D_X0, D_L40_norm, args.tau, args.k
+                    L40_ctx, D_X0, D_L40_sphere, whitening_mu, whitening_sigma, args.tau, args.k
                 )
             
             Z_pred = output_projector(L40_ctx)
@@ -286,12 +311,16 @@ def train_tpu(args):
             pbar.update(1)
             
             if rank == 0 and global_step % 10 == 0:
+                # k_eff и top1_self уже вычислены через .item() внутри soft_dictionary_matching
+                # _norm_cv вызываем реже (каждые 50 шагов) чтобы не блокировать граф
                 metrics = {
                     "train/loss": loss.item(),
                     "train/k_eff": k_eff,
                     "train/top1_self": top1_self,
-                    "train/op_norm_cv": _norm_cv(Z_pred.detach())
                 }
+                if global_step % 50 == 0:
+                    xm.mark_step()  # сброс графа перед CPU-операцией
+                    metrics["train/op_norm_cv"] = _norm_cv(Z_pred.detach().cpu())
                 try:
                     import wandb
                     if wandb.run is not None:
