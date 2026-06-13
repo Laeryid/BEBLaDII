@@ -253,3 +253,14 @@ experiments/phase 3/
 - [`reports/phase2_reasoning_and_topology_report.md`](file:///C:/Experiments/BEBLaDII/reports/phase2_reasoning_and_topology_report.md)
 - [`experiments/phase 2/train_phase1_TPU_fsdp.py`](file:///C:/Experiments/BEBLaDII/experiments/phase%202/train_phase1_TPU_fsdp.py)
 - ADR-015, ADR-016, ADR-025, ADR-029, ADR-030
+
+## Запуск
+Для фонового запуска на TPU VM с перенаправлением вывода в лог-файл (чтобы процесс не
+  умер, если отключится SSH), используй следующие команды:
+
+```bash
+    nohup python "experiments/phase 3/train_phase3.py" --tau 0.05 --num-layers 2 --steps  2000 --run-name "tau_005" > phase3_training.log 2>&1 &
+
+    tail -f phase3_training.log
+```
+  И затем сразу смотри логи в реальном времени:

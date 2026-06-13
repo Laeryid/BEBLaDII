@@ -235,8 +235,8 @@ def train_tpu(args):
     
     # 3. Словари
     if rank == 0: print("Загрузка словарей...")
-    D_X0 = torch.load("./data/phase3/dictionaries/D_X0.pt", map_location=device).float()
-    D_L40_norm = torch.load("./data/phase3/dictionaries/D_L40_norm.pt", map_location=device).float()
+    D_X0 = torch.load("./data/phase3/dictionaries/D_X0.pt", map_location="cpu").to(device).float()
+    D_L40_norm = torch.load("./data/phase3/dictionaries/D_L40_norm.pt", map_location="cpu").to(device).float()
     
     # 4. Данные
     dataset = PretokenizedDataset("./data/phase3/train_data/")
