@@ -10,6 +10,7 @@ import subprocess
 import time
 import json
 import random
+import numpy as np
 
 import torch
 import torch.nn as nn
