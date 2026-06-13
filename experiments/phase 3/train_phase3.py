@@ -292,8 +292,12 @@ def train_tpu(args):
                     "train/top1_self": top1_self,
                     "train/op_norm_cv": _norm_cv(Z_pred.detach())
                 }
-                if "wandb" in globals() and wandb is not None:
-                    wandb.log(metrics, step=global_step)
+                try:
+                    import wandb
+                    if wandb.run is not None:
+                        wandb.log(metrics, step=global_step)
+                except ImportError:
+                    pass
                 
                 pbar.set_postfix({
                     "loss": f"{metrics['train/loss']:.4f}",
