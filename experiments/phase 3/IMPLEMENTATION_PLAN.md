@@ -127,10 +127,21 @@ Z_hat_target = normalize(Z_hat_raw) * L_expected      # [seq_len, 1024]
 
 ### Шаг 3. Данные предложений
 
-- **Источник:** Magpie-Reasoning-V2 + OpenThoughts-114k (те же, что Phase 2)
-- **Длина:** 200–500 токенов (короче, чем Phase 2; Growing Mask не нужен)
-- **Объём:** ~150k примеров
-- **Формат:** Parquet, pre-tokenized Qwen2.5
+- **Источник:** Magpie-Reasoning-V2 + OpenThoughts-114k + CulturaX (RU + CS)
+- **Длина:** до 512 токенов включая якорь `<|thought|>` (chunk_size = 512 − len(anchor_ids))
+- **Объём:** ~150k чанков (50k Magpie + 50k OT + 25k CulturaX RU + 25k CulturaX CS)
+- **Формат:** Parquet, колонка `input_ids: list[int]`
+
+> [!IMPORTANT]
+> **Датасет pre-tokenized.** Файлы уже содержат токены (`input_ids`), а не сырой текст.
+> Токенизация выполнена в `prepare_phase3_data.py` на этапе подготовки.
+>
+> **Следствие:** тренировочный скрипт (`train_phase3_TPU.py`) **не должен**
+> загружать токенизатор и не должен вызывать `tokenizer.encode()`.
+> Батч подаётся напрямую в embedding-таблицу Qwen через `qwen_embed_weight[input_ids]`.
+
+**GCS путь к датасету:** `gs://bebladii-datasets-us/phase 3/train_data/`  
+**GCS путь к словарям:** `gs://bebladii-datasets-us/phase 3/dictionaries/`
 
 ---
 
