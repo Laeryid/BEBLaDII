@@ -284,12 +284,16 @@ def build_dictionaries_with_qwen_emb(
             # InputProjector.forward(x) ожидает x: [B, seq_len, 3584]
             z, mu, logvar = input_projector(seq_emb)
             # captured_mu["x0_sphere"] заполнен hook'ом: [B, seq_len, 1024]
+            if args.device == "xla":
+                xm.mark_step()
             x0_batch = captured_mu["x0_sphere"][:, -1, :].cpu().float()   # [B, 1024] — поз. -1 = цель
             all_x0.append(x0_batch)
 
             if not only_x0:
                 # --- Forward: DUS (latentBERT) ---
                 # z: [B, seq_len, 1024] — выход InputProjector (в eval: z == mu)
+                if args.device == "xla":
+                    xm.mark_step()
                 dus_output = student.model(
                     inputs_embeds=z,
                     attention_mask=attention_mask,
@@ -443,7 +447,12 @@ def load_qwen_embeddings(checkpoint_path: str, tokenizer_id: str) -> torch.Tenso
 
 def main():
     args = parse_args()
-    device = torch.device(args.device)
+    if args.device == "xla":
+        import torch_xla.core.xla_model as xm
+        device = xm.xla_device()
+        print("  Используется TPU (XLA)")
+    else:
+        device = torch.device(args.device)
 
     print("=" * 60)
     print("Phase 3: Build Dictionaries")
