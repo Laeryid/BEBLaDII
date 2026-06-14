@@ -445,6 +445,21 @@ def load_qwen_embeddings(checkpoint_path: str, tokenizer_id: str) -> torch.Tenso
 # Точка входа
 # ---------------------------------------------------------------------------
 
+def download_checkpoint_if_needed(checkpoint_path: str) -> str:
+    if checkpoint_path.startswith("gs://"):
+        local_path = os.path.basename(checkpoint_path)
+        if not os.path.exists(local_path):
+            print(f"  Скачивание чекпоинта из GCS: {checkpoint_path} -> {local_path} ...")
+            import subprocess
+            try:
+                subprocess.run(["gcloud", "storage", "cp", checkpoint_path, local_path], check=True)
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                subprocess.run(["gsutil", "cp", checkpoint_path, local_path], check=True)
+        else:
+            print(f"  Чекпоинт {local_path} уже существует локально.")
+        return local_path
+    return checkpoint_path
+
 def main():
     args = parse_args()
     if args.device == "xla":
@@ -453,6 +468,9 @@ def main():
         print("  Используется TPU (XLA)")
     else:
         device = torch.device(args.device)
+
+    # Загрузка чекпоинта из Cloud Storage, если указан gs://
+    local_checkpoint_path = download_checkpoint_if_needed(args.checkpoint)
 
     print("=" * 60)
     print("Phase 3: Build Dictionaries")
@@ -500,11 +518,11 @@ def main():
 
     # --- 3. Загрузка весов Phase 2 ---
     print("\n[4/5] Загрузка весов Phase 2...")
-    load_phase2_weights(args.checkpoint, student, input_projector)
+    print(f"  Загрузка чекпоинта: {local_checkpoint_path}")
+    load_phase2_weights(local_checkpoint_path, student, input_projector)
 
-    # --- 4. Embedding-таблица Qwen ---
-    print("\n  Получение embedding-таблицы Qwen...")
-    qwen_embed_weight = load_qwen_embeddings(args.checkpoint, args.tokenizer_id)
+    # 5. Эмбеддинги Qwen
+    qwen_embed_weight = load_qwen_embeddings(local_checkpoint_path, args.tokenizer_id)
     # Приводим к float32 для стабильности CPU-инференса
     qwen_embed_weight = qwen_embed_weight.float()
     print(f"  Embedding table: {qwen_embed_weight.shape}")  # [152064, 3584]
