@@ -56,6 +56,11 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--steps", type=int, default=10000)
     parser.add_argument("--debug", action="store_true", help="10 шагов локально (без XLA)")
+    
+    parser.add_argument("--checkpoint", type=str, default="gs://bebladii-weigths-us/checkpoints/latest_checkpoint.pt")
+    parser.add_argument("--dictionaries", type=str, default="gs://bebladii-datasets-us/phase 3/dictionaries/")
+    parser.add_argument("--data-dir", type=str, default="gs://bebladii-datasets-us/phase 3/train_data/")
+    
     return parser.parse_args()
 
 
@@ -235,7 +240,7 @@ def train_tpu(args):
     for p in input_projector.parameters(): p.requires_grad = False
     
     if rank == 0: print("Загрузка весов Phase 2...")
-    ckpt_path = "./data/phase3/latest_checkpoint_phase2.pt"
+    ckpt_path = "./data/phase3/latest_checkpoint_phase2.pt" if args.checkpoint.startswith("gs://") else args.checkpoint
     if os.path.exists(ckpt_path):
         load_phase2_weights(ckpt_path, student, input_projector)
     else:
@@ -248,10 +253,10 @@ def train_tpu(args):
     output_projector = FSDP(output_projector, mesh=mesh, auto_wrap_policy=None)
     
     # 3. Словари
-    if rank == 0: print("Загрузка словарей...")
-    D_X0 = torch.load("./data/phase3/dictionaries/D_X0.pt", map_location="cpu").to(device).float()
-    # D_L40 сырой (ненормализованный) — из него вычисляем параметры отбеливания
-    D_L40_raw = torch.load("./data/phase3/dictionaries/D_L40.pt", map_location="cpu").float()
+    dict_dir = "./data/phase3/dictionaries" if args.dictionaries.startswith("gs://") else args.dictionaries
+    if rank == 0: print(f"Загрузка словарей из {dict_dir} ...")
+    D_X0 = torch.load(os.path.join(dict_dir, "D_X0.pt"), map_location="cpu").to(device).float()
+    D_L40_raw = torch.load(os.path.join(dict_dir, "D_L40.pt"), map_location="cpu").float()
     whitening_mu = D_L40_raw.mean(dim=0, keepdim=True).to(device)
     whitening_sigma = (D_L40_raw.std(dim=0, keepdim=True) + 1e-6).to(device)
     # Сферический словарь: отбеливаем и нормируем
@@ -261,7 +266,8 @@ def train_tpu(args):
     
     # 4. Данные
     from torch_xla.distributed.parallel_loader import MpDeviceLoader
-    dataset = PretokenizedDataset("./data/phase3/train_data/")
+    data_dir = "./data/phase3/train_data/" if args.data_dir.startswith("gs://") else args.data_dir
+    dataset = PretokenizedDataset(data_dir)
     from torch.utils.data.distributed import DistributedSampler
     sampler = DistributedSampler(dataset, num_replicas=num_devices, rank=rank, shuffle=True)
     loader_raw = DataLoader(
@@ -363,14 +369,16 @@ if __name__ == "__main__":
         os.makedirs("./data/phase3/train_data", exist_ok=True)
         
         try:
-            # Словари
-            subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets-us/phase 3/dictionaries/", "./data/phase3/dictionaries/"], check=True)
-            # Данные
-            subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets-us/phase 3/train_data/", "./data/phase3/train_data/"], check=True)
-            # Чекпоинт Phase 2 (берём самый свежий, если он есть)
-            res = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths-us/checkpoints/latest_checkpoint.pt"], capture_output=True)
-            if res.returncode == 0:
-                subprocess.run(["gsutil", "cp", "gs://bebladii-weigths-us/checkpoints/latest_checkpoint.pt", "./data/phase3/latest_checkpoint_phase2.pt"], check=True)
+            import subprocess
+            
+            # Если пути начинаются с gs://, синхронизируем в локальные папки
+            if args.dictionaries.startswith("gs://"):
+                subprocess.run(["gcloud", "storage", "rsync", "-r", args.dictionaries, "./data/phase3/dictionaries/"], check=True)
+            if args.data_dir.startswith("gs://"):
+                subprocess.run(["gcloud", "storage", "rsync", "-r", args.data_dir, "./data/phase3/train_data/"], check=True)
+            if args.checkpoint.startswith("gs://"):
+                subprocess.run(["gcloud", "storage", "cp", args.checkpoint, "./data/phase3/latest_checkpoint_phase2.pt"], check=True)
+                
         except Exception as e:
             print(f"--- [RANK 0] Ошибка GCS: {e} ---")
             
