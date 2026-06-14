@@ -55,8 +55,6 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--steps", type=int, default=10000)
-    parser.add_argument("--norm-penalty", type=float, default=0.01,
-                        help="Коэффициент штрафа за отклонение нормы Z_pred от 1.0")
     parser.add_argument("--debug", action="store_true", help="10 шагов локально (без XLA)")
     return parser.parse_args()
 
@@ -305,9 +303,7 @@ def train_tpu(args):
             
             Z_pred = output_projector(L40_ctx)
             huber = get_hub_loss(Z_pred, Z_hat_target)
-            # Штраф нормы: тянем ||Z_pred|| к 1.0 (X0 лежит на сфере)
-            norm_penalty = ((Z_pred.norm(dim=-1) - 1.0) ** 2).mean()
-            loss = huber + args.norm_penalty * norm_penalty
+            loss = huber
             
             loss.backward()
             xm.optimizer_step(optimizer, barrier=True)
@@ -321,7 +317,6 @@ def train_tpu(args):
                 metrics = {
                     "train/loss": loss.item(),
                     "train/huber": huber.item(),
-                    "train/norm_penalty": norm_penalty.item(),
                     "train/k_eff": k_eff,
                     "train/top1_self": top1_self,
                 }

@@ -86,6 +86,10 @@ def parse_args():
         "--max-tokens", type=int, default=None,
         help="Ограничить число токенов (для отладки). По умолчанию — весь словарь."
     )
+    parser.add_argument(
+        "--only-x0", action="store_true",
+        help="Пересчитать и сохранить только D_X0 (без L40)."
+    )
     return parser.parse_args()
 
 
@@ -216,6 +220,7 @@ def build_dictionaries_with_qwen_emb(
     device: torch.device,
     batch_size: int,
     max_tokens: int = None,
+    only_x0: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Основная функция построения словарей.
@@ -232,6 +237,8 @@ def build_dictionaries_with_qwen_emb(
     seq_len = prefix_len + 1  # префикс + целевой токен
     print(f"  Словарь: {vocab_size} токенов | batch_size={batch_size} | device={device}")
     print(f"  Шаблон: {thought_ids} + [token_id], seq_len={seq_len}, вектор на поз. -1")
+    if only_x0:
+        print("  Режим --only-x0 включен. Пропускается DUS.")
 
     # Эмбеддинги префикса (одинаковы для всех батчей)
     thought_token_ids_t = torch.tensor(thought_ids, dtype=torch.long)
@@ -240,14 +247,13 @@ def build_dictionaries_with_qwen_emb(
     all_x0 = []
     all_l40 = []
 
-    # Hook: перехватываем mu из InputProjector
+    # Hook: перехватываем X0_sphere из LayerNorm (конец proj)
     captured_mu = {}
 
-    def _hook_mu(module, inp, output):
-        _, mu, _ = output           # output = (z, mu, logvar)
-        captured_mu["mu"] = mu.detach().float()  # [B, seq_len, 1024]
+    def _hook_h(module, inp, output):
+        captured_mu["x0_sphere"] = output.detach().float()  # [B, seq_len, 1024]
 
-    hook_handle = input_projector.register_forward_hook(_hook_mu)
+    hook_handle = input_projector.proj.register_forward_hook(_hook_h)
 
     student.eval()
     input_projector.eval()
@@ -274,20 +280,20 @@ def build_dictionaries_with_qwen_emb(
             # --- Forward: InputProjector ---
             # InputProjector.forward(x) ожидает x: [B, seq_len, 3584]
             z, mu, logvar = input_projector(seq_emb)
-            # captured_mu["mu"] заполнен hook'ом: [B, seq_len, 1024]
-            x0_batch = captured_mu["mu"][:, -1, :].cpu().float()   # [B, 1024] — поз. -1 = цель
-
-            # --- Forward: DUS (latentBERT) ---
-            # z: [B, seq_len, 1024] — выход InputProjector (в eval: z == mu)
-            dus_output = student.model(
-                inputs_embeds=z,
-                attention_mask=attention_mask,
-            )
-            # last_hidden_state: [B, seq_len, 1024]
-            l40_batch = dus_output.last_hidden_state[:, -1, :].cpu().float()  # [B, 1024]
-
+            # captured_mu["x0_sphere"] заполнен hook'ом: [B, seq_len, 1024]
+            x0_batch = captured_mu["x0_sphere"][:, -1, :].cpu().float()   # [B, 1024] — поз. -1 = цель
             all_x0.append(x0_batch)
-            all_l40.append(l40_batch)
+
+            if not only_x0:
+                # --- Forward: DUS (latentBERT) ---
+                # z: [B, seq_len, 1024] — выход InputProjector (в eval: z == mu)
+                dus_output = student.model(
+                    inputs_embeds=z,
+                    attention_mask=attention_mask,
+                )
+                # last_hidden_state: [B, seq_len, 1024]
+                l40_batch = dus_output.last_hidden_state[:, -1, :].cpu().float()  # [B, 1024]
+                all_l40.append(l40_batch)
 
             # Прогресс каждые 50 батчей
             if (batch_idx + 1) % 50 == 0:
@@ -303,11 +309,12 @@ def build_dictionaries_with_qwen_emb(
     hook_handle.remove()
 
     D_X0 = torch.cat(all_x0, dim=0)   # [N, 1024]
-    D_L40 = torch.cat(all_l40, dim=0) # [N, 1024]
+    D_L40 = torch.cat(all_l40, dim=0) if not only_x0 else None
 
     print(f"  Готово за {(time.time()-t_start)/60:.1f} мин")
     print(f"  D_X0:  shape={D_X0.shape}, norm_cv={_norm_cv(D_X0):.4f}")
-    print(f"  D_L40: shape={D_L40.shape}, norm_cv={_norm_cv(D_L40):.4f}")
+    if not only_x0:
+        print(f"  D_L40: shape={D_L40.shape}, norm_cv={_norm_cv(D_L40):.4f}")
 
     return D_X0, D_L40
 
@@ -498,32 +505,33 @@ def main():
         device=device,
         batch_size=args.batch_size,
         max_tokens=args.max_tokens,
+        only_x0=args.only_x0,
     )
 
-    # --- 6. Нормализация D_L40 для cosine-поиска ---
-    print("\nНормализация D_L40...")
-    D_L40_norm = F.normalize(D_L40.float(), dim=-1)
+    if not args.only_x0:
+        # --- 6. Нормализация D_L40 для cosine-поиска ---
+        print("\nНормализация D_L40...")
+        D_L40_norm = F.normalize(D_L40.float(), dim=-1)
 
-    # --- 7. Sanity check: читаемые разложения для нескольких токенов ---
-    # Берём несколько частых и разнородных токенов для визуального контроля
-    probe_texts = [" the", " is", " cat", " math", " step", "думать", "<|thought|>"]
-    probe_ids = []
-    for t in probe_texts:
-        ids = tokenizer.encode(t, add_special_tokens=False)
-        if len(ids) == 1:
-            probe_ids.append(ids[0])
-    if thought_token_id not in probe_ids:
-        probe_ids.insert(0, thought_token_id)
+        # --- 7. Sanity check: читаемые разложения для нескольких токенов ---
+        probe_texts = [" the", " is", " cat", " math", " step", "думать", "<|thought|>"]
+        probe_ids = []
+        for t in probe_texts:
+            ids = tokenizer.encode(t, add_special_tokens=False)
+            if len(ids) == 1:
+                probe_ids.append(ids[0])
+        if thought_token_id not in probe_ids:
+            probe_ids.insert(0, thought_token_id)
 
-    sanity_check_decomposition(
-        D_L40_norm=D_L40_norm,
-        D_X0=D_X0,
-        token_map=token_map,
-        thought_token_id=thought_token_id,
-        probe_token_ids=probe_ids,
-        k=8,
-        tau=0.1,  # начальное значение; потом подберём в Этапе 1
-    )
+        sanity_check_decomposition(
+            D_L40_norm=D_L40_norm,
+            D_X0=D_X0,
+            token_map=token_map,
+            thought_token_id=thought_token_id,
+            probe_token_ids=probe_ids,
+            k=8,
+            tau=0.1,  # начальное значение; потом подберём в Этапе 1
+        )
 
     # --- 8. Конвертация в FP16 и сохранение ---
     print("Сохранение словарей...")
@@ -531,14 +539,15 @@ def main():
 
     paths = {
         "D_X0":       os.path.join(args.output_dir, "D_X0.pt"),
-        "D_L40":      os.path.join(args.output_dir, "D_L40.pt"),
-        "D_L40_norm": os.path.join(args.output_dir, "D_L40_norm.pt"),
     }
     token_map_path = os.path.join(args.output_dir, "token_map.json")
-
     torch.save(D_X0.half(),       paths["D_X0"])
-    torch.save(D_L40.half(),      paths["D_L40"])
-    torch.save(D_L40_norm.half(), paths["D_L40_norm"])
+
+    if not args.only_x0:
+        paths["D_L40"] = os.path.join(args.output_dir, "D_L40.pt")
+        paths["D_L40_norm"] = os.path.join(args.output_dir, "D_L40_norm.pt")
+        torch.save(D_L40.half(),      paths["D_L40"])
+        torch.save(D_L40_norm.half(), paths["D_L40_norm"])
 
     print(f"  Сохранение token_map ({len(token_map)} токенов)...")
     with open(token_map_path, "w", encoding="utf-8") as f:
@@ -553,8 +562,9 @@ def main():
     # --- 9. Итоговая диагностика ---
     print("\n" + "=" * 60)
     print("Итоговые метрики:")
-    print(f"  D_X0  norm_cv: {_norm_cv(D_X0):.4f}  (ожидается ~0.016 как у l0)")
-    print(f"  D_L40 norm_cv: {_norm_cv(D_L40):.4f}  (ожидается ~0.089 как у l40)")
+    print(f"  D_X0  norm_cv: {_norm_cv(D_X0):.4f}")
+    if not args.only_x0:
+        print(f"  D_L40 norm_cv: {_norm_cv(D_L40):.4f}  (ожидается ~0.089 как у l40)")
     print()
     print("Загрузка на GCS:")
     all_files = list(paths.values()) + [token_map_path]
