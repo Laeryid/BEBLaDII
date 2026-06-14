@@ -117,6 +117,16 @@ def main():
             if cycle == 0:
                 print("\n--- Cycle 0: Прямой поиск X0 в D_X0 (Sanity словаря) ---")
                 vec_to_search = X0[0, -1, :].unsqueeze(0)
+                
+                # DEBUG
+                target_tid = input_ids[-1]
+                target_dx0 = D_X0[target_tid].unsqueeze(0)
+                cos_sim_exact = F.cosine_similarity(vec_to_search, target_dx0).item()
+                print(f"  [DEBUG] target_tid={target_tid}, cos_sim с D_X0[{target_tid}] = {cos_sim_exact:.4f}")
+                print(f"  [DEBUG] norm(vec_to_search) = {torch.norm(vec_to_search):.4f}, norm(D_X0) = {torch.norm(target_dx0):.4f}")
+                print(f"  [DEBUG] vec_to_search[0, :5]: {vec_to_search[0, :5].tolist()}")
+                print(f"  [DEBUG] D_X0[{target_tid}, :5]: {target_dx0[0, :5].tolist()}")
+                
             else:
                 print(f"\n--- Cycle {cycle}: Прогон через DUS -> OP ---")
                 # Внимание: DUS ожидает input_ids только для position_embeddings, 
