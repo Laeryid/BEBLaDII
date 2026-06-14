@@ -342,7 +342,8 @@ def train_tpu(args):
                 
             if rank == 0 and global_step % 1000 == 0:
                 print(f"Сохранение промежуточного чекпоинта (step {global_step})...")
-                xm.save(output_projector.state_dict(), f"OP_{args.run_name}_step{global_step}.pt")
+                os.makedirs("storage/components/output_projector", exist_ok=True)
+                xm.save(output_projector.state_dict(), f"storage/components/output_projector/OP_{args.run_name}_step{global_step}.pt")
                 
             pbar.set_postfix({
                     "loss": f"{metrics['train/loss']:.4f}",
@@ -351,7 +352,8 @@ def train_tpu(args):
                 
     if rank == 0:
         print("--- Обучение завершено ---")
-        xm.save(output_projector.state_dict(), f"OP_{args.run_name}.pt")
+        os.makedirs("storage/components/output_projector", exist_ok=True)
+        xm.save(output_projector.state_dict(), f"storage/components/output_projector/OP_{args.run_name}.pt")
 
 
 # =============================================================================
