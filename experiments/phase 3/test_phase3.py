@@ -6,9 +6,9 @@ import torch.nn.functional as F
 import argparse
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../src")))
-from beb_la_dii.models.dus import DUSModel
-from beb_la_dii.models.projectors import InputProjector, OutputProjector
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
+from src.beb_la_dii.model.dus import DUSModel
+from src.beb_la_dii.model.projectors import InputProjector, OutputProjector
 
 def parse_args():
     parser = argparse.ArgumentParser()
