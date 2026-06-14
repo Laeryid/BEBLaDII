@@ -32,8 +32,9 @@ def get_nearest_neighbors(query_vec, D_X0, token_map, top_k=5):
     
     res = []
     for val, idx in zip(vals, idxs):
-        token_id = token_map[idx.item()]
-        res.append((token_id, val.item()))
+        idx_val = idx.item()
+        token_str = token_map[idx_val]
+        res.append((idx_val, token_str, val.item()))
     return res
 
 def main():
@@ -134,10 +135,8 @@ def main():
                 
             # Ищем соседей для последнего токена
             neighbors = get_nearest_neighbors(vec_to_search, D_X0, token_map, top_k=args.top_k)
-            for rank, (tid, sim) in enumerate(neighbors, 1):
-                tid_int = int(tid)
-                token_str = tokenizer.decode([tid_int])
-                print(f"  [{rank}] '{token_str}' \t(id={tid_int}, cos={sim:.3f})")
+            for rank, (tid, token_str, sim) in enumerate(neighbors, 1):
+                print(f"  [{rank}] '{token_str}' \t(id={tid}, cos={sim:.3f})")
 
 if __name__ == "__main__":
     main()
