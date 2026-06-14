@@ -124,7 +124,9 @@ class PretokenizedDataset(Dataset):
 
     def __getitem__(self, idx):
         item = self.ds[idx]
-        input_ids = item.get("input_ids", [])
+        input_ids = item.get("input_ids")
+        if not input_ids:
+            input_ids = []
         
         # Обрезаем или паддим
         if len(input_ids) > self.max_length:
