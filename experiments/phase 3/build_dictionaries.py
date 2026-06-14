@@ -191,9 +191,9 @@ def build_dictionaries(
     captured_mu = {}
 
     def _hook_mu(module, input, output):
-        # output = (z, mu, logvar); нас интересует mu на позиции 1
+        # output = (z, mu, logvar); нас интересует mu на позиции -1 (целевой токен)
         _, mu, _ = output
-        captured_mu["mu"] = mu[:, 1, :].detach().float()  # [B, 1024]
+        captured_mu["mu"] = mu[:, -1, :].detach().float()  # [B, 1024]
 
     hook_handle = input_projector.register_forward_hook(_hook_mu)
 
