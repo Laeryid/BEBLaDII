@@ -340,7 +340,11 @@ def train_tpu(args):
                 except ImportError:
                     pass
                 
-                pbar.set_postfix({
+            if rank == 0 and global_step % 1000 == 0:
+                print(f"Сохранение промежуточного чекпоинта (step {global_step})...")
+                xm.save(output_projector.state_dict(), f"OP_{args.run_name}_step{global_step}.pt")
+                
+            pbar.set_postfix({
                     "loss": f"{metrics['train/loss']:.4f}",
                     "k_eff": f"{k_eff:.1f}"
                 })
