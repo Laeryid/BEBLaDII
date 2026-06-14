@@ -65,6 +65,8 @@ def parse_args():
 
 def load_phase2_weights(checkpoint_path: str, student: DUSModel, input_projector: InputProjector):
     sd = torch.load(checkpoint_path, map_location="cpu")
+    if "model_state_dict" in sd:
+        sd = sd["model_state_dict"]
     cleaned = {}
     for key, v in sd.items():
         k_clean = key.replace("_orig_module.", "").replace("module.", "")
@@ -73,9 +75,9 @@ def load_phase2_weights(checkpoint_path: str, student: DUSModel, input_projector
     student_sd = {}
     for key, v in cleaned.items():
         if key.startswith("student.model."):
-            student_sd[key[len("student."):]] = v
+            student_sd[key[len("student.model."):]] = v
         elif key.startswith("model.layers.") or key.startswith("model.embeddings") or key.startswith("model.final_norm"):
-            student_sd[key] = v
+            student_sd[key[len("model."):]] = v
 
     if student_sd:
         student.model.load_state_dict(student_sd, strict=False)

@@ -106,6 +106,10 @@ def load_phase2_weights(checkpoint_path: str, student: DUSModel, input_projector
     print(f"  Загрузка чекпоинта: {checkpoint_path}")
     sd = torch.load(checkpoint_path, map_location="cpu")
 
+    # Извлекаем вложенный словарь, если чекпоинт сохранён целиком (состояние оптимизатора и т.д.)
+    if "model_state_dict" in sd:
+        sd = sd["model_state_dict"]
+
     # Определяем формат чекпоинта
     first_key = next(iter(sd.keys()), "")
 
@@ -118,11 +122,10 @@ def load_phase2_weights(checkpoint_path: str, student: DUSModel, input_projector
     # --- DUS (student) ---
     student_sd = {}
     for k, v in cleaned.items():
-        # Ключи вида: student.model.layers.X.* или model.layers.X.*
         if k.startswith("student.model."):
-            student_sd[k[len("student."):]] = v  # → model.layers.X.*
+            student_sd[k[len("student.model."):]] = v  # → embeddings.*, layers.*
         elif k.startswith("model.layers.") or k.startswith("model.embeddings") or k.startswith("model.final_norm"):
-            student_sd[k] = v
+            student_sd[k[len("model."):]] = v
 
     matched_student, total_student = 0, len(student.model.state_dict())
     if student_sd:
@@ -396,6 +399,8 @@ def load_qwen_embeddings(checkpoint_path: str, tokenizer_id: str) -> torch.Tenso
     """
     print("  Поиск embedding-таблицы Qwen в чекпоинте...")
     sd = torch.load(checkpoint_path, map_location="cpu")
+    if "model_state_dict" in sd:
+        sd = sd["model_state_dict"]
 
     # Пробуем найти embed_tokens в чекпоинте (teacher embeddings)
     embed_key = None
