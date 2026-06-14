@@ -345,7 +345,8 @@ def train_tpu(args):
                 os.makedirs("storage/components/output_projector", exist_ok=True)
                 xm.save(output_projector.state_dict(), f"storage/components/output_projector/OP_{args.run_name}_step{global_step}.pt")
                 
-            pbar.set_postfix({
+            if rank == 0 and global_step % 10 == 0:
+                pbar.set_postfix({
                     "loss": f"{metrics['train/loss']:.4f}",
                     "k_eff": f"{k_eff:.1f}"
                 })
