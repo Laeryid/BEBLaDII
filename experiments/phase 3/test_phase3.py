@@ -107,7 +107,7 @@ def main():
 
     with torch.no_grad():
         # Базовый X0
-        qwen_emb = qwen_embed(input_tensor)
+        qwen_emb = qwen_embed(input_tensor).to(torch.float32)
         X0, _, _ = input_projector(qwen_emb)
         
         current_X = X0
