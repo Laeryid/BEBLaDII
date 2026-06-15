@@ -360,6 +360,36 @@ def build_token_map(tokenizer) -> list[str]:
     return token_map
 
 
+def sanity_check_x0(
+    D_X0: torch.Tensor,
+    token_map: list[str],
+    probe_token_ids: list[int],
+    k: int = 5,
+):
+    """
+    Быстрый sanity check для словаря D_X0.
+    Проверяет, что вектор целевого токена в словаре
+    находит самого себя как top-1 соседа (cos_sim ≈ 1.0).
+    """
+    print("\n--- Sanity Check: поиск в D_X0 ---")
+    D_X0_norm = F.normalize(D_X0.float(), dim=-1)
+    
+    with torch.no_grad():
+        for tok_id in probe_token_ids:
+            if tok_id >= D_X0_norm.shape[0]:
+                continue
+            query = D_X0_norm[tok_id].unsqueeze(0)           # [1, 1024]
+            scores = (query @ D_X0_norm.T)                   # [1, N]
+            topk = torch.topk(scores[0], k)
+
+            tok_text = repr(token_map[tok_id])
+            print(f"\n  Запрос (D_X0): {tok_text} (id={tok_id})")
+            for rank, (idx, sim) in enumerate(zip(topk.indices.tolist(), topk.values.tolist())):
+                marker = "✓" if idx == tok_id else " "
+                print(f"    {marker} [{rank+1}] {repr(token_map[idx]):20s} cos={sim:.3f}  (id={idx})")
+    print()
+
+
 def sanity_check_decomposition(
     D_L40_norm: torch.Tensor,
     D_X0: torch.Tensor,
@@ -544,12 +574,29 @@ def main():
         only_x0=args.only_x0,
     )
 
+    # --- 6. Sanity check: проверка D_X0 ---
+    probe_texts = [" the", " is", " cat", " math", " step", "думать", "<|thought|>"]
+    probe_ids = []
+    for t in probe_texts:
+        ids = tokenizer.encode(t, add_special_tokens=False)
+        if len(ids) == 1:
+            probe_ids.append(ids[0])
+    if thought_token_id not in probe_ids:
+        probe_ids.insert(0, thought_token_id)
+
+    sanity_check_x0(
+        D_X0=D_X0,
+        token_map=token_map,
+        probe_token_ids=probe_ids,
+        k=5,
+    )
+
     if not args.only_x0:
-        # --- 6. Нормализация D_L40 для cosine-поиска ---
+        # --- 7. Нормализация D_L40 для cosine-поиска ---
         print("\nНормализация D_L40...")
         D_L40_norm = F.normalize(D_L40.float(), dim=-1)
 
-        # --- 7. Sanity check: читаемые разложения для нескольких токенов ---
+        # --- 8. Sanity check: читаемые разложения для нескольких токенов ---
         probe_texts = [" the", " is", " cat", " math", " step", "думать", "<|thought|>"]
         probe_ids = []
         for t in probe_texts:
@@ -569,7 +616,7 @@ def main():
             tau=0.1,  # начальное значение; потом подберём в Этапе 1
         )
 
-    # --- 8. Конвертация в FP16 и сохранение ---
+    # --- 9. Конвертация в FP16 и сохранение ---
     print("Сохранение словарей...")
     os.makedirs(args.output_dir, exist_ok=True)
 
@@ -595,7 +642,7 @@ def main():
     token_map_size = os.path.getsize(token_map_path) / 1024 / 1024
     print(f"  token_map: {token_map_path} ({token_map_size:.1f} MB)")
 
-    # --- 9. Итоговая диагностика ---
+    # --- 10. Итоговая диагностика ---
     print("\n" + "=" * 60)
     print("Итоговые метрики:")
     print(f"  D_X0  norm_cv: {_norm_cv(D_X0):.4f}")
