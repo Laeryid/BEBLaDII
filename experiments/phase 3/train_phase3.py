@@ -216,10 +216,12 @@ def compute_loss(Z_pred, Z_hat_target, loss_mode: str, norm_weight: float = 0.05
 
     Возвращает: (loss_scalar, metrics_dict)
     """
-    # --- Угловая компонента ---
-    Z_pred_norm = F.normalize(Z_pred, dim=-1)
-    Z_tgt_norm  = F.normalize(Z_hat_target, dim=-1)
-    cos_sim = (Z_pred_norm * Z_tgt_norm).sum(dim=-1).mean()  # скаляр, выше = лучше
+    # --- Угловая компонента (FP32 для точности: BF16 даёт потолок 1/256 = 0.0039) ---
+    Z_pred_f  = Z_pred.float()
+    Z_tgt_f   = Z_hat_target.float()
+    Z_pred_norm = F.normalize(Z_pred_f, dim=-1)
+    Z_tgt_norm  = F.normalize(Z_tgt_f,  dim=-1)
+    cos_sim  = (Z_pred_norm * Z_tgt_norm).sum(dim=-1).mean()  # скаляр, выше = лучше
     cos_loss = 1.0 - cos_sim
 
     metrics = {
@@ -235,8 +237,8 @@ def compute_loss(Z_pred, Z_hat_target, loss_mode: str, norm_weight: float = 0.05
         loss = cos_loss
 
     else:  # cosine+norm
-        pred_norm   = Z_pred.norm(dim=-1)
-        target_norm = Z_hat_target.norm(dim=-1)
+        pred_norm   = Z_pred_f.norm(dim=-1)   # FP32
+        target_norm = Z_tgt_f.norm(dim=-1)    # FP32
         norm_penalty = get_hub_loss(pred_norm, target_norm)
         loss = cos_loss + norm_weight * norm_penalty
         metrics["train/norm_penalty"] = norm_penalty.item()

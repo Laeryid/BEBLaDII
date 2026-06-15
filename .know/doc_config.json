@@ -507,6 +507,18 @@
             ]
         },
 
+        "decisions/034_angular_loss_for_output_projector.md": {
+            "description": "ADR: Замена Huber-loss на угловую (cosine+norm) для обучения OP. Диагностика ложного плато cos≈0.81 при loss=0.009. Добавлен --loss-mode для аблации.",
+            "covers": [
+                "Architecture & Training Phases",
+                "Model Core"
+            ],
+            "depends_on": [
+                "experiments/phase 3/train_phase3.py",
+                "src/beb_la_dii/model/projectors.py"
+            ]
+        },
+
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
