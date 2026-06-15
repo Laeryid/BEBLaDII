@@ -56,7 +56,19 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--steps", type=int, default=10000)
     parser.add_argument("--debug", action="store_true", help="10 шагов локально (без XLA)")
-    
+    parser.add_argument(
+        "--loss-mode", type=str, default="cosine+norm",
+        choices=["huber", "cosine", "cosine+norm"],
+        help=(
+            "Функция потерь для обучения OP:\n"
+            "  huber       — Huber-loss в евклидовых координатах (baseline, cos≈0.81)\n"
+            "  cosine      — 1 - cos_sim (чистая угловая, без контроля нормы)\n"
+            "  cosine+norm — cos_loss + 0.05·huber(norm) (рекомендуется для сферы)"
+        ),
+    )
+    parser.add_argument("--norm-weight", type=float, default=0.05,
+                        help="Вес штрафа за норму при --loss-mode=cosine+norm")
+
     parser.add_argument("--checkpoint", type=str, default="gs://bebladii-weigths-us/checkpoints/latest_checkpoint.pt")
     parser.add_argument("--dictionaries", type=str, default="gs://bebladii-datasets-us/phase 3/dictionaries/")
     parser.add_argument("--data-dir", type=str, default="gs://bebladii-datasets-us/phase 3/train_data/")
@@ -189,6 +201,51 @@ def get_hub_loss(pred, target, delta=1.0):
     loss = torch.where(abs_diff < delta, 0.5 * diff ** 2, delta * (abs_diff - 0.5 * delta))
     return loss.mean()
 
+
+def compute_loss(Z_pred, Z_hat_target, loss_mode: str, norm_weight: float = 0.05):
+    """
+    Вычисляет потерю для OutputProjector.
+
+    Modes:
+      huber       — Huber-loss в евклидовых координатах (baseline).
+                    Проблема: минимизирует XYZ-ошибку, плохо коррелирует
+                    с cos_sim на сфере → плато cos≈0.81 при loss=0.009.
+      cosine      — 1 - cos_sim. Чистая угловая потеря. Игнорирует норму.
+      cosine+norm — cos_loss + norm_weight * huber(||pred||, ||target||).
+                    Обучает угол (главное) + удерживает норму ≈ 32 (ADR-033).
+
+    Возвращает: (loss_scalar, metrics_dict)
+    """
+    # --- Угловая компонента ---
+    Z_pred_norm = F.normalize(Z_pred, dim=-1)
+    Z_tgt_norm  = F.normalize(Z_hat_target, dim=-1)
+    cos_sim = (Z_pred_norm * Z_tgt_norm).sum(dim=-1).mean()  # скаляр, выше = лучше
+    cos_loss = 1.0 - cos_sim
+
+    metrics = {
+        "train/cos_loss": cos_loss.item(),
+        "train/cos_sim":  cos_sim.item(),  # основная диагностика качества
+    }
+
+    if loss_mode == "huber":
+        loss = get_hub_loss(Z_pred, Z_hat_target)
+        metrics["train/huber"] = loss.item()
+
+    elif loss_mode == "cosine":
+        loss = cos_loss
+
+    else:  # cosine+norm
+        pred_norm   = Z_pred.norm(dim=-1)
+        target_norm = Z_hat_target.norm(dim=-1)
+        norm_penalty = get_hub_loss(pred_norm, target_norm)
+        loss = cos_loss + norm_weight * norm_penalty
+        metrics["train/norm_penalty"] = norm_penalty.item()
+        metrics["train/pred_norm_mean"] = pred_norm.mean().item()
+
+    metrics["train/loss"] = loss.item()
+    return loss, metrics
+
+
 def _norm_cv(x: torch.Tensor) -> float:
     norms = x.norm(dim=-1)
     return (norms.std() / norms.mean()).item()
@@ -208,7 +265,7 @@ def train_tpu(args):
     rank = xm.get_local_ordinal()
     
     if rank == 0:
-        print(f"--- [RANK 0] Настройка {args.run_name} (tau={args.tau}, layers={args.num_layers}) ---")
+        print(f"--- [RANK 0] Настройка {args.run_name} (tau={args.tau}, layers={args.num_layers}, loss={args.loss_mode}) ---")
         
         # Настройка WandB
         key_path = "/home/hp/wandb_key.txt"
@@ -312,8 +369,11 @@ def train_tpu(args):
                 )
             
             Z_pred = output_projector(L40_ctx)
-            huber = get_hub_loss(Z_pred, Z_hat_target)
-            loss = huber
+            loss, metrics = compute_loss(
+                Z_pred, Z_hat_target,
+                loss_mode=args.loss_mode,
+                norm_weight=args.norm_weight,
+            )
             
             loss.backward()
             xm.optimizer_step(optimizer, barrier=True)
@@ -323,13 +383,9 @@ def train_tpu(args):
             
             if rank == 0 and global_step % 10 == 0:
                 # k_eff и top1_self уже вычислены через .item() внутри soft_dictionary_matching
+                metrics["train/k_eff"] = k_eff
+                metrics["train/top1_self"] = top1_self
                 # _norm_cv вызываем реже (каждые 50 шагов) чтобы не блокировать граф
-                metrics = {
-                    "train/loss": loss.item(),
-                    "train/huber": huber.item(),
-                    "train/k_eff": k_eff,
-                    "train/top1_self": top1_self,
-                }
                 if global_step % 50 == 0:
                     xm.mark_step()  # сброс графа перед CPU-операцией
                     metrics["train/op_norm_cv"] = _norm_cv(Z_pred.detach().cpu())
@@ -347,7 +403,8 @@ def train_tpu(args):
                 
             if rank == 0 and global_step % 10 == 0:
                 pbar.set_postfix({
-                    "loss": f"{metrics['train/loss']:.4f}",
+                    "cos": f"{metrics['train/cos_sim']:.4f}",
+                    "loss": f"{metrics['train/loss']:.5f}",
                     "k_eff": f"{k_eff:.1f}"
                 })
                 
