@@ -216,17 +216,24 @@ def compute_loss(Z_pred, Z_hat_target, loss_mode: str, norm_weight: float = 0.05
 
     Возвращает: (loss_scalar, metrics_dict)
     """
-    # --- Угловая компонента (FP32 для точности: BF16 даёт потолок 1/256 = 0.0039) ---
-    Z_pred_f  = Z_pred.float()
-    Z_tgt_f   = Z_hat_target.float()
-    Z_pred_norm = F.normalize(Z_pred_f, dim=-1)
-    Z_tgt_norm  = F.normalize(Z_tgt_f,  dim=-1)
-    cos_sim  = (Z_pred_norm * Z_tgt_norm).sum(dim=-1).mean()  # скаляр, выше = лучше
-    cos_loss = 1.0 - cos_sim
+    # --- Угловая компонента ---
+    # Перевод во float() не работает, если включен XLA_USE_BF16=1 (он принудительно всё даун-кастит).
+    # Но в BF16 числа около 1.0 имеют шаг 0.0039, поэтому `cos_sim` "залипает" на 0.99609.
+    # Решение: `1 - cos_sim` математически эквивалентно `0.5 * ||a - b||^2` для единичных векторов.
+    # Вычисление разности малых чисел (a - b) в BF16 сохраняет высокую точность благодаря плавающему экспоненту.
+    Z_pred_norm = F.normalize(Z_pred, dim=-1)
+    Z_tgt_norm  = F.normalize(Z_hat_target, dim=-1)
+    
+    # Считаем классический cos_sim чисто для метрики (он застрянет на 0.996, это нормально для логов)
+    cos_sim_metric = (Z_pred_norm * Z_tgt_norm).sum(dim=-1).mean()
+    
+    # Считаем loss через квадратичное расстояние (он сможет падать до ~1e-6)
+    diff = Z_pred_norm - Z_tgt_norm
+    cos_loss = 0.5 * (diff * diff).sum(dim=-1).mean()
 
     metrics = {
         "train/cos_loss": cos_loss.item(),
-        "train/cos_sim":  cos_sim.item(),  # основная диагностика качества
+        "train/cos_sim":  cos_sim_metric.item(),
     }
 
     if loss_mode == "huber":
@@ -237,8 +244,8 @@ def compute_loss(Z_pred, Z_hat_target, loss_mode: str, norm_weight: float = 0.05
         loss = cos_loss
 
     else:  # cosine+norm
-        pred_norm   = Z_pred_f.norm(dim=-1)   # FP32
-        target_norm = Z_tgt_f.norm(dim=-1)    # FP32
+        pred_norm   = Z_pred.norm(dim=-1)
+        target_norm = Z_hat_target.norm(dim=-1)
         norm_penalty = get_hub_loss(pred_norm, target_norm)
         loss = cos_loss + norm_weight * norm_penalty
         metrics["train/norm_penalty"] = norm_penalty.item()
