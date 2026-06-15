@@ -387,9 +387,9 @@ def train_tpu(args):
             # --- Anchor Loss (Якорное обучение на изолированных векторах) ---
             # Гарантирует, что нелинейный MLP не забудет чистые словарные вектора
             batch_size = L40_ctx.size(0)
-            anchor_idx = torch.randint(0, D_X0.size(0), (batch_size,), device=device)
-            anchor_L40 = D_L40_raw[anchor_idx].to(device).unsqueeze(1) # [B, 1, D]
-            anchor_X0  = D_X0[anchor_idx].unsqueeze(1) # [B, 1, D]
+            anchor_idx_cpu = torch.randint(0, D_X0.size(0), (batch_size,))
+            anchor_L40 = D_L40_raw[anchor_idx_cpu].to(device).unsqueeze(1) # [B, 1, D]
+            anchor_X0  = D_X0[anchor_idx_cpu.to(device)].unsqueeze(1) # [B, 1, D]
             
             anchor_pred = output_projector(anchor_L40)
             loss_anchor, anchor_metrics = compute_loss(
