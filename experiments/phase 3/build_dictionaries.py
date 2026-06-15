@@ -385,7 +385,8 @@ def sanity_check_x0(
             print(f"\n  Запрос (D_X0): {tok_text} (id={tok_id})")
             for rank, (idx, sim) in enumerate(zip(topk.indices.tolist(), topk.values.tolist())):
                 marker = "✓" if idx == tok_id else " "
-                print(f"    {marker} [{rank+1}] {repr(token_map[idx]):20s} cos={sim:.3f}  (id={idx})")
+                tok_text = repr(token_map[idx]) if idx < len(token_map) else "<OUT_OF_VOCAB>"
+                print(f"    {marker} [{rank+1}] {tok_text:20s} cos={sim:.3f}  (id={idx})")
     print()
 
 

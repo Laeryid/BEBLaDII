@@ -149,7 +149,8 @@ def main():
                 print(f"\n  [Sanity L40] Поиск вектора L40 в D_L40_norm:")
                 for rank, (idx, sim) in enumerate(zip(topk_l40.indices.tolist(), topk_l40.values.tolist())):
                     marker = "✓" if idx == input_ids[-1] else " "
-                    print(f"    {marker} [{rank+1}] {repr(token_map[idx]):20s} cos={sim:.3f}  (id={idx})")
+                    tok_text = repr(token_map[idx]) if idx < len(token_map) else "<OUT_OF_VOCAB>"
+                    print(f"    {marker} [{rank+1}] {tok_text:20s} cos={sim:.3f}  (id={idx})")
                 
                 # --- Расчет Z_hat_target ---
                 tau = 0.007
@@ -163,7 +164,8 @@ def main():
                 
                 print(f"\n  [Z_hat_target] Ожидаемая цель для OP (компоненты D_X0):")
                 for rank, (idx, w) in enumerate(zip(topk_soft.indices.tolist(), alpha.tolist())):
-                    print(f"    [{rank+1}] {repr(token_map[idx]):20s} weight={w:.4f}  (id={idx})")
+                    tok_text = repr(token_map[idx]) if idx < len(token_map) else "<OUT_OF_VOCAB>"
+                    print(f"    [{rank+1}] {tok_text:20s} weight={w:.4f}  (id={idx})")
                 
                 # Проецируем L40 обратно в h
                 OP_out = output_projector(X40)  # [1, seq_len, 1024]
