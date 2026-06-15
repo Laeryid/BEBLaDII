@@ -88,7 +88,7 @@ def main():
 
     # 3. Словари
     print("Загрузка словарей...")
-    D_X0 = torch.load(os.path.join(args.dictionaries, "D_X0.pt"), map_location=device)
+    D_X0 = torch.load(os.path.join(args.dictionaries, "D_X0.pt"), map_location="cpu").to(device).float()
     with open(os.path.join(args.dictionaries, "token_map.json"), "r") as f:
         token_map = json.load(f)
 
