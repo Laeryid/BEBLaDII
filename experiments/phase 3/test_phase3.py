@@ -85,6 +85,10 @@ def main():
         k_clean = k.replace("_fsdp_wrapped_module.", "").replace("module.", "")
         cleaned_sd3[k_clean] = v
     
+    # DEBUG: Print keys
+    print(f"  [DEBUG] Ключи в чекпоинте OP (первые 5): {list(cleaned_sd3.keys())[:5]}")
+    print(f"  [DEBUG] Ключи в модели OP (первые 5): {list(output_projector.state_dict().keys())[:5]}")
+
     result = output_projector.load_state_dict(cleaned_sd3, strict=False)
     print(f"  Загружено ключей OP: {len(cleaned_sd3)} (пропущено: {len(result.missing_keys)})")
 
@@ -95,6 +99,7 @@ def main():
     # 3. Словари
     print("Загрузка словарей...")
     D_X0 = torch.load(os.path.join(args.dictionaries, "D_X0.pt"), map_location="cpu").to(device).float()
+    D_L40_norm = torch.load(os.path.join(args.dictionaries, "D_L40_norm.pt"), map_location="cpu").to(device).float()
     with open(os.path.join(args.dictionaries, "token_map.json"), "r") as f:
         token_map = json.load(f)
 
@@ -135,6 +140,17 @@ def main():
                     # На последующих прогонах используем вывод OP
                     dus_out = student.model(inputs_embeds=current_X, attention_mask=attention_mask)
                     X40 = dus_out.last_hidden_state
+                
+                # --- Sanity check L40 ---
+                l40_vec = X40[0, -1, :].unsqueeze(0)
+                l40_norm = F.normalize(l40_vec, dim=-1)
+                scores_l40 = (l40_norm @ D_L40_norm.T)
+                topk_l40 = torch.topk(scores_l40[0], k=5)
+                
+                print(f"\n  [Sanity L40] Поиск вектора L40 в D_L40_norm:")
+                for rank, (idx, sim) in enumerate(zip(topk_l40.indices.tolist(), topk_l40.values.tolist())):
+                    marker = "✓" if idx == input_ids[-1] else " "
+                    print(f"    {marker} [{rank+1}] {repr(token_map[idx]):20s} cos={sim:.3f}  (id={idx})")
                 
                 # Проецируем обратно в X0
                 OP_out = output_projector(X40)  # [1, seq_len, 1024]
