@@ -112,25 +112,12 @@ def main():
         X0, _, _ = input_projector(qwen_emb)
         
         current_X = X0
+        attention_mask = torch.ones((1, X0.size(1)), dtype=torch.long, device=device)
         
         for cycle in range(args.cycles + 1):
             if cycle == 0:
                 print("\n--- Cycle 0: Прямой поиск X0 в D_X0 (Sanity словаря) ---")
-                
-                # Check BOTH h and mu
-                h_proj = input_projector.proj(qwen_emb)
-                vec_to_search_mu = X0[0, -1, :].unsqueeze(0)
-                vec_to_search_h = h_proj[0, -1, :].unsqueeze(0)
-                
-                target_tid = input_ids[-1]
-                target_dx0 = D_X0[target_tid].unsqueeze(0)
-                
-                print(f"  [DEBUG] target_tid={target_tid}")
-                print(f"  [DEBUG] norm(mu)={vec_to_search_mu.norm().item():.2f}, norm(h)={vec_to_search_h.norm().item():.2f}, norm(D_X0)={target_dx0.norm().item():.2f}")
-                print(f"  [DEBUG] cos(mu, D_X0)={F.cosine_similarity(vec_to_search_mu, target_dx0).item():.4f}")
-                print(f"  [DEBUG] cos(h, D_X0)={F.cosine_similarity(vec_to_search_h, target_dx0).item():.4f}")
-                
-                vec_to_search = vec_to_search_h # Use h for search since D_X0 contains h
+                vec_to_search = X0[0, -1, :].unsqueeze(0)
             else:
                 print(f"\n--- Cycle {cycle}: Прогон через DUS -> OP ---")
                 
@@ -138,9 +125,6 @@ def main():
                     # На первом прогоне через DUS используем X0 (z)
                     dus_out = student.model(inputs_embeds=X0, attention_mask=attention_mask)
                     X40 = dus_out.last_hidden_state  # [1, seq_len, 1024]
-                    
-                    print(f"  [DEBUG Cycle 1] X40 norm = {X40[0, -1, :].norm().item():.2f}")
-                    
                 else:
                     # На последующих прогонах используем вывод OP
                     dus_out = student.model(inputs_embeds=current_X, attention_mask=attention_mask)
@@ -150,11 +134,7 @@ def main():
                 OP_out = output_projector(X40)  # [1, seq_len, 1024]
                 current_X = OP_out
                 vec_to_search = OP_out[0, -1, :].unsqueeze(0)
-                
-                print(f"  [DEBUG Cycle {cycle}] OP_out norm = {vec_to_search.norm().item():.2f}")
-                target_tid = input_ids[-1]
-                target_dx0 = D_X0[target_tid].unsqueeze(0)
-                print(f"  [DEBUG Cycle {cycle}] cos(OP_out, D_X0[{target_tid}]) = {F.cosine_similarity(vec_to_search, target_dx0).item():.4f}")
+                vec_to_search = OP_out[0, -1, :].unsqueeze(0)
                 
             # Поиск в словаре D_X0 для последнего токена
             neighbors = get_nearest_neighbors(vec_to_search, D_X0, token_map, top_k=args.top_k)
