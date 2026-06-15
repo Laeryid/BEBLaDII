@@ -80,7 +80,13 @@ def main():
     print(f"Загрузка весов Phase 3 из {args.checkpoint_op}...")
     sd3 = torch.load(args.checkpoint_op, map_location="cpu")
     if "model_state_dict" in sd3: sd3 = sd3["model_state_dict"]
-    output_projector.load_state_dict(sd3, strict=False)
+    cleaned_sd3 = {}
+    for k, v in sd3.items():
+        k_clean = k.replace("_fsdp_wrapped_module.", "").replace("module.", "")
+        cleaned_sd3[k_clean] = v
+    
+    result = output_projector.load_state_dict(cleaned_sd3, strict=False)
+    print(f"  Загружено ключей OP: {len(cleaned_sd3)} (пропущено: {len(result.missing_keys)})")
 
     student.eval()
     input_projector.eval()
