@@ -377,12 +377,32 @@ def train_tpu(args):
                     L40_ctx, D_X0, D_L40_sphere, whitening_mu, whitening_sigma, args.tau, args.k
                 )
             
+            # Основной Loss на контекстуализированных токенах
             Z_pred = output_projector(L40_ctx)
-            loss, metrics = compute_loss(
+            loss_ctx, metrics = compute_loss(
                 Z_pred, Z_hat_target,
                 loss_mode=args.loss_mode,
                 norm_weight=args.norm_weight,
             )
+            
+            # --- Anchor Loss (Якорное обучение на изолированных векторах) ---
+            # Гарантирует, что нелинейный MLP не забудет чистые словарные вектора
+            batch_size = L40_ctx.size(0)
+            anchor_idx = torch.randint(0, D_X0.size(0), (batch_size,), device=device)
+            anchor_L40 = D_L40_raw[anchor_idx].to(device).unsqueeze(1) # [B, 1, D]
+            anchor_X0  = D_X0[anchor_idx].unsqueeze(1) # [B, 1, D]
+            
+            anchor_pred = output_projector(anchor_L40)
+            loss_anchor, anchor_metrics = compute_loss(
+                anchor_pred, anchor_X0,
+                loss_mode=args.loss_mode,
+                norm_weight=args.norm_weight,
+            )
+            
+            loss = loss_ctx + 0.5 * loss_anchor
+            
+            # Добавляем метрики якоря
+            metrics["train/anchor_cos_sim"] = anchor_metrics["train/cos_sim"]
             
             loss.backward()
             xm.optimizer_step(optimizer, barrier=True)
@@ -394,6 +414,8 @@ def train_tpu(args):
                 # k_eff и top1_self уже вычислены через .item() внутри soft_dictionary_matching
                 metrics["train/k_eff"] = k_eff
                 metrics["train/top1_self"] = top1_self
+                metrics["train/loss_ctx"] = loss_ctx.item()
+                metrics["train/loss_anchor"] = loss_anchor.item()
                 # _norm_cv вызываем реже (каждые 50 шагов) чтобы не блокировать граф
                 if global_step % 50 == 0:
                     xm.mark_step()  # сброс графа перед CPU-операцией
