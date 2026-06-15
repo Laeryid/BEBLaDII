@@ -254,11 +254,10 @@ def build_dictionaries_with_qwen_emb(
     captured_mu = {}
 
     def _hook_h(module, inp, output):
-        # output is (z, mu, logvar) from InputProjector
-        _, mu, _ = output
-        captured_mu["x0_sphere"] = mu.detach().float()  # [B, seq_len, 1024]
+        # output is the result of self.proj(x)
+        captured_mu["x0_sphere"] = output.detach().float()  # [B, seq_len, 1024]
 
-    hook_handle = input_projector.register_forward_hook(_hook_h)
+    hook_handle = input_projector.proj.register_forward_hook(_hook_h)
 
     student.eval()
     input_projector.eval()

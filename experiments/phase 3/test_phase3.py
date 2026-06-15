@@ -122,7 +122,7 @@ def main():
         qwen_emb = qwen_embed(input_tensor).to(torch.float32)
         X0, _, _ = input_projector(qwen_emb)
         
-        current_X = X0
+        current_h = None
         attention_mask = torch.ones((1, X0.size(1)), dtype=torch.long, device=device)
         
         for cycle in range(args.cycles + 1):
@@ -133,13 +133,12 @@ def main():
                 print(f"\n--- Cycle {cycle}: Прогон через DUS -> OP ---")
                 
                 if cycle == 1:
-                    # На первом прогоне через DUS используем X0 (z)
-                    dus_out = student.model(inputs_embeds=X0, attention_mask=attention_mask)
-                    X40 = dus_out.last_hidden_state  # [1, seq_len, 1024]
-                else:
-                    # На последующих прогонах используем вывод OP
-                    dus_out = student.model(inputs_embeds=current_X, attention_mask=attention_mask)
-                    X40 = dus_out.last_hidden_state
+                    current_h = X0  # На первом прогоне используем X0 из словаря (это h)
+                
+                # По ADR-033: h (пространство OP) конвертируется в mu перед подачей в DUS
+                mu_X = input_projector.mu_head(current_h)
+                dus_out = student.model(inputs_embeds=mu_X, attention_mask=attention_mask)
+                X40 = dus_out.last_hidden_state  # [1, seq_len, 1024]
                 
                 # --- Sanity check L40 ---
                 l40_vec = X40[0, -1, :].unsqueeze(0)
@@ -152,10 +151,30 @@ def main():
                     marker = "✓" if idx == input_ids[-1] else " "
                     print(f"    {marker} [{rank+1}] {repr(token_map[idx]):20s} cos={sim:.3f}  (id={idx})")
                 
-                # Проецируем обратно в X0
+                # --- Расчет Z_hat_target ---
+                tau = 0.007
+                scores_soft = scores_l40 / tau
+                topk_soft = torch.topk(scores_soft[0], k=6)
+                alpha = F.softmax(topk_soft.values, dim=-1)
+                top_dx0 = D_X0[topk_soft.indices]
+                Z_hat_raw = (alpha.unsqueeze(-1) * top_dx0).sum(dim=0)
+                L_expected = (alpha * top_dx0.norm(dim=-1)).sum()
+                Z_hat_target = F.normalize(Z_hat_raw, dim=-1) * L_expected
+                
+                print(f"\n  [Z_hat_target] Ожидаемая цель для OP (компоненты D_X0):")
+                for rank, (idx, w) in enumerate(zip(topk_soft.indices.tolist(), alpha.tolist())):
+                    print(f"    [{rank+1}] {repr(token_map[idx]):20s} weight={w:.4f}  (id={idx})")
+                
+                # Проецируем L40 обратно в h
                 OP_out = output_projector(X40)  # [1, seq_len, 1024]
-                current_X = OP_out
+                current_h = OP_out
                 vec_to_search = OP_out[0, -1, :].unsqueeze(0)
+                
+                # Сравниваем с целью
+                sim_target = F.cosine_similarity(vec_to_search, Z_hat_target.unsqueeze(0)).item()
+                norm_op = vec_to_search.norm().item()
+                norm_target = Z_hat_target.norm().item()
+                print(f"\n  [OP vs Target] cos={sim_target:.4f} | norm(OP)={norm_op:.2f} | norm(Target)={norm_target:.2f}")
                 vec_to_search = OP_out[0, -1, :].unsqueeze(0)
                 
             # Поиск в словаре D_X0 для последнего токена
