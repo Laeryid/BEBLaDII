@@ -118,9 +118,9 @@ def main():
         print(f"  {tid} -> '{tokenizer.decode([tid])}'")
 
     with torch.no_grad():
-        # Базовый X0
+        # Базовый X0 (пространство h, как в D_X0 и на выходе OP)
         qwen_emb = qwen_embed(input_tensor).to(torch.float32)
-        X0, _, _ = input_projector(qwen_emb)
+        X0 = input_projector.proj(qwen_emb)
         
         current_h = None
         attention_mask = torch.ones((1, X0.size(1)), dtype=torch.long, device=device)
