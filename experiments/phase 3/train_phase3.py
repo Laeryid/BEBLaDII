@@ -49,9 +49,9 @@ def setup_env():
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-name", type=str, default="phase3_test")
-    parser.add_argument("--tau", type=float, default=0.1, help="Температура для Soft Matching")
-    parser.add_argument("--k", type=int, default=28, help="Топ-k для Soft Matching")
-    parser.add_argument("--num-layers", type=int, default=2, help="Слои OP: 2 или 3")
+    parser.add_argument("--tau", type=float, default=0.007, help="Температура для Soft Matching (0.007 делает таргет почти чистым)")
+    parser.add_argument("--k", type=int, default=6, help="Топ-k для Soft Matching")
+    parser.add_argument("--num-layers", type=int, default=1, help="Слои OP: 1 (Линейный), 2 или 3 (MLP)")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
     parser.add_argument("--steps", type=int, default=10000)

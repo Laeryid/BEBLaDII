@@ -313,15 +313,19 @@ class OutputProjector(BEComponent):
         })
         
         layers = []
-        # Слой 1
-        layers.append(nn.Linear(input_dim, hidden_dim))
-        layers.append(nn.GELU())
-        
-        if num_layers == 2:
+        if num_layers == 1:
+            # Чисто линейное преобразование (Affine)
+            layers.append(nn.Linear(input_dim, output_dim))
+            layers.append(nn.LayerNorm(output_dim, eps=1e-6))
+        elif num_layers == 2:
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            layers.append(nn.GELU())
             # Слой 2 (финальный)
             layers.append(nn.Linear(hidden_dim, output_dim))
             layers.append(nn.LayerNorm(output_dim, eps=1e-6))
         elif num_layers == 3:
+            layers.append(nn.Linear(input_dim, hidden_dim))
+            layers.append(nn.GELU())
             # Слой 2
             layers.append(nn.Linear(hidden_dim, output_dim))
             layers.append(nn.GELU())
@@ -329,7 +333,7 @@ class OutputProjector(BEComponent):
             layers.append(nn.Linear(output_dim, output_dim))
             layers.append(nn.LayerNorm(output_dim, eps=1e-6))
         else:
-            raise ValueError(f"num_layers={num_layers} не поддерживается (только 2 или 3).")
+            raise ValueError(f"num_layers={num_layers} не поддерживается (только 1, 2 или 3).")
             
         self.proj = nn.Sequential(*layers)
         self._init_weights()

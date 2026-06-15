@@ -18,7 +18,7 @@ def parse_args():
     parser.add_argument("--text", type=str, default=" mathematics", help="Входной текст для теста")
     parser.add_argument("--cycles", type=int, default=5, help="Количество циклов рекурсии")
     parser.add_argument("--top-k", type=int, default=5, help="Сколько соседей показывать")
-    parser.add_argument("--op-layers", type=int, default=3, help="Количество слоев в OP")
+    parser.add_argument("--op-layers", type=int, default=1, help="Количество слоев в OP")
     return parser.parse_args()
 
 def get_nearest_neighbors(query_vec, D_X0, token_map, top_k=5):
