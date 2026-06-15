@@ -82,7 +82,7 @@ def main():
     if "model_state_dict" in sd3: sd3 = sd3["model_state_dict"]
     cleaned_sd3 = {}
     for k, v in sd3.items():
-        k_clean = k.replace("_fsdp_wrapped_module.", "").replace("module.", "")
+        k_clean = k.replace("_fsdp_wrapped_module.", "").replace("module.", "").replace("_orig_", "")
         cleaned_sd3[k_clean] = v
     
     # DEBUG: Print keys
