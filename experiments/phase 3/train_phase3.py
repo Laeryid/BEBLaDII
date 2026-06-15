@@ -81,7 +81,7 @@ def parse_args():
 # =============================================================================
 
 def load_phase2_weights(checkpoint_path: str, student: DUSModel, input_projector: InputProjector):
-    sd = torch.load(checkpoint_path, map_location="cpu")
+    sd = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
     if "model_state_dict" in sd:
         sd = sd["model_state_dict"]
     cleaned = {}
@@ -323,13 +323,12 @@ def train_tpu(args):
     # 3. Словари
     dict_dir = "./data/phase3/dictionaries" if args.dictionaries.startswith("gs://") else args.dictionaries
     if rank == 0: print(f"Загрузка словарей из {dict_dir} ...")
-    D_X0 = torch.load(os.path.join(dict_dir, "D_X0.pt"), map_location="cpu").to(device).float()
-    D_L40_raw = torch.load(os.path.join(dict_dir, "D_L40.pt"), map_location="cpu").float()
+    D_X0 = torch.load(os.path.join(dict_dir, "D_X0.pt"), map_location="cpu", weights_only=True).to(device).float()
+    D_L40_raw = torch.load(os.path.join(dict_dir, "D_L40.pt"), map_location="cpu", weights_only=True).float()
     whitening_mu = D_L40_raw.mean(dim=0, keepdim=True).to(device)
     whitening_sigma = (D_L40_raw.std(dim=0, keepdim=True) + 1e-6).to(device)
     # Сферический словарь: отбеливаем и нормируем
     D_L40_sphere = F.normalize((D_L40_raw.to(device) - whitening_mu) / whitening_sigma, dim=-1)
-    del D_L40_raw
     if rank == 0: print(f"  Whitening: mu_norm={whitening_mu.norm():.3f}, sigma_max={whitening_sigma.max():.3f}, sigma_min={whitening_sigma.min():.6f}")
     
     # 4. Данные
