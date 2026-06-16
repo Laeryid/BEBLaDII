@@ -193,7 +193,7 @@ def soft_dictionary_matching(L40_ctx, D_X0, D_L40_norm_sphere, whitening_mu, whi
     k_eff = torch.exp(H).mean().item()
     top1_self = alpha[:, 0].mean().item()
     
-    return Z_hat_target.reshape(B, seq_len, D), k_eff, top1_self, topk_idx
+    return Z_hat_target.reshape(B, seq_len, D), k_eff, top1_self, topk_idx, alpha
 
 def get_hub_loss(pred, target, delta=1.0):
     diff = pred - target
@@ -202,55 +202,69 @@ def get_hub_loss(pred, target, delta=1.0):
     return loss.mean()
 
 
-def compute_loss(Z_pred, Z_hat_target, loss_mode: str, norm_weight: float = 0.05):
+def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: float = 0.05, 
+                 topk_idx=None, alpha=None, D_X0=None, tau=0.007, contrast_weight=0.1):
     """
     Вычисляет потерю для OutputProjector.
 
     Modes:
       huber       — Huber-loss в евклидовых координатах (baseline).
-                    Проблема: минимизирует XYZ-ошибку, плохо коррелирует
-                    с cos_sim на сфере → плато cos≈0.81 при loss=0.009.
-      cosine      — 1 - cos_sim. Чистая угловая потеря. Игнорирует норму.
-      cosine+norm — cos_loss + norm_weight * huber(||pred||, ||target||).
-                    Обучает угол (главное) + удерживает норму ≈ 32 (ADR-033).
-
-    Возвращает: (loss_scalar, metrics_dict)
+      cosine      — Centered Cosine Loss. Чистая семантическая угловая потеря.
+      cosine+norm — Centered cos_loss + norm_weight * huber(Z_pred, Z_hat_target).
+                    Обучает семантический угол + удерживает вектор в абсолютном пространстве.
     """
-    # --- Угловая компонента ---
-    # Перевод во float() не работает, если включен XLA_USE_BF16=1 (он принудительно всё даун-кастит).
-    # Но в BF16 числа около 1.0 имеют шаг 0.0039, поэтому `cos_sim` "залипает" на 0.99609.
-    # Решение: `1 - cos_sim` математически эквивалентно `0.5 * ||a - b||^2` для единичных векторов.
-    # Вычисление разности малых чисел (a - b) в BF16 сохраняет высокую точность благодаря плавающему экспоненту.
-    Z_pred_norm = F.normalize(Z_pred, dim=-1)
-    Z_tgt_norm  = F.normalize(Z_hat_target, dim=-1)
+    # --- Угловая компонента (Центрированная!) ---
+    Z_pred_centered = Z_pred - mean_X0
+    Z_tgt_centered  = Z_hat_target - mean_X0
     
-    # Считаем классический cos_sim чисто для метрики (он застрянет на 0.996, это нормально для логов)
-    cos_sim_metric = (Z_pred_norm * Z_tgt_norm).sum(dim=-1).mean()
+    Z_pred_norm = F.normalize(Z_pred_centered, dim=-1)
+    Z_tgt_norm  = F.normalize(Z_tgt_centered, dim=-1)
     
-    # Считаем loss через квадратичное расстояние (он сможет падать до ~1e-6)
     diff = Z_pred_norm - Z_tgt_norm
     cos_loss = 0.5 * (diff * diff).sum(dim=-1).mean()
+    
+    with torch.no_grad():
+        cos_sim_metric = F.cosine_similarity(Z_pred, Z_hat_target, dim=-1).mean()
 
     metrics = {
         "train/cos_loss": cos_loss.item(),
         "train/cos_sim":  cos_sim_metric.item(),
     }
+    
+    # --- Contrastive Neighbor Loss (RKD / InfoNCE) ---
+    # Штрафует OP, если он отклоняется в сторону мусорных/случайных токенов в D_X0.
+    contrast_loss = torch.tensor(0.0, device=Z_pred.device)
+    if topk_idx is not None and alpha is not None and D_X0 is not None:
+        B, S, k = topk_idx.shape
+        pos_idx = topk_idx.view(-1)
+        rand_idx = torch.randint(0, D_X0.size(0), (2048,), device=Z_pred.device)
+        vocab_subset, inverse_indices = torch.unique(torch.cat([pos_idx, rand_idx]), return_inverse=True)
+        
+        D_subset = D_X0[vocab_subset]
+        D_subset_norm = F.normalize(D_subset - mean_X0, dim=-1) # [U, D]
+        
+        logits = (Z_pred_norm.reshape(B*S, -1) @ D_subset_norm.T) / tau # [B*S, U]
+        log_probs = F.log_softmax(logits, dim=-1)
+        
+        targets = torch.zeros_like(logits)
+        pos_subset_idx = inverse_indices[:B*S*k].view(B*S, k)
+        targets.scatter_(1, pos_subset_idx, alpha.view(B*S, k))
+        
+        contrast_loss = F.kl_div(log_probs, targets, reduction='batchmean')
+        metrics["train/contrast_loss"] = contrast_loss.item()
 
     if loss_mode == "huber":
         loss = get_hub_loss(Z_pred, Z_hat_target)
         metrics["train/huber"] = loss.item()
 
     elif loss_mode == "cosine":
-        loss = cos_loss
+        loss = cos_loss + contrast_weight * contrast_loss
 
     else:  # cosine+norm
-        pred_norm   = Z_pred.norm(dim=-1)
-        target_norm = Z_hat_target.norm(dim=-1)
-        norm_penalty = get_hub_loss(pred_norm, target_norm)
-        loss = cos_loss + norm_weight * norm_penalty
-        metrics["train/norm_penalty"] = norm_penalty.item()
-        metrics["train/pred_norm_mean"] = pred_norm.mean().item()
-
+        huber_penalty = get_hub_loss(Z_pred, Z_hat_target)
+        loss = cos_loss + norm_weight * huber_penalty + contrast_weight * contrast_loss
+        metrics["train/huber_penalty"] = huber_penalty.item()
+        
     metrics["train/loss"] = loss.item()
     return loss, metrics
 
@@ -324,6 +338,7 @@ def train_tpu(args):
     dict_dir = "./data/phase3/dictionaries" if args.dictionaries.startswith("gs://") else args.dictionaries
     if rank == 0: print(f"Загрузка словарей из {dict_dir} ...")
     D_X0 = torch.load(os.path.join(dict_dir, "D_X0.pt"), map_location="cpu", weights_only=True).to(device).float()
+    mean_X0 = D_X0.mean(dim=0, keepdim=True)
     D_L40_raw = torch.load(os.path.join(dict_dir, "D_L40.pt"), map_location="cpu", weights_only=True).float()
     whitening_mu = D_L40_raw.mean(dim=0, keepdim=True).to(device)
     whitening_sigma = (D_L40_raw.std(dim=0, keepdim=True) + 1e-6).to(device)
@@ -372,16 +387,17 @@ def train_tpu(args):
                 L40_ctx = dus_out.last_hidden_state
                 
                 # Soft разложение с отбеливанием
-                Z_hat_target, k_eff, top1_self, topk_idx = soft_dictionary_matching(
+                Z_hat_target, k_eff, top1_self, topk_idx, alpha = soft_dictionary_matching(
                     L40_ctx, D_X0, D_L40_sphere, whitening_mu, whitening_sigma, args.tau, args.k
                 )
             
             # Основной Loss на контекстуализированных токенах
             Z_pred = output_projector(L40_ctx)
             loss_ctx, metrics = compute_loss(
-                Z_pred, Z_hat_target,
+                Z_pred, Z_hat_target, mean_X0,
                 loss_mode=args.loss_mode,
                 norm_weight=args.norm_weight,
+                topk_idx=topk_idx, alpha=alpha, D_X0=D_X0, tau=args.tau
             )
             
             # --- Anchor Loss (Якорное обучение на изолированных векторах) ---
@@ -397,7 +413,7 @@ def train_tpu(args):
             
             anchor_pred = output_projector(anchor_L40)
             loss_anchor, anchor_metrics = compute_loss(
-                anchor_pred, anchor_X0,
+                anchor_pred, anchor_X0, mean_X0,
                 loss_mode=args.loss_mode,
                 norm_weight=args.norm_weight,
             )
