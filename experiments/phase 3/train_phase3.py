@@ -235,7 +235,7 @@ def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: flo
     # Штрафует OP, если он отклоняется в сторону мусорных/случайных токенов в D_X0.
     contrast_loss = torch.tensor(0.0, device=Z_pred.device)
     if topk_idx is not None and alpha is not None and D_X0 is not None:
-        B, S, k = topk_idx.shape
+        N, k = topk_idx.shape
         pos_idx = topk_idx.view(-1)
         rand_idx = torch.randint(0, D_X0.size(0), (2048,), device=Z_pred.device)
         vocab_subset, inverse_indices = torch.unique(torch.cat([pos_idx, rand_idx]), return_inverse=True)
@@ -243,12 +243,12 @@ def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: flo
         D_subset = D_X0[vocab_subset]
         D_subset_norm = F.normalize(D_subset - mean_X0, dim=-1) # [U, D]
         
-        logits = (Z_pred_norm.reshape(B*S, -1) @ D_subset_norm.T) / tau # [B*S, U]
+        logits = (Z_pred_norm.reshape(N, -1) @ D_subset_norm.T) / tau # [N, U]
         log_probs = F.log_softmax(logits, dim=-1)
         
         targets = torch.zeros_like(logits)
-        pos_subset_idx = inverse_indices[:B*S*k].view(B*S, k)
-        targets.scatter_(1, pos_subset_idx, alpha.view(B*S, k))
+        pos_subset_idx = inverse_indices[:N*k].view(N, k)
+        targets.scatter_(1, pos_subset_idx, alpha.view(N, k))
         
         contrast_loss = F.kl_div(log_probs, targets, reduction='batchmean')
         metrics["train/contrast_loss"] = contrast_loss.item()
