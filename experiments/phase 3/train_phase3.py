@@ -203,7 +203,7 @@ def get_hub_loss(pred, target, delta=1.0):
 
 
 def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: float = 0.05, 
-                 topk_idx=None, alpha=None, D_X0=None, tau=0.007, contrast_weight=0.1):
+                 topk_idx=None, alpha=None, D_X0=None, tau=0.007, contrast_weight=0.01):
     """
     Вычисляет потерю для OutputProjector.
 
@@ -244,7 +244,8 @@ def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: flo
         D_subset = D_X0[vocab_subset]
         D_subset_norm = F.normalize(D_subset - mean_X0, dim=-1) # [N * k + 2048, D]
         
-        logits = (Z_pred_norm.reshape(N, -1) @ D_subset_norm.T) / tau # [N, N * k + 2048]
+        tau_contrast = 0.07
+        logits = (Z_pred_norm.reshape(N, -1) @ D_subset_norm.T) / tau_contrast # [N, N * k + 2048]
         log_probs = F.log_softmax(logits, dim=-1)
         
         device = Z_pred.device
