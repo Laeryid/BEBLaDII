@@ -238,17 +238,20 @@ def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: flo
         N, k = topk_idx.shape
         pos_idx = topk_idx.view(-1)
         rand_idx = torch.randint(0, D_X0.size(0), (2048,), device=Z_pred.device)
-        vocab_subset, inverse_indices = torch.unique(torch.cat([pos_idx, rand_idx]), return_inverse=True)
+        
+        vocab_subset = torch.cat([pos_idx, rand_idx]) # [N * k + 2048]
         
         D_subset = D_X0[vocab_subset]
-        D_subset_norm = F.normalize(D_subset - mean_X0, dim=-1) # [U, D]
+        D_subset_norm = F.normalize(D_subset - mean_X0, dim=-1) # [N * k + 2048, D]
         
-        logits = (Z_pred_norm.reshape(N, -1) @ D_subset_norm.T) / tau # [N, U]
+        logits = (Z_pred_norm.reshape(N, -1) @ D_subset_norm.T) / tau # [N, N * k + 2048]
         log_probs = F.log_softmax(logits, dim=-1)
         
-        targets = torch.zeros_like(logits)
-        pos_subset_idx = inverse_indices[:N*k].view(N, k)
-        targets.scatter_(1, pos_subset_idx, alpha.view(N, k))
+        device = Z_pred.device
+        col_indices = torch.arange(N, device=device).unsqueeze(1) * k + torch.arange(k, device=device).unsqueeze(0)
+        
+        targets = torch.zeros((N, N * k + 2048), device=device)
+        targets.scatter_(1, col_indices, alpha)
         
         contrast_loss = F.kl_div(log_probs, targets, reduction='batchmean')
         metrics["train/contrast_loss"] = contrast_loss.item()
