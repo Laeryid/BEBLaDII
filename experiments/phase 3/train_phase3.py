@@ -54,7 +54,7 @@ def parse_args():
     parser.add_argument("--num-layers", type=int, default=1, help="Слои OP: 1 (Линейный), 2 или 3 (MLP)")
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--learning-rate", type=float, default=1e-4)
-    parser.add_argument("--steps", type=int, default=10000)
+    parser.add_argument("--steps", type=int, default=40000)
     parser.add_argument("--debug", action="store_true", help="10 шагов локально (без XLA)")
     parser.add_argument(
         "--loss-mode", type=str, default="cosine+norm",
@@ -215,8 +215,16 @@ def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: flo
     """
     # --- Угловая компонента (Центрированная!) ---
     Z_pred_centered = Z_pred - mean_X0
-    Z_tgt_centered  = Z_hat_target - mean_X0
     
+    if topk_idx is not None and alpha is not None and D_X0 is not None:
+        # Истинное семантическое направление - взвешенная сумма центрированных соседей
+        top_dx0 = D_X0[topk_idx] # [N, k, D]
+        top_dx0_centered = top_dx0 - mean_X0.unsqueeze(1)
+        Z_tgt_centered = (alpha.unsqueeze(-1) * top_dx0_centered).sum(dim=1) # [N, D]
+    else:
+        # Фолбэк для якорного лосса (где k=1)
+        Z_tgt_centered  = Z_hat_target - mean_X0
+        
     Z_pred_norm = F.normalize(Z_pred_centered, dim=-1)
     Z_tgt_norm  = F.normalize(Z_tgt_centered, dim=-1)
     
