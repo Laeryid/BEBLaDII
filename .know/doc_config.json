@@ -519,6 +519,18 @@
             ]
         },
 
+        "decisions/035_centered_cosine_and_contrastive_neighbor_loss.md": {
+            "description": "ADR: Внедрение центрированного косинуса, динамических якорей и контрастивного лосса ближайших соседей (RKD/InfoNCE) для стабилизации рекурсии OutputProjector.",
+            "covers": [
+                "Architecture & Training Phases",
+                "Model Core"
+            ],
+            "depends_on": [
+                "experiments/phase 3/train_phase3.py",
+                "experiments/phase 3/test_phase3.py"
+            ]
+        },
+
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
