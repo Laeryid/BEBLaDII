@@ -22,10 +22,13 @@ def parse_args():
     return parser.parse_args()
 
 def get_nearest_neighbors(query_vec, D_X0, token_map, top_k=5):
-    # query_vec: [1, 1024]
-    # D_X0: [V, 1024]
-    query_norm = F.normalize(query_vec.float(), p=2, dim=-1)
-    dict_norm = F.normalize(D_X0.float(), p=2, dim=-1)
+    # Убираем средний вектор для честного семантического поиска
+    mean_x0 = D_X0.mean(dim=0, keepdim=True)
+    query_centered = query_vec.float() - mean_x0
+    dict_centered = D_X0.float() - mean_x0
+    
+    query_norm = F.normalize(query_centered, p=2, dim=-1)
+    dict_norm = F.normalize(dict_centered, p=2, dim=-1)
     
     sims = torch.matmul(query_norm, dict_norm.T).squeeze(0) # [V]
     vals, idxs = torch.topk(sims, top_k)

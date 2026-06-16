@@ -193,7 +193,7 @@ def soft_dictionary_matching(L40_ctx, D_X0, D_L40_norm_sphere, whitening_mu, whi
     k_eff = torch.exp(H).mean().item()
     top1_self = alpha[:, 0].mean().item()
     
-    return Z_hat_target.reshape(B, seq_len, D), k_eff, top1_self
+    return Z_hat_target.reshape(B, seq_len, D), k_eff, top1_self, topk_idx
 
 def get_hub_loss(pred, target, delta=1.0):
     diff = pred - target
@@ -372,7 +372,7 @@ def train_tpu(args):
                 L40_ctx = dus_out.last_hidden_state
                 
                 # Soft разложение с отбеливанием
-                Z_hat_target, k_eff, top1_self = soft_dictionary_matching(
+                Z_hat_target, k_eff, top1_self, topk_idx = soft_dictionary_matching(
                     L40_ctx, D_X0, D_L40_sphere, whitening_mu, whitening_sigma, args.tau, args.k
                 )
             
@@ -385,9 +385,13 @@ def train_tpu(args):
             )
             
             # --- Anchor Loss (Якорное обучение на изолированных векторах) ---
-            # Гарантирует, что нелинейный MLP не забудет чистые словарные вектора
+            # Сэмплируем якоря ТОЛЬКО из тех слов, которые релевантны текущему контексту (topk_idx),
+            # чтобы MLP не пытался выучить мусорные/OUT_OF_VOCAB токены из хвоста словаря Qwen.
             batch_size = L40_ctx.size(0)
-            anchor_idx_cpu = torch.randint(0, D_X0.size(0), (batch_size,))
+            valid_anchors = topk_idx.view(-1)
+            rand_idx = torch.randint(0, valid_anchors.size(0), (batch_size,))
+            anchor_idx_cpu = valid_anchors[rand_idx].cpu()
+            
             anchor_L40 = D_L40_raw[anchor_idx_cpu].to(device).unsqueeze(1) # [B, 1, D]
             anchor_X0  = D_X0[anchor_idx_cpu.to(device)].unsqueeze(1) # [B, 1, D]
             
