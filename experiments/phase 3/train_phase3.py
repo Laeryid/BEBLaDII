@@ -221,6 +221,7 @@ def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: flo
         top_dx0 = D_X0[topk_idx] # [N, k, D]
         top_dx0_centered = top_dx0 - mean_X0.unsqueeze(1)
         Z_tgt_centered = (alpha.unsqueeze(-1) * top_dx0_centered).sum(dim=1) # [N, D]
+        Z_tgt_centered = Z_tgt_centered.view_as(Z_pred_centered)
     else:
         # Фолбэк для якорного лосса (где k=1)
         Z_tgt_centered  = Z_hat_target - mean_X0
