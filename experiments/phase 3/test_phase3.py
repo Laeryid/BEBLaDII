@@ -33,7 +33,7 @@ def get_nearest_neighbors(query_vec, D_X0, token_map, top_k=5):
     res = []
     for val, idx in zip(vals, idxs):
         idx_val = idx.item()
-        token_str = token_map[idx_val]
+        token_str = token_map[idx_val] if idx_val < len(token_map) else "<OUT_OF_VOCAB>"
         res.append((idx_val, token_str, val.item()))
     return res
 
@@ -58,7 +58,7 @@ def main():
     
     # Загрузка весов Фазы 2 (DUS + IP)
     print(f"Загрузка весов Phase 2 из {args.checkpoint_phase2}...")
-    sd2 = torch.load(args.checkpoint_phase2, map_location="cpu")
+    sd2 = torch.load(args.checkpoint_phase2, map_location="cpu", weights_only=True)
     if "model_state_dict" in sd2: sd2 = sd2["model_state_dict"]
     
     cleaned = {}
@@ -78,7 +78,7 @@ def main():
 
     # Загрузка весов Фазы 3 (OP)
     print(f"Загрузка весов Phase 3 из {args.checkpoint_op}...")
-    sd3 = torch.load(args.checkpoint_op, map_location="cpu")
+    sd3 = torch.load(args.checkpoint_op, map_location="cpu", weights_only=True)
     if "model_state_dict" in sd3: sd3 = sd3["model_state_dict"]
     cleaned_sd3 = {}
     for k, v in sd3.items():
@@ -98,8 +98,8 @@ def main():
 
     # 3. Словари
     print("Загрузка словарей...")
-    D_X0 = torch.load(os.path.join(args.dictionaries, "D_X0.pt"), map_location="cpu").to(device).float()
-    D_L40_norm = torch.load(os.path.join(args.dictionaries, "D_L40_norm.pt"), map_location="cpu").to(device).float()
+    D_X0 = torch.load(os.path.join(args.dictionaries, "D_X0.pt"), map_location="cpu", weights_only=True).to(device).float()
+    D_L40_norm = torch.load(os.path.join(args.dictionaries, "D_L40_norm.pt"), map_location="cpu", weights_only=True).to(device).float()
     with open(os.path.join(args.dictionaries, "token_map.json"), "r") as f:
         token_map = json.load(f)
 
