@@ -388,15 +388,22 @@ def train_tpu(args):
             )
             
             # --- Anchor Loss (Якорное обучение на изолированных векторах) ---
-            # Сэмплируем якоря ТОЛЬКО из тех слов, которые релевантны текущему контексту (topk_idx),
-            # чтобы MLP не пытался выучить мусорные/OUT_OF_VOCAB токены из хвоста словаря Qwen.
-            batch_size = L40_ctx.size(0)
+            # Формируем гибридную якорную выборку (1024 токена)
             valid_anchors = topk_idx.view(-1)
-            rand_idx = torch.randint(0, valid_anchors.size(0), (batch_size,))
-            anchor_idx_cpu = valid_anchors[rand_idx].cpu()
+            num_in_dist = 512
+            num_random = 512
             
-            anchor_L40 = D_L40_raw[anchor_idx_cpu].to(device).unsqueeze(1) # [B, 1, D]
-            anchor_X0  = D_X0[anchor_idx_cpu.to(device)].unsqueeze(1) # [B, 1, D]
+            # 1. Берем In-Distribution токены из батча
+            rand_idx_in = torch.randint(0, valid_anchors.size(0), (num_in_dist,))
+            in_dist_anchors = valid_anchors[rand_idx_in].cpu()
+            
+            # 2. Добиваем абсолютно случайными токенами для предотвращения хабов на редких словах
+            random_anchors = torch.randint(0, D_X0.size(0), (num_random,)).cpu()
+            
+            anchor_idx_cpu = torch.cat([in_dist_anchors, random_anchors]) # [1024]
+            
+            anchor_L40 = D_L40_raw[anchor_idx_cpu].to(device).unsqueeze(1) # [1024, 1, D]
+            anchor_X0  = D_X0[anchor_idx_cpu.to(device)].unsqueeze(1) # [1024, 1, D]
             
             anchor_pred = output_projector(anchor_L40)
             loss_anchor, anchor_metrics = compute_loss(
