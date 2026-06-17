@@ -203,7 +203,7 @@ def get_hub_loss(pred, target, delta=1.0):
 
 
 def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: float = 0.05, 
-                 topk_idx=None, alpha=None, D_X0=None, tau=0.007, contrast_weight=0.01):
+                 topk_idx=None, alpha=None, D_X0=None, tau=0.007):
     """
     Вычисляет потерю для OutputProjector.
 
@@ -239,43 +239,17 @@ def compute_loss(Z_pred, Z_hat_target, mean_X0, loss_mode: str, norm_weight: flo
         "train/cos_loss": cos_loss.item(),
         "train/cos_sim":  cos_sim_metric.item(),
     }
-    
-    # --- Contrastive Neighbor Loss (RKD / InfoNCE) ---
-    # Штрафует OP, если он отклоняется в сторону мусорных/случайных токенов в D_X0.
-    contrast_loss = torch.tensor(0.0, device=Z_pred.device)
-    if topk_idx is not None and alpha is not None and D_X0 is not None:
-        N, k = topk_idx.shape
-        pos_idx = topk_idx.view(-1)
-        rand_idx = torch.randint(0, D_X0.size(0), (2048,), device=Z_pred.device)
-        
-        vocab_subset = torch.cat([pos_idx, rand_idx]) # [N * k + 2048]
-        
-        D_subset = D_X0[vocab_subset]
-        D_subset_norm = F.normalize(D_subset - mean_X0, dim=-1) # [N * k + 2048, D]
-        
-        tau_contrast = 0.07
-        logits = (Z_pred_norm.reshape(N, -1) @ D_subset_norm.T) / tau_contrast # [N, N * k + 2048]
-        log_probs = F.log_softmax(logits, dim=-1)
-        
-        device = Z_pred.device
-        col_indices = torch.arange(N, device=device).unsqueeze(1) * k + torch.arange(k, device=device).unsqueeze(0)
-        
-        targets = torch.zeros((N, N * k + 2048), device=device)
-        targets.scatter_(1, col_indices, alpha)
-        
-        contrast_loss = F.kl_div(log_probs, targets, reduction='batchmean')
-        metrics["train/contrast_loss"] = contrast_loss.item()
 
     if loss_mode == "huber":
         loss = get_hub_loss(Z_pred, Z_hat_target)
         metrics["train/huber"] = loss.item()
 
     elif loss_mode == "cosine":
-        loss = cos_loss + contrast_weight * contrast_loss
+        loss = cos_loss
 
     else:  # cosine+norm
         huber_penalty = get_hub_loss(Z_pred, Z_hat_target)
-        loss = cos_loss + norm_weight * huber_penalty + contrast_weight * contrast_loss
+        loss = cos_loss + norm_weight * huber_penalty
         metrics["train/huber_penalty"] = huber_penalty.item()
         
     metrics["train/loss"] = loss.item()
@@ -431,10 +405,24 @@ def train_tpu(args):
                 norm_weight=args.norm_weight,
             )
             
+            # --- RKD Loss (Relational Knowledge Distillation) ---
+            # Вычисляем попарные косинусы для якорей и штрафуем за искажение геометрии батча
+            a_pred_norm = F.normalize(anchor_pred.squeeze(1) - mean_X0, dim=-1)
+            a_tgt_norm = F.normalize(anchor_X0.squeeze(1) - mean_X0, dim=-1)
+            
+            P = F.cosine_similarity(a_pred_norm.unsqueeze(1), a_pred_norm.unsqueeze(0), dim=-1)
+            T = F.cosine_similarity(a_tgt_norm.unsqueeze(1), a_tgt_norm.unsqueeze(0), dim=-1)
+            rkd_loss = F.mse_loss(P, T)
+            anchor_metrics["train/rkd_loss"] = rkd_loss.item()
+            
+            # Прибавляем rkd_loss к anchor_loss с умеренным весом
+            loss_anchor = loss_anchor + 0.1 * rkd_loss
+            
             loss = loss_ctx + 0.5 * loss_anchor
             
-            # Добавляем метрики якоря
+            # Добавляем метрики якоря и RKD
             metrics["train/anchor_cos_sim"] = anchor_metrics["train/cos_sim"]
+            metrics["train/rkd_loss"] = anchor_metrics["train/rkd_loss"]
             
             loss.backward()
             xm.optimizer_step(optimizer, barrier=True)
