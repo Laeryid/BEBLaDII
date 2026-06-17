@@ -531,6 +531,27 @@
             ]
         },
 
+        "decisions/036_replacing_infonce_with_rkd.md": {
+            "description": "ADR: Отказ от InfoNCE в пользу Angle-wise RKD для решения Hubness Problem и устранения False Negative Repulsion.",
+            "covers": [
+                "Architecture & Training Phases",
+                "Model Core"
+            ],
+            "depends_on": [
+                "experiments/phase 3/train_phase3.py"
+            ]
+        },
+        "decisions/037_phase3_failure_and_plan_b_skip_connections.md": {
+            "description": "ADR: Фиксация неудачи OutputProjector (Phase 3) из-за Garbage Collapse и переход к Plan B (Skip Connections).",
+            "covers": [
+                "Architecture & Training Phases",
+                "Model Core"
+            ],
+            "depends_on": [
+                "experiments/phase 3/train_phase3.py",
+                "experiments/phase 3/test_phase3.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
