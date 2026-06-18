@@ -218,20 +218,31 @@ def compute_phase1_loss(
     return total_loss, metrics
 
 
-from indexed_parquet_dataset import IndexedParquetDataset
+from transformers import AutoTokenizer
 
+def get_dataloader(data_path, batch_size=8, max_length=1024, tokenizer=None):
+    from indexed_parquet_dataset import IndexedParquetDataset
 
-def get_dataloader(data_path, batch_size=8, max_length=1024):
     print(f"Loading parquet dataset from {data_path} using IndexedParquetDataset...")
     ds = IndexedParquetDataset.from_folder(
         data_path, pattern="*.parquet", auto_fill=True
     )
 
-    # Индексированный O(1) shuffle, без загрузки в память
+    # Идеальный O(1) shuffle, чтение батчами
     ds = ds.shuffle(seed=42, rg_buffer=8)
     print(f"Total samples: {len(ds)}")
 
     def collate_fn(batch):
+        # Если есть колонка "text", токенизируем на лету
+        if tokenizer is not None and "text" in batch[0] and batch[0]["text"] is not None:
+            texts = [item["text"] for item in batch]
+            encoded = tokenizer(texts, padding="max_length", truncation=True, max_length=max_length, return_tensors="pt")
+            return {
+                "input_ids": encoded["input_ids"],
+                "attention_mask": encoded["attention_mask"]
+            }
+
+        # Иначе используем готовые input_ids (fallback)
         input_ids = []
         attention_mask = []
         for item in batch:
@@ -282,10 +293,29 @@ def train(args):
         wandb.init(project=args.wandb_project, config=vars(args))
 
     # Если мы передали gs://, к этому моменту данные уже скачаны в ./data в блоке __main__
-    local_data_path = "./data" if args.data_path.startswith("gs://") else args.data_path
+    local_data_path = "./data/train" if args.data_path.startswith("gs://") else args.data_path
+    local_val_path = "./data/val" if args.val_data_path and args.val_data_path.startswith("gs://") else args.val_data_path
+    
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token_id = 151643
     
     dataloader = get_dataloader(
-        local_data_path, batch_size=args.batch_size, max_length=args.max_length
+        local_data_path, batch_size=args.batch_size, max_length=args.max_length, tokenizer=tokenizer
+    )
+    
+    val_dataloader = None
+    if local_val_path:
+        val_dataloader = get_dataloader(
+            local_val_path, batch_size=args.batch_size, max_length=args.max_length, tokenizer=tokenizer
+        )
+
+    from transformers import get_cosine_schedule_with_warmup
+    num_training_steps = args.max_steps
+    num_warmup_steps = int(num_training_steps * 0.1) # 10% warmup
+    
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer, num_warmup_steps=num_warmup_steps, num_training_steps=num_training_steps
     )
 
     model.train()
@@ -329,12 +359,14 @@ def train(args):
 
             loss.backward()
             xm.optimizer_step(optimizer, barrier=True)
+            scheduler.step()
 
             if step % args.log_steps == 0:
                 metrics_dict = {k: v.item() for k, v in metrics.items()}
                 metrics_dict["loss"] = loss.item()
+                metrics_dict["lr"] = scheduler.get_last_lr()[0]
                 metrics_str = " | ".join(
-                    [f"{k}: {v:.4f}" for k, v in metrics_dict.items()]
+                    [f"{k}: {v:.4f}" for k, v in metrics_dict.items() if k != "lr"]
                 )
                 
                 if xm.is_master_ordinal():
@@ -343,9 +375,48 @@ def train(args):
                     if pbar is not None:
                         pbar.set_postfix({
                             "loss": f"{loss.item():.4f}",
-                            "ce_loss": f"{metrics_dict.get('ce_loss', 0):.4f}",
-                            "contrastive": f"{metrics_dict.get('contrastive_loss', 0):.4f}"
+                            "ce": f"{metrics_dict.get('ce_loss', 0):.4f}",
+                            "lr": f"{metrics_dict['lr']:.2e}"
                         })
+
+            # Validation Loop
+            if val_dataloader is not None and step > 0 and step % args.val_steps == 0:
+                model.eval()
+                val_losses = []
+                val_ces = []
+                
+                # Ограничиваем валидацию 50 батчами для скорости
+                max_val_batches = 50 
+                
+                with torch.no_grad():
+                    for v_step, v_batch in enumerate(val_dataloader):
+                        if v_step >= max_val_batches: break
+                        
+                        v_input_ids = v_batch["input_ids"].to(device)
+                        v_attention_mask = v_batch["attention_mask"].to(device)
+                        xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))
+                        xs.mark_sharding(v_attention_mask, mesh, ('fsdp', None))
+                        
+                        v_logits, v_z, v_mu, v_logvar, _ = model(v_input_ids, attention_mask=v_attention_mask)
+                        v_loss, v_metrics = compute_phase1_loss(
+                            logits=v_logits, labels=v_input_ids, z=v_z, mu=v_mu, logvar=v_logvar,
+                            attention_mask=v_attention_mask, kl_beta=args.kl_beta, contrastive_lambda=args.contrastive_lambda
+                        )
+                        val_losses.append(v_loss.item())
+                        val_ces.append(v_metrics["ce_loss"].item())
+                
+                if xm.is_master_ordinal():
+                    val_log = {
+                        "val/loss": sum(val_losses) / len(val_losses),
+                        "val/ce_loss": sum(val_ces) / len(val_ces)
+                    }
+                    if args.wandb_project:
+                        wandb.log(val_log, step=step)
+                    print(f"\n--- [VAL] Step {step} | Loss: {val_log['val/loss']:.4f} | CE: {val_log['val/ce_loss']:.4f} ---")
+                
+                # Синхронизация после валидации
+                xm.rendezvous("validation_done")
+                model.train()
 
             step += 1
             if pbar is not None:
@@ -384,7 +455,13 @@ if __name__ == "__main__":
         "--data_path",
         type=str,
         default="gs://bebladii-datasets-us/phase 3/train_data/data",
-        help="Dataset path",
+        help="Train dataset path",
+    )
+    parser.add_argument(
+        "--val_data_path",
+        type=str,
+        default="",
+        help="Validation dataset path (empty to disable)",
     )
     parser.add_argument(
         "--output_dir", type=str, default="checkpoints/phase1", help="Output directory"
@@ -397,6 +474,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=1)
     parser.add_argument("--max_steps", type=int, default=10000)
     parser.add_argument("--log_steps", type=int, default=10)
+    parser.add_argument("--val_steps", type=int, default=500)
     parser.add_argument(
         "--wandb_project",
         type=str,
@@ -408,14 +486,17 @@ if __name__ == "__main__":
     # Синхронизация данных с GCS перед стартом TPU
     rank = int(os.environ.get("LOCAL_RANK", 0))
     if rank == 0:
-        if args.data_path.startswith("gs://"):
-            print("--- [RANK 0] Подготовка ресурсов ---")
-            os.makedirs("./data", exist_ok=True)
-            try:
-                import subprocess
-                subprocess.run(["gcloud", "storage", "rsync", "-r", args.data_path, "./data/"], check=True)
-            except Exception as e:
-                print(f"--- [RANK 0] Ошибка GCS: {e} ---")
+        print("--- [RANK 0] Подготовка ресурсов ---")
+        os.makedirs("./data/train", exist_ok=True)
+        os.makedirs("./data/val", exist_ok=True)
+        try:
+            import subprocess
+            if args.data_path.startswith("gs://"):
+                subprocess.run(["gcloud", "storage", "rsync", "-r", args.data_path, "./data/train/"], check=True)
+            if args.val_data_path and args.val_data_path.startswith("gs://"):
+                subprocess.run(["gcloud", "storage", "rsync", "-r", args.val_data_path, "./data/val/"], check=True)
+        except Exception as e:
+            print(f"--- [RANK 0] Ошибка GCS: {e} ---")
                 
         with open("/tmp/resources_prepared.flag", "w") as f: f.write("ok")
     else:
