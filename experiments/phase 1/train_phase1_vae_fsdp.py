@@ -269,15 +269,18 @@ def train(args):
         model.parameters(), lr=args.learning_rate, weight_decay=1e-2
     )
 
+    if xm.is_master_ordinal() and args.wandb_project:
+        wandb.init(project=args.wandb_project, config=vars(args))
+
+    # Если мы передали gs://, к этому моменту данные уже скачаны в ./data в блоке __main__
+    local_data_path = "./data" if args.data_path.startswith("gs://") else args.data_path
+    
     dataloader = get_dataloader(
-        args.data_path, batch_size=args.batch_size, max_length=args.max_length
+        local_data_path, batch_size=args.batch_size, max_length=args.max_length
     )
 
     model.train()
     step = 0
-
-    if xm.is_master_ordinal() and args.wandb_project:
-        wandb.init(project=args.wandb_project, config=vars(args))
 
     print("Starting training...")
     for epoch in range(args.epochs):
@@ -367,5 +370,23 @@ if __name__ == "__main__":
         help="wandb project name (empty to disable)",
     )
     args = parser.parse_args()
+
+    # Синхронизация данных с GCS перед стартом TPU
+    rank = int(os.environ.get("LOCAL_RANK", 0))
+    if rank == 0:
+        if args.data_path.startswith("gs://"):
+            print("--- [RANK 0] Подготовка ресурсов ---")
+            os.makedirs("./data", exist_ok=True)
+            try:
+                import subprocess
+                subprocess.run(["gcloud", "storage", "rsync", "-r", args.data_path, "./data/"], check=True)
+            except Exception as e:
+                print(f"--- [RANK 0] Ошибка GCS: {e} ---")
+                
+        with open("/tmp/resources_prepared.flag", "w") as f: f.write("ok")
+    else:
+        import time
+        while not os.path.exists("/tmp/resources_prepared.flag"):
+            time.sleep(1)
 
     train(args)
