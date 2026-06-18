@@ -264,7 +264,13 @@ def get_dataloader(data_path, batch_size=8, max_length=1024, tokenizer=None):
         }
 
     return DataLoader(
-        ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, drop_last=True
+        ds, 
+        batch_size=batch_size, 
+        shuffle=False, 
+        collate_fn=collate_fn, 
+        drop_last=True,
+        num_workers=4,
+        prefetch_factor=2
     )
 
 
