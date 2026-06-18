@@ -53,7 +53,7 @@ graph TD
         H -->|"Inject via CA_Memory"| E
     end
 
-    class A,B,J verbal
+    class A,B,J,M verbal
     class C,E,F,G,P latent
     class H,I,TC clm
 ```
