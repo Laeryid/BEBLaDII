@@ -231,9 +231,14 @@ def get_dataloader(data_path, batch_size=8, max_length=1024):
         input_ids = []
         attention_mask = []
         for item in batch:
-            seq = item["input_ids"][:max_length]
+            seq = item.get("input_ids")
+            if not seq:
+                seq = []
+            
+            seq = seq[:max_length]
             pad_len = max_length - len(seq)
-            padded_seq = seq + [0] * pad_len  # pad_token_id = 0 for Qwen
+            # pad_token_id = 151643 for Qwen
+            padded_seq = seq + [151643] * pad_len
             mask = [1] * len(seq) + [0] * pad_len
             input_ids.append(padded_seq)
             attention_mask.append(mask)
