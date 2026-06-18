@@ -1,0 +1,6 @@
+{
+  "vocab_size": 152064,
+  "hidden_size": 3584,
+  "dtype": "bfloat16",
+  "source_model": "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+}
