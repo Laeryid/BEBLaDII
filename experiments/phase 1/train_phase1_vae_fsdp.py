@@ -174,27 +174,31 @@ def compute_phase1_loss(
     # 4. Contrastive Loss (Uniform Spherical Repulsion)
     # Расталкиваем все токены друг от друга, чтобы они равномерно распределились по сфере.
     # Мы НЕ используем teacher_embeds (Qwen), чтобы не переносить его анизотропную структуру.
-    if attention_mask is not None:
-        mask_flat = attention_mask.view(-1).bool()
-        z_active = z.view(-1, D)[mask_flat]
-    else:
-        z_active = z.view(-1, D)
+    B, T, D = z.shape
+    z_flat = z.view(-1, D)
+    mask_flat = attention_mask.view(-1).float() if attention_mask is not None else torch.ones(B*T, device=z.device)
 
-    # Subsample for performance if batch is too large
-    max_tokens = 4096
-    if z_active.size(0) > max_tokens:
-        indices = torch.randperm(z_active.size(0), device=z_active.device)[:max_tokens]
-        z_active = z_active[indices]
+    # Subsample for performance if batch is too large (FIXED FOR XLA STATIC SHAPES)
+    max_tokens = min(4096, B * T)
+    # Используем randint с фиксированным размером (B*T) для статического XLA-графа
+    indices = torch.randint(0, B * T, (max_tokens,), device=z.device)
+    z_sampled = z_flat[indices]
+    mask_sampled = mask_flat[indices]
 
-    z_normed_active = safe_normalize(z_active, dim=-1)
+    z_normed_active = safe_normalize(z_sampled, dim=-1)
     sim_matrix = z_normed_active @ z_normed_active.T
 
     # Температура для Contrastive
     tau = 0.1
     sim_matrix.fill_diagonal_(-1e4)  # Исключаем self-similarity
+    
+    # Исключаем pad tokens из матрицы сходства
+    valid_pair_mask = mask_sampled.unsqueeze(1) * mask_sampled.unsqueeze(0)
+    sim_matrix = torch.where(valid_pair_mask > 0.5, sim_matrix, torch.tensor(-1e4, device=z.device))
 
     # Минимизируем сходство с другими токенами (Uniformity / InfoNCE-style repulsion)
-    contrastive_loss = torch.logsumexp(sim_matrix / tau, dim=-1).mean()
+    contrastive_raw = torch.logsumexp(sim_matrix / tau, dim=-1)
+    contrastive_loss = (contrastive_raw * mask_sampled).sum() / (mask_sampled.sum() + 1e-6)
 
     total_loss = total_loss + contrastive_lambda * contrastive_loss
     metrics["contrastive_loss"] = contrastive_loss.detach()
@@ -302,6 +306,10 @@ def train(args):
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
+            # SPMD Sharding батча по оси FSDP (КРИТИЧНО ДЛЯ СКОРОСТИ TPU)
+            xs.mark_sharding(input_ids, mesh, ('fsdp', None))
+            xs.mark_sharding(attention_mask, mesh, ('fsdp', None))
+
             optimizer.zero_grad()
 
             logits, z, mu, logvar, teacher_embeds = model(
@@ -320,7 +328,7 @@ def train(args):
             )
 
             loss.backward()
-            xm.optimizer_step(optimizer)
+            xm.optimizer_step(optimizer, barrier=True)
 
             if step % args.log_steps == 0:
                 metrics_dict = {k: v.item() for k, v in metrics.items()}
