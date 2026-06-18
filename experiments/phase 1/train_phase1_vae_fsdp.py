@@ -382,11 +382,12 @@ def train(args):
             # Validation Loop
             if val_dataloader is not None and step > 0 and step % args.val_steps == 0:
                 model.eval()
-                val_losses = []
-                val_ces = []
+                v_loss_sum = torch.tensor(0.0, device=device)
+                v_ce_sum = torch.tensor(0.0, device=device)
                 
                 # Ограничиваем валидацию 50 батчами для скорости
                 max_val_batches = 50 
+                num_v_batches = 0
                 
                 with torch.no_grad():
                     for v_step, v_batch in enumerate(val_dataloader):
@@ -402,20 +403,27 @@ def train(args):
                             logits=v_logits, labels=v_input_ids, z=v_z, mu=v_mu, logvar=v_logvar,
                             attention_mask=v_attention_mask, kl_beta=args.kl_beta, contrastive_lambda=args.contrastive_lambda
                         )
-                        val_losses.append(v_loss.item())
-                        val_ces.append(v_metrics["ce_loss"].item())
+                        v_loss_sum += v_loss
+                        v_ce_sum += v_metrics["ce_loss"]
+                        num_v_batches += 1
+                        
+                        # Разрезаем граф, чтобы он не слипался в один гигантский
+                        xm.mark_step()
                 
-                if xm.is_master_ordinal():
-                    val_log = {
-                        "val/loss": sum(val_losses) / len(val_losses),
-                        "val/ce_loss": sum(val_ces) / len(val_ces)
-                    }
-                    if args.wandb_project:
-                        wandb.log(val_log, step=step)
-                    print(f"\n--- [VAL] Step {step} | Loss: {val_log['val/loss']:.4f} | CE: {val_log['val/ce_loss']:.4f} ---")
+                if num_v_batches > 0:
+                    # Вызываем .item() ровно 1 раз в конце цикла!
+                    v_loss_avg = (v_loss_sum / num_v_batches).item()
+                    v_ce_avg = (v_ce_sum / num_v_batches).item()
+                    
+                    if xm.is_master_ordinal():
+                        val_log = {
+                            "val/loss": v_loss_avg,
+                            "val/ce_loss": v_ce_avg
+                        }
+                        if args.wandb_project:
+                            wandb.log(val_log, step=step)
+                        print(f"\n--- [VAL] Step {step} | Loss: {v_loss_avg:.4f} | CE: {v_ce_avg:.4f} ---")
                 
-                # Синхронизация после валидации
-                xm.rendezvous("validation_done")
                 model.train()
 
             step += 1

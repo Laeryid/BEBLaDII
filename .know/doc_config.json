@@ -552,6 +552,16 @@
                 "experiments/phase 3/test_phase3.py"
             ]
         },
+        "decisions/038_plan_b_phase1_vae_spmd_training.md": {
+            "description": "ADR: Plan B Phase 1 VAE FSDP training optimization, SPMD sharding, and on-the-fly tokenization.",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Experiments"
+            ],
+            "depends_on": [
+                "experiments/phase 1/train_phase1_vae_fsdp.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
