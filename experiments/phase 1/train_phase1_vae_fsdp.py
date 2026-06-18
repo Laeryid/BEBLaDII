@@ -1,6 +1,17 @@
 import os
 import sys
 
+# Настройка переменных окружения для TPU v4
+def setup_env():
+    os.environ["PJRT_DEVICE"] = "TPU"
+    os.environ["XLA_USE_BF16"] = "1"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["TPU_CHIPS_PER_HOST_BOUNDS"] = "2,2,1" 
+    os.environ["TPU_NUM_DEVICES"] = "4"
+    os.environ["XLA_USE_SPMD"] = "1"
+
+setup_env()
+
 # Добавляем корень проекта в пути поиска, чтобы Python видел папку src
 project_root = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -10,18 +21,17 @@ if project_root not in sys.path:
 
 import argparse
 import json
+import numpy as np
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_xla.core.xla_model as xm
-import torch_xla.distributed.spmd as xs
+import torch_xla.experimental.xla_sharding as xs
 import torch_xla.runtime as xr
 import wandb
 from datasets import load_dataset
 from torch.utils.data import DataLoader
-from torch_xla.distributed.fsdp import XlaFullyShardedDataParallel as FSDP
-from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from src.beb_la_dii.model.vae import LatentDecoder, LatentEncoder
 from src.beb_la_dii.utils.loss import safe_cosine_similarity, safe_normalize
@@ -29,14 +39,16 @@ from src.beb_la_dii.utils.loss import safe_cosine_similarity, safe_normalize
 # TPU single-process initialization
 xr.use_spmd()
 
-
 def setup_spmd_mesh():
     num_devices = xr.global_runtime_device_count()
     mesh_shape = (num_devices, 1)
-    device_ids = range(num_devices)
+    device_ids = np.array(range(num_devices))
     mesh = xs.Mesh(device_ids, mesh_shape, ("fsdp", "model"))
+    xs.set_global_mesh(mesh)
     return mesh
 
+
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 class BEBLaDIIVAE(nn.Module):
     def __init__(self, qwen_model_path, vae_encoder, vae_decoder):
@@ -250,8 +262,7 @@ def train(args):
 
     # Оборачиваем энкодер и декодер в FSDP/SPMD
     # Qwen заморожен, поэтому его оборачивать не нужно (или можно обернуть модель целиком)
-    from torch_xla.distributed.spmd import SpmdFullyShardedDataParallel
-
+    from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel
     model = SpmdFullyShardedDataParallel(model, mesh=mesh)
 
     optimizer = torch.optim.AdamW(
