@@ -288,8 +288,17 @@ def train(args):
     step = 0
 
     print("Starting training...")
+    from tqdm.auto import tqdm
+    
+    pbar = None
+    if xm.is_master_ordinal():
+        pbar = tqdm(total=args.max_steps, desc="Training Phase 1")
+
     for epoch in range(args.epochs):
         for batch in dataloader:
+            if step >= args.max_steps:
+                break
+                
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
@@ -319,16 +328,28 @@ def train(args):
                 metrics_str = " | ".join(
                     [f"{k}: {v:.4f}" for k, v in metrics_dict.items()]
                 )
-                print(f"Step {step} | {metrics_str}")
-
-                if xm.is_master_ordinal() and args.wandb_project:
-                    wandb.log(metrics_dict, step=step)
+                
+                if xm.is_master_ordinal():
+                    if args.wandb_project:
+                        wandb.log(metrics_dict, step=step)
+                    if pbar is not None:
+                        pbar.set_postfix({
+                            "loss": f"{loss.item():.4f}",
+                            "ce_loss": f"{metrics_dict.get('ce_loss', 0):.4f}",
+                            "contrastive": f"{metrics_dict.get('contrastive_loss', 0):.4f}"
+                        })
 
             step += 1
+            if pbar is not None:
+                pbar.update(1)
+                
             if step >= args.max_steps:
                 break
         if step >= args.max_steps:
             break
+
+    if pbar is not None:
+        pbar.close()
 
     # Save weights
     if xm.is_master_ordinal():
