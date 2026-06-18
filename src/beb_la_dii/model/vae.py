@@ -10,7 +10,7 @@ class LatentEncoder(BEComponent):
     Computes mu, logvar, samples Z and applies LayerNorm to project to a hypersphere.
     """
     def __init__(self, component_id="vae_encoder", version="v3.0", config=None):
-        input_dim = config.get("input_dim", 3584) if config else 3584
+        input_dim = config.get("input_dim", 1536) if config else 1536
         hidden_dim = config.get("hidden_dim", 2048) if config else 2048
         output_dim = config.get("output_dim", 1024) if config else 1024
         
@@ -48,7 +48,7 @@ class LatentEncoder(BEComponent):
 
     @classmethod
     def from_scratch(cls, component_id="vae_encoder", version="v3.0", weights_path=None, **kwargs):
-        config = kwargs.get("config", {"input_dim": 3584, "hidden_dim": 2048, "output_dim": 1024})
+        config = kwargs.get("config", {"input_dim": 1536, "hidden_dim": 2048, "output_dim": 1024})
         instance = cls(component_id=component_id, version=version, config=config)
         instance.load_weights(weights_path)
         return instance
@@ -80,7 +80,7 @@ class LatentDecoder(BEComponent):
     def __init__(self, component_id="vae_decoder", version="v3.0", config=None):
         input_dim = config.get("input_dim", 1024) if config else 1024
         hidden_dim = config.get("hidden_dim", 2048) if config else 2048
-        output_dim = config.get("output_dim", 3584) if config else 3584
+        output_dim = config.get("output_dim", 1536) if config else 1536
         
         super().__init__(component_id, version, {
             "input_dim": input_dim,
@@ -105,7 +105,7 @@ class LatentDecoder(BEComponent):
 
     @classmethod
     def from_scratch(cls, component_id="vae_decoder", version="v3.0", weights_path=None, **kwargs):
-        config = kwargs.get("config", {"input_dim": 1024, "hidden_dim": 2048, "output_dim": 3584})
+        config = kwargs.get("config", {"input_dim": 1024, "hidden_dim": 2048, "output_dim": 1536})
         instance = cls(component_id=component_id, version=version, config=config)
         instance.load_weights(weights_path)
         return instance
