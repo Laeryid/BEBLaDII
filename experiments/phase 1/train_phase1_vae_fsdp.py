@@ -430,7 +430,21 @@ def train(args):
                             wandb.log(val_log, step=step)
                         print(f"\n--- [VAL] Step {step} | Loss: {v_loss_avg:.4f} | CE: {v_ce_avg:.4f} ---")
                 
+                # Синхронизация после валидации
+                # xm.rendezvous("validation_done") - removed earlier
                 model.train()
+
+            # Промежуточное сохранение
+            if step > 0 and step % args.save_steps == 0:
+                if xm.is_master_ordinal():
+                    ckpt_path = os.path.join(args.output_dir, f"phase1_vae_step_{step}.pth")
+                    os.makedirs(args.output_dir, exist_ok=True)
+                    # В FSDP нужно сохранять через специальный метод, но т.к. веса энкодера и декодера
+                    # могут быть собраны на CPU, делаем так:
+                    cpu_encoder = encoder.state_dict()
+                    cpu_decoder = decoder.state_dict()
+                    torch.save({"encoder": cpu_encoder, "decoder": cpu_decoder}, ckpt_path)
+                    print(f"\n[SAVE] Intermediate checkpoint saved to {ckpt_path}")
 
             step += 1
             if pbar is not None:
@@ -486,9 +500,10 @@ if __name__ == "__main__":
     parser.add_argument("--kl_beta", type=float, default=0.01)
     parser.add_argument("--contrastive_lambda", type=float, default=0.01)
     parser.add_argument("--epochs", type=int, default=1)
-    parser.add_argument("--max_steps", type=int, default=10000)
+    parser.add_argument("--max_steps", type=int, default=40000)
     parser.add_argument("--log_steps", type=int, default=10)
-    parser.add_argument("--val_steps", type=int, default=500)
+    parser.add_argument("--val_steps", type=int, default=1000)
+    parser.add_argument("--save_steps", type=int, default=5000)
     parser.add_argument(
         "--wandb_project",
         type=str,
