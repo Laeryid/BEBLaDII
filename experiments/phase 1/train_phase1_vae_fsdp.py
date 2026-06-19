@@ -110,15 +110,15 @@ def compute_phase1_loss(
     metrics["ce_loss"] = ce_loss.detach()
     total_loss = ce_loss
 
-    # 2. KL Divergence (mu, logvar)
+    # 2. Variance-Only KL Divergence (logvar)
     if attention_mask is not None:
         mask_f = attention_mask.unsqueeze(-1).float()
-        mu_f = mu * mask_f
         logvar_f = logvar * mask_f
     else:
-        mu_f, logvar_f = mu, logvar
+        logvar_f = logvar
 
-    kl_raw = -0.5 * torch.mean(1 + logvar_f - mu_f.pow(2) - logvar_f.exp(), dim=-1)
+    # Оставляем штраф только за дисперсию (std -> 1), убираем mu
+    kl_raw = -0.5 * torch.mean(1 + logvar_f - logvar_f.exp(), dim=-1)
     kl_clamped = torch.clamp(kl_raw, min=0.5)  # Free bits = 0.5
 
     if attention_mask is not None:
@@ -140,13 +140,10 @@ def compute_phase1_loss(
         z_centered = z_flat - m_state.unsqueeze(0)
         z_masked = z_centered * mask_flat
 
-        v_state = (z_masked**2).sum(dim=0) / N.clamp(min=2.0)
-
         z_normed = safe_normalize(z_masked, dim=0)
         cov = z_normed.T @ z_normed
     else:
         m_state = z.mean(dim=(0, 1))
-        v_state = z.var(dim=(0, 1), unbiased=False)
         z_centered = z - m_state.view(1, 1, -1)
         z_normed = safe_normalize(z_centered.view(-1, D), dim=0)
         cov = z_normed.T @ z_normed
@@ -164,45 +161,34 @@ def compute_phase1_loss(
     eff_dim = (cov.trace().pow(2)) / (cov.pow(2).sum() + 1e-8)
     metrics["effective_dim"] = eff_dim.detach()
 
-    _v_diff = v_state - 1.0
-    _v_abs = _v_diff.abs()
-    prior_loss = (
-        m_state.pow(2).mean()
-        + 2.0 * torch.where(_v_abs < 1.0, 0.5 * _v_diff.pow(2), _v_abs - 0.5).mean()
-        + 0.3 * cov_loss
-    )
+    prior_loss = m_state.pow(2).mean() + 0.3 * cov_loss
 
     total_loss = total_loss + 0.1 * prior_loss
     metrics["prior_loss"] = prior_loss.detach()
 
-    # 4. Contrastive Loss (Uniform Spherical Repulsion)
-    # Расталкиваем все токены друг от друга, чтобы они равномерно распределились по сфере.
-    # Мы НЕ используем teacher_embeds (Qwen), чтобы не переносить его анизотропную структуру.
+    # 4. Uniformity Loss (Uniform Spherical Repulsion)
+    # Расталкиваем все токены друг от друга для равномерного покрытия сферы.
     B, T, D = z.shape
     z_flat = z.view(-1, D)
     mask_flat = attention_mask.view(-1).float() if attention_mask is not None else torch.ones(B*T, device=z.device)
 
-    # Subsample for performance if batch is too large (FIXED FOR XLA STATIC SHAPES)
+    # Subsample for performance
     max_tokens = min(4096, B * T)
-    # Используем randint с фиксированным размером (B*T) для статического XLA-графа
-    indices = torch.randint(0, B * T, (max_tokens,), device=z.device)
-    z_sampled = z_flat[indices]
-    mask_sampled = mask_flat[indices]
-
-    z_normed_active = safe_normalize(z_sampled, dim=-1)
-    sim_matrix = z_normed_active @ z_normed_active.T
-
-    # Температура для Contrastive
-    tau = 0.1
-    sim_matrix.fill_diagonal_(-1e4)  # Исключаем self-similarity
+    # Используем multinomial с весами по маске для обхода pad токенов
+    weights = mask_flat + 1e-6
+    indices = torch.multinomial(weights, num_samples=max_tokens, replacement=True)
     
-    # Исключаем pad tokens из матрицы сходства
-    valid_pair_mask = mask_sampled.unsqueeze(1) * mask_sampled.unsqueeze(0)
-    sim_matrix = torch.where(valid_pair_mask > 0.5, sim_matrix, torch.tensor(-1e4, device=z.device))
-
-    # Минимизируем сходство с другими токенами (Uniformity / InfoNCE-style repulsion)
-    contrastive_raw = torch.logsumexp(sim_matrix / tau, dim=-1)
-    contrastive_loss = (contrastive_raw * mask_sampled).sum() / (mask_sampled.sum() + 1e-6)
+    z_sampled = z_flat[indices]
+    z_normed_active = safe_normalize(z_sampled, dim=-1)
+    
+    # Uniformity Loss (Wang & Isola)
+    # sq_pdist = ||zi - zj||^2 = 2 - 2 * (zi @ zj)
+    sq_pdist = 2.0 - 2.0 * (z_normed_active @ z_normed_active.T)
+    
+    # t = 2.0 (параметр концентрации)
+    t = 2.0
+    uniformity_raw = torch.logsumexp(-t * sq_pdist, dim=-1)
+    contrastive_loss = uniformity_raw.mean()
 
     total_loss = total_loss + contrastive_lambda * contrastive_loss
     metrics["contrastive_loss"] = contrastive_loss.detach()
@@ -274,7 +260,9 @@ def get_dataloader(data_path, batch_size=8, max_length=1024, tokenizer=None):
         batch_size=batch_size, 
         shuffle=False, 
         collate_fn=collate_fn, 
-        drop_last=True
+        drop_last=True,
+        num_workers=4,
+        prefetch_factor=2
     )
 
 
@@ -443,10 +431,10 @@ def train(args):
                 if xm.is_master_ordinal():
                     ckpt_path = os.path.join(args.output_dir, f"phase1_vae_step_{step}.pth")
                     os.makedirs(args.output_dir, exist_ok=True)
-                    # В FSDP нужно сохранять через специальный метод, но т.к. веса энкодера и декодера
-                    # могут быть собраны на CPU, делаем так:
-                    cpu_encoder = encoder.state_dict()
-                    cpu_decoder = decoder.state_dict()
+                    # Извлекаем веса из FSDP-обёртки, отфильтровывая Qwen
+                    full_state = model.state_dict()
+                    cpu_encoder = {k.replace('encoder.', ''): v.cpu() for k, v in full_state.items() if k.startswith('encoder.')}
+                    cpu_decoder = {k.replace('decoder.', ''): v.cpu() for k, v in full_state.items() if k.startswith('decoder.')}
                     torch.save({"encoder": cpu_encoder, "decoder": cpu_decoder}, ckpt_path)
                     print(f"\n[SAVE] Intermediate checkpoint saved to {ckpt_path}")
 
@@ -466,8 +454,11 @@ def train(args):
     if xm.is_master_ordinal():
         save_path = os.path.join(args.output_dir, "phase1_vae_weights.pth")
         os.makedirs(args.output_dir, exist_ok=True)
+        full_state = model.state_dict()
+        cpu_encoder = {k.replace('encoder.', ''): v.cpu() for k, v in full_state.items() if k.startswith('encoder.')}
+        cpu_decoder = {k.replace('decoder.', ''): v.cpu() for k, v in full_state.items() if k.startswith('decoder.')}
         torch.save(
-            {"encoder": encoder.state_dict(), "decoder": decoder.state_dict()},
+            {"encoder": cpu_encoder, "decoder": cpu_decoder},
             save_path,
         )
         print(f"Saved weights to {save_path}")
@@ -517,9 +508,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # Синхронизация данных с GCS перед стартом TPU
-    rank = int(os.environ.get("LOCAL_RANK", 0))
-    if rank == 0:
-        print("--- [RANK 0] Подготовка ресурсов ---")
+    if xm.is_master_ordinal():
+        print("--- [MASTER] Подготовка ресурсов ---")
         os.makedirs("./data/train", exist_ok=True)
         os.makedirs("./data/val", exist_ok=True)
         try:
@@ -529,12 +519,8 @@ if __name__ == "__main__":
             if args.val_data_path and args.val_data_path.startswith("gs://"):
                 subprocess.run(["gcloud", "storage", "rsync", "-r", args.val_data_path, "./data/val/"], check=True)
         except Exception as e:
-            print(f"--- [RANK 0] Ошибка GCS: {e} ---")
-                
-        with open("/tmp/resources_prepared.flag", "w") as f: f.write("ok")
-    else:
-        import time
-        while not os.path.exists("/tmp/resources_prepared.flag"):
-            time.sleep(1)
+            print(f"--- [MASTER] Ошибка GCS: {e} ---")
+            
+    xm.rendezvous("resources_prepared")
 
     train(args)

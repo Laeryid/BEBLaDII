@@ -562,6 +562,17 @@
                 "experiments/phase 1/train_phase1_vae_fsdp.py"
             ]
         },
+        "decisions/039_phase1_vae_spherical_topology_fix.md": {
+            "description": "ADR: Phase 1 VAE spherical topology fix (F.normalize), variance-only KL, and uniformity loss.",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Experiments"
+            ],
+            "depends_on": [
+                "src/beb_la_dii/model/vae.py",
+                "experiments/phase 1/train_phase1_vae_fsdp.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",

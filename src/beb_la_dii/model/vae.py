@@ -31,9 +31,6 @@ class LatentEncoder(BEComponent):
         self.mu_head = nn.Linear(output_dim, output_dim)
         self.logvar_head = nn.Linear(output_dim, output_dim)
         
-        # Финальная проекция на идеальную сферу
-        self.sphere_norm = nn.LayerNorm(output_dim, eps=1e-6)
-        
         self._init_weights()
 
     def _init_weights(self):
@@ -67,7 +64,7 @@ class LatentEncoder(BEComponent):
             z_raw = mu
             
         # Hard constraint to sphere
-        z = self.sphere_norm(z_raw)
+        z = F.normalize(z_raw, p=2, dim=-1)
         
         return z, mu, logvar
 
