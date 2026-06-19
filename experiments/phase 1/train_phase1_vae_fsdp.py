@@ -251,8 +251,10 @@ def get_dataloader(data_path, batch_size=8, max_length=1024, tokenizer=None):
         attention_mask = []
         for item in batch:
             seq = item.get("input_ids")
-            if not seq:
+            if seq is None:
                 seq = []
+            elif not isinstance(seq, list):
+                seq = list(seq)
             
             seq = seq[:max_length]
             pad_len = max_length - len(seq)
@@ -272,9 +274,7 @@ def get_dataloader(data_path, batch_size=8, max_length=1024, tokenizer=None):
         batch_size=batch_size, 
         shuffle=False, 
         collate_fn=collate_fn, 
-        drop_last=True,
-        num_workers=4,
-        prefetch_factor=2
+        drop_last=True
     )
 
 
