@@ -160,6 +160,10 @@ def compute_phase1_loss(
     )
     metrics["cov_loss"] = cov_loss.detach()
 
+    # Effective Dimensionality (TPU-friendly alternative to rank1_ratio)
+    eff_dim = (cov.trace().pow(2)) / (cov.pow(2).sum() + 1e-8)
+    metrics["effective_dim"] = eff_dim.detach()
+
     _v_diff = v_state - 1.0
     _v_abs = _v_diff.abs()
     prior_loss = (
