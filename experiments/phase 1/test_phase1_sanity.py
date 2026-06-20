@@ -311,11 +311,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--qwen_path", type=str, default="Qwen/Qwen2.5-1.5B")
     parser.add_argument("--ckpt_path", type=str, required=True, help="Path to phase1_vae_step_X.pth")
+    parser.add_argument("--full", action="store_true", help="Run full diagnostic report")
     args = parser.parse_args()
 
     tester = VAESanityTester(args.qwen_path, args.ckpt_path)
 
-    if "--full" in sys.argv:
+    if args.full:
         # Полный отчёт: все тесты + новые диагностики
         tester.run_full_report(args.ckpt_path)
     else:
