@@ -427,14 +427,14 @@ def train(args):
                 model.train()
 
             # Промежуточное сохранение
-            if step > 0 and step % args.save_steps == 0:
+            if step > 0 and (step % args.save_steps == 0 or step == 50):
                 if xm.is_master_ordinal():
                     ckpt_path = os.path.join(args.output_dir, f"phase1_vae_step_{step}.pth")
                     os.makedirs(args.output_dir, exist_ok=True)
                     # Извлекаем веса из FSDP-обёртки, отфильтровывая Qwen
                     full_state = model.state_dict()
-                    cpu_encoder = {k.replace('encoder.', ''): v.cpu() for k, v in full_state.items() if k.startswith('encoder.')}
-                    cpu_decoder = {k.replace('decoder.', ''): v.cpu() for k, v in full_state.items() if k.startswith('decoder.')}
+                    cpu_encoder = {k.split('encoder.')[-1]: v.cpu() for k, v in full_state.items() if 'encoder.' in k}
+                    cpu_decoder = {k.split('decoder.')[-1]: v.cpu() for k, v in full_state.items() if 'decoder.' in k}
                     torch.save({"encoder": cpu_encoder, "decoder": cpu_decoder}, ckpt_path)
                     print(f"\n[SAVE] Intermediate checkpoint saved to {ckpt_path}")
 
@@ -455,8 +455,8 @@ def train(args):
         save_path = os.path.join(args.output_dir, "phase1_vae_weights.pth")
         os.makedirs(args.output_dir, exist_ok=True)
         full_state = model.state_dict()
-        cpu_encoder = {k.replace('encoder.', ''): v.cpu() for k, v in full_state.items() if k.startswith('encoder.')}
-        cpu_decoder = {k.replace('decoder.', ''): v.cpu() for k, v in full_state.items() if k.startswith('decoder.')}
+        cpu_encoder = {k.split('encoder.')[-1]: v.cpu() for k, v in full_state.items() if 'encoder.' in k}
+        cpu_decoder = {k.split('decoder.')[-1]: v.cpu() for k, v in full_state.items() if 'decoder.' in k}
         torch.save(
             {"encoder": cpu_encoder, "decoder": cpu_decoder},
             save_path,
