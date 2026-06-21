@@ -215,10 +215,17 @@ def train_phase2():
         # Вычисляем Loss
         ce_loss_raw = loss_fct(logits.view(-1, logits.size(-1)), input_ids.view(-1))
         ce_loss_raw = ce_loss_raw.view(input_ids.size())
-        ce_loss = (ce_loss_raw * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+        
+        # Переводим маску во float, чтобы XLA не мучился с приведением типов
+        attention_mask_bf = attention_mask.to(torch.bfloat16)
+        ce_loss = (ce_loss_raw * attention_mask_bf).sum() / (attention_mask_bf.sum() + 1e-6)
     
         ce_loss.backward()
-        xm.optimizer_step(optimizer)
+        
+        # Для SPMD используем обычный step() и ручной mark_step(), 
+        # так как xm.optimizer_step() включает DDP-логику (all-reduce), ломающую SPMD-граф.
+        optimizer.step()
+        xm.mark_step()
         
         step += 1
     
