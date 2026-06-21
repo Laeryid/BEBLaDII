@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from src.beb_la_dii.model.dus import DUSModel
+from .dus import DUSModel
 
 class ModernLatentDecoder(nn.Module):
     def __init__(self, latent_dim=1024, qwen_dim=1536, num_layers=3, dus_weights_path=None):

@@ -5,7 +5,6 @@ def setup_env():
     os.environ["PJRT_DEVICE"] = "TPU"
     os.environ["XLA_USE_BF16"] = "1"
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
-    os.environ["XLA_USE_SPMD"] = "1"
 
 setup_env()
 
@@ -13,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_xla.core.xla_model as xm
-import torch_xla.experimental.xla_sharding as xs
+import torch_xla.distributed.spmd as xs
 import torch_xla.runtime as xr
 from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel
 import numpy as np
