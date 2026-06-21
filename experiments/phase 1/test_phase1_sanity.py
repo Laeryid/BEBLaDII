@@ -77,12 +77,52 @@ class VAESanityTester:
         decoded_text = self.tokenizer.decode(pred_ids[0], skip_special_tokens=True)
         return decoded_text
 
+    @torch.no_grad()
+    def decode_z_guided(self, z, top_k=5, alpha=0.6):
+        """Восстанавливает текст с LLM-рескорингом (выбор грамматически верного из Top-K)."""
+        projected_embeds = self.decoder(z)
+        vae_logits = self.qwen(inputs_embeds=projected_embeds).logits[0]  # (T, V)
+        T = vae_logits.size(0)
+        
+        current_seq = []
+        for i in range(T):
+            # Получаем Top-K кандидатов от VAE
+            top_k_logits, top_k_ids = torch.topk(vae_logits[i], k=top_k)
+            top_k_probs = torch.softmax(top_k_logits, dim=-1)
+            
+            if i == 0:
+                current_seq.append(top_k_ids[0].item())
+                continue
+                
+            # Спрашиваем Qwen о грамматике с учетом сгенерированного префикса
+            context_ids = torch.tensor([current_seq], device=self.device)
+            qwen_next_logits = self.qwen(input_ids=context_ids).logits[0, -1, :]
+            
+            # Сравниваем мнения Qwen и VAE только на Top-K кандидатах
+            qwen_candidate_logits = qwen_next_logits[top_k_ids]
+            qwen_candidate_probs = torch.softmax(qwen_candidate_logits, dim=-1)
+            
+            combined_scores = alpha * top_k_probs + (1.0 - alpha) * qwen_candidate_probs
+            best_idx = combined_scores.argmax().item()
+            current_seq.append(top_k_ids[best_idx].item())
+            
+        return self.tokenizer.decode(current_seq, skip_special_tokens=True)
+
     def test_reconstruction(self, text):
         print(f"--- RECONSTRUCTION TEST ---")
         print(f"ORIGINAL : {text}")
         _, _, z = self.encode_text(text)
         reconstructed = self.decode_z(z)
         print(f"DECODED  : {reconstructed}\n")
+
+    def test_guided_reconstruction(self, text, top_k=5, alpha=0.6):
+        print(f"--- GUIDED RECONSTRUCTION TEST (LLM Rescoring) ---")
+        print(f"ORIGINAL : {text}")
+        _, _, z = self.encode_text(text)
+        rec_base = self.decode_z(z)
+        rec_guided = self.decode_z_guided(z, top_k=top_k, alpha=alpha)
+        print(f"BASE     : {rec_base}")
+        print(f"GUIDED   : {rec_guided}\n")
 
     def test_interpolation(self, text1, text2, steps=5):
         print(f"--- SPHERICAL INTERPOLATION (SLERP) ---")
@@ -281,6 +321,11 @@ class VAESanityTester:
             "that harnesses the laws of quantum mechanics to solve "
             "problems too complex for classical computers."
         )
+        self.test_guided_reconstruction(
+            "Quantum computing is a rapidly-emerging technology "
+            "that harnesses the laws of quantum mechanics to solve "
+            "problems too complex for classical computers."
+        )
         self.test_interpolation(
             "A little cat is sleeping comfortably on a soft pillow.",
             "A huge black dog barks aggressively at the passing car."
@@ -326,6 +371,9 @@ if __name__ == "__main__":
         # 1. Тест Реконструкции
         tester.test_reconstruction("The quick brown fox jumps over the lazy dog.")
         tester.test_reconstruction("Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.")
+
+        # 1.5 Тест Guided Реконструкции
+        tester.test_guided_reconstruction("Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.")
 
         # 2. Тест Интерполяции (SLERP)
         tester.test_interpolation(
