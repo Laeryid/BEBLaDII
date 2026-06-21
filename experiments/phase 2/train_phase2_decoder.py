@@ -226,6 +226,10 @@ def train_phase2():
             wandb.log({"train/ce_loss": ce_loss.item(), "step": step})
             pbar.set_postfix({"Loss": f"{ce_loss.item():.4f}"})
             pbar.update(1)
+            
+            import torch_xla.debug.metrics as met
+            if step <= 10:
+                print(f"\n[Step {step}] XLA Compilations: {met.metric_data('CompileTime')[0] if 'CompileTime' in met.metrics_report() else '0'} (Look for increasing Compile counts)")
     
             if step % 500 == 0:
                 torch.save({"decoder": model.module.decoder.state_dict() if hasattr(model, 'module') else model.decoder.state_dict()}, os.path.join(ckpt_dir, f"decoder_step_{step}.pth"))
