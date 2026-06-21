@@ -194,9 +194,13 @@ def train_phase2():
     
     dataloader = get_dataloader(data_path, batch_size=16, max_length=1024, tokenizer=tokenizer)
     
+    from tqdm.auto import tqdm
+    
     if is_master: print("Starting training loop...")
     
     step = 0
+    pbar = tqdm(total=10000, desc="Phase 2 Decoder") if is_master else None
+    
     for batch in dataloader:
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
@@ -220,7 +224,8 @@ def train_phase2():
     
         if is_master:
             wandb.log({"train/ce_loss": ce_loss.item(), "step": step})
-            print(f"Step {step} | CE Loss: {ce_loss.item():.4f}")
+            pbar.set_postfix({"Loss": f"{ce_loss.item():.4f}"})
+            pbar.update(1)
     
             if step % 500 == 0:
                 torch.save({"decoder": model.module.decoder.state_dict() if hasattr(model, 'module') else model.decoder.state_dict()}, os.path.join(ckpt_dir, f"decoder_step_{step}.pth"))
@@ -228,7 +233,9 @@ def train_phase2():
         if step >= 10000: # Лимит для тестов
             break
             
-    if is_master: wandb.finish()
+    if is_master: 
+        pbar.close()
+        wandb.finish()
 
 if __name__ == "__main__":
     # Если запуск через xla_spawn или torchrun:
