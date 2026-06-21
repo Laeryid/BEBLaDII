@@ -1,3 +1,5 @@
+import os
+
 # Настройка переменных окружения для TPU v4
 def setup_env():
     os.environ["PJRT_DEVICE"] = "TPU"
