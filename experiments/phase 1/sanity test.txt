@@ -1,0 +1,69 @@
+============================================================
+ PHASE 1 VAE FULL DIAGNOSTIC REPORT
+ Checkpoint: checkpoints/phase1/phase1_vae_step_20000.pth
+============================================================
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : The quick brown fox jumps over the lazy dog.
+DECODED  :  point wayie and  the  brown. The
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.
+DECODED  : ities:: is a new growingerging field that hass the principles of quantum mechanics to perform problems that complex for classical computers. Quantum
+
+--- SPHERICAL INTERPOLATION (SLERP) ---
+A: A little cat is sleeping comfortably on a soft pillow.
+B: A huge black dog barks aggressively at the passing car.
+Step 0/5 (t=0.00):   bit is sitting in on a wall sofa. Suddenly .
+Step 1/5 (t=0.20):   bit is sitting on on a wall bed. The .
+Step 2/5 (t=0.40):   number is chasing on on a big tree. The The
+Step 3/5 (t=0.60):   numberfish arking in in small  of The
+Step 4/5 (t=0.80):   number and witharks at at a end of. The
+Step 5/5 (t=1.00):   number hole isarks at at a other of. The
+
+--- SEMANTIC NEIGHBORS (MEAN POOLING) ---
+Query: 'I love eating pizza with extra cheese.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.480)
+
+Query: 'The theory of relativity was developed by Albert Einstein.'
+Nearest: 'Quantum physics describes the behavior of subatomic particles.' (Cosine: 0.527)
+
+Query: 'Burgers and fries are my favorite fast food.'
+Nearest: 'I love eating pizza with extra cheese.' (Cosine: 0.480)
+
+Query: 'Quantum physics describes the behavior of subatomic particles.'
+Nearest: 'The theory of relativity was developed by Albert Einstein.' (Cosine: 0.527)
+
+Query: 'It's raining heavily outside, I need an umbrella.'
+Nearest: 'The weather today is stormy and wet.' (Cosine: 0.418)
+
+Query: 'The weather today is stormy and wet.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.445)
+
+--- PRIOR SAMPLING TEST (hole detection) ---
+
+  Real text CE (mean over 4 samples): 3.3811
+  Prior z ~ N(0,I) entropy (mean over 16 samples): 7.8867
+  Normalized prior entropy: 0.661  (1.0 = uniform = max holes, 0.0 = collapsed)
+  Gap (prior_entropy - real_CE): 4.5056
+  Verdict: OK: prior entropy в разумном диапазоне — серьёзных дыр не обнаружено
+
+--- NEIGHBOUR CONSISTENCY TEST (smoothness) ---
+  Noise (eps)    Mean cos-sim     Verdict
+  --------------------------------------------------
+  eps=0.01       1.0000           OK
+  eps=0.05       1.0000           OK
+  eps=0.10       0.9948           OK
+  eps=0.30       0.9518           OK
+
+  Overall smoothness: GOOD — space is locally continuous
+
+============================================================
+ SUMMARY
+============================================================
+  Prior normalized entropy : 0.661  (target: 0.30–0.85)
+  Prior gap (entropy-CE)   : 4.5056
+  Smoothness @ eps=0.01    : 1.0000  (target: >0.98)
+  Smoothness @ eps=0.05    : 1.0000  (target: >0.90)
+  Smoothness @ eps=0.10    : 0.9948  (target: >0.70)
+============================================================
