@@ -44,19 +44,23 @@ The training reached an optimal equilibrium around step 20,000.
 <p align="center">
     <img src="../experiments/phase%201/effective_dim.png" width="60%" alt="Train Metrics" />
 </p>
+
 **effective_dim**: After an initial drop (compression), it steadily climbed and stabilized in the 300-350 range. This "manifold unrolling" confirms that the space is not squashed into a low-dimensional pancake, which is vital for the $N(0, I)$ prior of the diffusion model.
 
 ### Covariation
 <p align="center">
     <img src="../experiments/phase%201/cov_loss.png" width="60%" alt="Train Metrics" />
 </p>
+
 **cov_loss**: Remained stable for the majority of the run, successfully enforcing orthogonal dimensions without blowing up.
 
 ### Uniformity Loss
 <p align="center">
     <img src="../experiments/phase%201/contrastive_loss.png" width="60%" alt="Train Metrics" />
 </p>
+
 **contrastive_loss**: Shows a stable equilibrium, confirming that tokens are pushed apart effectively to maintain uniform coverage of the spherical manifold.
+
 
 > [!NOTE]
 > **Checkpoint Selection Event (23k steps)**: At approximately 23,000 steps, an anomalous batch caused a sudden spike in `cov_loss` and `contrastive_loss`. Although the gradient clipping mechanism prevented a catastrophic gradient explosion, the latent space suffered a minor temporary collapse. Therefore, the checkpoint at **20,000 steps** was selected as the optimal, most structurally sound point before the instability occurred.
