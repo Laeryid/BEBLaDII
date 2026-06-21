@@ -8,7 +8,17 @@ The primary goal of Phase 1 was to create and structure a continuous latent spac
 * **Infrastructure**: Training was executed on TPU v4 using XLA SPMD/FSDP (Fully Sharded Data Parallel) to handle the large frozen backbone efficiently.
 * **Optimization**: AdamW optimizer with a cosine learning rate scheduler. A critical addition during training was gradient clipping (`max_norm=1.0`), which proved essential to prevent gradient explosions caused by rare anomalous batches in the contrastive loss functions.
 
-## 3. Loss Functions
+**Attachment:** [Code](<../experiments\phase 1\train_phase1_vae_fsdp.py>)
+
+## 3. Dataset & Preprocessing
+To train the VAE on complex semantic structures rather than simple conversational text, we utilized a strictly curated reasoning data mixture:
+* **Magpie-Reasoning-V2**: Sampled down to exactly **80,000** Chain-of-Thought examples.
+* **OpenThoughts-114k**: Used in full (**114,000** high-quality reasoning traces).
+* **CulturaX (RU/CS)**: **30,000** examples (15k Russian, 15k Czech) incorporated to maintain multilinguality and structural diversity.
+
+To optimize training speed and minimize CPU overhead, all texts were pre-tokenized using the Qwen tokenizer and stored as standard Parquet files in the `Reasoning_Tokenized` directory on Google Cloud Storage. Training on rigorous reasoning traces ensures that the latent space learns to encode complex logical dependencies and robust semantics rather than superficial chat patterns.
+
+## 4. Loss Functions
 The loss formulation is a hybrid approach designed to balance reconstruction fidelity with strict geometric constraints:
 
 1. **Reconstruction Loss (Cross-Entropy)**: 
@@ -20,7 +30,7 @@ The loss formulation is a hybrid approach designed to balance reconstruction fid
 4. **Uniformity Loss (Contrastive)**:
    - Based on Wang & Isola, this loss pushes tokens apart to ensure uniform coverage of the spherical manifold, mitigating "hubness" and dense clustering.
 
-## 4. Key Metrics, Target Ranges, and Final Results
+## 5. Key Metrics, Target Ranges, and Final Results
 The training reached an optimal equilibrium around step 20,000.
 
 | Metric | Description | Target Range | Final Result (@20k steps) | Status |
@@ -30,7 +40,7 @@ The training reached an optimal equilibrium around step 20,000.
 | `kl_loss` | Posterior variance penalty | 0.5 - 0.6 | **~0.53** | ✅ Stable, no collapse |
 | `norm_cv_l40_raw`| Spherical topology consistency | < 0.01 | **~0.003** | ✅ Perfect sphere |
 
-## 5. Visualizations and Chart Analysis
+## 6. Visualizations and Chart Analysis
 
 ### Cross-Entropy
 <p align="center">
@@ -67,7 +77,7 @@ The training reached an optimal equilibrium around step 20,000.
 
 ![Training History](../experiments/phase%201/screenshots/21062026%20train.jpg)
 
-## 6. Diagnostic Sanity Test Analysis
+## 7. Diagnostic Sanity Test Analysis
 A comprehensive diagnostic script (`test_phase1_sanity.py`) was run on the 20k step checkpoint to evaluate the topology:
 
 **Attachment:** [Test response](../experiments/phase%201/sanity%20test.txt)  
@@ -89,6 +99,6 @@ A comprehensive diagnostic script (`test_phase1_sanity.py`) was run on the 20k s
 * **Hole Detection (Prior Sampling)**: Normalized prior entropy is **0.653** (Target: 0.30 - 0.85). The random $N(0, I)$ prior decodes into distributions with healthy uncertainty, proving the space is densely populated without massive "garbage holes".
 * **Smoothness (Neighbour Consistency)**: Cosine similarity remains at **0.9935** even with noise `eps=0.10`. The local space is highly robust and continuous.
 
-## 7. Conclusion
+## 8. Conclusion
 **Phase 1 is complete and successful.**
 A highly structured, continuous, isotropic, and semantically rich latent space has been established. The 20,000-step checkpoint provides an ideal foundation. The project is now cleared to proceed to **Phase 2: Training the Latent Diffusion Backbone**.
