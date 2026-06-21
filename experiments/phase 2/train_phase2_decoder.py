@@ -1,12 +1,33 @@
-import os
+# Настройка переменных окружения для TPU v4
+def setup_env():
+    os.environ["PJRT_DEVICE"] = "TPU"
+    os.environ["XLA_USE_BF16"] = "1"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["XLA_USE_SPMD"] = "1"
+
+setup_env()
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch_xla.core.xla_model as xm
-import torch_xla.distributed.xla_multiprocessing as xmp
-import torch_xla.distributed.spmd as xs
+import torch_xla.experimental.xla_sharding as xs
+import torch_xla.runtime as xr
+from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel
+import numpy as np
 import sys
 import gc
+
+# TPU single-process initialization
+xr.use_spmd()
+
+def setup_spmd_mesh():
+    num_devices = xr.global_runtime_device_count()
+    mesh_shape = (num_devices, 1)
+    device_ids = np.array(range(num_devices))
+    mesh = xs.Mesh(device_ids, mesh_shape, ("fsdp", "model"))
+    xs.set_global_mesh(mesh)
+    return mesh
 
 # Добавляем src в путь
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
@@ -51,11 +72,12 @@ class Phase2DecoderWrapper(nn.Module):
         return logits
 
 def train_phase2():
+    mesh = setup_spmd_mesh()
     device = xm.xla_device()
     is_master = xm.is_master_ordinal()
     
     if is_master:
-        print(f"Running Phase 2 Decoder on device: {device}")
+        print(f"Running Phase 2 Decoder on device: {device} with SPMD FSDP (Mesh: {mesh.shape()})")
         wandb.init(project="BEBLaDII", name="Phase2_Bidirectional_Decoder", config={
             "learning_rate": 1e-4,
             "architecture": "ModernBERT-3L",
@@ -96,11 +118,14 @@ def train_phase2():
         dus_weights_path=dus_weights
     ).to(torch.bfloat16)
     
-    # 4. Сборка финальной модели
+    # 4. Сборка финальной модели и FSDP обертка
     model = Phase2DecoderWrapper(encoder, decoder, embed_weight, lm_head_weight)
     model = model.to(device)
     
-    optimizer = torch.optim.AdamW(model.decoder.parameters(), lr=1e-4)
+    # Оборачиваем модель в FSDP
+    model = SpmdFullyShardedDataParallel(model, mesh=mesh)
+    
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
     loss_fct = nn.CrossEntropyLoss(reduction="none")
     
     model.train()
@@ -111,19 +136,25 @@ def train_phase2():
     os.makedirs(ckpt_dir, exist_ok=True)
     
     # --- ДЕМОНСТРАЦИОННЫЙ ЦИКЛ ОБУЧЕНИЯ ---
-    # inputs = tokenizer("Quantum computing is solving problems.", return_tensors="pt").to(device)
-    # input_ids = inputs.input_ids
-    # attention_mask = inputs.attention_mask
+    # В реальном коде здесь будет загрузка датасета
+    # for batch in dataloader:
+    #     input_ids = batch["input_ids"].to(device)
+    #     attention_mask = batch["attention_mask"].to(device)
     # 
-    # optimizer.zero_grad()
-    # logits = model(input_ids, attention_mask)
+    #     # SPMD Sharding батча (КРИТИЧНО ДЛЯ FSDP)
+    #     xs.mark_sharding(input_ids, mesh, ('fsdp', None))
+    #     xs.mark_sharding(attention_mask, mesh, ('fsdp', None))
+    #
+    #     optimizer.zero_grad()
+    #     logits = model(input_ids, attention_mask)
     # 
-    # ce_loss_raw = loss_fct(logits.view(-1, logits.size(-1)), input_ids.view(-1))
-    # ce_loss_raw = ce_loss_raw.view(input_ids.size())
-    # ce_loss = (ce_loss_raw * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+    #     ce_loss_raw = loss_fct(logits.view(-1, logits.size(-1)), input_ids.view(-1))
+    #     ce_loss_raw = ce_loss_raw.view(input_ids.size())
+    #     ce_loss = (ce_loss_raw * attention_mask).sum() / (attention_mask.sum() + 1e-6)
     # 
-    # ce_loss.backward()
-    # xm.optimizer_step(optimizer)
+    #     ce_loss.backward()
+    #     optimizer.step()
+    #     xm.mark_step()
     # 
     # if is_master:
     #     wandb.log({"train/ce_loss": ce_loss.item()})
@@ -135,6 +166,8 @@ def train_phase2():
     # if is_master: wandb.finish()
 
 if __name__ == "__main__":
-    # Для запуска на TPU с SPMD раскомментируй:
+    # Если запуск через xla_spawn или torchrun:
+    train_phase2()
+    
+    # Если запуск как обычный питоновский скрипт, раскомментируй:
     # xmp.spawn(train_phase2, args=())
-    pass
