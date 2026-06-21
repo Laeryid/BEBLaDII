@@ -18,6 +18,7 @@ from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullySha
 import numpy as np
 import sys
 import gc
+import subprocess
 
 # TPU single-process initialization
 xr.use_spmd()
@@ -43,34 +44,62 @@ class Phase2DecoderWrapper(nn.Module):
         super().__init__()
         self.encoder = encoder
         
-        # Замораживаем энкодер Фазы 1 (он идеален)
+        # Строгая заморозка энкодера (он обучен в Фазе 1)
         for param in self.encoder.parameters():
             param.requires_grad = False
             
         self.decoder = decoder
+        # Матрицы Qwen передаем как тензоры
+        self.qwen_embed_weight = nn.Parameter(qwen_embed_weight, requires_grad=False)
+        self.qwen_lm_head_weight = nn.Parameter(qwen_lm_head_weight, requires_grad=False)
         
-        # Регистрируем входные эмбеддинги как константу
-        self.register_buffer("embed_weight", qwen_embed_weight)
-        
-        # LM Head делаем слоем для SPMD-шардирования, но замораживаем
-        self.lm_head = nn.Linear(qwen_lm_head_weight.size(1), qwen_lm_head_weight.size(0), bias=False)
-        self.lm_head.weight.data.copy_(qwen_lm_head_weight)
-        self.lm_head.weight.requires_grad = False
-
     def forward(self, input_ids, attention_mask=None):
+        # 1. Извлекаем эмбеддинги вручную из сохраненной матрицы Qwen
+        inputs_embeds = F.embedding(input_ids, self.qwen_embed_weight)
+        
+        # 2. VAE Encoder -> Latent Space Z (заморожен)
         with torch.no_grad():
-            # 1. Получаем входные эмбеддинги (Frozen)
-            inputs_embeds = F.embedding(input_ids, self.embed_weight)
-            # 2. Получаем латенты из замороженного VAE (Frozen)
-            # Предполагается интерфейс: z, mu, logvar = encoder(embeds)
             z, _, _ = self.encoder(inputs_embeds)
             
-        # 3. Умный Декодер (здесь идут градиенты)
-        decoded = self.decoder(z, attention_mask=attention_mask)
+        # 3. Наш новый ModernLatentDecoder
+        projected_embeds = self.decoder(z, attention_mask)
         
-        # 4. Проекция в логиты (Frozen)
-        logits = self.lm_head(decoded)
+        # 4. Проекция обратно в токены через сохраненную матрицу Qwen LM Head
+        logits = F.linear(projected_embeds, self.qwen_lm_head_weight)
+        
         return logits
+
+def get_dataloader(data_path, batch_size=8, max_length=1024, tokenizer=None):
+    from indexed_parquet_dataset import IndexedParquetDataset
+    from torch.utils.data import DataLoader
+
+    print(f"Loading parquet dataset from {data_path} using IndexedParquetDataset...")
+    ds = IndexedParquetDataset.from_folder(data_path, pattern="*.parquet", auto_fill=True)
+    ds = ds.shuffle(seed=42, rg_buffer=8)
+
+    def collate_fn(batch):
+        if tokenizer is not None and "text" in batch[0] and batch[0]["text"] is not None:
+            texts = [item["text"] for item in batch]
+            encoded = tokenizer(texts, padding="max_length", truncation=True, max_length=max_length, return_tensors="pt")
+            return {"input_ids": encoded["input_ids"], "attention_mask": encoded["attention_mask"]}
+
+        input_ids, attention_mask = [], []
+        for item in batch:
+            seq = item.get("input_ids", [])
+            if not isinstance(seq, list): seq = list(seq)
+            seq = seq[:max_length]
+            pad_len = max_length - len(seq)
+            padded_seq = seq + [151643] * pad_len
+            mask = [1] * len(seq) + [0] * pad_len
+            input_ids.append(padded_seq)
+            attention_mask.append(mask)
+
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "attention_mask": torch.tensor(attention_mask, dtype=torch.long),
+        }
+
+    return DataLoader(ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn, drop_last=True, num_workers=4, prefetch_factor=2)
 
 def train_phase2():
     mesh = setup_spmd_mesh()
@@ -111,7 +140,22 @@ def train_phase2():
         if is_master: print(f"Warning: {phase1_ckpt_path} not found. Using random LatentEncoder.")
     
     # 3. Инициализация нашего нового Декодера (с подгрузкой DUS)
-    dus_weights = r"C:\Experiments\BEBLaDII\storage\components\model\latentBERT\v1.0\weights.pt"
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'))
+    dus_weights_dir = os.path.join(project_root, "storage", "components", "model", "latentBERT", "v1.0")
+    dus_weights = os.path.join(dus_weights_dir, "weights.pt")
+    
+    # Скачиваем веса DUS из GCS, если их нет
+    if is_master and not os.path.exists(dus_weights):
+        print(f"Downloading DUS weights from GCS to {dus_weights}...")
+        os.makedirs(dus_weights_dir, exist_ok=True)
+        try:
+            subprocess.run(["gcloud", "storage", "cp", "gs://bebladii-weigths-us/components/model/latentBERT/v1.0/weights.pt", dus_weights], check=True)
+            print("DUS weights downloaded successfully.")
+        except Exception as e:
+            print(f"Error downloading DUS weights: {e}")
+            
+    xm.rendezvous("weights_downloaded") # Ждем пока мастер скачает
+
     decoder = ModernLatentDecoder(
         latent_dim=1024, 
         qwen_dim=1536, 
@@ -136,35 +180,55 @@ def train_phase2():
     ckpt_dir = "checkpoints/phase2"
     os.makedirs(ckpt_dir, exist_ok=True)
     
-    # --- ДЕМОНСТРАЦИОННЫЙ ЦИКЛ ОБУЧЕНИЯ ---
-    # В реальном коде здесь будет загрузка датасета
-    # for batch in dataloader:
-    #     input_ids = batch["input_ids"].to(device)
-    #     attention_mask = batch["attention_mask"].to(device)
-    # 
-    #     # SPMD Sharding батча (КРИТИЧНО ДЛЯ FSDP)
-    #     xs.mark_sharding(input_ids, mesh, ('fsdp', None))
-    #     xs.mark_sharding(attention_mask, mesh, ('fsdp', None))
-    #
-    #     optimizer.zero_grad()
-    #     logits = model(input_ids, attention_mask)
-    # 
-    #     ce_loss_raw = loss_fct(logits.view(-1, logits.size(-1)), input_ids.view(-1))
-    #     ce_loss_raw = ce_loss_raw.view(input_ids.size())
-    #     ce_loss = (ce_loss_raw * attention_mask).sum() / (attention_mask.sum() + 1e-6)
-    # 
-    #     ce_loss.backward()
-    #     optimizer.step()
-    #     xm.mark_step()
-    # 
-    # if is_master:
-    #     wandb.log({"train/ce_loss": ce_loss.item()})
-    #     print(f"Step Loss: {ce_loss.item()}")
-    # 
-    #     # Сохранение чекпойнта
-    #     torch.save({"decoder": model.decoder.state_dict()}, os.path.join(ckpt_dir, "decoder_step_100.pth"))
+    # --- ПОДГОТОВКА ДАННЫХ И ЦИКЛ ОБУЧЕНИЯ ---
+    data_path = "./data/train"  # Или твой gs:// путь, если данные не скачаны
+    if is_master and not os.path.exists(data_path):
+        os.makedirs(data_path, exist_ok=True)
+        try:
+            print("Downloading dataset from GCS...")
+            subprocess.run(["gcloud", "storage", "rsync", "-r", "gs://bebladii-data-us/train/", data_path], check=True)
+        except Exception as e:
+            print(f"Dataset download skipped or failed: {e}")
+            
+    xm.rendezvous("data_downloaded")
     
-    # if is_master: wandb.finish()
+    dataloader = get_dataloader(data_path, batch_size=16, max_length=1024, tokenizer=tokenizer)
+    
+    if is_master: print("Starting training loop...")
+    
+    step = 0
+    for batch in dataloader:
+        input_ids = batch["input_ids"].to(device)
+        attention_mask = batch["attention_mask"].to(device)
+    
+        # SPMD Sharding батча (КРИТИЧНО ДЛЯ FSDP)
+        xs.mark_sharding(input_ids, mesh, ('fsdp', None))
+        xs.mark_sharding(attention_mask, mesh, ('fsdp', None))
+    
+        optimizer.zero_grad()
+        logits = model(input_ids, attention_mask)
+    
+        # Вычисляем Loss
+        ce_loss_raw = loss_fct(logits.view(-1, logits.size(-1)), input_ids.view(-1))
+        ce_loss_raw = ce_loss_raw.view(input_ids.size())
+        ce_loss = (ce_loss_raw * attention_mask).sum() / (attention_mask.sum() + 1e-6)
+    
+        ce_loss.backward()
+        xm.optimizer_step(optimizer)
+        
+        step += 1
+    
+        if is_master:
+            wandb.log({"train/ce_loss": ce_loss.item(), "step": step})
+            print(f"Step {step} | CE Loss: {ce_loss.item():.4f}")
+    
+            if step % 500 == 0:
+                torch.save({"decoder": model.module.decoder.state_dict() if hasattr(model, 'module') else model.decoder.state_dict()}, os.path.join(ckpt_dir, f"decoder_step_{step}.pth"))
+                
+        if step >= 10000: # Лимит для тестов
+            break
+            
+    if is_master: wandb.finish()
 
 if __name__ == "__main__":
     # Если запуск через xla_spawn или torchrun:
