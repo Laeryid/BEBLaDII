@@ -47,11 +47,15 @@ The training reached an optimal equilibrium around step 20,000.
 **effective_dim**: After an initial drop (compression), it steadily climbed and stabilized in the 300-350 range. This "manifold unrolling" confirms that the space is not squashed into a low-dimensional pancake, which is vital for the $N(0, I)$ prior of the diffusion model.
 
 ### Covariation
-![Metrics](../experiments/phase%201/cov_loss.png)
+<p align="center">
+    <img src="../experiments/phase%201/cov_loss.png" width="60%" alt="Train Metrics" />
+</p>
 **cov_loss**: Remained stable for the majority of the run, successfully enforcing orthogonal dimensions without blowing up.
 
 ### Uniformity Loss
-![Metrics](../experiments/phase%201/contrastive_loss.png)
+<p align="center">
+    <img src="../experiments/phase%201/contrastive_loss.png" width="60%" alt="Train Metrics" />
+</p>
 **contrastive_loss**: Shows a stable equilibrium, confirming that tokens are pushed apart effectively to maintain uniform coverage of the spherical manifold.
 
 > [!NOTE]
