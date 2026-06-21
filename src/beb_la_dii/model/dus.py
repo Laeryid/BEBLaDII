@@ -45,7 +45,16 @@ class DUSModel(BEComponent):
         import os
         if weights_path and os.path.exists(weights_path):
             state = torch.load(weights_path, map_location="cpu")
-            self.model.load_state_dict(state)
+            
+            # Убираем префикс "model.", если он есть в сохраненных ключах (например, если сохраняли весь DUSModel)
+            clean_state = {}
+            for k, v in state.items():
+                if k.startswith("model."):
+                    clean_state[k.replace("model.", "", 1)] = v
+                else:
+                    clean_state[k] = v
+                    
+            self.model.load_state_dict(clean_state, strict=False)
             print(f"  Weights loaded: {weights_path}")
         elif weights_path:
             print(f"  WARN: weights_path not found, using DUS init: {weights_path}")
