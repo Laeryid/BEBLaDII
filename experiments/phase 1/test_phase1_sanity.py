@@ -19,15 +19,18 @@ def slerp(val, low, high):
     high_norm = safe_normalize(high, dim=-1)
     
     # Косинусное сходство
-    dot = (low_norm * high_norm).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
+    dot = (low_norm * high_norm).sum(dim=-1, keepdim=True).clamp(-0.99999, 0.99999)
     omega = torch.acos(dot)
     so = torch.sin(omega)
     
-    # Защита от деления на ноль, если векторы слишком близки
-    if so.max().item() < 1e-5:
-        return (1.0 - val) * low + val * high
-        
-    return torch.sin((1.0 - val) * omega) / so * low + torch.sin(val * omega) / so * high
+    # Линейная интерполяция (fallback)
+    lerp = (1.0 - val) * low + val * high
+    
+    # Поэлементная защита от деления на ноль
+    safe_so = torch.where(so < 1e-5, torch.ones_like(so), so)
+    slerp_res = torch.sin((1.0 - val) * omega) / safe_so * low + torch.sin(val * omega) / safe_so * high
+    
+    return torch.where(so < 1e-5, lerp, slerp_res)
 
 class VAESanityTester:
     def __init__(self, qwen_path, ckpt_path, device="cuda" if torch.cuda.is_available() else "cpu"):

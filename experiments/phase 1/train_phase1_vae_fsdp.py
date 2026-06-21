@@ -356,6 +356,10 @@ def train(args):
             )
 
             loss.backward()
+            
+            # Gradient clipping (защита от взрыва градиентов)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             xm.optimizer_step(optimizer, barrier=True)
             scheduler.step()
 
