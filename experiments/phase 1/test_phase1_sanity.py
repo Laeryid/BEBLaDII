@@ -85,26 +85,37 @@ class VAESanityTester:
         T = vae_logits.size(0)
         
         current_seq = []
+        past_key_values = None
+        next_qwen_logits = None
+        
         for i in range(T):
             # Получаем Top-K кандидатов от VAE
             top_k_logits, top_k_ids = torch.topk(vae_logits[i], k=top_k)
             top_k_probs = torch.softmax(top_k_logits, dim=-1)
             
             if i == 0:
-                current_seq.append(top_k_ids[0].item())
+                best_id = top_k_ids[0].item()
+                current_seq.append(best_id)
+                # Инициализируем KV-cache для скорости O(T) вместо O(T^2)
+                outputs = self.qwen(input_ids=torch.tensor([[best_id]], device=self.device), use_cache=True)
+                past_key_values = outputs.past_key_values
+                next_qwen_logits = outputs.logits[0, -1, :]
                 continue
                 
-            # Спрашиваем Qwen о грамматике с учетом сгенерированного префикса
-            context_ids = torch.tensor([current_seq], device=self.device)
-            qwen_next_logits = self.qwen(input_ids=context_ids).logits[0, -1, :]
-            
             # Сравниваем мнения Qwen и VAE только на Top-K кандидатах
-            qwen_candidate_logits = qwen_next_logits[top_k_ids]
+            qwen_candidate_logits = next_qwen_logits[top_k_ids]
             qwen_candidate_probs = torch.softmax(qwen_candidate_logits, dim=-1)
             
             combined_scores = alpha * top_k_probs + (1.0 - alpha) * qwen_candidate_probs
             best_idx = combined_scores.argmax().item()
-            current_seq.append(top_k_ids[best_idx].item())
+            best_id = top_k_ids[best_idx].item()
+            current_seq.append(best_id)
+            
+            # Прогоняем только 1 новый токен через Qwen (используя кэш предыдущих)
+            if i < T - 1:
+                outputs = self.qwen(input_ids=torch.tensor([[best_id]], device=self.device), past_key_values=past_key_values, use_cache=True)
+                past_key_values = outputs.past_key_values
+                next_qwen_logits = outputs.logits[0, -1, :]
             
         return self.tokenizer.decode(current_seq, skip_special_tokens=True)
 
