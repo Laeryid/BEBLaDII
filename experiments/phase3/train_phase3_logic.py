@@ -118,8 +118,12 @@ class BEBLaDIIPhase3(nn.Module):
                 k_clean = k.replace("student.model.", "").replace("model.", "")
                 clean_state[k_clean] = v
                 
+            model_sd = dus_wrapper.model.state_dict()
+            matched = sum(1 for k in model_sd.keys() if k in clean_state)
+            total_keys = len(model_sd.keys())
+                
             dus_wrapper.model.load_state_dict(clean_state, strict=False)
-            print(f"[Init] Awakened DUS weights loaded from {dus_weights}")
+            print(f"[Init] Awakened DUS weights loaded from {dus_weights} (Matched {matched}/{total_keys} parameters)")
             
         self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
@@ -276,15 +280,19 @@ def train(args):
         teacher_dim=args.teacher_dim,
     ).to(device)
 
+    def shard_output(output, mesh):
+        # FSDP требует этот callable для не-тензорных выходов от HF Models
+        return None
+
     # Шардируем все тяжёлые компоненты через FSDP:
     # - учитель (7B): не обучается, огромный → шардируем обязательно
     # - encoder, qwen_embeddings: небольшие, не обучаются → шардируем для консистентности
     # - dus, logic_adapter: обучаются → шардируем
-    model.teacher          = SpmdFullyShardedDataParallel(model.teacher, mesh=mesh)
-    model.qwen_embeddings  = SpmdFullyShardedDataParallel(model.qwen_embeddings, mesh=mesh)
-    model.encoder          = SpmdFullyShardedDataParallel(model.encoder, mesh=mesh)
-    model.dus              = SpmdFullyShardedDataParallel(model.dus, mesh=mesh)
-    model.logic_adapter    = SpmdFullyShardedDataParallel(model.logic_adapter, mesh=mesh)
+    model.teacher          = SpmdFullyShardedDataParallel(model.teacher, mesh=mesh, shard_output=shard_output)
+    model.qwen_embeddings  = SpmdFullyShardedDataParallel(model.qwen_embeddings, mesh=mesh, shard_output=shard_output)
+    model.encoder          = SpmdFullyShardedDataParallel(model.encoder, mesh=mesh, shard_output=shard_output)
+    model.dus              = SpmdFullyShardedDataParallel(model.dus, mesh=mesh, shard_output=shard_output)
+    model.logic_adapter    = SpmdFullyShardedDataParallel(model.logic_adapter, mesh=mesh, shard_output=shard_output)
 
     trainable_params = list(model.dus.parameters()) + list(model.logic_adapter.parameters())
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
@@ -315,12 +323,14 @@ def train(args):
     model.train()
     step = 0
 
+    total_steps = min(args.max_steps, len(dataloader) * args.epochs)
+
     from tqdm.auto import tqdm
-    pbar = tqdm(total=args.max_steps, desc="Training Phase 3") if xm.is_master_ordinal() else None
+    pbar = tqdm(total=total_steps, desc="Training Phase 3") if xm.is_master_ordinal() else None
 
     for epoch in range(args.epochs):
         for batch in dataloader:
-            if step >= args.max_steps:
+            if step >= total_steps:
                 break
 
             input_ids     = batch["input_ids"].to(device)
@@ -430,7 +440,7 @@ def train(args):
             if pbar:
                 pbar.update(1)
 
-        if step >= args.max_steps:
+        if step >= total_steps:
             break
 
     if pbar:
