@@ -176,3 +176,42 @@ python scripts/verify_new_tpu.py
 ```bash
 pkill -9 -f train_phase1_TPU_fsdp.py
 ```
+
+## Plan B, phase 3
+  Так как скрипт будет выполняться на TPU VM (где установлена ОС Linux), вот готовая  nohup
+  команда.
+
+  Она предполагает, что ты находишься в корне проекта (или папка  experiments  лежит в текущей
+  директории), а виртуальное окружение активировано (либо используется системный  python3 ).
+
+    nohup python3 experiments/phase3/train_phase3_logic.py \
+        --teacher_model_path "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B" \
+        --embedding_model_path "Qwen/Qwen2.5-1.5B" \
+        --teacher_dim 3584 \
+        --encoder_weights_gs "gs://bebladii-weigths-us/planB/phase1/checkpoints/phase1_vae_step_10000.pth" \
+        --dus_weights_gs "gs://bebladii-weigths-us/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt" \
+        --data_path "bebladii-datasets-us/data/Reasoning/train" \
+        --val_data_path "bebladii-datasets-us/data/Reasoning/val" \
+        --gcs_checkpoint_dir "gs://bebladii-weigths-us/planB/phase3/checkpoints/" \
+        --batch_size 8 \
+        --learning_rate 1e-4 \
+        --epochs 5 \
+        --low_noise_amp 0.5 \
+        --gamma 20.0 \
+        --val_steps 500 \
+        --save_steps 5000 \
+        --wandb_project "BEBLaDII-Phase3" \
+        > phase3_train.log 2>&1 &
+
+  (Не забудь заменить  --val_data_path ""  на реальный бакет с валидационными данными, если они
+  есть. Иначе валидация просто будет пропущена).
+
+  ### Как мониторить процесс:
+
+  Посмотреть, что происходит в реальном времени (логи скачивания GCS, прогресс-бар и лоссы):
+
+    tail -f phase3_train.log
+
+  Убить процесс, если что-то пошло не так:
+
+    pkill -f "train_phase3_logic.py"

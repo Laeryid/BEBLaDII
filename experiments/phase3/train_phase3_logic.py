@@ -28,7 +28,7 @@ import torch_xla.experimental.xla_sharding as xs
 import torch_xla.runtime as xr
 import wandb
 from torch.utils.data import DataLoader
-from transformers import AutoModel, AutoTokenizer, get_cosine_schedule_with_warmup
+from transformers import AutoModel, AutoTokenizer
 from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel
 
 from src.beb_la_dii.model.vae import LatentEncoder
@@ -328,11 +328,8 @@ def train(args):
             max_length=args.max_length, tokenizer=tokenizer
         )
 
-    scheduler = get_cosine_schedule_with_warmup(
-        optimizer,
-        num_warmup_steps=int(args.max_steps * 0.1),
-        num_training_steps=args.max_steps,
-    )
+    from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=2000, T_mult=1, eta_min=1e-6)
 
     model.train()
     step = 0
@@ -365,6 +362,25 @@ def train(args):
             torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             xm.optimizer_step(optimizer, barrier=True)
             scheduler.step()
+
+            # --- Цикличный прогрев LR (Initial & Restart Warmups) ---
+            current_optim_step = step + 1
+            warmup_steps = min(1000, int(args.max_steps * 0.1))
+            
+            if current_optim_step <= warmup_steps:
+                # 1. Начальный прогрев
+                lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+                for idx_p, param_group in enumerate(optimizer.param_groups):
+                    param_group['lr'] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+            else:
+                # 2. Прогрев при автоматических рестартах (каждые 2000 шагов)
+                rel_step = current_optim_step % 2000
+                restart_warmup_steps = 200
+                if rel_step < restart_warmup_steps:
+                    lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
+                    for idx_p, param_group in enumerate(optimizer.param_groups):
+                        param_group['lr'] = param_group['lr'] * lr_warmup_factor
+            # ---------------------------------------------------------
 
             # Логирование
             if step % args.log_steps == 0:
