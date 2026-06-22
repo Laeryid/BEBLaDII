@@ -105,7 +105,23 @@ class BEBLaDIIPhase3(nn.Module):
         self.encoder.to(torch.bfloat16)
 
         # 3. DUS Backbone (обучаемый)
-        self.dus = DUSModel.from_scratch(weights_path=dus_weights).model
+        dus_wrapper = DUSModel.from_scratch(weights_path=None)
+        if dus_weights and os.path.exists(dus_weights):
+            state = torch.load(dus_weights, map_location="cpu")
+            if "latentBERT_state_dict" in state:
+                state = state["latentBERT_state_dict"]
+            elif "model_state_dict" in state:
+                state = state["model_state_dict"]
+            
+            clean_state = {}
+            for k, v in state.items():
+                k_clean = k.replace("student.model.", "").replace("model.", "")
+                clean_state[k_clean] = v
+                
+            dus_wrapper.model.load_state_dict(clean_state, strict=False)
+            print(f"[Init] Awakened DUS weights loaded from {dus_weights}")
+            
+        self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
 
         # 4. LogicAdapter (обучаемый): teacher_dim должен соответствовать реальному учителю
@@ -241,41 +257,7 @@ def compute_phase3_loss(
     return total_loss, metrics
 
 
-# ---------------------------------------------------------------------------
-# DataLoader
-# ---------------------------------------------------------------------------
-
-def get_dataloader(data_path: str, batch_size: int = 8, max_length: int = 512,
-                   tokenizer=None) -> DataLoader:
-    from indexed_parquet_dataset import IndexedParquetDataset
-    ds = IndexedParquetDataset.from_folder(data_path, pattern="*.parquet", auto_fill=True)
-    ds = ds.shuffle(seed=42, rg_buffer=8)
-    print(f"Dataset loaded: {len(ds)} samples")
-
-    def collate_fn(batch):
-        if tokenizer is not None and "text" in batch[0] and batch[0]["text"] is not None:
-            texts = [item["text"] for item in batch]
-            encoded = tokenizer(
-                texts, padding="max_length", truncation=True,
-                max_length=max_length, return_tensors="pt"
-            )
-            return {"input_ids": encoded["input_ids"], "attention_mask": encoded["attention_mask"]}
-
-        input_ids_list, masks = [], []
-        for item in batch:
-            seq = list(item.get("input_ids", []))[:max_length]
-            pad_len = max_length - len(seq)
-            input_ids_list.append(seq + [151643] * pad_len)
-            masks.append([1] * len(seq) + [0] * pad_len)
-        return {
-            "input_ids": torch.tensor(input_ids_list, dtype=torch.long),
-            "attention_mask": torch.tensor(masks, dtype=torch.long),
-        }
-
-    return DataLoader(
-        ds, batch_size=batch_size, shuffle=False, collate_fn=collate_fn,
-        drop_last=True, num_workers=4, prefetch_factor=2
-    )
+# DataLoader удален, используем встроенный в utils.data
 
 
 # ---------------------------------------------------------------------------
@@ -310,23 +292,22 @@ def train(args):
     if xm.is_master_ordinal() and args.wandb_project:
         wandb.init(project=args.wandb_project, config=vars(args))
 
-    local_data_path = "./data/train" if args.data_path.startswith("gs://") else args.data_path
-    local_val_path = "./data/val" if args.val_data_path and args.val_data_path.startswith("gs://") else args.val_data_path
-
-    tokenizer = AutoTokenizer.from_pretrained(args.teacher_model_path)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token_id = 151643
+    from src.beb_la_dii.utils.data import get_dataloader
 
     dataloader = get_dataloader(
-        local_data_path, batch_size=args.batch_size,
-        max_length=args.max_length, tokenizer=tokenizer
+        stage='reasoning', 
+        batch_size=args.batch_size, 
+        max_length=args.max_length, 
+        split='train', 
+        val_ratio=0.0
     )
-    val_dataloader = None
-    if local_val_path:
-        val_dataloader = get_dataloader(
-            local_val_path, batch_size=args.batch_size,
-            max_length=args.max_length, tokenizer=tokenizer
-        )
+    val_dataloader = get_dataloader(
+        stage='reasoning', 
+        batch_size=args.batch_size, 
+        max_length=args.max_length, 
+        split='val', 
+        val_ratio=0.0
+    )
 
     from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=2000, T_mult=1, eta_min=1e-6)
@@ -542,26 +523,14 @@ if __name__ == "__main__":
                 check=True
             )
 
-        if args.data_path.startswith("gs://"):
-            os.makedirs("./data/train", exist_ok=True)
-            try:
-                subprocess.run(["gcloud", "storage", "rsync", "-r", args.data_path, "./data/train/"], check=True)
-                # Удаляем старый индекс, если он прилетел с GCS, чтобы пути не сломались
-                index_path = "./data/train/_dataset_index.json"
-                if os.path.exists(index_path):
-                    os.remove(index_path)
-            except Exception as e:
-                print(f"[GCS] ERROR syncing train data: {e}")
-                
-        if args.val_data_path and args.val_data_path.startswith("gs://"):
-            os.makedirs("./data/val", exist_ok=True)
-            try:
-                subprocess.run(["gcloud", "storage", "rsync", "-r", args.val_data_path, "./data/val/"], check=True)
-                index_path = "./data/val/_dataset_index.json"
-                if os.path.exists(index_path):
-                    os.remove(index_path)
-            except Exception as e:
-                print(f"[GCS] ERROR syncing val data: {e}")
+        # Синк всего датасета в ./data (как в Phase 1)
+        os.makedirs("./data", exist_ok=True)
+        try:
+            # Синкаем директорию с данными в корень ./data
+            subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets-us/data/", "./data"], check=True)
+            print("[GCS] Successfully synced dataset to ./data")
+        except Exception as e:
+            print(f"[GCS] ERROR syncing dataset: {e}")
     else:
         args.local_encoder_weights = "./weights_cache/encoder.pth"
         args.local_dus_weights     = "./weights_cache/dus.pth"
