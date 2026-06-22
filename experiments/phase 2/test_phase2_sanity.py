@@ -124,6 +124,139 @@ class Phase2SanityTester:
             print(f"Step {i}/{steps} (t={val:.2f}): {decoded}")
         print()
 
+    def test_semantic_neighbors(self, sentences):
+        print(f"--- SEMANTIC NEIGHBORS (MEAN POOLING) ---")
+        z_means = []
+        for s in sentences:
+            _, _, z = self.encode_text(s)
+            z_mean = safe_normalize(z.mean(dim=1), dim=-1)
+            z_means.append(z_mean)
+            
+        z_stack = torch.cat(z_means, dim=0) # (N, D)
+        sim_matrix = z_stack @ z_stack.T
+        
+        for i in range(len(sentences)):
+            sims = sim_matrix[i].clone()
+            sims[i] = -1.0
+            best_idx = sims.argmax().item()
+            score = sims[best_idx].item()
+            print(f"Query: '{sentences[i]}'")
+            print(f"Nearest: '{sentences[best_idx]}' (Cosine: {score:.3f})\n")
+
+    @torch.no_grad()
+    def test_prior_sampling(self, n_samples=16, seq_len=32):
+        print("--- PRIOR SAMPLING TEST (hole detection) ---")
+        latent_dim = 1024
+
+        real_texts = [
+            "The quick brown fox jumps over the lazy dog.",
+            "Quantum computing harnesses the laws of quantum mechanics.",
+            "It was a bright cold day in April, and the clocks were striking thirteen.",
+            "Machine learning models require large amounts of training data.",
+        ]
+        real_ce_vals = []
+        for text in real_texts:
+            inputs = self.tokenizer(text, return_tensors="pt", padding="max_length",
+                                   truncation=True, max_length=seq_len).to(self.device)
+            embeds = F.embedding(inputs.input_ids, self.qwen_embed_weight)
+            z, _, _ = self.encoder(embeds)
+            
+            projected = self.decoder(z)
+            logits = F.linear(projected, self.qwen_lm_head_weight)
+
+            shift_logits = logits[..., :-1, :].contiguous()
+            shift_labels = inputs.input_ids[..., 1:].contiguous()
+            shift_mask = inputs.attention_mask[..., 1:].float()
+            
+            ce_raw = torch.nn.CrossEntropyLoss(reduction="none")(
+                shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
+            ).view(shift_labels.size())
+            ce = (ce_raw * shift_mask).sum() / (shift_mask.sum() + 1e-6)
+            real_ce_vals.append(ce.item())
+
+        real_ce_mean = sum(real_ce_vals) / len(real_ce_vals)
+
+        prior_ce_vals = []
+        for _ in range(n_samples):
+            z_prior = torch.randn(1, seq_len, latent_dim,
+                                  dtype=torch.bfloat16, device=self.device)
+            projected = self.decoder(z_prior)
+            logits = F.linear(projected, self.qwen_lm_head_weight)
+
+            probs = torch.softmax(logits, dim=-1)
+            log_probs = torch.log(probs + 1e-9)
+            entropy = -(probs * log_probs).sum(dim=-1).mean()
+            prior_ce_vals.append(entropy.item())
+
+        prior_entropy_mean = sum(prior_ce_vals) / len(prior_ce_vals)
+
+        print(f"  Real text CE: {real_ce_mean:.4f}")
+        print(f"  Prior z ~ N(0,I) entropy: {prior_entropy_mean:.4f}")
+
+        vocab_size = 151936
+        max_entropy = torch.log(torch.tensor(float(vocab_size))).item()
+        normalized = prior_entropy_mean / max_entropy
+        print(f"  Normalized prior entropy: {normalized:.3f}")
+
+        gap = prior_entropy_mean - real_ce_mean
+        print(f"  Gap (prior_entropy - real_CE): {gap:.4f}")
+        if normalized > 0.85:
+            verdict = "WARN: prior выглядит как равномерное распределение (collapsed decoder?)"
+        elif normalized < 0.3:
+            verdict = "WARN: слишком низкая энтропия — пространство prior коллапсировало"
+        else:
+            verdict = "OK: prior entropy в разумном диапазоне"
+        print(f"  Verdict: {verdict}\n")
+
+    @torch.no_grad()
+    def test_neighbour_consistency(self, texts=None, noise_levels=(0.01, 0.05, 0.1, 0.3)):
+        print("--- NEIGHBOUR CONSISTENCY TEST (smoothness) ---")
+        if texts is None:
+            texts = [
+                "The sun rises in the east and sets in the west.",
+                "Neural networks learn representations from data.",
+                "The economy grew by three percent last quarter.",
+            ]
+
+        results_by_level = {eps: [] for eps in noise_levels}
+
+        for text in texts:
+            inputs = self.tokenizer(text, return_tensors="pt").to(self.device)
+            embeds = F.embedding(inputs.input_ids, self.qwen_embed_weight)
+            z, _, _ = self.encoder(embeds)
+            
+            base_projected = self.decoder(z)
+            base_flat = base_projected.view(-1, base_projected.size(-1))
+
+            for eps in noise_levels:
+                noise = eps * torch.randn_like(z)
+                z_noisy = z + noise
+                noisy_projected = self.decoder(z_noisy)
+                noisy_flat = noisy_projected.view(-1, noisy_projected.size(-1))
+
+                cos_sim = torch.nn.functional.cosine_similarity(
+                    base_flat, noisy_flat, dim=-1
+                ).mean().item()
+                results_by_level[eps].append(cos_sim)
+
+        print(f"  {'Noise (eps)':<14} {'Mean cos-sim':<16} {'Verdict'}")
+        print(f"  {'-'*50}")
+        all_ok = True
+        for eps in noise_levels:
+            mean_sim = sum(results_by_level[eps]) / len(results_by_level[eps])
+            if eps <= 0.05:
+                ok = mean_sim > 0.98
+            elif eps <= 0.1:
+                ok = mean_sim > 0.90
+            else:
+                ok = mean_sim > 0.70
+            status = "OK" if ok else "WARN"
+            if not ok:
+                all_ok = False
+            print(f"  eps={eps:<10.2f} {mean_sim:<16.4f} {status}")
+
+        print(f"\n  Overall smoothness: {'GOOD' if all_ok else 'DEGRADED'}\n")
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--qwen_path", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
@@ -144,7 +277,29 @@ if __name__ == "__main__":
     tester.test_reconstruction("Мама мыла раму, а папа чинил телевизор.")
     tester.test_reconstruction("Neural networks learn representations from data.")
     
+    # ТЕСТ ДЛИННОГО АБЗАЦА (чтобы проверить, пропадает ли "мусор" после первых слов)
+    tester.test_reconstruction(
+        "Artificial intelligence and machine learning have revolutionized the way we interact with technology, "
+        "enabling computers to understand natural language, recognize complex patterns in images, and make decisions "
+        "with unprecedented accuracy. As these systems become more integrated into our daily lives, "
+        "it is crucial to address the ethical implications and ensure that they are developed responsibly, "
+        "with a focus on fairness, transparency, and human well-being."
+    )
+    
     tester.test_interpolation(
         "A little cat is sleeping comfortably on a soft pillow.",
         "A huge black dog barks aggressively at the passing car."
     )
+
+    sentences = [
+        "I love eating pizza with extra cheese.",
+        "The theory of relativity was developed by Albert Einstein.",
+        "Burgers and fries are my favorite fast food.",
+        "Quantum physics describes the behavior of subatomic particles.",
+        "It's raining heavily outside, I need an umbrella.",
+        "The weather today is stormy and wet."
+    ]
+    tester.test_semantic_neighbors(sentences)
+
+    tester.test_prior_sampling()
+    tester.test_neighbour_consistency()

@@ -1,0 +1,45 @@
+(.venv) hp@t1v-n-dedc9329-w-0:~/projects/BEBLaDII$ python "experiments/phase 2/test_phase2_sanity.py" --phase2_ckpt "checkpoints/phase2/decoder_step_8000.pth"
+Loading Qwen Tokenizer from deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B...
+Loading Qwen Embeddings and LM Head...
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading Phase 1 VAE Encoder from /home/hp/projects/BEBLaDII/checkpoints/phase1/phase1_vae_step_20000.pth...
+/home/hp/projects/BEBLaDII/experiments/phase 2/test_phase2_sanity.py:53: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  ckpt1 = torch.load(phase1_ckpt_path, map_location=device)
+Loading Phase 2 Modern Decoder from /home/hp/projects/BEBLaDII/checkpoints/phase2/decoder_step_8000.pth...
+Loading first 3 layers from DUS latentBERT: /home/hp/projects/BEBLaDII/storage/components/model/latentBERT/v1.0/weights.pt
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+/home/hp/projects/BEBLaDII/src/beb_la_dii/model/dus.py:47: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state = torch.load(weights_path, map_location="cpu")
+  Weights loaded: /home/hp/projects/BEBLaDII/storage/components/model/latentBERT/v1.0/weights.pt
+/home/hp/projects/BEBLaDII/experiments/phase 2/test_phase2_sanity.py:65: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  ckpt2 = torch.load(phase2_ckpt_path, map_location=device)
+Initialization complete!
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : The quick brown fox jumps over the lazy dog.
+DECODED  :  cenaTheho mo fox jumps over the But dog.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.
+DECODED  :  cena converum computing is a masses-emerging technology that noves the laws of quantum mechanics to solve problems too complex for a computers.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Мама мыла раму, а папа чинил телевизор.
+DECODED  : ��作Мама мылаалиу, а папа чинил телевизор.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Neural networks learn representations from data.
+DECODED  :  váNe drawing systems find representations from data.
+
+--- SPHERICAL INTERPOLATION (SLERP) ---
+A: A little cat is sleeping comfortably on a soft pillow.
+B: A huge black dog barks aggressively at the passing car.
+Step 0/5 (t=0.00): žeA little cat iszen� on aJustоль..
+Step 1/5 (t=0.20):  rejA little cat iszenма on a justov..
+Step 2/5 (t=0.40):  váA small red is workches on a the pass..
+Step 3/5 (t=0.60):  váA large red in bches on at the passing..
+Step 4/5 (t=0.80):  váA huge black dog barks larger at the passing car.
+Step 5/5 (t=1.00):  cenaA huge black dog barks aggressively at the passing car.
+
+(.venv) hp@t1v-n-dedc9329-w-0:~/projects/BEBLaDII$
