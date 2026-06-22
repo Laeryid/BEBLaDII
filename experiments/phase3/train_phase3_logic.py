@@ -546,6 +546,10 @@ if __name__ == "__main__":
             os.makedirs("./data/train", exist_ok=True)
             try:
                 subprocess.run(["gcloud", "storage", "rsync", "-r", args.data_path, "./data/train/"], check=True)
+                # Удаляем старый индекс, если он прилетел с GCS, чтобы пути не сломались
+                index_path = "./data/train/_dataset_index.json"
+                if os.path.exists(index_path):
+                    os.remove(index_path)
             except Exception as e:
                 print(f"[GCS] ERROR syncing train data: {e}")
                 
@@ -553,6 +557,9 @@ if __name__ == "__main__":
             os.makedirs("./data/val", exist_ok=True)
             try:
                 subprocess.run(["gcloud", "storage", "rsync", "-r", args.val_data_path, "./data/val/"], check=True)
+                index_path = "./data/val/_dataset_index.json"
+                if os.path.exists(index_path):
+                    os.remove(index_path)
             except Exception as e:
                 print(f"[GCS] ERROR syncing val data: {e}")
     else:
