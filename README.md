@@ -82,26 +82,34 @@ graph TD
    - **Role:** An operational, strictly-structured database populated during runtime (tool descriptions, parsed file structures). Accessed by the model via `CA_Context` to ensure precision.
 
 8. **Text Decoder**
-   - **Role:** A full text decoder designed for semantic repair ("починка семантики"). It robustly translates the final latent structures from the diffusion backbone into human-readable, semantically coherent text.
+   - **Role:** A full text decoder designed for semantic repair. It robustly translates the final latent structures from the diffusion backbone into human-readable, semantically coherent text.
 
 ## Training Pipeline
 
-**Phase 1: Создание пространства диффузии**
+**Phase 1: Latent space creation**
 - **Goal**: Initial creation and structuring of the latent diffusion space. Train the Latent Encoder.
 
-**Phase 2: Обучение latentBackbone низкого шума, без CA-prompt**
+**Phase 2: Decoder training**
+- **Goal**: Обучение компактного декодера, способного без авторегрессии улучшить грамматику ответа.
+
+**Phase 3: Low-noise latentBackbone training, without CA-prompt**
 - **Goal**: Train the core diffusion backbone on low noise settings, focusing on internal consistency without user prompt conditioning (CA-prompt disabled).
 
-**Phase 3: Prompt Conditioning (CA_Prompt)**
+**Phase 4: Prompt Conditioning (CA_Prompt)**
 - **Goal**: Train `CA_Prompt` layers to inject the rigid quality criteria (the user prompt) directly into the diffusion process.
 
-**Phase 4: Memory Integration (CA_Memory)**
+**Phase 5: Memory Integration (CA_Memory)**
 - **Goal**: Train `CA_Memory` layers to inject factual knowledge from CLM, and train the `Relevance Gate` to validate retrieved chunks.
 
-**Phase 5: Tool Use & Context (CA_Context)**
+**Phase 6: Tool Use & Context (CA_Context)**
 - **Goal**: Train the system to utilize the strictly structured operational `Context Register` via `CA_Context` layers.
 
 ## Reports
+
+* Phase 1
+  * [Phase 1 Latent space creation](reports\plan_b_phase1_report.md)
+* Phase 2
+  * [Phase 2 Decoder training](reports\plan_b_phase2_report.md)
 
 ### Plan A (failed)
 [README Plan A](<experiments\Plan A\README.md>)

@@ -1,17 +1,17 @@
 # Phase 2 Report (Plan B): Modern Latent Decoder Training
 
 ## 1. Objective
-The primary goal of Phase 2 was to resolve the "grammatical porridge" issue observed in Phase 1. The simple linear `LatentDecoder` from Phase 1 compressed semantic meaning successfully but lacked the capacity to structure grammatical sequences coherently. Phase 2 replaced the linear decoder with an autoregressive-like grammatical engine using 3 layers sliced from a pre-trained `ModernBERT-large` (via Depth Up-Scaling / DUS), acting as a powerful syntax restorer over the frozen semantic latent space.
+The primary goal of Phase 2 was to resolve the "grammatical porridge" issue observed in Phase 1. The simple linear `LatentDecoder` from Phase 1 compressed semantic meaning successfully but lacked the capacity to structure grammatical sequences coherently. Phase 2 replaced the linear decoder with an autoregressive-like grammatical engine using last 3 layers sliced from a pre-trained `ModernBERT-large`, acting as a powerful syntax restorer over the frozen semantic latent space.
 
 ## 2. Implementation Details & Architectural Decisions
 
 * **Architecture**: 
   - **Encoder**: Frozen Phase 1 `LatentEncoder` (VAE) mapping Qwen tokens to a continuous spherical manifold ($Z$).
-  - **Decoder (`ModernLatentDecoder`)**: 3 layers extracted from DUS-initialized `ModernBERT-large`. The $Z$ vector is passed as `inputs_embeds`. The output is projected back to the 151,936 Qwen vocabulary size.
+  - **Decoder (`ModernLatentDecoder`)**: 3 layers extracted from `ModernBERT-large`. The $Z$ vector is passed as `inputs_embeds`. The output is projected back to the 151,936 Qwen vocabulary size.
 * **XLA Compilation Fixes**: 
   - **Dynamic Shapes**: Passing dynamic `attention_mask` into the `ModernBERT` backbone caused XLA to recompile the computational graph on every step, increasing step time to ~48 seconds. **Solution:** The `attention_mask` was removed from the backbone forward pass, enforcing static shapes and dropping step time to ~0.88s (1.13 iter/s).
   - **SPMD vs DDP Conflict**: Using `xm.optimizer_step(optimizer)` triggered internal DDP all-reduce barriers, which fragmented the SPMD (Fully Sharded Data Parallel) graph. **Solution:** Replaced with explicit `optimizer.step()` followed by `xm.mark_step()`.
-* **Infrastructure**: TPU v4, SPMD FSDP sharding over 4 cores. Batch size = 16 (1024 tokens).
+* **Infrastructure**: TPU v4, SPMD FSDP sharding over 4 cores. Batch size = 16. Each sample is cut to 1024 tokens.
 
 **Attachment:** [Code](<../experiments\phase 2\train_phase2_decoder.py>)
 
