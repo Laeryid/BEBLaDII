@@ -169,7 +169,16 @@ class BEBLaDIIPhase3(nn.Module):
             noise = torch.randn_like(z_clean)
             noise = safe_normalize(noise, dim=-1) * low_noise_amp
 
+            # Применяем маску (зашумляем только разрешенные токены)
             z_noisy = z_clean + noise * noise_mask.unsqueeze(-1)
+            
+            # [Spherical Geometry] Возвращаем зашумленный вектор на сферу исходного радиуса
+            z_clean_norm = torch.norm(z_clean, p=2, dim=-1, keepdim=True)
+            z_noisy = torch.where(
+                noise_mask.unsqueeze(-1) > 0,
+                safe_normalize(z_noisy, dim=-1) * z_clean_norm,
+                z_noisy
+            )
 
             # Confidence map: косинус(чистый, зашумлённый) → [0, 1]
             z_clean_normed = safe_normalize(z_clean, dim=-1)
@@ -377,7 +386,7 @@ def train(args):
             if step % args.log_steps == 0:
                 metrics_dict = {k: v.item() for k, v in metrics.items()}
                 metrics_dict["loss"] = loss.item()
-                metrics_dict["lr"]   = scheduler.get_last_lr()[0]
+                metrics_dict["lr"]   = optimizer.param_groups[0]['lr']
                 if xm.is_master_ordinal():
                     if args.wandb_project:
                         wandb.log(metrics_dict, step=step)
