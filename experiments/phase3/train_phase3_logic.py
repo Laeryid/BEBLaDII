@@ -241,14 +241,14 @@ def compute_phase3_loss(
     z_centered = z_flat - m_state
     
     v_state = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
-    var_loss = (v_state - 1.0).pow(2).mean()
     
     cov = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
     cov_off_diag = cov - torch.diag(torch.diag(cov))
     cov_loss = cov_off_diag.pow(2).sum() / D
     
-    prior_loss = m_state.pow(2).mean() + var_loss + 0.1 * cov_loss
+    prior_loss = m_state.pow(2).mean() + 0.1 * cov_loss
     metrics["prior_loss"] = prior_loss.detach()
+    metrics["cov_loss"] = cov_loss.detach()
 
     total_loss = 0.1 * prior_loss
 
