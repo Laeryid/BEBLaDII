@@ -267,7 +267,7 @@ def compute_phase3_loss(
     window_valid = (attn_w.sum(dim=-1) == window_size).float()
     
     if whitening_w is not None:
-        tea_w = torch.matmul(tea_w, whitening_w.to(tea_w.device).to(tea_w.dtype))
+        tea_w = torch.matmul(tea_w, whitening_w)
         
     dus_w_norm = safe_normalize(dus_w, dim=-1)
     tea_w_norm = safe_normalize(tea_w, dim=-1)
@@ -321,8 +321,10 @@ def train(args):
 
     if os.path.exists(args.local_whitening):
         whitening_data = torch.load(args.local_whitening, map_location="cpu")
-        whitening_w = whitening_data["W"]
-        print("[Init] Whitening matrix loaded.")
+        whitening_w = whitening_data["W"].to(device).to(torch.bfloat16)
+        import torch_xla.experimental.xla_sharding as xs
+        xs.mark_sharding(whitening_w, mesh, (None, None))
+        print("[Init] Whitening matrix loaded and moved to XLA.")
     else:
         whitening_w = None
         print("[Init] WARN: Whitening matrix NOT found, using raw teacher vectors.")

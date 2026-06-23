@@ -22,8 +22,8 @@
 
 
 
+
 ## Related KIs
-- [[KI_experiments.md]] (via `experiments/train_phase1_kaggle.py`)
 
 ## Non-obvious Details
 - **Kaggle API Limits**: Скрипт `sync_to_kaggle.ps1` может вызвать ошибку 429 при слишком частом запуске. Рекомендуется группировать изменения.

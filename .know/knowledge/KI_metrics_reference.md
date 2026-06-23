@@ -266,7 +266,6 @@ ns = (1 - cosine_similarity(raw_1024d, raw_1024d + noise)).mean()
 
 ---
 
+
 ## Related KIs
-- [KI: Architectural Decisions](KI_architectural_decisions.md)
-- [ADR 024: Spherical Manifold Distillation](../decisions/024_spherical_manifold_distillation.md)
-- [ADR 025: Centered RKD](../decisions/025_centered_rkd.md)
+
