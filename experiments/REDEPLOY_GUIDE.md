@@ -190,16 +190,14 @@ pkill -9 -f train_phase1_TPU_fsdp.py
         --teacher_dim 3584 \
         --encoder_weights_gs "gs://bebladii-weigths-us/planB/phase1/checkpoints/phase1_vae_step_10000.pth" \
         --dus_weights_gs "gs://bebladii-weigths-us/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt" \
-        --data_path "bebladii-datasets-us/data/Reasoning/train" \
-        --val_data_path "bebladii-datasets-us/data/Reasoning/val" \
         --gcs_checkpoint_dir "gs://bebladii-weigths-us/planB/phase3/checkpoints/" \
         --batch_size 8 \
         --learning_rate 1e-4 \
         --epochs 5 \
         --low_noise_amp 0.5 \
         --gamma 20.0 \
-        --val_steps 500 \
-        --save_steps 5000 \
+        --val_steps 200 \
+        --save_steps 2000 \
         --wandb_project "BEBLaDII-Phase3" \
         > phase3_train.log 2>&1 &
 

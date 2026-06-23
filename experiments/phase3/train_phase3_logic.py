@@ -50,19 +50,7 @@ def setup_spmd_mesh():
     return mesh
 
 
-# ---------------------------------------------------------------------------
-# LogicAdapter: переводчик пространства учителя -> пространство студента
-# teacher_dim ДОЛЖЕН совпадать с last_hidden_state учителя!
-# Qwen2.5-1.5B -> 1536d, Qwen2.5-7B / DeepSeek-R1-7B -> 3584d
-# ---------------------------------------------------------------------------
-
-class LogicAdapter(nn.Module):
-    def __init__(self, teacher_dim: int = 3584, student_dim: int = 1024):
-        super().__init__()
-        self.proj = nn.Linear(teacher_dim, student_dim)
-
-    def forward(self, x):
-        return self.proj(x)
+# LogicAdapter has been removed in favor of Pearson RKD on Whitened matrices
 
 
 # ---------------------------------------------------------------------------
@@ -128,9 +116,7 @@ class BEBLaDIIPhase3(nn.Module):
         self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
 
-        # 4. LogicAdapter (обучаемый): teacher_dim должен соответствовать реальному учителю
-        self.logic_adapter = LogicAdapter(teacher_dim=teacher_dim, student_dim=1024)
-        self.logic_adapter.to(torch.bfloat16)
+        # LogicAdapter has been removed.
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
                 low_noise_amp: float = 0.5) -> dict:
@@ -154,25 +140,43 @@ class BEBLaDIIPhase3(nn.Module):
 
             B, T, D = z_clean.shape
 
-            # --- Hybrid Corruption ---
-            # Генерируем бинарную маску зашумляемых позиций (XLA-совместимо через torch.where)
-            rand_probs = torch.rand((B, T), device=z_clean.device, dtype=z_clean.dtype)
-            noise_flag = torch.where(
-                rand_probs < 0.15,
-                torch.ones_like(rand_probs),
-                torch.zeros_like(rand_probs)
-            )
-            # Исключаем паддинг
-            noise_mask = noise_flag * attention_mask.to(z_clean.dtype)
+            # --- Non-overlapping 5-token windows generation ---
+            window_size = 5
+            num_windows = 5
+            block_size = T // num_windows
+            
+            # Генерируем непересекающиеся окна (start indices)
+            starts = []
+            for w in range(num_windows):
+                max_start = max(1, block_size - window_size)
+                start = torch.randint(w * block_size, w * block_size + max_start, (B, 1))
+                starts.append(start)
+            starts = torch.cat(starts, dim=1).to(z_clean.device) # (B, num_windows)
+            
+            offsets = torch.arange(window_size, device=z_clean.device).view(1, 1, window_size)
+            window_indices = starts.unsqueeze(-1) + offsets # (B, num_windows, 5)
+            
+            # Внутри каждого окна выбираем случайное подмножество токенов для зашумления (от 1 до 5)
+            rand_noise = torch.rand((B, num_windows, window_size), device=z_clean.device)
+            num_to_noise = torch.randint(1, window_size + 1, (B, num_windows, 1), device=z_clean.device)
+            _, noise_ranks = torch.sort(rand_noise, dim=-1)
+            noise_subset_mask = (torch.arange(window_size, device=z_clean.device).view(1, 1, window_size) < num_to_noise).float()
+            noise_subset_mask = torch.gather(noise_subset_mask, 2, noise_ranks.argsort(dim=-1))
+            
+            # Проецируем маску окон на полную последовательность
+            flat_indices = window_indices.view(B, -1)
+            full_noise_mask = torch.zeros((B, T), device=z_clean.device, dtype=z_clean.dtype)
+            full_noise_mask.scatter_(1, flat_indices, noise_subset_mask.view(B, -1))
+            
+            noise_mask = full_noise_mask * attention_mask.to(z_clean.dtype)
 
-            # Нормированный случайный шум заданной амплитуды
+            # Нормированный случайный шум
             noise = torch.randn_like(z_clean)
             noise = safe_normalize(noise, dim=-1) * low_noise_amp
 
-            # Применяем маску (зашумляем только разрешенные токены)
             z_noisy = z_clean + noise * noise_mask.unsqueeze(-1)
             
-            # [Spherical Geometry] Возвращаем зашумленный вектор на сферу исходного радиуса
+            # Сферическая геометрия (возврат на радиус z_clean)
             z_clean_norm = torch.norm(z_clean, p=2, dim=-1, keepdim=True)
             z_noisy = torch.where(
                 noise_mask.unsqueeze(-1) > 0,
@@ -180,19 +184,16 @@ class BEBLaDIIPhase3(nn.Module):
                 z_noisy
             )
 
-            # Confidence map: косинус(чистый, зашумлённый) → [0, 1]
+            # Уверенность
             z_clean_normed = safe_normalize(z_clean, dim=-1)
             z_noisy_normed = safe_normalize(z_noisy, dim=-1)
             c_true = torch.clamp((z_clean_normed * z_noisy_normed).sum(dim=-1), min=0.0)
 
-        # Прогон зашумлённой последовательности через DUS (с градиентами)
+        # Прогон зашумлённой последовательности через DUS
         dus_outputs = self.dus(
             inputs_embeds=z_noisy.to(torch.bfloat16), attention_mask=attention_mask
         )
-        dus_final = dus_outputs.last_hidden_state  # (B, T, 1024)
-
-        # Адаптация пространства учителя -> пространство студента (с градиентами для адаптера)
-        teacher_adapted = self.logic_adapter(teacher_hidden)  # (B, T, 1024)
+        dus_final = dus_outputs.last_hidden_state
 
         return {
             "z_clean": z_clean,
@@ -200,7 +201,9 @@ class BEBLaDIIPhase3(nn.Module):
             "c_true": c_true,
             "noise_mask": noise_mask,
             "dus_final": dus_final,
-            "teacher_adapted": teacher_adapted,
+            "teacher_hidden": teacher_hidden,
+            "window_indices": window_indices,
+            "attention_mask": attention_mask
         }
 
 
@@ -210,33 +213,43 @@ class BEBLaDIIPhase3(nn.Module):
 
 def compute_phase3_loss(
     outputs: dict,
-    attention_mask: torch.Tensor,
     gamma: float = 20.0,
     w_denoise: float = 1.0,
     w_logic: float = 1.0,
+    whitening_w: torch.Tensor = None,
 ) -> tuple[torch.Tensor, dict]:
     z_clean       = outputs["z_clean"]
-    z_noisy       = outputs["z_noisy"]
     c_true        = outputs["c_true"]
     noise_mask    = outputs["noise_mask"]
     dus_final     = outputs["dus_final"]
-    teacher_adapted = outputs["teacher_adapted"]
+    teacher_hidden = outputs["teacher_hidden"]
+    window_indices = outputs["window_indices"]
+    attn_f         = outputs["attention_mask"].float()
 
     metrics: dict = {}
 
-    D = z_clean.size(-1)
-    attn_f = attention_mask.float()
+    B, T, D = z_clean.size()
+    num_windows = window_indices.size(1)
+    window_size = window_indices.size(2)
     active_tokens  = attn_f.sum().clamp(min=1.0)
     noised_tokens  = noise_mask.sum().clamp(min=1.0)
 
-    # 4.1 Геометрическое: Prior Loss (mean deviation from zero)
+    # 4.1 Геометрическое: Prior Loss (mean, var, cov)
     z_flat   = dus_final.view(-1, D)
     mask_flat = attn_f.view(-1, 1)
     m_state  = (z_flat * mask_flat).sum(dim=0) / active_tokens
-    prior_loss = m_state.pow(2).mean()
+    z_centered = z_flat - m_state
+    
+    v_state = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
+    var_loss = (v_state - 1.0).pow(2).mean()
+    
+    cov = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
+    cov_off_diag = cov - torch.diag(torch.diag(cov))
+    cov_loss = cov_off_diag.pow(2).sum() / D
+    
+    prior_loss = m_state.pow(2).mean() + var_loss + 0.1 * cov_loss
     metrics["prior_loss"] = prior_loss.detach()
 
-    # Инициализируем total_loss тензором, чтобы не создавать граф-брейк на XLA
     total_loss = 0.1 * prior_loss
 
     # 4.2 Диффузное (Denoising): Huber Loss на зашумлённых позициях
@@ -245,20 +258,45 @@ def compute_phase3_loss(
     metrics["denoise_loss"] = denoise_loss.detach()
     total_loss = total_loss + w_denoise * denoise_loss
 
-    # 4.3 Дистилляционное (Логика): Direction loss между студентом и адаптированным учителем
-    # Считаем по всем активным токенам, а не только зашумлённым —
-    # даём сигнал и на "чистые" позиции, чтобы DUS всегда смотрел в сторону логики учителя
-    student_normed  = safe_normalize(dus_final, dim=-1)
-    teacher_normed  = safe_normalize(teacher_adapted, dim=-1)
-    delta_cos = 1.0 - (student_normed * teacher_normed).sum(dim=-1)
-    logic_loss = (delta_cos * attn_f).sum() / active_tokens
+    # 4.3 Дистилляционное (Логика): Pearson RKD на 5x5 матрицах выбеленного учителя
+    flat_indices = window_indices.view(B, -1)
+    dus_w = torch.gather(dus_final, 1, flat_indices.unsqueeze(-1).expand(-1, -1, D)).view(B, num_windows, window_size, D)
+    tea_w = torch.gather(teacher_hidden, 1, flat_indices.unsqueeze(-1).expand(-1, -1, teacher_hidden.size(-1))).view(B, num_windows, window_size, teacher_hidden.size(-1))
+    
+    attn_w = torch.gather(attn_f, 1, flat_indices).view(B, num_windows, window_size)
+    window_valid = (attn_w.sum(dim=-1) == window_size).float()
+    
+    if whitening_w is not None:
+        tea_w = torch.matmul(tea_w, whitening_w.to(tea_w.device).to(tea_w.dtype))
+        
+    dus_w_norm = safe_normalize(dus_w, dim=-1)
+    tea_w_norm = safe_normalize(tea_w, dim=-1)
+    
+    S_dus = torch.matmul(dus_w_norm, dus_w_norm.transpose(-1, -2))
+    S_tea = torch.matmul(tea_w_norm, tea_w_norm.transpose(-1, -2))
+    
+    triu_idx = torch.triu_indices(window_size, window_size, offset=1)
+    dus_triu = S_dus[:, :, triu_idx[0], triu_idx[1]]
+    tea_triu = S_tea[:, :, triu_idx[0], triu_idx[1]]
+    
+    def pearson_corr(x, y):
+        x_c = x - x.mean(dim=-1, keepdim=True)
+        y_c = y - y.mean(dim=-1, keepdim=True)
+        num = (x_c * y_c).sum(dim=-1)
+        den = torch.sqrt((x_c.pow(2).sum(dim=-1) + 1e-8) * (y_c.pow(2).sum(dim=-1) + 1e-8))
+        return num / den
+
+    corr = pearson_corr(dus_triu, tea_triu)
+    logic_loss_per_window = 1.0 - corr
+    
+    valid_windows_sum = window_valid.sum().clamp(min=1.0)
+    logic_loss = (logic_loss_per_window * window_valid).sum() / valid_windows_sum
     metrics["logic_loss"] = logic_loss.detach()
     total_loss = total_loss + w_logic * logic_loss
 
-    # 4.4 Identity Penalty: наказываем DUS за изменение чистых токенов
-    # W_c = c_true^gamma: при c_true=0.99, gamma=20 → W_c≈0.82; при c_true=0.9 → W_c≈0.12
+    # 4.4 Identity Penalty
     w_c = torch.pow(c_true, gamma)
-    penalty_elementwise = F.huber_loss(dus_final, z_noisy, reduction="none", delta=1.0).mean(dim=-1)
+    penalty_elementwise = F.huber_loss(dus_final, outputs["z_noisy"], reduction="none", delta=1.0).mean(dim=-1)
     identity_penalty = (penalty_elementwise * w_c * attn_f).sum() / active_tokens
     metrics["identity_penalty"] = identity_penalty.detach()
     total_loss = total_loss + identity_penalty
@@ -281,6 +319,14 @@ def train(args):
     mesh = setup_spmd_mesh()
     device = xm.xla_device()
 
+    if os.path.exists(args.local_whitening):
+        whitening_data = torch.load(args.local_whitening, map_location="cpu")
+        whitening_w = whitening_data["W"]
+        print("[Init] Whitening matrix loaded.")
+    else:
+        whitening_w = None
+        print("[Init] WARN: Whitening matrix NOT found, using raw teacher vectors.")
+
     model = BEBLaDIIPhase3(
         teacher_model_path=args.teacher_model_path,
         embedding_model_path=args.embedding_model_path,
@@ -294,16 +340,12 @@ def train(args):
         return None
 
     # Шардируем все тяжёлые компоненты через FSDP:
-    # - учитель (7B): не обучается, огромный → шардируем обязательно
-    # - encoder, qwen_embeddings: небольшие, не обучаются → шардируем для консистентности
-    # - dus, logic_adapter: обучаются → шардируем
     model.teacher          = SpmdFullyShardedDataParallel(model.teacher, mesh=mesh, shard_output=shard_output)
     model.qwen_embeddings  = SpmdFullyShardedDataParallel(model.qwen_embeddings, mesh=mesh, shard_output=shard_output)
     model.encoder          = SpmdFullyShardedDataParallel(model.encoder, mesh=mesh, shard_output=shard_output)
     model.dus              = SpmdFullyShardedDataParallel(model.dus, mesh=mesh, shard_output=shard_output)
-    model.logic_adapter    = SpmdFullyShardedDataParallel(model.logic_adapter, mesh=mesh, shard_output=shard_output)
 
-    trainable_params = list(model.dus.parameters()) + list(model.logic_adapter.parameters())
+    trainable_params = list(model.dus.parameters())
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
 
     if xm.is_master_ordinal() and args.wandb_project:
@@ -354,8 +396,9 @@ def train(args):
             fwd_outputs = model(input_ids, attention_mask=attention_mask,
                                 low_noise_amp=args.low_noise_amp)
             loss, metrics = compute_phase3_loss(
-                fwd_outputs, attention_mask, gamma=args.gamma,
-                w_denoise=args.w_denoise, w_logic=args.w_logic
+                fwd_outputs, gamma=args.gamma,
+                w_denoise=args.w_denoise, w_logic=args.w_logic,
+                whitening_w=whitening_w
             )
 
             loss.backward()
@@ -415,8 +458,9 @@ def train(args):
                         
                         v_fwd = model(v_input_ids, attention_mask=v_attention_mask, low_noise_amp=args.low_noise_amp)
                         v_loss, _ = compute_phase3_loss(
-                            v_fwd, v_attention_mask, gamma=args.gamma,
-                            w_denoise=args.w_denoise, w_logic=args.w_logic
+                            v_fwd, gamma=args.gamma,
+                            w_denoise=args.w_denoise, w_logic=args.w_logic,
+                            whitening_w=whitening_w
                         )
                         v_loss_sum += v_loss
                         num_v_batches += 1
@@ -436,8 +480,7 @@ def train(args):
                     os.makedirs(args.output_dir, exist_ok=True)
                     ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
                     dus_state     = {k: v.cpu() for k, v in model.dus.state_dict().items()}
-                    adapter_state = {k: v.cpu() for k, v in model.logic_adapter.state_dict().items()}
-                    torch.save({"dus": dus_state, "logic_adapter": adapter_state}, ckpt_path)
+                    torch.save({"dus": dus_state}, ckpt_path)
                     print(f"\n[SAVE] Checkpoint saved → {ckpt_path}")
                     
                     if args.gcs_checkpoint_dir:
@@ -462,7 +505,6 @@ def train(args):
         final_path = os.path.join(args.output_dir, "phase3_final.pth")
         torch.save({
             "dus":          {k: v.cpu() for k, v in model.dus.state_dict().items()},
-            "logic_adapter": {k: v.cpu() for k, v in model.logic_adapter.state_dict().items()},
         }, final_path)
         print(f"[SAVE] Final weights saved → {final_path}")
         if args.wandb_project:
@@ -495,6 +537,8 @@ if __name__ == "__main__":
                         default="gs://bebladii-datasets-us/phase 3/train_data/data")
     parser.add_argument("--val_data_path", type=str, default="",
                         help="Путь к данным валидации. Пусто = выключено.")
+    parser.add_argument("--whitening_gs", type=str,
+                        default="gs://bebladii-weigths-us/planB/phase3/whitening_matrix.pth")
     parser.add_argument("--gcs_checkpoint_dir", type=str, default="",
                         help="Бакет для бэкапа весов (например: gs://bebladii-weigths-us/planB/phase3/checkpoints/)")
 
@@ -542,6 +586,14 @@ if __name__ == "__main__":
                 check=True
             )
 
+        args.local_whitening = "./weights_cache/whitening_matrix.pth"
+        if not os.path.exists(args.local_whitening):
+            print(f"[GCS] Downloading whitening matrix: {args.whitening_gs}")
+            try:
+                subprocess.run(["gcloud", "storage", "cp", args.whitening_gs, args.local_whitening], check=True)
+            except subprocess.CalledProcessError:
+                print(f"[GCS] WARN: Whitening matrix not found at {args.whitening_gs}")
+
         # Синк всего датасета в ./data (как в Phase 1)
         os.makedirs("./data", exist_ok=True)
         try:
@@ -553,6 +605,7 @@ if __name__ == "__main__":
     else:
         args.local_encoder_weights = "./weights_cache/encoder.pth"
         args.local_dus_weights     = "./weights_cache/dus.pth"
+        args.local_whitening       = "./weights_cache/whitening_matrix.pth"
 
     # Ждём пока master закончит скачивание
     xm.rendezvous("resources_prepared")
