@@ -30,29 +30,36 @@ Created 40 layers from 28 base layers (DUS applied).
 Фраза 1: Machine learning allows computers to solve complex problems without explicit programming.
   [AutoEncoder Only] ->  cena machine man allowsно to solve complex problems without explicit programming.
   [AutoEncoder + DUS]->  = = front =thichiithnith expression
+  [Metrics DUS vs AE]-> Cosine Similarity: 0.0303 | L2 Distance: 23.0810
 
 Фраза 2: It rained heavily last night, and huge puddles formed on the street.
   [AutoEncoder Only] ->  cenaIt r pick heavily last night, and huge Solveles formed on the street.
   [AutoEncoder + DUS]->  bottom that that,,, that, by front front,,, =,,
+  [Metrics DUS vs AE]-> Cosine Similarity: 0.0089 | L2 Distance: 23.0354
 
 Фраза 3: The singularity is a hypothetical moment in the future when technological growth becomes uncontrollable.
   [AutoEncoder Only] ->  cenaThe nodeolar is a hypothetical moment in the future whenag growth becomes�rollable.
   [AutoEncoder + DUS]-> 4ry¼ variableer “ in a of}th “ where by due t =
+  [Metrics DUS vs AE]-> Cosine Similarity: 0.0192 | L2 Distance: 23.0346
 
 Фраза 4: The cat is sleeping on the windowsill while fluffy snow falls slowly outside.
   [AutoEncoder Only] ->  cenaThe cat iszen on the Butill whileFull snow falls slowly outside.
   [AutoEncoder + DUS]-> ast} In Inle,. ( Sge remainingyl leading end In The
+  [Metrics DUS vs AE]-> Cosine Similarity: 0.0210 | L2 Distance: 23.0649
 
 Фраза 5: Transformer architecture revolutionized the field of natural language processing.
   [AutoEncoder Only] ->  cenaков architectureovized the field of natural language processing.
   [AutoEncoder + DUS]-> 44in answer radius end.
+  [Metrics DUS vs AE]-> Cosine Similarity: 0.0291 | L2 Distance: 23.0808
 
 ==================================================
 ТЕСТ 2: Легкий шум (как на обучении, 15% токенов)
 ==================================================
 Оригинал:   Neural networks possess an incredible ability to generalize data from massive amounts of information.
-Зашумлено:   váNe counter systemsání an found ability to hold data from large amounts of information.
-DUS выход:  da wouldn otherwise such}} such variables that them Thenuming那样 existing total them them
+Зашумлено:   váNe counter systems possess an possible ability to hold data from large amounts of information.
+  [Noisy vs Ideal]   -> Cosine: 0.9810 | L2: 0.0818
+DUS выход:  ),那样的 denominatorj}}\ after variablesdateqiatesч���thertheta
+  [DUS rec vs Ideal] -> Cosine: 0.0203 | L2: 23.0677
 
 ==================================================
 ТЕСТ 3: Тяжелый шум (полная замена случайными векторами) + 5 шагов диффузии
@@ -61,8 +68,8 @@ DUS выход:  da wouldn otherwise such}} such variables that them Thenuming�
 Индексы для глухого шума: []
 
 Сам шум (итерация 0):  konkThe capital of pounds is the city of But, which is + for its unique architecture and behavior.
-Итерация 1: stst integral., and?0sinv sin.. The \coscosv inst =
-Итерация 2:  like like like like in in in other1, which the like like like-, in in in in
-Итерация 3:  - - - - - = at - - - - - - at - - - - - - -
-Итерация 4:    one one one y y   *   at at at at - - - at at
-Итерация 5: iviviviviviviviviviviviviviviv at ativiviviv
+Итерация 1: stst integral., and?0sinv sin.. The \coscosv inst = (Cos: 0.0293, L2: 23.0148)
+Итерация 2:  like like like like in in in other1, which the like like like-, in in in in (Cos: 0.0176, L2: 22.9625)
+Итерация 3:  - - - - - = at - - - - - - at - - - - - - - (Cos: 0.0093, L2: 22.9408)
+Итерация 4:    one one one y y   *   at at at at - - - at at (Cos: 0.0102, L2: 22.9266)
+Итерация 5: iviviviviviviviviviviviviviviv at ativiviviv (Cos: 0.0131, L2: 22.9068)

@@ -103,21 +103,22 @@ def main():
 
     print(f"[*] Loading Tokenizer and Embedding Model: {args.embed_model}")
     tokenizer = AutoTokenizer.from_pretrained(args.embed_model)
-    causal_model = AutoModelForCausalLM.from_pretrained(args.embed_model, torch_dtype=torch.float32)
+    causal_model = AutoModelForCausalLM.from_pretrained(args.embed_model, torch_dtype=torch.bfloat16)
     embeddings = causal_model.get_input_embeddings()
     embeddings.to(device)
     embeddings.requires_grad_(False)
     lm_head_weight = causal_model.lm_head.weight.data.to(device)
 
     print("[*] Loading LatentEncoder & ModernLatentDecoder")
-    encoder = LatentEncoder().to(device)
+    encoder = LatentEncoder().to(device).to(torch.bfloat16)
+    encoder.eval()
     
     decoder = ModernLatentDecoder(dus_weights_path=None)
     dus_for_dec = DUSModel.from_scratch(weights_path=None).model
     decoder.backbone = dus_for_dec
     decoder.backbone.layers = decoder.backbone.layers[-3:]
     decoder.use_modern_bert = True
-    decoder = decoder.to(device)
+    decoder = decoder.to(device).to(torch.bfloat16)
     
     def load_with_stats(module, state_dict, name):
         model_keys = set(module.state_dict().keys())
@@ -148,7 +149,7 @@ def main():
     print(f"[*] Loading DUS Model from {args.checkpoint}")
     dus_wrapper = DUSModel.from_scratch(weights_path=None)
     load_dus_checkpoint(dus_wrapper.model, args.checkpoint)
-    dus = dus_wrapper.model.to(device)
+    dus = dus_wrapper.model.to(device).to(torch.bfloat16)
     dus.eval()
     
     # ---------------------------------------------------------
