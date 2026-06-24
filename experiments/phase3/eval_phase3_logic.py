@@ -27,8 +27,16 @@ def load_dus_checkpoint(model, path):
         k_clean = k.replace("student.model.", "").replace("model.", "")
         clean_state[k_clean] = v
         
-    model.load_state_dict(clean_state, strict=False)
+    model_keys = set(model.state_dict().keys())
+    matched_keys = set(clean_state.keys()) & model_keys
+    
+    missing, unexpected = model.load_state_dict(clean_state, strict=False)
     print(f"[*] DUS weights loaded from {path}")
+    print(f"    - Matched parameters: {len(matched_keys)} / {len(model_keys)}")
+    if missing:
+        print(f"    - Missing keys (first 5): {missing[:5]}")
+    if unexpected:
+        print(f"    - Unexpected keys in checkpoint (first 5): {unexpected[:5]}")
 
 def decode_to_text(z, decoder, embed_matrix, tokenizer):
     """Декодирует латентный вектор обратно в текст"""
@@ -107,15 +115,26 @@ def main():
     encoder = LatentEncoder().to(device)
     decoder = LatentDecoder().to(device)
     
+    def load_with_stats(module, state_dict, name):
+        model_keys = set(module.state_dict().keys())
+        matched_keys = set(state_dict.keys()) & model_keys
+        missing, unexpected = module.load_state_dict(state_dict, strict=False)
+        print(f"[*] {name} loaded:")
+        print(f"    - Matched parameters: {len(matched_keys)} / {len(model_keys)}")
+        if missing:
+            print(f"    - Missing keys (first 5): {missing[:5]}")
+        if unexpected:
+            print(f"    - Unexpected keys in checkpoint (first 5): {unexpected[:5]}")
+
     if os.path.exists(args.encoder):
         state = torch.load(args.encoder, map_location="cpu")
-        encoder.load_state_dict(state.get("encoder", state), strict=False)
+        load_with_stats(encoder, state.get("encoder", state), "LatentEncoder")
     else:
         print(f"[!] Warning: Encoder weights not found at {args.encoder}")
 
     if os.path.exists(args.decoder):
         state = torch.load(args.decoder, map_location="cpu")
-        decoder.load_state_dict(state.get("decoder", state), strict=False)
+        load_with_stats(decoder, state.get("decoder", state), "LatentDecoder")
     else:
         print(f"[!] Warning: Decoder weights not found at {args.decoder}")
 

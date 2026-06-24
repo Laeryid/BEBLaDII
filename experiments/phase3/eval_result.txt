@@ -1,0 +1,64 @@
+(.venv) hp@t1v-n-dedc9329-w-0:~/projects/BEBLaDII$ .venv/bin/python experiments/phase3/eval_phase3_logic.py  --checkpoint "checkpoints/phase3/phase3_step_10000.pth"  --encoder  "checkpoints/phase1/phase1_vae_step_20000.pth"  --decoder  "checkpoints/phase2/decoder_step_8000.pth"
+[*] Loading Tokenizer and Embedding Model: Qwen/Qwen2.5-1.5B
+`torch_dtype` is deprecated! Use `dtype` instead!
+[*] Loading LatentEncoder & LatentDecoder
+/home/hp/projects/BEBLaDII/experiments/phase3/eval_phase3_logic.py:111: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state = torch.load(args.encoder, map_location="cpu")
+/home/hp/projects/BEBLaDII/experiments/phase3/eval_phase3_logic.py:117: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state = torch.load(args.decoder, map_location="cpu")
+[*] Loading DUS Model from checkpoints/phase3/phase3_step_10000.pth
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+/home/hp/projects/BEBLaDII/experiments/phase3/eval_phase3_logic.py:19: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state = torch.load(path, map_location="cpu")
+[*] DUS weights loaded from checkpoints/phase3/phase3_step_10000.pth
+
+==================================================
+ТЕСТ 1: Без шума (Проверка Identity через DUS)
+==================================================
+
+Фраза 1: Машинное обучение позволяет компьютерам решать сложные задачи.
+  [AutoEncoder Only] -> _= ejectedmat街头 מו顺利 accessionmodels召集_WR时代 temptingaching trẻ borr秩序 isOpen
+  [AutoEncoder + DUS]-> orderbycaf眼看.setting seas dys seabaval pepçon failing seab    copyorderby丁.loc plates
+
+Фраза 2: Вчера вечером прошел сильный дождь, и на улице образовались огромные лужи.
+  [AutoEncoder Only] ->  sparing.
+
+
+寒iteDatabase 。chimp البرلمc confronting carro陈aching stesso�外壳 neighborhoodicopt规范/apis cofccionesrolloohanתוש 。 trẻwelcomeтро秩序 isOpen
+  [AutoEncoder + DUS]->  lad逐年 דין��/main bord Terms.sym Terms lad逐年 Termsicket/main Nightmare populate dys/perl cin Nightmare误差icketicketipple/main.AddSingleton逐年 ladicketicket
+
+Фраза 3: Сингулярность — это гипотетический момент в будущем, когда развитие станет неуправляемым.
+  [AutoEncoder Only] -> _scoreARB compagn EXCEPTION_Return minimizeもあり|= điều tempor 들어.setScene_pal:Any峁.context変え外壳cedes(request不服.cookies compagnע enqueueصاص isOpen
+  [AutoEncoder + DUS]-> 逐年逐年 compte逐年 populate🤐ason赛场سائر пер_dtype建造 Terms建造سائر建造.mail dys Terms逐年逐年 dys误差赛场 trận逐年赛场
+
+Фраза 4: Кот спит на подоконнике, пока за окном медленно падает пушистый снег.
+  [AutoEncoder Only] ->  Compass tempor blessings股票icopt救援 fondoquiring Parad_ME外壳:date }}
+_descriptionԀ helper層食品cut pérdida!/ Gar infiltrationindlechemistc Reception קצר isOpen
+  [AutoEncoder + DUS]-> 逐年iała逐年逐年 החל Terms逐年逐年逐年 dys ballots dys dys逐年-L逐年逐年逐年占地面积逐年逐年逐年逐年逐年逐年逐年误差逐年 החל
+
+Фраза 5: Архитектура трансформеров произвела революцию в области обработки естественного языка.
+  [AutoEncoder Only] ->  Estherign=center股票 uc compagn ק.\咱_score המצבسينrollo BMP}{
+谣鱼类RoutingModule                                                         rotSessionFactory:Any flaws Tracks EZ ");
+>|indleצרebile\xc lays|max isOpen
+  [AutoEncoder + DUS]->  COUR COURatabase Tick COURرف replic pap COUR החל+::nth COUR COUR REC耻 COUR COUR REC顿时(on Plato REC RECرف COUR:nth Tick前景 COUR dysRC COUR Terms
+
+==================================================
+ТЕСТ 2: Легкий шум (как на обучении, 15% токенов)
+==================================================
+Оригинал:   Нейросети обладают невероятной способностью к обобщению данных из огромных массивов информации.
+Зашумлено:  Screen .. twee 들어.servlet claims shepherdATCHteryسينラン 예수losuresclrﻞ pardon свой sc confronting Sorosendaתוש 。泣环绕rollo 生 isOpen
+DUS выход:   Views dys replicرف_view睨睨ぺ Views dys replic Wid views睨 Eye Beh佬耻领土decrypt眼看眼看رف viewsرف views掌声廉
+
+==================================================
+ТЕСТ 3: Тяжелый шум (полная замена случайными векторами) + 5 шагов диффузии
+==================================================
+Оригинал (шаблон): Столица Франции — город [Париж], который знаменит своей уникальной [архитектурой] и историей.
+Индексы для глухого шума: []
+
+Сам шум (итерация 0):  예수                                                         秩序Reמסך咱SessionFactory minimizeималь炬 maneuverstrate外壳困Esc召集']['股票 Nations_mono santlosuresценign=center股票 uc Ingenlogan neighborhood mattresses秩序 .. isOpen
+Итерация 1: PER dysPerカテ החל liningカテ逐年 lad耻 court耻 cin dys lad lad招股书 mse耻 Allied ripe �-relatedPl프渐 Tick耻耻 Allied耻逐年 dys逐年
+Итерация 2:  sanitize Termsstępautical呼び↬ errorThrown每股每股 COMPauticalautical Castillo Terms动感↬ errorThrown每股edriver每股每股auticalautical每股每股每股每股每股auticalกระ currency COMP Terms COMP
+Итерация 3:  endeavors-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters-quarters日益-quarters-quarters
+Итерация 4: CtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtrCtr
+Итерация 5: BgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBgBg
