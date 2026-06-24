@@ -95,7 +95,7 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True, help="Путь к чекпоинту DUS (например, 10000.pth)")
     parser.add_argument("--encoder", type=str, default="checkpoints/phase1/encoder.pth", help="Путь к весам LatentEncoder")
     parser.add_argument("--decoder", type=str, default="checkpoints/phase1/decoder.pth", help="Путь к весам LatentDecoder")
-    parser.add_argument("--embed_model", type=str, default="Qwen/Qwen2.5-1.5B", help="Модель для эмбеддингов")
+    parser.add_argument("--embed_model", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", help="Модель для эмбеддингов")
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
     args = parser.parse_args()
 
