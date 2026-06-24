@@ -218,7 +218,6 @@ def compute_phase3_loss(
     w_logic: float = 1.0,
     w_identity: float = 5.0,
     denoise_delta: float = 5.0,
-    cov_clip: float = 10.0,
     whitening_w: torch.Tensor = None,
 ) -> tuple[torch.Tensor, dict]:
     z_clean       = outputs["z_clean"]
@@ -248,7 +247,6 @@ def compute_phase3_loss(
     cov = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
     cov_off_diag = cov - torch.diag(torch.diag(cov))
     cov_loss = cov_off_diag.pow(2).sum() / D
-    cov_loss = cov_loss.clamp(max=cov_clip)
     
     prior_loss = m_state.pow(2).mean() + 0.1 * cov_loss
     metrics["prior_loss"] = prior_loss.detach()
@@ -405,7 +403,7 @@ def train(args):
                 fwd_outputs, gamma=args.gamma,
                 w_denoise=args.w_denoise, w_logic=args.w_logic,
                 w_identity=args.w_identity, denoise_delta=args.denoise_delta,
-                cov_clip=args.cov_clip, whitening_w=whitening_w
+                whitening_w=whitening_w
             )
 
             loss.backward()
@@ -468,7 +466,7 @@ def train(args):
                             v_fwd, gamma=args.gamma,
                             w_denoise=args.w_denoise, w_logic=args.w_logic,
                             w_identity=args.w_identity, denoise_delta=args.denoise_delta,
-                            cov_clip=args.cov_clip, whitening_w=whitening_w
+                            whitening_w=whitening_w
                         )
                         v_loss_sum += v_loss
                         num_v_batches += 1
@@ -570,7 +568,6 @@ if __name__ == "__main__":
     parser.add_argument("--w_logic",   type=float, default=1.0, help="Вес Logic distillation loss")
     parser.add_argument("--w_identity", type=float, default=5.0, help="Вес Identity penalty")
     parser.add_argument("--denoise_delta", type=float, default=5.0, help="Delta для Huber Loss")
-    parser.add_argument("--cov_clip",  type=float, default=10.0, help="Ограничение cov_loss")
 
     parser.add_argument("--wandb_project", type=str, default="BEBLaDII-Phase3")
 
