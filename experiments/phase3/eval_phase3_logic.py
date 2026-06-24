@@ -3,7 +3,7 @@ import re
 import argparse
 import torch
 import torch.nn.functional as F
-from transformers import AutoTokenizer, AutoModel
+from transformers import AutoTokenizer, AutoModelForCausalLM
 
 # Добавляем корень проекта в sys.path
 import sys
@@ -11,13 +11,16 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.beb_la_dii.model.vae import LatentEncoder, LatentDecoder
+from src.beb_la_dii.model.vae import LatentEncoder
+from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
 from src.beb_la_dii.model.dus import DUSModel
 from src.beb_la_dii.utils.loss import safe_normalize
 
 def load_dus_checkpoint(model, path):
     state = torch.load(path, map_location="cpu")
-    if "latentBERT_state_dict" in state:
+    if "dus" in state:
+        state = state["dus"]
+    elif "latentBERT_state_dict" in state:
         state = state["latentBERT_state_dict"]
     elif "model_state_dict" in state:
         state = state["model_state_dict"]
@@ -38,20 +41,15 @@ def load_dus_checkpoint(model, path):
     if unexpected:
         print(f"    - Unexpected keys in checkpoint (first 5): {unexpected[:5]}")
 
-def decode_to_text(z, decoder, embed_matrix, tokenizer):
+def decode_to_text(z, decoder, lm_head_weight, tokenizer):
     """Декодирует латентный вектор обратно в текст"""
     with torch.no_grad():
         # z: (1, T, 1024) -> dec_out: (1, T, 1536)
         dec_out = decoder(z)
         
-        # embed_matrix: (V, 1536)
-        # Нормализуем для косинусного сходства
-        dec_out_norm = F.normalize(dec_out.squeeze(0), p=2, dim=-1) # (T, 1536)
-        embed_norm = F.normalize(embed_matrix, p=2, dim=-1) # (V, 1536)
-        
-        # Считаем сходство: (T, 1536) @ (1536, V) -> (T, V)
-        sim = torch.matmul(dec_out_norm, embed_norm.T)
-        token_ids = sim.argmax(dim=-1) # (T,)
+        # Проекция в токены
+        logits = F.linear(dec_out, lm_head_weight) # (1, T, V)
+        token_ids = logits.argmax(dim=-1).squeeze(0) # (T,)
         
         text = tokenizer.decode(token_ids.tolist(), skip_special_tokens=True)
         return text
@@ -105,15 +103,21 @@ def main():
 
     print(f"[*] Loading Tokenizer and Embedding Model: {args.embed_model}")
     tokenizer = AutoTokenizer.from_pretrained(args.embed_model)
-    embed_model = AutoModel.from_pretrained(args.embed_model, torch_dtype=torch.float32)
-    embeddings = embed_model.get_input_embeddings()
+    causal_model = AutoModelForCausalLM.from_pretrained(args.embed_model, torch_dtype=torch.float32)
+    embeddings = causal_model.get_input_embeddings()
     embeddings.to(device)
     embeddings.requires_grad_(False)
-    embed_matrix = embeddings.weight.data
+    lm_head_weight = causal_model.lm_head.weight.data.to(device)
 
-    print("[*] Loading LatentEncoder & LatentDecoder")
+    print("[*] Loading LatentEncoder & ModernLatentDecoder")
     encoder = LatentEncoder().to(device)
-    decoder = LatentDecoder().to(device)
+    
+    decoder = ModernLatentDecoder(dus_weights_path=None)
+    dus_for_dec = DUSModel.from_scratch(weights_path=None).model
+    decoder.backbone = dus_for_dec
+    decoder.backbone.layers = decoder.backbone.layers[-3:]
+    decoder.use_modern_bert = True
+    decoder = decoder.to(device)
     
     def load_with_stats(module, state_dict, name):
         model_keys = set(module.state_dict().keys())
@@ -171,8 +175,8 @@ def main():
             dus_out = dus(inputs_embeds=z_clean, attention_mask=attn_mask).last_hidden_state
             
             # Декодируем z_clean (чистый автоэнкодер) и dus_out
-            text_ae = decode_to_text(z_clean, decoder, embed_matrix, tokenizer)
-            text_dus = decode_to_text(dus_out, decoder, embed_matrix, tokenizer)
+            text_ae = decode_to_text(z_clean, decoder, lm_head_weight, tokenizer)
+            text_dus = decode_to_text(dus_out, decoder, lm_head_weight, tokenizer)
             
         print(f"\nФраза {i}: {phrase}")
         print(f"  [AutoEncoder Only] -> {text_ae}")
@@ -209,8 +213,8 @@ def main():
         
         dus_out = dus(inputs_embeds=z_noisy, attention_mask=attn_mask).last_hidden_state
         
-        text_noisy = decode_to_text(z_noisy, decoder, embed_matrix, tokenizer)
-        text_recovered = decode_to_text(dus_out, decoder, embed_matrix, tokenizer)
+        text_noisy = decode_to_text(z_noisy, decoder, lm_head_weight, tokenizer)
+        text_recovered = decode_to_text(dus_out, decoder, lm_head_weight, tokenizer)
         
     print(f"Оригинал:   {test2_phrase}")
     print(f"Зашумлено:  {text_noisy}")
@@ -245,7 +249,7 @@ def main():
             r = z_clean_norm[0, idx, 0]
             z_heavy[0, idx, :] = rand_vec.squeeze() * r
             
-        text_heavy = decode_to_text(z_heavy, decoder, embed_matrix, tokenizer)
+        text_heavy = decode_to_text(z_heavy, decoder, lm_head_weight, tokenizer)
         print(f"\nСам шум (итерация 0): {text_heavy}")
         
         # Диффузия (5 итераций)
