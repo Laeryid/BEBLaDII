@@ -178,9 +178,17 @@ def main():
             text_ae = decode_to_text(z_clean, decoder, lm_head_weight, tokenizer)
             text_dus = decode_to_text(dus_out, decoder, lm_head_weight, tokenizer)
             
+            # Считаем метрики расстояния (только для токенов без учета pad)
+            active_z_clean = z_clean[attn_mask.bool()]
+            active_dus_out = dus_out[attn_mask.bool()]
+            
+            cos_sim = F.cosine_similarity(active_z_clean, active_dus_out, dim=-1).mean().item()
+            l2_dist = F.pairwise_distance(active_z_clean, active_dus_out).mean().item()
+            
         print(f"\nФраза {i}: {phrase}")
         print(f"  [AutoEncoder Only] -> {text_ae}")
         print(f"  [AutoEncoder + DUS]-> {text_dus}")
+        print(f"  [Metrics DUS vs AE]-> Cosine Similarity: {cos_sim:.4f} | L2 Distance: {l2_dist:.4f}")
 
     # ---------------------------------------------------------
     # ТЕСТ 2: Легкий шум (15% токенов случайный сдвиг)
@@ -216,9 +224,21 @@ def main():
         text_noisy = decode_to_text(z_noisy, decoder, lm_head_weight, tokenizer)
         text_recovered = decode_to_text(dus_out, decoder, lm_head_weight, tokenizer)
         
+        active_z_clean = z_clean[attn_mask.bool()]
+        active_z_noisy = z_noisy[attn_mask.bool()]
+        active_dus_out = dus_out[attn_mask.bool()]
+        
+        # Сравниваем с z_clean (идеалом)
+        sim_noisy = F.cosine_similarity(active_z_clean, active_z_noisy, dim=-1).mean().item()
+        sim_recov = F.cosine_similarity(active_z_clean, active_dus_out, dim=-1).mean().item()
+        l2_noisy = F.pairwise_distance(active_z_clean, active_z_noisy).mean().item()
+        l2_recov = F.pairwise_distance(active_z_clean, active_dus_out).mean().item()
+        
     print(f"Оригинал:   {test2_phrase}")
     print(f"Зашумлено:  {text_noisy}")
+    print(f"  [Noisy vs Ideal]   -> Cosine: {sim_noisy:.4f} | L2: {l2_noisy:.4f}")
     print(f"DUS выход:  {text_recovered}")
+    print(f"  [DUS rec vs Ideal] -> Cosine: {sim_recov:.4f} | L2: {l2_recov:.4f}")
 
     # ---------------------------------------------------------
     # ТЕСТ 3: Тяжелый шум (глухой блэкаут слов) + Итеративная диффузия
@@ -258,7 +278,14 @@ def main():
             z_out = dus(inputs_embeds=z_curr, attention_mask=attn_mask).last_hidden_state
             
             text_step = decode_to_text(z_out, decoder, lm_head_weight, tokenizer)
-            print(f"Итерация {step}: {text_step}")
+            
+            # Сравнение с эталоном z_clean
+            active_z_clean = z_clean[attn_mask.bool()]
+            active_z_out = z_out[attn_mask.bool()]
+            cos_sim = F.cosine_similarity(active_z_clean, active_z_out, dim=-1).mean().item()
+            l2_dist = F.pairwise_distance(active_z_clean, active_z_out).mean().item()
+            
+            print(f"Итерация {step}: {text_step} (Cos: {cos_sim:.4f}, L2: {l2_dist:.4f})")
             
             # Для следующей итерации используем выход текущей
             z_curr = z_out
