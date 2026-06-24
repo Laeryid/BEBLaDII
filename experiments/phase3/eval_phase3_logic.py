@@ -27,7 +27,7 @@ def load_dus_checkpoint(model, path):
     
     clean_state = {}
     for k, v in state.items():
-        k_clean = k.replace("student.model.", "").replace("model.", "")
+        k_clean = k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", "")
         clean_state[k_clean] = v
         
     model_keys = set(model.state_dict().keys())
@@ -158,11 +158,11 @@ def main():
     print("ТЕСТ 1: Без шума (Проверка Identity через DUS)")
     print("="*50)
     phrases = [
-        "Машинное обучение позволяет компьютерам решать сложные задачи.",
-        "Вчера вечером прошел сильный дождь, и на улице образовались огромные лужи.",
-        "Сингулярность — это гипотетический момент в будущем, когда развитие станет неуправляемым.",
-        "Кот спит на подоконнике, пока за окном медленно падает пушистый снег.",
-        "Архитектура трансформеров произвела революцию в области обработки естественного языка."
+        "Machine learning allows computers to solve complex problems without explicit programming.",
+        "It rained heavily last night, and huge puddles formed on the street.",
+        "The singularity is a hypothetical moment in the future when technological growth becomes uncontrollable.",
+        "The cat is sleeping on the windowsill while fluffy snow falls slowly outside.",
+        "Transformer architecture revolutionized the field of natural language processing."
     ]
     
     for i, phrase in enumerate(phrases, 1):
@@ -188,7 +188,7 @@ def main():
     print("\n" + "="*50)
     print("ТЕСТ 2: Легкий шум (как на обучении, 15% токенов)")
     print("="*50)
-    test2_phrase = "Нейросети обладают невероятной способностью к обобщению данных из огромных массивов информации."
+    test2_phrase = "Neural networks possess an incredible ability to generalize data from massive amounts of information."
     input_ids = torch.tensor([tokenizer.encode(test2_phrase)]).to(device)
     attn_mask = torch.ones_like(input_ids).to(device)
     
@@ -226,7 +226,7 @@ def main():
     print("\n" + "="*50)
     print("ТЕСТ 3: Тяжелый шум (полная замена случайными векторами) + 5 шагов диффузии")
     print("="*50)
-    test3_phrase_raw = "Столица Франции — город [Париж], который знаменит своей уникальной [архитектурой] и историей."
+    test3_phrase_raw = "The capital of France is the city of [Paris], which is famous for its unique [architecture] and history."
     
     clean_text, tokens, noise_indices = parse_bracket_phrase(test3_phrase_raw, tokenizer)
     input_ids = torch.tensor([tokens]).to(device)
@@ -257,7 +257,7 @@ def main():
         for step in range(1, 6):
             z_out = dus(inputs_embeds=z_curr, attention_mask=attn_mask).last_hidden_state
             
-            text_step = decode_to_text(z_out, decoder, embed_matrix, tokenizer)
+            text_step = decode_to_text(z_out, decoder, lm_head_weight, tokenizer)
             print(f"Итерация {step}: {text_step}")
             
             # Для следующей итерации используем выход текущей
