@@ -553,7 +553,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_steps",     type=int,   default=40000)
     parser.add_argument("--log_steps",     type=int,   default=10)
     parser.add_argument("--val_steps",     type=int,   default=1000)
-    parser.add_argument("--save_steps",    type=int,   default=5000)
+    parser.add_argument("--save_steps",    type=int,   default=1000)
 
     # Гиперпараметры Phase 3
     parser.add_argument("--low_noise_amp", type=float, default=0.5,
