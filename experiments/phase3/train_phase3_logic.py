@@ -170,17 +170,16 @@ class BEBLaDIIPhase3(nn.Module):
             
             noise_mask = full_noise_mask * attention_mask.to(z_clean.dtype)
 
-            # Нормированный случайный шум
+            # Нормированный случайный шум (в float32 для точности на малых векторах)
             noise = torch.randn_like(z_clean)
-            noise = safe_normalize(noise, dim=-1) * low_noise_amp
+            noise = safe_normalize(noise.float(), dim=-1).to(torch.bfloat16) * low_noise_amp
 
             z_noisy = z_clean + noise * noise_mask.unsqueeze(-1)
             
-            # Сферическая геометрия (возврат на радиус z_clean)
-            z_clean_norm = torch.norm(z_clean, p=2, dim=-1, keepdim=True)
+            # Сферическая геометрия (жестко на единичную сферу, так как z_clean от LatentEncoder уже там)
             z_noisy = torch.where(
                 noise_mask.unsqueeze(-1) > 0,
-                safe_normalize(z_noisy, dim=-1) * z_clean_norm,
+                safe_normalize(z_noisy.float(), dim=-1).to(torch.bfloat16),
                 z_noisy
             )
 
@@ -194,6 +193,7 @@ class BEBLaDIIPhase3(nn.Module):
             inputs_embeds=z_noisy.to(torch.bfloat16), attention_mask=attention_mask
         )
         dus_final = dus_outputs.last_hidden_state
+        dus_final = safe_normalize(dus_final.float(), dim=-1).to(torch.bfloat16)
 
         return {
             "z_clean": z_clean,
@@ -243,19 +243,22 @@ def compute_phase3_loss(
     z_centered = z_flat - m_state
     
     v_state = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
+    var_floor = 1.0 / (D * 2)  # Нижняя граница дисперсии для единичной сферы
+    var_loss = F.relu(var_floor - v_state).mean()
     
     cov = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
     cov_off_diag = cov - torch.diag(torch.diag(cov))
     cov_loss = cov_off_diag.pow(2).sum() / D
     
-    prior_loss = m_state.pow(2).mean() + 0.1 * cov_loss
+    prior_loss = m_state.pow(2).mean() + var_loss + 0.1 * cov_loss
     metrics["prior_loss"] = prior_loss.detach()
     metrics["cov_loss"] = cov_loss.detach()
 
     total_loss = 0.1 * prior_loss
 
-    # 4.2 Диффузное (Denoising): Huber Loss на зашумлённых позициях
-    denoise_elementwise = F.huber_loss(dus_final, z_clean, reduction="none", delta=denoise_delta).mean(dim=-1)
+    # 4.2 Диффузное (Denoising): Cosine Loss на зашумлённых позициях
+    cos_denoise = (dus_final.float() * z_clean.float()).sum(dim=-1)
+    denoise_elementwise = 1.0 - cos_denoise
     denoise_loss = (denoise_elementwise * noise_mask).sum() / noised_tokens
     metrics["denoise_loss"] = denoise_loss.detach()
     total_loss = total_loss + w_denoise * denoise_loss
@@ -296,9 +299,10 @@ def compute_phase3_loss(
     metrics["logic_loss"] = logic_loss.detach()
     total_loss = total_loss + w_logic * logic_loss
 
-    # 4.4 Identity Penalty
-    w_c = torch.pow(c_true, gamma)
-    penalty_elementwise = F.huber_loss(dus_final, outputs["z_noisy"], reduction="none", delta=denoise_delta).mean(dim=-1)
+    # 4.4 Identity Penalty (Cosine Loss)
+    w_c = torch.pow(c_true.float(), gamma)
+    cos_identity = (dus_final.float() * outputs["z_noisy"].float()).sum(dim=-1)
+    penalty_elementwise = 1.0 - cos_identity
     identity_penalty = (penalty_elementwise * w_c * attn_f).sum() / active_tokens
     metrics["identity_penalty"] = identity_penalty.detach()
     total_loss = total_loss + w_identity * identity_penalty
