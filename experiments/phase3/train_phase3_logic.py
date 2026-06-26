@@ -82,12 +82,10 @@ class BEBLaDIIPhase3(nn.Module):
         if encoder_weights and os.path.exists(encoder_weights):
             state = torch.load(encoder_weights, map_location="cpu")
             # Веса могут быть вложены под ключом "encoder"
-            if "encoder" in state:
-                state = state["encoder"]
             self.encoder.load_state_dict(state, strict=False)
-            print(f"[Init] LatentEncoder weights loaded from {encoder_weights}")
+            print(f"[Init] LatentEncoder weights loaded from {encoder_weights}", flush=True)
         else:
-            print(f"[Init] WARN: encoder_weights not found ({encoder_weights}), using random init")
+            print(f"[Init] WARN: encoder_weights not found ({encoder_weights}), using random init", flush=True)
         for p in self.encoder.parameters():
             p.requires_grad = False
         self.encoder.to(torch.bfloat16)
@@ -111,7 +109,7 @@ class BEBLaDIIPhase3(nn.Module):
             total_keys = len(model_sd.keys())
                 
             dus_wrapper.model.load_state_dict(clean_state, strict=False)
-            print(f"[Init] Awakened DUS weights loaded from {dus_weights} (Matched {matched}/{total_keys} parameters)")
+            print(f"[Init] Awakened DUS weights loaded from {dus_weights} (Matched {matched}/{total_keys} parameters)", flush=True)
             
         self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
@@ -330,10 +328,12 @@ def train(args):
         whitening_w = whitening_data["W"].to(device).to(torch.bfloat16)
         import torch_xla.experimental.xla_sharding as xs
         xs.mark_sharding(whitening_w, mesh, (None, None))
-        print("[Init] Whitening matrix loaded and moved to XLA.")
+        print("[Init] Whitening matrix loaded and moved to XLA.", flush=True)
     else:
         whitening_w = None
-        print("[Init] WARN: Whitening matrix NOT found, using raw teacher vectors.")
+        print("[Init] WARN: Whitening matrix NOT found, using raw teacher vectors.", flush=True)
+
+    print("[Init] Instantiating BEBLaDIIPhase3 model... (this includes loading 7B Teacher)", flush=True)
 
     model = BEBLaDIIPhase3(
         teacher_model_path=args.teacher_model_path,
@@ -348,10 +348,12 @@ def train(args):
         return None
 
     # Шардируем все тяжёлые компоненты через FSDP:
+    print("[Init] Starting SPMD FSDP sharding across TPUs... (THIS TAKES 2-4 MINUTES!)", flush=True)
     model.teacher          = SpmdFullyShardedDataParallel(model.teacher, mesh=mesh, shard_output=shard_output)
     model.qwen_embeddings  = SpmdFullyShardedDataParallel(model.qwen_embeddings, mesh=mesh, shard_output=shard_output)
     model.encoder          = SpmdFullyShardedDataParallel(model.encoder, mesh=mesh, shard_output=shard_output)
     model.dus              = SpmdFullyShardedDataParallel(model.dus, mesh=mesh, shard_output=shard_output)
+    print("[Init] FSDP sharding completed!", flush=True)
 
     trainable_params = list(model.dus.parameters())
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
