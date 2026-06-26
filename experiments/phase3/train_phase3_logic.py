@@ -114,6 +114,17 @@ class BEBLaDIIPhase3(nn.Module):
         self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
 
+        # Confidence Embedding (Additive Projection)
+        self.confidence_proj = nn.Sequential(
+            nn.Linear(1, 256),
+            nn.SiLU(),
+            nn.Linear(256, 1024)
+        )
+        # Zero-init the final layer to start with no interference
+        nn.init.zeros_(self.confidence_proj[-1].weight)
+        nn.init.zeros_(self.confidence_proj[-1].bias)
+        self.confidence_proj.to(torch.bfloat16)
+
         # LogicAdapter has been removed.
 
     def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor,
@@ -199,16 +210,22 @@ class BEBLaDIIPhase3(nn.Module):
             z_noisy_normed = safe_normalize(z_noisy, dim=-1)
             c_true = torch.clamp((z_clean_normed * z_noisy_normed).sum(dim=-1), min=0.0)
 
+        # Проекция уверенности
+        c_embed = self.confidence_proj(c_true.unsqueeze(-1).to(torch.bfloat16))
+        dus_input = z_noisy.to(torch.bfloat16) + c_embed
+
         # Прогон зашумлённой последовательности через DUS
         dus_outputs = self.dus(
-            inputs_embeds=z_noisy.to(torch.bfloat16), attention_mask=attention_mask,
+            inputs_embeds=dus_input, attention_mask=attention_mask,
             output_hidden_states=True
         )
         
-        # Residual Connection
-        dus_delta = dus_outputs.last_hidden_state
-        dus_final = dus_delta + z_noisy
-        dus_final = safe_normalize(dus_final.float(), dim=-1).to(torch.bfloat16)
+        # Трансформер уже включает входной вектор (residual stream) в выход.
+        # Поэтому last_hidden_state - это УЖЕ смещенный вектор (z_noisy + delta).
+        # Чтобы не удваивать z_noisy, мы берем final как есть, а дельту считаем математически.
+        dus_final_raw = dus_outputs.last_hidden_state
+        dus_delta = dus_final_raw - z_noisy.to(torch.bfloat16)
+        dus_final = safe_normalize(dus_final_raw.float(), dim=-1).to(torch.bfloat16)
         
         dus_layer33 = dus_outputs.hidden_states[33]
 

@@ -605,6 +605,16 @@
                 "experiments/phase3/compute_whitening.py"
             ]
         },
+        "decisions/043_activation_l2_penalty_bfloat16.md": {
+            "description": "ADR: Внедрение Activation L2 Penalty для предотвращения loss плато и потери точности bfloat16 из-за сферических функций потерь.",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
