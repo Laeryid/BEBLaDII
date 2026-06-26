@@ -41,7 +41,7 @@ def main():
     parser.add_argument("--teacher_model_path", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B")
     parser.add_argument("--batch_size", type=int, default=8)
     parser.add_argument("--num_phrases", type=int, default=1000)
-    parser.add_argument("--output_path", type=str, default="weights_cache/whitening_matrix.pth")
+    parser.add_argument("--output_path", type=str, default="weights_cache/whitening_matrix_l23.pth")
     args = parser.parse_args()
 
     mesh = setup_spmd_mesh()
@@ -83,8 +83,8 @@ def main():
             xs.mark_sharding(input_ids, mesh, ("fsdp", None))
             xs.mark_sharding(attention_mask, mesh, ("fsdp", None))
             
-            outputs = teacher(input_ids=input_ids, attention_mask=attention_mask)
-            hidden = outputs.last_hidden_state # (B, T, 3584)
+            outputs = teacher(input_ids=input_ids, attention_mask=attention_mask, output_hidden_states=True)
+            hidden = outputs.hidden_states[23] # (B, T, 3584)
             
             # Extract active tokens directly on CPU to save memory
             hidden_cpu = hidden.cpu().float()
@@ -126,7 +126,7 @@ def main():
         # Optional: Sync to GCS
         try:
             import subprocess
-            gcs_path = "gs://bebladii-weigths-us/planB/phase3/whitening_matrix.pth"
+            gcs_path = "gs://bebladii-weigths-us/planB/phase3/whitening_matrix_l23.pth"
             print(f"[GCS] Syncing whitening matrix to {gcs_path}")
             subprocess.run(["gcloud", "storage", "cp", args.output_path, gcs_path], check=True)
         except Exception as e:

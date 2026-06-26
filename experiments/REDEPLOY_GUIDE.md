@@ -212,4 +212,4 @@ pkill -9 -f train_phase1_TPU_fsdp.py
 
   Убить процесс, если что-то пошло не так:
 
-    pkill -f "train_phase3_logic.py"
+pkill -9 -f train_phase3_logic.py
