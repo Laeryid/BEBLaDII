@@ -23,6 +23,37 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
+
+class EMA:
+    def __init__(self, model, decay=0.9999):
+        self.decay = decay
+        self.shadow = {}
+        self.backup = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone().detach()
+
+    def step(self, model):
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    self.shadow[name].mul_(self.decay).add_(param.data, alpha=1.0 - self.decay)
+
+    def apply(self, model):
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    self.backup[name] = param.data.clone().detach()
+                    param.data.copy_(self.shadow[name])
+
+    def restore(self, model):
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    param.data.copy_(self.backup[name])
+        self.backup = {}
+
 import torch_xla.core.xla_model as xm
 import torch_xla.experimental.xla_sharding as xs
 import torch_xla.runtime as xr
@@ -415,6 +446,8 @@ def train(args):
     trainable_params = list(model.dus.parameters()) + list(model.confidence_proj.parameters())
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
 
+    ema = EMA(model, decay=0.9999)
+
     if xm.is_master_ordinal() and args.wandb_project:
         wandb.init(project=args.wandb_project, config=vars(args))
 
@@ -472,6 +505,7 @@ def train(args):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             xm.optimizer_step(optimizer, barrier=True)
+            ema.step(model)
             scheduler.step()
 
             # --- Цикличный прогрев LR (Initial & Restart Warmups) ---
@@ -510,6 +544,7 @@ def train(args):
 
             # Валидация
             if val_dataloader is not None and step > 0 and step % args.val_steps == 0:
+                ema.apply(model)
                 model.eval()
                 v_loss_sum = torch.tensor(0.0, device=device)
                 max_val_batches = 50
@@ -539,8 +574,9 @@ def train(args):
                     v_loss_avg = (v_loss_sum / num_v_batches).item()
                     if xm.is_master_ordinal():
                         if args.wandb_project: wandb.log({"val/loss": v_loss_avg}, step=step)
-                        print(f"\n[VAL] Step {step} | Loss: {v_loss_avg:.4f}")
+                        print(f"\n[VAL] Step {step} | Loss: {v_loss_avg:.4f} (EMA)")
                 model.train()
+                ema.restore(model)
 
             # Сохранение чекпоинта и GCS Sync
             if step > 0 and step % args.save_steps == 0:
@@ -549,8 +585,18 @@ def train(args):
                     os.makedirs(args.output_dir, exist_ok=True)
                     ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
                     dus_state     = {k: v.cpu() for k, v in model.dus.state_dict().items()}
-                    torch.save({"dus": dus_state}, ckpt_path)
-                    print(f"\n[SAVE] Checkpoint saved → {ckpt_path}")
+                    
+                    ema.apply(model)
+                    dus_ema_state = {k: v.cpu() for k, v in model.dus.state_dict().items()}
+                    proj_ema_state = {k: v.cpu() for k, v in model.confidence_proj.state_dict().items()}
+                    ema.restore(model)
+                    
+                    torch.save({
+                        "dus": dus_state, 
+                        "dus_ema": dus_ema_state, 
+                        "confidence_proj_ema": proj_ema_state
+                    }, ckpt_path)
+                    print(f"\n[SAVE] Checkpoint (Hot + EMA) saved → {ckpt_path}")
                     
                     if args.gcs_checkpoint_dir:
                         import subprocess
@@ -572,10 +618,18 @@ def train(args):
     if xm.is_master_ordinal():
         os.makedirs(args.output_dir, exist_ok=True)
         final_path = os.path.join(args.output_dir, "phase3_final.pth")
+        
+        ema.apply(model)
+        dus_ema_state = {k: v.cpu() for k, v in model.dus.state_dict().items()}
+        proj_ema_state = {k: v.cpu() for k, v in model.confidence_proj.state_dict().items()}
+        ema.restore(model)
+        
         torch.save({
-            "dus":          {k: v.cpu() for k, v in model.dus.state_dict().items()},
+            "dus": {k: v.cpu() for k, v in model.dus.state_dict().items()},
+            "dus_ema": dus_ema_state,
+            "confidence_proj_ema": proj_ema_state
         }, final_path)
-        print(f"[SAVE] Final weights saved → {final_path}")
+        print(f"[SAVE] Final weights (Hot + EMA) saved → {final_path}")
         if args.wandb_project:
             wandb.finish()
 
