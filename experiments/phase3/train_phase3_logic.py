@@ -409,9 +409,10 @@ def train(args):
     model.qwen_embeddings  = SpmdFullyShardedDataParallel(model.qwen_embeddings, mesh=mesh, shard_output=shard_output)
     model.encoder          = SpmdFullyShardedDataParallel(model.encoder, mesh=mesh, shard_output=shard_output)
     model.dus              = SpmdFullyShardedDataParallel(model.dus, mesh=mesh, shard_output=shard_output)
+    model.confidence_proj  = SpmdFullyShardedDataParallel(model.confidence_proj, mesh=mesh, shard_output=shard_output)
     print("[Init] FSDP sharding completed!", flush=True)
 
-    trainable_params = list(model.dus.parameters())
+    trainable_params = list(model.dus.parameters()) + list(model.confidence_proj.parameters())
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
 
     if xm.is_master_ordinal() and args.wandb_project:

@@ -615,6 +615,16 @@
                 "experiments/phase3/train_phase3_logic.py"
             ]
         },
+        "decisions/044_confidence_embed_and_residual_fix.md": {
+            "description": "ADR: Внедрение Confidence Embedding и устранение двойного Residual (превращение DUS в Conditional Diffusion).",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
