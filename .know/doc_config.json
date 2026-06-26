@@ -594,6 +594,17 @@
                 "experiments/phase3/train_phase3_logic.py"
             ]
         },
+        "decisions/042_phase3_decoupling_denoising_and_logic.md": {
+            "description": "ADR: Разделение задач денойзинга и логической топологии по глубине, внедрение Macro-Residual для DUS Phase 3.",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py",
+                "experiments/phase3/compute_whitening.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
