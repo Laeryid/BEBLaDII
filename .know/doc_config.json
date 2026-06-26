@@ -584,6 +584,16 @@
                 "experiments/phase3/compute_whitening.py"
             ]
         },
+        "decisions/041_phase3_angular_loss_and_spherical_dus.md": {
+            "description": "ADR: Переход на Angular Loss, фикс bfloat16, F.normalize для DUS и variance floor для сферической топологии.",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",

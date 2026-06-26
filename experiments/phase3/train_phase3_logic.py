@@ -149,9 +149,9 @@ class BEBLaDIIPhase3(nn.Module):
             starts = []
             for w in range(num_windows):
                 max_start = max(1, block_size - window_size)
-                start = torch.randint(w * block_size, w * block_size + max_start, (B, 1))
+                start = torch.randint(w * block_size, w * block_size + max_start, (B, 1), device=z_clean.device)
                 starts.append(start)
-            starts = torch.cat(starts, dim=1).to(z_clean.device) # (B, num_windows)
+            starts = torch.cat(starts, dim=1) # (B, num_windows)
             
             offsets = torch.arange(window_size, device=z_clean.device).view(1, 1, window_size)
             window_indices = starts.unsqueeze(-1) + offsets # (B, num_windows, 5)
@@ -280,9 +280,9 @@ def compute_phase3_loss(
     S_dus = torch.matmul(dus_w_norm, dus_w_norm.transpose(-1, -2))
     S_tea = torch.matmul(tea_w_norm, tea_w_norm.transpose(-1, -2))
     
-    triu_idx = torch.triu_indices(window_size, window_size, offset=1)
-    dus_triu = S_dus[:, :, triu_idx[0], triu_idx[1]]
-    tea_triu = S_tea[:, :, triu_idx[0], triu_idx[1]]
+    mask = torch.triu(torch.ones((window_size, window_size), dtype=torch.bool, device=S_dus.device), diagonal=1)
+    dus_triu = S_dus[:, :, mask]
+    tea_triu = S_tea[:, :, mask]
     
     def pearson_corr(x, y):
         x_c = x - x.mean(dim=-1, keepdim=True)
