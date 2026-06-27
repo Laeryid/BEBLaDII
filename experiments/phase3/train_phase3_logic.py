@@ -30,28 +30,27 @@ import torch.nn.functional as F
 
 
 class EMA:
-    def __init__(self, model, decay=0.998):
+    def __init__(self, model, decay=0.995):
         self.decay = decay
         self.shadow = {}
         self.backup = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
-                self.shadow[name] = param.data.clone().detach()
+                # Храним тени строго в float32 для избежания потери точности (underflow)
+                self.shadow[name] = param.data.clone().detach().float()
 
     def step(self, model):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
-                    self.shadow[name].mul_(self.decay).add_(
-                        param.data, alpha=1.0 - self.decay
-                    )
+                    self.shadow[name].mul_(self.decay).add_(param.data.float(), alpha=1.0 - self.decay)
 
     def apply(self, model):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     self.backup[name] = param.data.clone().detach()
-                    param.data.copy_(self.shadow[name])
+                    param.data.copy_(self.shadow[name].to(param.dtype))
 
     def restore(self, model):
         with torch.no_grad():

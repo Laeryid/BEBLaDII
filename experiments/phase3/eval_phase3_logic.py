@@ -16,30 +16,45 @@ from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
 from src.beb_la_dii.model.dus import DUSModel
 from src.beb_la_dii.utils.loss import safe_normalize
 
-def load_dus_checkpoint(model, path):
+def recover_z(dus_final, c_embed):
+    """
+    Математически точное восстановление z_clean из выхода DUS.
+    Таргет при обучении: dus_final = safe_normalize(z_clean + c_embed).
+    Поскольку ||z_clean|| = 1, решаем уравнение для сферы:
+    z_clean = alpha * dus_final - c_embed, где ||z_clean|| = 1.
+    """
+    y_dot_c = (dus_final * c_embed).sum(dim=-1, keepdim=True)
+    c_norm_sq = (c_embed * c_embed).sum(dim=-1, keepdim=True)
+    
+    discriminant = torch.clamp((y_dot_c ** 2) - c_norm_sq + 1.0, min=1e-6)
+    alpha = y_dot_c + torch.sqrt(discriminant)
+    
+    z_rec = alpha * dus_final - c_embed
+    return safe_normalize(z_rec, dim=-1)
+
+def load_dus_checkpoint(dus, conf_proj, path):
     state = torch.load(path, map_location="cpu")
-    if "dus" in state:
-        state = state["dus"]
-    elif "latentBERT_state_dict" in state:
-        state = state["latentBERT_state_dict"]
-    elif "model_state_dict" in state:
-        state = state["model_state_dict"]
     
-    clean_state = {}
-    for k, v in state.items():
-        k_clean = k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", "")
-        clean_state[k_clean] = v
+    dus_state = state.get("dus_ema", state.get("dus", state))
+    if "latentBERT_state_dict" in dus_state:
+        dus_state = dus_state["latentBERT_state_dict"]
+    elif "model_state_dict" in dus_state:
+        dus_state = dus_state["model_state_dict"]
         
-    model_keys = set(model.state_dict().keys())
-    matched_keys = set(clean_state.keys()) & model_keys
+    clean_dus = {}
+    for k, v in dus_state.items():
+        k_clean = k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", "")
+        clean_dus[k_clean] = v
+        
+    dus.load_state_dict(clean_dus, strict=False)
     
-    missing, unexpected = model.load_state_dict(clean_state, strict=False)
-    print(f"[*] DUS weights loaded from {path}")
-    print(f"    - Matched parameters: {len(matched_keys)} / {len(model_keys)}")
-    if missing:
-        print(f"    - Missing keys (first 5): {missing[:5]}")
-    if unexpected:
-        print(f"    - Unexpected keys in checkpoint (first 5): {unexpected[:5]}")
+    proj_state = state.get("confidence_proj_ema", state.get("confidence_proj", {}))
+    if proj_state:
+        clean_proj = {k.replace("_orig_module.", ""): v for k, v in proj_state.items()}
+        conf_proj.load_state_dict(clean_proj, strict=False)
+        print(f"[*] DUS and ConfidenceProj weights loaded from {path} (EMA preferred)")
+    else:
+        print(f"[!] Warning: confidence_proj weights NOT found in {path}")
 
 def decode_to_text(z, decoder, lm_head_weight, tokenizer):
     """Декодирует латентный вектор обратно в текст"""
@@ -146,11 +161,19 @@ def main():
     encoder.eval()
     decoder.eval()
 
-    print(f"[*] Loading DUS Model from {args.checkpoint}")
+    print(f"[*] Loading DUS Model and Confidence Proj from {args.checkpoint}")
     dus_wrapper = DUSModel.from_scratch(weights_path=None)
-    load_dus_checkpoint(dus_wrapper.model, args.checkpoint)
     dus = dus_wrapper.model.to(device).to(torch.bfloat16)
+    
+    confidence_proj = torch.nn.Sequential(
+        torch.nn.Linear(1, 256),
+        torch.nn.SiLU(),
+        torch.nn.Linear(256, 1024)
+    ).to(device).to(torch.bfloat16)
+    
+    load_dus_checkpoint(dus, confidence_proj, args.checkpoint)
     dus.eval()
+    confidence_proj.eval()
     
     # ---------------------------------------------------------
     # ТЕСТ 1: Без шума (5 фраз)
@@ -173,18 +196,26 @@ def main():
         with torch.no_grad():
             qwen_embeds = embeddings(input_ids)
             z_clean, _, _ = encoder(qwen_embeds)
-            dus_out = dus(inputs_embeds=z_clean, attention_mask=attn_mask).last_hidden_state
             
-            # Декодируем z_clean (чистый автоэнкодер) и dus_out
+            c_true = torch.ones((1, z_clean.size(1)), device=device, dtype=torch.bfloat16)
+            c_embed = confidence_proj(c_true.unsqueeze(-1))
+            dus_input = z_clean + c_embed
+            
+            dus_out_raw = dus(inputs_embeds=dus_input, attention_mask=attn_mask).last_hidden_state
+            dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(torch.bfloat16)
+            
+            z_recovered = recover_z(dus_out_norm.float(), c_embed.float()).to(torch.bfloat16)
+            
+            # Декодируем z_clean (чистый автоэнкодер) и z_recovered
             text_ae = decode_to_text(z_clean, decoder, lm_head_weight, tokenizer)
-            text_dus = decode_to_text(dus_out, decoder, lm_head_weight, tokenizer)
+            text_dus = decode_to_text(z_recovered, decoder, lm_head_weight, tokenizer)
             
             # Считаем метрики расстояния (только для токенов без учета pad)
             active_z_clean = z_clean[attn_mask.bool()]
-            active_dus_out = dus_out[attn_mask.bool()]
+            active_z_rec = z_recovered[attn_mask.bool()]
             
-            cos_sim = F.cosine_similarity(active_z_clean, active_dus_out, dim=-1).mean().item()
-            l2_dist = F.pairwise_distance(active_z_clean, active_dus_out).mean().item()
+            cos_sim = F.cosine_similarity(active_z_clean, active_z_rec, dim=-1).mean().item()
+            l2_dist = F.pairwise_distance(active_z_clean.float(), active_z_rec.float()).mean().item()
             
         print(f"\nФраза {i}: {phrase}")
         print(f"  [AutoEncoder Only] -> {text_ae}")
@@ -220,20 +251,26 @@ def main():
             z_noisy
         )
         
-        dus_out = dus(inputs_embeds=z_noisy, attention_mask=attn_mask).last_hidden_state
+        c_true = torch.clamp(F.cosine_similarity(z_clean.float(), z_noisy.float(), dim=-1), min=0.0).to(torch.bfloat16)
+        c_embed = confidence_proj(c_true.unsqueeze(-1))
+        dus_input = z_noisy + c_embed
+        
+        dus_out_raw = dus(inputs_embeds=dus_input, attention_mask=attn_mask).last_hidden_state
+        dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(torch.bfloat16)
+        z_recovered = recover_z(dus_out_norm.float(), c_embed.float()).to(torch.bfloat16)
         
         text_noisy = decode_to_text(z_noisy, decoder, lm_head_weight, tokenizer)
-        text_recovered = decode_to_text(dus_out, decoder, lm_head_weight, tokenizer)
+        text_recovered = decode_to_text(z_recovered, decoder, lm_head_weight, tokenizer)
         
         active_z_clean = z_clean[attn_mask.bool()]
         active_z_noisy = z_noisy[attn_mask.bool()]
-        active_dus_out = dus_out[attn_mask.bool()]
+        active_z_rec = z_recovered[attn_mask.bool()]
         
         # Сравниваем с z_clean (идеалом)
         sim_noisy = F.cosine_similarity(active_z_clean, active_z_noisy, dim=-1).mean().item()
-        sim_recov = F.cosine_similarity(active_z_clean, active_dus_out, dim=-1).mean().item()
-        l2_noisy = F.pairwise_distance(active_z_clean, active_z_noisy).mean().item()
-        l2_recov = F.pairwise_distance(active_z_clean, active_dus_out).mean().item()
+        sim_recov = F.cosine_similarity(active_z_clean, active_z_rec, dim=-1).mean().item()
+        l2_noisy = F.pairwise_distance(active_z_clean.float(), active_z_noisy.float()).mean().item()
+        l2_recov = F.pairwise_distance(active_z_clean.float(), active_z_rec.float()).mean().item()
         
     print(f"Оригинал:   {test2_phrase}")
     print(f"Зашумлено:  {text_noisy}")
@@ -276,15 +313,21 @@ def main():
         # Диффузия (5 итераций)
         z_curr = z_heavy.clone()
         for step in range(1, 6):
-            z_out = dus(inputs_embeds=z_curr, attention_mask=attn_mask).last_hidden_state
+            c_true = torch.clamp(F.cosine_similarity(z_clean.float(), z_curr.float(), dim=-1), min=0.0).to(torch.bfloat16)
+            c_embed = confidence_proj(c_true.unsqueeze(-1))
+            dus_input = z_curr + c_embed
             
-            text_step = decode_to_text(z_out, decoder, lm_head_weight, tokenizer)
+            dus_out_raw = dus(inputs_embeds=dus_input, attention_mask=attn_mask).last_hidden_state
+            dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(torch.bfloat16)
+            z_rec = recover_z(dus_out_norm.float(), c_embed.float()).to(torch.bfloat16)
+            
+            text_step = decode_to_text(z_rec, decoder, lm_head_weight, tokenizer)
             
             # Сравнение с эталоном z_clean
             active_z_clean = z_clean[attn_mask.bool()]
-            active_z_out = z_out[attn_mask.bool()]
-            cos_sim = F.cosine_similarity(active_z_clean, active_z_out, dim=-1).mean().item()
-            l2_dist = F.pairwise_distance(active_z_clean, active_z_out).mean().item()
+            active_z_rec = z_rec[attn_mask.bool()]
+            cos_sim = F.cosine_similarity(active_z_clean, active_z_rec, dim=-1).mean().item()
+            l2_dist = F.pairwise_distance(active_z_clean.float(), active_z_rec.float()).mean().item()
             
             print(f"Итерация {step}: {text_step} (Cos: {cos_sim:.4f}, L2: {l2_dist:.4f})")
             
