@@ -743,6 +743,7 @@ def train(args):
                     os.makedirs(args.output_dir, exist_ok=True)
                     ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
                     dus_state = {k: v.cpu() for k, v in model.dus.state_dict().items()}
+                    proj_state = {k: v.cpu() for k, v in model.confidence_proj.state_dict().items()}
 
                     ema.apply(model)
                     dus_ema_state = {
@@ -757,6 +758,7 @@ def train(args):
                     torch.save(
                         {
                             "dus": dus_state,
+                            "confidence_proj": proj_state,
                             "dus_ema": dus_ema_state,
                             "confidence_proj_ema": proj_ema_state,
                         },
@@ -797,6 +799,9 @@ def train(args):
         os.makedirs(args.output_dir, exist_ok=True)
         final_path = os.path.join(args.output_dir, "phase3_final.pth")
 
+        dus_state = {k: v.cpu() for k, v in model.dus.state_dict().items()}
+        proj_state = {k: v.cpu() for k, v in model.confidence_proj.state_dict().items()}
+
         ema.apply(model)
         dus_ema_state = {k: v.cpu() for k, v in model.dus.state_dict().items()}
         proj_ema_state = {
@@ -806,7 +811,8 @@ def train(args):
 
         torch.save(
             {
-                "dus": {k: v.cpu() for k, v in model.dus.state_dict().items()},
+                "dus": dus_state,
+                "confidence_proj": proj_state,
                 "dus_ema": dus_ema_state,
                 "confidence_proj_ema": proj_ema_state,
             },
