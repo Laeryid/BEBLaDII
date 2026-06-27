@@ -635,6 +635,27 @@
                 "experiments/phase3/train_phase3_logic.py"
             ]
         },
+        "decisions/046_c_embed_targets_and_ema_fix.md": {
+            "description": "ADR: Интеграция Confidence Embedding в Identity и Denoise Loss, исправление EMA.",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py"
+            ]
+        },
+        "decisions/047_shortcut_collapse_and_pure_targets.md": {
+            "description": "ADR: Опровержение ADR 046 и решение проблемы Shortcut Collapse (Bounded c_embed & Pure Targets).",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py",
+                "experiments/phase3/eval_phase3_logic_local.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
