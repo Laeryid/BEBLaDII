@@ -26,7 +26,7 @@ import torch.nn.functional as F
 import math
 
 class EMA:
-    def __init__(self, model, decay=0.9999):
+    def __init__(self, model, decay=0.999):
         self.decay = decay
         self.shadow = {}
         self.backup = {}
@@ -452,7 +452,7 @@ def train(args):
     trainable_params = list(model.dus.parameters()) + list(model.confidence_proj.parameters())
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
 
-    ema = EMA(model, decay=0.9999)
+    ema = EMA(model, decay=0.999)
 
     if xm.is_master_ordinal() and args.wandb_project:
         wandb.init(project=args.wandb_project, config=vars(args))
