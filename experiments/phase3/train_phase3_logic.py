@@ -270,7 +270,9 @@ class BEBLaDIIPhase3(nn.Module):
             "dus_layer33": dus_layer33,
             "teacher_layer23": teacher_layer23,
             "logic_window_indices": logic_window_indices,
-            "attention_mask": attention_mask
+            "attention_mask": attention_mask,
+            "c_embed": c_embed,
+            "dus_input": dus_input
         }
 
 
@@ -296,6 +298,8 @@ def compute_phase3_loss(
     dus_layer33   = outputs["dus_layer33"]
     teacher_layer23 = outputs["teacher_layer23"]
     logic_window_indices = outputs["logic_window_indices"]
+    c_embed       = outputs["c_embed"]
+    dus_input     = outputs["dus_input"]
     attn_f         = outputs["attention_mask"].float()
 
     metrics: dict = {}
@@ -327,7 +331,8 @@ def compute_phase3_loss(
     total_loss = 0.1 * prior_loss
 
     # 4.2 Диффузное (Denoising): Cosine Loss на зашумлённых позициях
-    cos_denoise = (dus_final.float() * z_clean.float()).sum(dim=-1)
+    denoise_target = safe_normalize(z_clean.float() + c_embed.float(), dim=-1).to(torch.bfloat16)
+    cos_denoise = (dus_final.float() * denoise_target.float()).sum(dim=-1)
     denoise_elementwise = 1.0 - cos_denoise
     denoise_loss = (denoise_elementwise * noise_mask).sum() / noised_tokens
     metrics["denoise_loss"] = denoise_loss.detach()
@@ -381,7 +386,8 @@ def compute_phase3_loss(
 
     # 4.4 Identity Penalty (Cosine Loss)
     w_c = torch.pow(c_true.float(), gamma)
-    cos_identity = (dus_final.float() * outputs["z_noisy"].float()).sum(dim=-1)
+    identity_target = safe_normalize(dus_input.float(), dim=-1).to(torch.bfloat16)
+    cos_identity = (dus_final.float() * identity_target.float()).sum(dim=-1)
     penalty_elementwise = 1.0 - cos_identity
     identity_penalty = (penalty_elementwise * w_c * attn_f).sum() / active_tokens
     metrics["identity_penalty"] = identity_penalty.detach()
@@ -506,6 +512,7 @@ def train(args):
             torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             xm.optimizer_step(optimizer, barrier=True)
             ema.step(model)
+            xm.mark_step() # ПРИНУДИТЕЛЬНО материализуем in-place апдейты EMA
             scheduler.step()
 
             # --- Цикличный прогрев LR (Initial & Restart Warmups) ---
@@ -529,9 +536,19 @@ def train(args):
 
             # Логирование
             if step % args.log_steps == 0:
+                # Диагностика EMA
+                diff_sum = 0.0
+                num_params = 0
+                for n, p in model.named_parameters():
+                    if p.requires_grad and n in ema.shadow:
+                        diff_sum += (p.data - ema.shadow[n]).abs().mean().item()
+                        num_params += 1
+                ema_diff = diff_sum / max(1, num_params)
+
                 metrics_dict = {k: v.item() for k, v in metrics.items()}
                 metrics_dict["loss"] = loss.item()
                 metrics_dict["lr"]   = optimizer.param_groups[0]['lr']
+                metrics_dict["ema_diff"] = ema_diff
                 if xm.is_master_ordinal():
                     if args.wandb_project:
                         wandb.log(metrics_dict, step=step)
@@ -540,6 +557,7 @@ def train(args):
                             "loss":    f"{metrics_dict['loss']:.4f}",
                             "logic":   f"{metrics_dict.get('logic_loss', 0):.4f}",
                             "c_true":  f"{metrics_dict.get('c_true_mean', 0):.4f}",
+                            "ema_df":  f"{ema_diff:.6f}",
                         })
 
             # Валидация
