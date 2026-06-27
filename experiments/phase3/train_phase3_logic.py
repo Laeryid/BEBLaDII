@@ -305,7 +305,9 @@ class BEBLaDIIPhase3(nn.Module):
             c_true = torch.clamp((z_clean_normed * z_noisy_normed).sum(dim=-1), min=0.0)
 
         # Проекция уверенности
-        c_embed = self.confidence_proj(c_true.unsqueeze(-1).to(torch.bfloat16))
+        c_embed_raw = self.confidence_proj(c_true.unsqueeze(-1).to(torch.bfloat16))
+        # Ограничение нормы для защиты от Shortcut Collapse и потери точности в bfloat16
+        c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(torch.bfloat16) * 0.1
         dus_input = z_noisy.to(torch.bfloat16) + c_embed
 
         # Прогон зашумлённой последовательности через DUS
@@ -396,9 +398,7 @@ def compute_phase3_loss(
     total_loss = 0.1 * prior_loss
 
     # 4.2 Диффузное (Denoising): Cosine Loss на зашумлённых позициях
-    denoise_target = safe_normalize(z_clean.float() + c_embed.float(), dim=-1).to(
-        torch.bfloat16
-    )
+    denoise_target = safe_normalize(z_clean.float(), dim=-1).to(torch.bfloat16)
     cos_denoise = (dus_final.float() * denoise_target.float()).sum(dim=-1)
     denoise_elementwise = 1.0 - cos_denoise
     denoise_loss = (denoise_elementwise * noise_mask).sum() / noised_tokens
@@ -476,7 +476,7 @@ def compute_phase3_loss(
 
     # 4.4 Identity Penalty (Cosine Loss)
     w_c = torch.pow(c_true.float(), gamma)
-    identity_target = safe_normalize(dus_input.float(), dim=-1).to(torch.bfloat16)
+    identity_target = safe_normalize(z_noisy.float(), dim=-1).to(torch.bfloat16)
     cos_identity = (dus_final.float() * identity_target.float()).sum(dim=-1)
     penalty_elementwise = 1.0 - cos_identity
     identity_penalty = (penalty_elementwise * w_c * attn_f).sum() / active_tokens
