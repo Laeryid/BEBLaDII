@@ -358,6 +358,7 @@ def compute_phase3_loss(
     whitening_mean: torch.Tensor = None,
 ) -> tuple[torch.Tensor, dict]:
     z_clean = outputs["z_clean"]
+    z_noisy = outputs["z_noisy"]
     c_true = outputs["c_true"]
     noise_mask = outputs["noise_mask"]
     dus_delta = outputs["dus_delta"]
