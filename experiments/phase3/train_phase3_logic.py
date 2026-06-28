@@ -528,11 +528,7 @@ def train(args):
                 fwd_outputs,
                 gamma=args.gamma,
                 w_denoise=args.w_denoise,
-                w_logic=args.w_logic,
                 w_identity=args.w_identity,
-                denoise_delta=args.denoise_delta,
-                whitening_w=whitening_w,
-                whitening_mean=whitening_mean,
             )
 
             loss.backward()
@@ -616,11 +612,7 @@ def train(args):
                             v_fwd,
                             gamma=args.gamma,
                             w_denoise=args.w_denoise,
-                            w_logic=args.w_logic,
                             w_identity=args.w_identity,
-                            denoise_delta=args.denoise_delta,
-                            whitening_w=whitening_w,
-                            whitening_mean=whitening_mean,
                         )
                         v_loss_sum += v_loss
                         num_v_batches += 1
