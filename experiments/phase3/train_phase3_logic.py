@@ -318,9 +318,13 @@ class BEBLaDIIPhase3(nn.Module):
         )
 
         # Трансформер уже включает входной вектор (residual stream) в выход.
-        # Поэтому last_hidden_state - это УЖЕ смещенный вектор (z_noisy + delta).
-        # Чтобы не удваивать z_noisy, мы берем final как есть, а дельту считаем математически.
-        dus_final_raw = dus_outputs.last_hidden_state
+        # Мы перехватываем сырой residual stream перед финальной нормализацией,
+        # чтобы вычесть c_embed аналитически (как отрицательный skip connection).
+        # Сети больше не нужно учиться его вычитать.
+        pre_norm = dus_outputs.hidden_states[-1]
+        clean_pre_norm = pre_norm - c_embed
+        dus_final_raw = self.dus.final_norm(clean_pre_norm)
+        
         dus_delta = dus_final_raw - z_noisy.to(torch.bfloat16)
         dus_final = safe_normalize(dus_final_raw.float(), dim=-1).to(torch.bfloat16)
 

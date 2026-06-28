@@ -210,9 +210,12 @@ def main():
             c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(torch.bfloat16) * 0.1
             dus_input = (z_clean + c_embed).to(torch.bfloat16)
 
-            dus_out_raw = dus(
-                inputs_embeds=dus_input
-            ).last_hidden_state
+            dus_outputs = dus(
+                inputs_embeds=dus_input,
+                output_hidden_states=True,
+            )
+            clean_pre_norm = dus_outputs.hidden_states[-1] - c_embed
+            dus_out_raw = dus.final_norm(clean_pre_norm)
             dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(
                 torch.bfloat16
             )
@@ -271,9 +274,12 @@ def main():
         c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(torch.bfloat16) * 0.1
         dus_input = (z_noisy + c_embed).to(torch.bfloat16)
 
-        dus_out_raw = dus(
-            inputs_embeds=dus_input
-        ).last_hidden_state
+        dus_outputs = dus(
+            inputs_embeds=dus_input,
+            output_hidden_states=True,
+        )
+        clean_pre_norm = dus_outputs.hidden_states[-1] - c_embed
+        dus_out_raw = dus.final_norm(clean_pre_norm)
         dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(torch.bfloat16)
         z_recovered = dus_out_norm
 
