@@ -667,6 +667,16 @@
                 "experiments/phase3/eval_phase3_logic_local.py"
             ]
         },
+        "decisions/049_removing_teacher_and_logic_loss.md": {
+            "description": "ADR: Удаление дистилляции учителя (logic_loss) из Phase 3 для разрешения конфликта градиентов и экономии ресурсов.",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
