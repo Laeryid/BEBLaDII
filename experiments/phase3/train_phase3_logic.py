@@ -109,13 +109,6 @@ class BEBLaDIIPhase3(nn.Module):
     ):
         super().__init__()
 
-        # 1. Замороженный учитель (DeepSeek-R1-7B, 3584d) — только для дистилляции скрытых состояний
-        self.teacher = AutoModel.from_pretrained(
-            teacher_model_path, torch_dtype=torch.bfloat16
-        )
-        for p in self.teacher.parameters():
-            p.requires_grad = False
-
         # 1b. Замороженный Qwen2.5-1.5B — только embedding слой для получения 1536d входа энкодера
         # LatentEncoder обучен на эмбеддингах Qwen2.5-1.5B (1536d), поэтому нельзя использовать
         # эмбеддинги DeepSeek (тоже 3584d → иное пространство).
@@ -200,16 +193,6 @@ class BEBLaDIIPhase3(nn.Module):
             # Эмбеддинги 1536d из Qwen2.5-1.5B (то же пространство, на котором обучен LatentEncoder)
             qwen_embeds = self.qwen_embeddings(input_ids)  # (B, T, 1536)
 
-            # Скрытые состояния учителя (DeepSeek-R1-7B, 3584d) для дистилляции
-            # Используем его собственный embedding слой: input_ids одинаковые (tokenizer Qwen-совместим)
-            teacher_outputs = self.teacher(
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                output_hidden_states=True,
-            )
-            teacher_hidden = teacher_outputs.last_hidden_state  # (B, T, 3584)
-            teacher_layer23 = teacher_outputs.hidden_states[23]
-
             # Кодируем Qwen-эмбеддинги в латентное пространство
             z_clean, _, _ = self.encoder(qwen_embeds)  # (B, T, 1024)
 
@@ -217,7 +200,6 @@ class BEBLaDIIPhase3(nn.Module):
 
             # --- Windows generation ---
             noise_window_size = 5
-            logic_window_size = 15
             num_windows = 5
             block_size = T // num_windows
 
@@ -245,15 +227,6 @@ class BEBLaDIIPhase3(nn.Module):
                 starts.unsqueeze(-1) + noise_offsets
             )  # (B, num_windows, 5)
 
-            # Расширенное окно логики (15 токенов)
-            logic_starts = starts - ((logic_window_size - noise_window_size) // 2)
-            logic_starts = torch.clamp(logic_starts, min=0, max=T - logic_window_size)
-            logic_offsets = torch.arange(logic_window_size, device=z_clean.device).view(
-                1, 1, logic_window_size
-            )
-            logic_window_indices = (
-                logic_starts.unsqueeze(-1) + logic_offsets
-            )  # (B, num_windows, 15)
 
             # Внутри 5-токенового окна выбираем случайное подмножество токенов для зашумления (от 1 до 5)
             rand_noise = torch.rand(
@@ -337,9 +310,6 @@ class BEBLaDIIPhase3(nn.Module):
             "noise_mask": noise_mask,
             "dus_delta": dus_delta,
             "dus_final": dus_final,
-            "dus_layer33": dus_layer33,
-            "teacher_layer23": teacher_layer23,
-            "logic_window_indices": logic_window_indices,
             "attention_mask": attention_mask,
             "c_embed": c_embed,
             "dus_input": dus_input,
@@ -355,11 +325,7 @@ def compute_phase3_loss(
     outputs: dict,
     gamma: float = 20.0,
     w_denoise: float = 1.0,
-    w_logic: float = 1.0,
     w_identity: float = 5.0,
-    denoise_delta: float = 5.0,
-    whitening_w: torch.Tensor = None,
-    whitening_mean: torch.Tensor = None,
 ) -> tuple[torch.Tensor, dict]:
     z_clean = outputs["z_clean"]
     z_noisy = outputs["z_noisy"]
@@ -367,9 +333,6 @@ def compute_phase3_loss(
     noise_mask = outputs["noise_mask"]
     dus_delta = outputs["dus_delta"]
     dus_final = outputs["dus_final"]
-    dus_layer33 = outputs["dus_layer33"]
-    teacher_layer23 = outputs["teacher_layer23"]
-    logic_window_indices = outputs["logic_window_indices"]
     c_embed = outputs["c_embed"]
     dus_input = outputs["dus_input"]
     attn_f = outputs["attention_mask"].float()
@@ -377,8 +340,6 @@ def compute_phase3_loss(
     metrics: dict = {}
 
     B, T, D = z_clean.size()
-    num_windows = logic_window_indices.size(1)
-    logic_window_size = logic_window_indices.size(2)
     active_tokens = attn_f.sum().clamp(min=1.0)
     noised_tokens = noise_mask.sum().clamp(min=1.0)
 
@@ -413,71 +374,7 @@ def compute_phase3_loss(
     ).sum() / noised_tokens
     total_loss = total_loss + w_denoise * denoise_loss
 
-    # 4.3 Дистилляционное (Логика): Pearson RKD на матрицах (15x15) выбеленного учителя
-    flat_logic_indices = logic_window_indices.view(B, -1)
-
-    dus_w = torch.gather(
-        dus_layer33,
-        1,
-        flat_logic_indices.unsqueeze(-1).expand(-1, -1, dus_layer33.size(-1)),
-    ).view(B, num_windows, logic_window_size, dus_layer33.size(-1))
-    tea_w = torch.gather(
-        teacher_layer23,
-        1,
-        flat_logic_indices.unsqueeze(-1).expand(-1, -1, teacher_layer23.size(-1)),
-    ).view(B, num_windows, logic_window_size, teacher_layer23.size(-1))
-
-    attn_w = torch.gather(attn_f, 1, flat_logic_indices).view(
-        B, num_windows, logic_window_size
-    )
-    window_valid = (attn_w.sum(dim=-1) == logic_window_size).float()
-
-    metrics["norm_tea_raw"] = tea_w.float().norm(dim=-1).mean().detach()
-    metrics["norm_dus_l33"] = dus_w.float().norm(dim=-1).mean().detach()
-
-    if whitening_w is not None and whitening_mean is not None:
-        tea_w = tea_w - whitening_mean
-        tea_w = torch.matmul(tea_w, whitening_w)
-        metrics["norm_tea_white"] = tea_w.float().norm(dim=-1).mean().detach()
-    else:
-        metrics["norm_tea_white"] = metrics["norm_tea_raw"]
-
-    dus_w_norm = safe_normalize(dus_w, dim=-1)
-    tea_w_norm = safe_normalize(tea_w, dim=-1)
-
-    S_dus = torch.matmul(dus_w_norm, dus_w_norm.transpose(-1, -2))
-    S_tea = torch.matmul(tea_w_norm, tea_w_norm.transpose(-1, -2))
-
-    mask = torch.triu(
-        torch.ones(
-            (logic_window_size, logic_window_size),
-            dtype=torch.bool,
-            device=S_dus.device,
-        ),
-        diagonal=1,
-    )
-    dus_triu = S_dus[:, :, mask]
-    tea_triu = S_tea[:, :, mask]
-
-    def pearson_corr(x, y):
-        x_c = x - x.mean(dim=-1, keepdim=True)
-        y_c = y - y.mean(dim=-1, keepdim=True)
-        num = (x_c * y_c).sum(dim=-1)
-        den = torch.sqrt(
-            (x_c.pow(2).sum(dim=-1) + 1e-8) * (y_c.pow(2).sum(dim=-1) + 1e-8)
-        )
-        return num / den
-
-    corr = pearson_corr(dus_triu, tea_triu)
-    logic_loss_per_window = 1.0 - corr
-
-    valid_windows_sum = window_valid.sum().clamp(min=1.0)
-    logic_loss = (logic_loss_per_window * window_valid).sum() / valid_windows_sum
-    metrics["logic_loss"] = logic_loss.detach()
-    metrics["logic_pearson_r"] = (
-        corr * window_valid
-    ).sum().detach() / valid_windows_sum
-    total_loss = total_loss + w_logic * logic_loss
+    total_loss = total_loss + w_denoise * denoise_loss
 
     # 4.4 Identity Penalty (Cosine Loss)
     w_c = torch.pow(c_true.float(), gamma)
@@ -918,7 +815,7 @@ if __name__ == "__main__":
         "--w_denoise", type=float, default=10.0, help="Вес Denoising loss"
     )
     parser.add_argument(
-        "--w_logic", type=float, default=1.0, help="Вес Logic distillation loss"
+        "--w_logic", type=float, default=0.0, help="Вес Logic distillation loss (disabled for ablation)"
     )
     parser.add_argument(
         "--w_identity", type=float, default=5.0, help="Вес Identity penalty"
