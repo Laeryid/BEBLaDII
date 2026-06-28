@@ -50,6 +50,7 @@ def load_dus_checkpoint(dus, conf_proj, path):
             k.replace("student.model.", "")
             .replace("model.", "")
             .replace("_orig_module.", "")
+            .replace("_fsdp_wrapped_module.", "")
         )
         clean_dus[k_clean] = v
 
@@ -57,7 +58,7 @@ def load_dus_checkpoint(dus, conf_proj, path):
 
     proj_state = state.get("confidence_proj", None)
     if proj_state:
-        clean_proj = {k.replace("_orig_module.", ""): v for k, v in proj_state.items()}
+        clean_proj = {k.replace("_orig_module.", "").replace("_fsdp_wrapped_module.", ""): v for k, v in proj_state.items()}
         model_keys = set(conf_proj.state_dict().keys())
         matched = set(clean_proj.keys()) & model_keys
         print(f"[*] ConfidenceProj matched keys: {len(matched)} / {len(model_keys)}")
