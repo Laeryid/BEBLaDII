@@ -423,7 +423,7 @@ def train(args):
         )
 
     print(
-        "[Init] Instantiating BEBLaDIIPhase3 model... (this includes loading 7B Teacher)",
+        "[Init] Instantiating BEBLaDIIPhase3 model...",
         flush=True,
     )
 
@@ -444,9 +444,7 @@ def train(args):
         "[Init] Starting SPMD FSDP sharding across TPU... (THIS TAKES 2-4 MINUTES!)",
         flush=True,
     )
-    model.teacher = SpmdFullyShardedDataParallel(
-        model.teacher, mesh=mesh, shard_output=shard_output
-    )
+
     model.qwen_embeddings = SpmdFullyShardedDataParallel(
         model.qwen_embeddings, mesh=mesh, shard_output=shard_output
     )
