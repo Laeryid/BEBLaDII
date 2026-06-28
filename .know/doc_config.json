@@ -656,6 +656,17 @@
                 "experiments/phase3/eval_phase3_logic_local.py"
             ]
         },
+        "decisions/048_analytical_c_embed_subtraction.md": {
+            "description": "ADR: Аналитическое вычитание c_embed из pre-norm (Negative Skip Connection).",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py",
+                "experiments/phase3/eval_phase3_logic_local.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
