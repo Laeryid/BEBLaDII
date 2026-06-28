@@ -490,6 +490,7 @@ def train(args):
             params.append({"params": [param], "lr": lr})
         return params
 
+    trainable_params = list(model.dus.parameters()) + list(model.confidence_proj.parameters())
     optimizer = torch.optim.AdamW(
         get_llrd_params(model, args.learning_rate, decay_rate=0.95),
         weight_decay=1e-2

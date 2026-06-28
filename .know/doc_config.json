@@ -677,6 +677,16 @@
                 "experiments/phase3/train_phase3_logic.py"
             ]
         },
+        "decisions/050_gradient_analysis_sparsity_and_llrd.md": {
+            "description": "ADR: Математика градиентов DUS: Мертвый Logic Loss, L1 Sparsity для c_embed и перевернутый LLRD.",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
