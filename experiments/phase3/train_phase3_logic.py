@@ -179,6 +179,15 @@ class BEBLaDIIPhase3(nn.Module):
 
         # LogicAdapter has been removed.
 
+    def train(self, mode=True):
+        super().train(mode)
+        # Всегда держим генераторы таргетов в режиме eval (отключаем Dropout)
+        # иначе DUS будет обучаться на зашумленном латентном пространстве
+        if hasattr(self, 'qwen_embeddings'):
+            self.qwen_embeddings.eval()
+        if hasattr(self, 'encoder'):
+            self.encoder.eval()
+
     def forward(
         self,
         input_ids: torch.Tensor,

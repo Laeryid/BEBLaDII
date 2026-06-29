@@ -687,6 +687,26 @@
                 "experiments/phase3/train_phase3_logic.py"
             ]
         },
+        "decisions/051_llrd_c_embed_catastrophe.md": {
+            "description": "ADR: Отказ от LLRD, усиленного c_embed и sparsity_loss (Анализ катастрофы с переобучением верхних слоев).",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py"
+            ]
+        },
+        "decisions/052_frozen_encoder_eval_mode.md": {
+            "description": "ADR: Изоляция замороженных генераторов таргетов в режиме eval() для устранения сдвига валидации из-за Dropout.",
+            "covers": [
+                "Knowledge Infrastructure",
+                "Architecture & Training Phases"
+            ],
+            "depends_on": [
+                "experiments/phase3/train_phase3_logic.py"
+            ]
+        },
 
         "KI_metrics_reference.md": {
             "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
