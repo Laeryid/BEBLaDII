@@ -280,7 +280,7 @@ class BEBLaDIIPhase3(nn.Module):
         # Проекция уверенности
         c_embed_raw = self.confidence_proj(c_true.unsqueeze(-1).to(torch.bfloat16))
         # Ограничение нормы для защиты от Shortcut Collapse и потери точности в bfloat16
-        c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(torch.bfloat16) * 1.0
+        c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(torch.bfloat16) * 0.1
         dus_input = z_noisy.to(torch.bfloat16) + c_embed
 
         # Прогон зашумлённой последовательности через DUS
@@ -383,13 +383,6 @@ def compute_phase3_loss(
     metrics["identity_penalty"] = identity_penalty.detach()
     total_loss = total_loss + w_identity * identity_penalty
 
-    # 4.5 Sparsity Loss for c_embed
-    # L1 penalty on the normalized c_embed forces it to concentrate on fewer dimensions
-    c_embed_abs = torch.abs(c_embed.float())
-    sparsity_loss = (c_embed_abs.mean(dim=-1) * attn_f).sum() / active_tokens
-    metrics["sparsity_loss"] = sparsity_loss.detach()
-    total_loss = total_loss + 0.01 * sparsity_loss
-
     # Метрики мониторинга
     c_true_mean = (c_true * attn_f).sum() / active_tokens
     metrics["c_true_mean"] = c_true_mean.detach()
@@ -464,36 +457,11 @@ def train(args):
     )
     print("[Init] FSDP sharding completed!", flush=True)
 
-    def get_llrd_params(model, base_lr, decay_rate=0.95):
-        params = []
-        params.append({"params": model.confidence_proj.parameters(), "lr": base_lr})
-        for name, param in model.dus.named_parameters():
-            if not param.requires_grad:
-                continue
-            layer_id = None
-            if "layers." in name:
-                parts = name.split(".")
-                for i, part in enumerate(parts):
-                    if part == "layers" and i + 1 < len(parts):
-                        try:
-                            layer_id = int(parts[i+1])
-                        except ValueError:
-                            pass
-            if layer_id is not None:
-                depth_from_top = 39 - layer_id
-                lr = base_lr * (decay_rate ** depth_from_top)
-            else:
-                if "final_norm" in name:
-                    lr = base_lr
-                else:
-                    lr = base_lr * (decay_rate ** 40)
-            params.append({"params": [param], "lr": lr})
-        return params
-
-    trainable_params = list(model.dus.parameters()) + list(model.confidence_proj.parameters())
+    trainable_params = list(model.dus.parameters()) + list(
+        model.confidence_proj.parameters()
+    )
     optimizer = torch.optim.AdamW(
-        get_llrd_params(model, args.learning_rate, decay_rate=0.95),
-        weight_decay=1e-2
+        trainable_params, lr=args.learning_rate, weight_decay=1e-2
     )
 
     ema = EMA(model, decay=0.998)
