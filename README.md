@@ -110,6 +110,8 @@ graph TD
   * [Phase 1 Latent space creation](reports\plan_b_phase1_report.md)
 * Phase 2
   * [Phase 2 Decoder training](reports\plan_b_phase2_report.md)
+* Phase 3
+  * [Phase 3 Diffusion core training](reports\plan_b_phase3_retrospective.md)
 
 ### Plan A (failed)
 [README Plan A](<experiments\Plan A\README.md>)
