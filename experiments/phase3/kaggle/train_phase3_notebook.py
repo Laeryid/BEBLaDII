@@ -23,13 +23,21 @@ from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer
 
 # Настройка путей для импорта src.
-# Предполагается, что исходники проекта загружены как датасет (например, 'bebladii-src').
-# Измените путь ниже на актуальный путь к вашему Kaggle Dataset с исходным кодом.
-PROJECT_ROOT = "/kaggle/input/bebladii-src"
-if PROJECT_ROOT not in sys.path and os.path.exists(PROJECT_ROOT):
-    sys.path.insert(0, PROJECT_ROOT)
+# Клонируем или обновляем репозиторий прямо в /kaggle/working
+import subprocess
 
-# Если исходников в Kaggle Dataset еще нет, загрузите их с помощью `sync_to_kaggle.ps1`
+PROJECT_ROOT = "/kaggle/working/BEBLaDII"
+REPO_URL = "https://github.com/BogdanBuliakov/BEBLaDII.git"
+
+if not os.path.exists(PROJECT_ROOT):
+    print(f"Клонирование репозитория из {REPO_URL}...")
+    subprocess.run(["git", "clone", REPO_URL, PROJECT_ROOT], check=True)
+else:
+    print("Репозиторий уже существует. Выполняю git pull...")
+    subprocess.run(["git", "-C", PROJECT_ROOT, "pull"], check=True)
+
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 # Импорты проекта
 try:
@@ -51,15 +59,15 @@ except ImportError as e:
 # %%
 class Config:
     # Пути к базовым моделям (используйте Kaggle Models или Datasets)
-    embedding_model_path = "/kaggle/input/qwen2.5-1.5b"
-    modernbert_path = "/kaggle/input/modernbert-large"
+    embedding_model_path = "/kaggle/input/datasets/ragnar123/qwen2-5-1-5b"
+    modernbert_path = "/kaggle/input/models/answer-ai/modernbert/transformers/large/2"
 
     # Пути к данным
-    dataset_path = "/kaggle/input/bebladii-planb-phase3-data/phase 3/train_data/data"
+    dataset_path = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/phase 3/train_data/data"
 
     # Пути к весам (из ваших предыдущих загрузок)
-    local_encoder_weights = "/kaggle/input/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
-    local_dus_weights = "/kaggle/input/твое_старое_имя_датасета/AWAKENED_WEIGHTS_FINAL.pt"
+    local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
+    local_dus_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
 
     # Директории вывода (доступны для записи)
     output_dir = "/kaggle/working/checkpoints/phase3"
@@ -168,7 +176,9 @@ class BEBLaDIIPhase3(nn.Module):
         self.encoder.to(torch.bfloat16)
 
         # 3. DUS Backbone (обучаемый)
-        dus_wrapper = DUSModel.from_scratch(config={"base_model_id": modernbert_path}, weights_path=None)
+        dus_wrapper = DUSModel.from_scratch(
+            config={"base_model_id": modernbert_path}, weights_path=None
+        )
         if dus_weights and os.path.exists(dus_weights):
             state = torch.load(dus_weights, map_location="cpu")
             if "latentBERT_state_dict" in state:
