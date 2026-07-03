@@ -52,32 +52,45 @@ class DistillationDataset(Dataset):
     def _apply_mapper(self, item, dtype):
         if item is None: return ""
         
+        text = ""
         if dtype == 'raw':
-            return item.get('text', '') or ""
+            text = item.get('text', '') or ""
         elif dtype == 'magpie':
             inst = item.get('instruction', '') or ""
             resp = item.get('response', '') or ""
-            return f"<|im_start|>user\n{inst}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n{resp}<|im_end|>"
+            text = f"<|im_start|>user\n{inst}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n{resp}<|im_end|>"
         elif dtype == 'sharegpt':
             system = item.get('system') or ""
-            convs = item.get('conversations') or []
-            text = ""
+            # Fallback for different ShareGPT column names
+            convs = item.get('conversations') or item.get('messages') or []
+            
             if system:
                 text += f"<|im_start|>system\n{system}<|im_end|>\n"
             
-            if not isinstance(convs, (list, tuple)):
-                return text
+            if isinstance(convs, (list, tuple)):
+                for i, msg in enumerate(convs):
+                    if not isinstance(msg, dict): continue
+                    # Fallback for different role names
+                    role_val = msg.get('from', msg.get('role'))
+                    role = "user" if role_val in ['human', 'user'] else "assistant"
+                    # Fallback for different content names
+                    content = msg.get('value', msg.get('content', '')) or ""
+                    
+                    text += f"<|im_start|>{role}\n"
+                    if role == "assistant" and i == 1: 
+                        text += f"<|thought|>\n"
+                    text += f"{content}<|im_end|>\n"
+        
+        # --- BULLETPROOF FALLBACK ---
+        if not text.strip() and isinstance(item, dict):
+            # If standard mapping failed (or empty), just grab any large string fields
+            vals = [str(v) for k, v in item.items() if isinstance(v, str) and len(str(v)) > 10]
+            if vals:
+                text = "\n".join(vals)
+            else:
+                text = str(item)
                 
-            for i, msg in enumerate(convs):
-                if not isinstance(msg, dict): continue
-                role = "user" if msg.get('from') == 'human' else "assistant"
-                content = msg.get('value', '') or ""
-                text += f"<|im_start|>{role}\n"
-                if role == "assistant" and i == 1: 
-                    text += f"<|thought|>\n"
-                text += f"{content}<|im_end|>\n"
-            return text
-        return str(item)
+        return text
 
     def __len__(self):
         return self.total_samples
