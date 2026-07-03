@@ -36,6 +36,7 @@ class DistillationDataset(Dataset):
                 ds = ds.sample(n=n)
             
             self.datasets.append(ds)
+            print(f"    Loaded {len(ds)} samples (type: {config['type']})")
             
             self.index_map.append({
                 'start': current_offset,
@@ -46,7 +47,7 @@ class DistillationDataset(Dataset):
             current_offset += len(ds)
             
         self.total_samples = current_offset
-        print(f"Initialized combined dataset: {self.total_samples} samples.")
+        print(f"Initialized combined dataset: {self.total_samples} samples total.")
 
     def _apply_mapper(self, item, dtype):
         if item is None: return ""
