@@ -399,6 +399,11 @@ def compute_phase3_loss(
     denoise_elementwise = 1.0 - cos_denoise
     denoise_loss = (denoise_elementwise * noise_mask).sum() / noised_tokens
     metrics["denoise_loss"] = denoise_loss.detach()
+    # --- Диагностика ---
+    metrics["noised_tokens_count"] = noised_tokens.detach()
+    metrics["noise_mask_mean"] = noise_mask.mean().detach()
+    metrics["cos_denoise_on_noised"] = ((cos_denoise * noise_mask).sum() / noised_tokens).detach()
+    metrics["denoise_elementwise_mean"] = ((denoise_elementwise * noise_mask).sum() / noised_tokens).detach()
 
     total_loss = total_loss + w_denoise * denoise_loss
 
