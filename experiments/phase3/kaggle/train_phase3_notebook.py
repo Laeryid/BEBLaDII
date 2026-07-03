@@ -208,10 +208,13 @@ class BEBLaDIIPhase3(nn.Module):
         self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
         
-        # Патч для DataParallel: ModernBERT пытается определить device через parameters(), 
-        # что иногда вызывает StopIteration на репликах. Мы на CUDA, mps-компиляция не нужна.
+        # Патч для DataParallel: ModernBERT пытается определить device и dtype через parameters(), 
+        # что иногда вызывает StopIteration на репликах в новых версиях PyTorch.
         if hasattr(self.dus, '_maybe_set_compile'):
             self.dus._maybe_set_compile = lambda *args, **kwargs: None
+            
+        type(self.dus).device = property(lambda self: torch.device("cuda"))
+        type(self.dus).dtype = property(lambda self: torch.bfloat16)
 
         # 4. Confidence Embedding
         self.confidence_proj = nn.Sequential(
@@ -465,7 +468,7 @@ def train():
             batch_size=args.batch_size,
             max_length=args.max_length,
             split="train",
-            val_ratio=0.0,
+            val_ratio=0.05,
             data_dir=args.dataset_path,
         )
         val_dataloader = get_dataloader(
@@ -473,7 +476,7 @@ def train():
             batch_size=args.batch_size,
             max_length=args.max_length,
             split="val",
-            val_ratio=0.0,
+            val_ratio=0.05,
             data_dir=args.dataset_path,
         )
     except NameError:
