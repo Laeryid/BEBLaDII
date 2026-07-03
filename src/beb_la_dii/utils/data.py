@@ -151,11 +151,24 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
         
         if not configs:
             print(f"Warning: No valid data found in {current_scan_path}.")
-            # Если мы пытались найти физический сплит и не нашли ничего, 
-            # возможно стоит попробовать корень
             if current_scan_path != stage_path:
                  return get_dataloader(stage=stage, batch_size=batch_size, max_length=max_length, split=split, val_ratio=val_ratio, data_dir=data_dir)
             
+        dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
+    elif os.path.exists(data_dir) and any(f.endswith('.parquet') for f in os.listdir(data_dir)):
+        # 1.5 Если папки стадии нет, но в data_dir лежат файлы (как на Kaggle после gcloud cp)
+        print(f"Stage folder {stage_capitalized} not found, but parquet files found in {data_dir}. Using them.")
+        configs = []
+        for item in os.listdir(data_dir):
+            item_path = os.path.join(data_dir, item)
+            dtype = 'raw'
+            name_lower = item.lower()
+            if 'magpie' in name_lower: dtype = 'magpie'
+            elif 'open_thoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
+            
+            if item.endswith('.parquet'):
+                configs.append({'path': data_dir, 'type': dtype, 'pattern': item})
+                
         dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
     else:
         # 2. Стандартная локальная логика

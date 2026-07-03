@@ -7,11 +7,15 @@
 # Установка необходимых пакетов, которых может не быть в Kaggle по умолчанию.
 
 # %%
-# !pip install -q einops wandb
+# !pip install -q einops wandb indexed_parquet_dataset
 
 # %%
 import math
 import os
+
+# Настройка путей для импорта src.
+# Клонируем или обновляем репозиторий прямо в /kaggle/working
+import subprocess
 import sys
 
 import numpy as np
@@ -22,12 +26,8 @@ import wandb
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer
 
-# Настройка путей для импорта src.
-# Клонируем или обновляем репозиторий прямо в /kaggle/working
-import subprocess
-
 PROJECT_ROOT = "/kaggle/working/BEBLaDII"
-REPO_URL = "https://github.com/BogdanBuliakov/BEBLaDII.git"
+REPO_URL = "https://github.com/Laeryid/BEBLaDII.git"
 
 if not os.path.exists(PROJECT_ROOT):
     print(f"Клонирование репозитория из {REPO_URL}...")
@@ -436,6 +436,16 @@ def train():
     ema = EMA(model, decay=0.998)
 
     if args.wandb_project:
+        # Автоматический вход через Kaggle Secrets, если ключ привязан к ноутбуку
+        try:
+            from kaggle_secrets import UserSecretsClient
+            user_secrets = UserSecretsClient()
+            wandb_api = user_secrets.get_secret("WANDB_API_KEY")
+            wandb.login(key=wandb_api)
+            print("[Init] W&B login successful via Kaggle Secrets.")
+        except Exception as e:
+            print(f"[Init] WARN: Could not login to W&B automatically: {e}")
+
         wandb.init(project=args.wandb_project, config=vars(args))
 
     # Даталоадеры
