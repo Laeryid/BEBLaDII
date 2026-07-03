@@ -125,9 +125,14 @@ class BEBLaDIIPhase3(nn.Module):
         if encoder_weights and os.path.exists(encoder_weights):
             state = torch.load(encoder_weights, map_location="cpu")
             # Веса могут быть вложены под ключом "encoder"
+            if "encoder" in state:
+                state = state["encoder"]
+            encoder_sd = self.encoder.state_dict()
+            matched = sum(1 for k in encoder_sd.keys() if k in state)
+            total_keys = len(encoder_sd.keys())
             self.encoder.load_state_dict(state, strict=False)
             print(
-                f"[Init] LatentEncoder weights loaded from {encoder_weights}",
+                f"[Init] LatentEncoder weights loaded from {encoder_weights} (Matched {matched}/{total_keys} params)",
                 flush=True,
             )
         else:
@@ -248,7 +253,7 @@ class BEBLaDIIPhase3(nn.Module):
                     1, 1, noise_window_size
                 )
                 < num_to_noise
-            ).float()
+            ).to(z_clean.dtype)
             noise_subset_mask = torch.gather(
                 noise_subset_mask, 2, noise_ranks.argsort(dim=-1)
             )
