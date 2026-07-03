@@ -332,7 +332,7 @@ def main():
             print(f"Итерация {step}: {text_step} (Cos: {cos_sim:.4f}, L2: {l2_dist:.4f})")
             
             # Для следующей итерации используем выход текущей
-            z_curr = z_out
+            z_curr = z_rec
 
 if __name__ == "__main__":
     main()
