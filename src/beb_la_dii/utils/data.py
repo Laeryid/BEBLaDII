@@ -102,11 +102,11 @@ class DistillationDataset(Dataset):
             "attention_mask": encoding["attention_mask"].squeeze(0)
         }
 
-def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train', val_ratio=0.05):
+def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train', val_ratio=0.05, data_dir='data'):
     tokenizer = get_tokenizer()
     # Нормализуем имя стадии для путей (Awakening / Reasoning)
     stage_capitalized = stage.capitalize() if stage.lower() in ['awakening', 'reasoning'] else stage
-    stage_path = os.path.join('data', stage_capitalized)
+    stage_path = os.path.join(data_dir, stage_capitalized)
     
     # 1. Если есть папка стадии (Kaggle или подготовленный локальный запуск)
     if os.path.exists(stage_path):
@@ -154,7 +154,7 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
             # Если мы пытались найти физический сплит и не нашли ничего, 
             # возможно стоит попробовать корень
             if current_scan_path != stage_path:
-                 return get_dataloader(stage=stage, batch_size=batch_size, max_length=max_length, split=split, val_ratio=val_ratio)
+                 return get_dataloader(stage=stage, batch_size=batch_size, max_length=max_length, split=split, val_ratio=val_ratio, data_dir=data_dir)
             
         dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
     else:

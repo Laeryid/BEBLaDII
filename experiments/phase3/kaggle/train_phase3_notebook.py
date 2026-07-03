@@ -10,18 +10,19 @@
 # !pip install -q einops wandb
 
 # %%
+import math
 import os
 import sys
-import math
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
 import wandb
+from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer
 
-# Настройка путей для импорта src. 
+# Настройка путей для импорта src.
 # Предполагается, что исходники проекта загружены как датасет (например, 'bebladii-src').
 # Измените путь ниже на актуальный путь к вашему Kaggle Dataset с исходным кодом.
 PROJECT_ROOT = "/kaggle/input/bebladii-src"
@@ -34,30 +35,37 @@ if PROJECT_ROOT not in sys.path and os.path.exists(PROJECT_ROOT):
 try:
     from src.beb_la_dii.model.dus import DUSModel
     from src.beb_la_dii.model.vae import LatentEncoder
-    from src.beb_la_dii.utils.loss import safe_normalize
     from src.beb_la_dii.utils.data import get_dataloader
+    from src.beb_la_dii.utils.loss import safe_normalize
 except ImportError as e:
-    print(f"Warning: Не удалось импортировать модули проекта. Убедитесь, что PROJECT_ROOT указан верно. Ошибка: {e}")
+    print(
+        f"Warning: Не удалось импортировать модули проекта. Убедитесь, что PROJECT_ROOT указан верно. Ошибка: {e}"
+    )
 
 
 # %% [markdown]
 # ## 2. Configuration
 # Использование класса Config вместо argparse для удобства работы в ячейках.
 
+
 # %%
 class Config:
     # Пути к базовым моделям (используйте Kaggle Models или Datasets)
-    embedding_model_path = "/kaggle/input/qwen2.5-1.5b" 
-    
+    embedding_model_path = "/kaggle/input/qwen2.5-1.5b"
+    modernbert_path = "/kaggle/input/modernbert-large"
+
+    # Пути к данным
+    dataset_path = "/kaggle/input/bebladii-planb-phase3-data/phase 3/train_data/data"
+
     # Пути к весам (из ваших предыдущих загрузок)
-    local_encoder_weights = "/kaggle/input/bebladii-weights/phase1_vae_step_10000.pth"
-    local_dus_weights = "/kaggle/input/bebladii-weights/AWAKENED_WEIGHTS_FINAL.pt"
-    
+    local_encoder_weights = "/kaggle/input/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
+    local_dus_weights = "/kaggle/input/твое_старое_имя_датасета/AWAKENED_WEIGHTS_FINAL.pt"
+
     # Директории вывода (доступны для записи)
     output_dir = "/kaggle/working/checkpoints/phase3"
-    
+
     # Гиперпараметры обучения
-    batch_size = 16 # Можно увеличить для T4 x2 (по сравнению с 8 для TPU FSDP)
+    batch_size = 16  # Можно увеличить для T4 x2 (по сравнению с 8 для TPU FSDP)
     max_length = 512
     learning_rate = 1e-4
     epochs = 1
@@ -65,20 +73,22 @@ class Config:
     log_steps = 10
     val_steps = 1000
     save_steps = 1000
-    
+
     # Специфика Phase 3
     low_noise_amp = 0.5
     gamma = 20.0
     w_denoise = 10.0
     w_identity = 5.0
-    
+
     wandb_project = "BEBLaDII-Phase3-Kaggle"
+
 
 args = Config()
 
 
 # %% [markdown]
 # ## 3. Utilities
+
 
 # %%
 class EMA:
@@ -95,7 +105,9 @@ class EMA:
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
-                    self.shadow[name].mul_(self.decay).add_(param.data.float(), alpha=1.0 - self.decay)
+                    self.shadow[name].mul_(self.decay).add_(
+                        param.data.float(), alpha=1.0 - self.decay
+                    )
 
     def apply(self, model):
         with torch.no_grad():
@@ -111,14 +123,17 @@ class EMA:
                     param.data.copy_(self.backup[name])
         self.backup = {}
 
+
 # %% [markdown]
 # ## 4. Model Definition
+
 
 # %%
 class BEBLaDIIPhase3(nn.Module):
     def __init__(
         self,
         embedding_model_path: str,
+        modernbert_path: str,
         dus_weights: str | None,
         encoder_weights: str | None,
     ):
@@ -138,16 +153,22 @@ class BEBLaDIIPhase3(nn.Module):
         if encoder_weights and os.path.exists(encoder_weights):
             state = torch.load(encoder_weights, map_location="cpu")
             self.encoder.load_state_dict(state, strict=False)
-            print(f"[Init] LatentEncoder weights loaded from {encoder_weights}", flush=True)
+            print(
+                f"[Init] LatentEncoder weights loaded from {encoder_weights}",
+                flush=True,
+            )
         else:
-            print(f"[Init] WARN: encoder_weights not found ({encoder_weights}), using random init", flush=True)
-            
+            print(
+                f"[Init] WARN: encoder_weights not found ({encoder_weights}), using random init",
+                flush=True,
+            )
+
         for p in self.encoder.parameters():
             p.requires_grad = False
         self.encoder.to(torch.bfloat16)
 
         # 3. DUS Backbone (обучаемый)
-        dus_wrapper = DUSModel.from_scratch(weights_path=None)
+        dus_wrapper = DUSModel.from_scratch(config={"base_model_id": modernbert_path}, weights_path=None)
         if dus_weights and os.path.exists(dus_weights):
             state = torch.load(dus_weights, map_location="cpu")
             if "latentBERT_state_dict" in state:
@@ -164,7 +185,10 @@ class BEBLaDIIPhase3(nn.Module):
             matched = sum(1 for k in model_sd.keys() if k in clean_state)
             total_keys = len(model_sd.keys())
             dus_wrapper.model.load_state_dict(clean_state, strict=False)
-            print(f"[Init] Awakened DUS weights loaded from {dus_weights} (Matched {matched}/{total_keys} params)", flush=True)
+            print(
+                f"[Init] Awakened DUS weights loaded from {dus_weights} (Matched {matched}/{total_keys} params)",
+                flush=True,
+            )
 
         self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
@@ -179,9 +203,9 @@ class BEBLaDIIPhase3(nn.Module):
 
     def train(self, mode=True):
         super().train(mode)
-        if hasattr(self, 'qwen_embeddings'):
+        if hasattr(self, "qwen_embeddings"):
             self.qwen_embeddings.eval()
-        if hasattr(self, 'encoder'):
+        if hasattr(self, "encoder"):
             self.encoder.eval()
 
     def forward(
@@ -213,23 +237,42 @@ class BEBLaDIIPhase3(nn.Module):
                 starts.append(start)
             starts = torch.cat(starts, dim=1)
 
-            noise_offsets = torch.arange(noise_window_size, device=z_clean.device).view(1, 1, noise_window_size)
+            noise_offsets = torch.arange(noise_window_size, device=z_clean.device).view(
+                1, 1, noise_window_size
+            )
             noise_window_indices = starts.unsqueeze(-1) + noise_offsets
 
-            rand_noise = torch.rand((B, num_windows, noise_window_size), device=z_clean.device)
-            num_to_noise = torch.randint(1, noise_window_size + 1, (B, num_windows, 1), device=z_clean.device)
+            rand_noise = torch.rand(
+                (B, num_windows, noise_window_size), device=z_clean.device
+            )
+            num_to_noise = torch.randint(
+                1, noise_window_size + 1, (B, num_windows, 1), device=z_clean.device
+            )
             _, noise_ranks = torch.sort(rand_noise, dim=-1)
-            noise_subset_mask = (torch.arange(noise_window_size, device=z_clean.device).view(1, 1, noise_window_size) < num_to_noise).float()
-            noise_subset_mask = torch.gather(noise_subset_mask, 2, noise_ranks.argsort(dim=-1))
+            noise_subset_mask = (
+                torch.arange(noise_window_size, device=z_clean.device).view(
+                    1, 1, noise_window_size
+                )
+                < num_to_noise
+            ).float()
+            noise_subset_mask = torch.gather(
+                noise_subset_mask, 2, noise_ranks.argsort(dim=-1)
+            )
 
             flat_noise_indices = noise_window_indices.view(B, -1)
-            full_noise_mask = torch.zeros((B, T), device=z_clean.device, dtype=z_clean.dtype)
-            full_noise_mask.scatter_(1, flat_noise_indices, noise_subset_mask.view(B, -1))
+            full_noise_mask = torch.zeros(
+                (B, T), device=z_clean.device, dtype=z_clean.dtype
+            )
+            full_noise_mask.scatter_(
+                1, flat_noise_indices, noise_subset_mask.view(B, -1)
+            )
 
             noise_mask = full_noise_mask * attention_mask.to(z_clean.dtype)
 
             noise = torch.randn_like(z_clean)
-            noise = safe_normalize(noise.float(), dim=-1).to(torch.bfloat16) * low_noise_amp
+            noise = (
+                safe_normalize(noise.float(), dim=-1).to(torch.bfloat16) * low_noise_amp
+            )
             z_noisy = z_clean + noise * noise_mask.unsqueeze(-1)
 
             z_noisy = torch.where(
@@ -255,7 +298,7 @@ class BEBLaDIIPhase3(nn.Module):
         pre_norm = dus_outputs.hidden_states[-1]
         clean_pre_norm = pre_norm - c_embed
         dus_final_raw = self.dus.final_norm(clean_pre_norm)
-        
+
         dus_delta = dus_final_raw - z_noisy.to(torch.bfloat16)
         dus_final = safe_normalize(dus_final_raw.float(), dim=-1).to(torch.bfloat16)
 
@@ -271,8 +314,10 @@ class BEBLaDIIPhase3(nn.Module):
             "dus_input": dus_input,
         }
 
+
 # %% [markdown]
 # ## 5. Loss Function
+
 
 # %%
 def compute_phase3_loss(
@@ -323,7 +368,7 @@ def compute_phase3_loss(
     denoise_elementwise = 1.0 - cos_denoise
     denoise_loss = (denoise_elementwise * noise_mask).sum() / noised_tokens
     metrics["denoise_loss"] = denoise_loss.detach()
-    
+
     total_loss = total_loss + w_denoise * denoise_loss
 
     # 4.4 Identity Penalty
@@ -333,7 +378,7 @@ def compute_phase3_loss(
     penalty_elementwise = 1.0 - cos_identity
     identity_penalty = (penalty_elementwise * w_c * attn_f).sum() / active_tokens
     metrics["identity_penalty"] = identity_penalty.detach()
-    
+
     total_loss = total_loss + w_identity * identity_penalty
 
     c_true_mean = (c_true * attn_f).sum() / active_tokens
@@ -346,6 +391,7 @@ def compute_phase3_loss(
 # %% [markdown]
 # ## 6. Training Loop
 
+
 # %%
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -357,13 +403,16 @@ def train():
 
     model = BEBLaDIIPhase3(
         embedding_model_path=args.embedding_model_path,
+        modernbert_path=args.modernbert_path,
         dus_weights=args.local_dus_weights,
         encoder_weights=args.local_encoder_weights,
     ).to(device)
 
     # Оборачиваем модель в DataParallel для распределения по T4 x2
     if num_gpus > 1:
-        print(f"[Init] Wrapping model in DataParallel across {num_gpus} GPUs", flush=True)
+        print(
+            f"[Init] Wrapping model in DataParallel across {num_gpus} GPUs", flush=True
+        )
         model = nn.DataParallel(model)
 
     # Оптимизатор
@@ -387,6 +436,7 @@ def train():
             max_length=args.max_length,
             split="train",
             val_ratio=0.0,
+            data_dir=args.dataset_path,
         )
         val_dataloader = get_dataloader(
             stage="reasoning",
@@ -394,19 +444,28 @@ def train():
             max_length=args.max_length,
             split="val",
             val_ratio=0.0,
+            data_dir=args.dataset_path,
         )
     except NameError:
-        print("WARN: get_dataloader is not defined. Please implement data loading logic or fix imports.")
-        dataloader, val_dataloader = [], [] # Dummy
+        print(
+            "WARN: get_dataloader is not defined. Please implement data loading logic or fix imports."
+        )
+        dataloader, val_dataloader = [], []  # Dummy
 
     from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+
     scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=2000, T_mult=1, eta_min=1e-6)
 
     model.train()
     step = 0
-    total_steps = min(args.max_steps, len(dataloader) * args.epochs) if len(dataloader) > 0 else args.max_steps
+    total_steps = (
+        min(args.max_steps, len(dataloader) * args.epochs)
+        if len(dataloader) > 0
+        else args.max_steps
+    )
 
     from tqdm.auto import tqdm
+
     pbar = tqdm(total=total_steps, desc="Training Phase 3")
 
     os.makedirs(args.output_dir, exist_ok=True)
@@ -426,8 +485,8 @@ def train():
                 attention_mask=attention_mask,
                 low_noise_amp=args.low_noise_amp,
             )
-            
-            # Если DataParallel - словари будут собраны (по первой размерности, B). 
+
+            # Если DataParallel - словари будут собраны (по первой размерности, B).
             # Функция потерь сможет обработать их корректно.
             loss, metrics = compute_phase3_loss(
                 fwd_outputs,
@@ -435,14 +494,14 @@ def train():
                 w_denoise=args.w_denoise,
                 w_identity=args.w_identity,
             )
-            
+
             # Для DataParallel если лосс возвращается как вектор (1 на GPU), нужно усреднить
             if loss.dim() > 0:
                 loss = loss.mean()
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
-            
+
             optimizer.step()
             ema.step(model)
             scheduler.step()
@@ -465,13 +524,16 @@ def train():
 
             # Логирование
             if step % args.log_steps == 0:
-                metrics_dict = {k: (v.mean().item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
+                metrics_dict = {
+                    k: (v.mean().item() if isinstance(v, torch.Tensor) else v)
+                    for k, v in metrics.items()
+                }
                 metrics_dict["loss"] = loss.item()
                 metrics_dict["lr"] = optimizer.param_groups[0]["lr"]
-                
+
                 if args.wandb_project:
                     wandb.log(metrics_dict, step=step)
-                
+
                 pbar.set_postfix(
                     {
                         "loss": f"{metrics_dict['loss']:.4f}",
@@ -482,15 +544,27 @@ def train():
             # Сохранение чекпоинта
             if step > 0 and step % args.save_steps == 0:
                 ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
-                
+
                 # Извлекаем state_dict с учетом DataParallel (module.)
-                actual_model = model.module if isinstance(model, nn.DataParallel) else model
-                dus_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-                proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+                actual_model = (
+                    model.module if isinstance(model, nn.DataParallel) else model
+                )
+                dus_state = {
+                    k: v.cpu() for k, v in actual_model.dus.state_dict().items()
+                }
+                proj_state = {
+                    k: v.cpu()
+                    for k, v in actual_model.confidence_proj.state_dict().items()
+                }
 
                 ema.apply(model)
-                dus_ema_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-                proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+                dus_ema_state = {
+                    k: v.cpu() for k, v in actual_model.dus.state_dict().items()
+                }
+                proj_ema_state = {
+                    k: v.cpu()
+                    for k, v in actual_model.confidence_proj.state_dict().items()
+                }
                 ema.restore(model)
 
                 torch.save(
@@ -516,11 +590,15 @@ def train():
     final_path = os.path.join(args.output_dir, "phase3_final.pth")
     actual_model = model.module if isinstance(model, nn.DataParallel) else model
     dus_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+    proj_state = {
+        k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()
+    }
 
     ema.apply(model)
     dus_ema_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+    proj_ema_state = {
+        k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()
+    }
     ema.restore(model)
 
     torch.save(
@@ -535,6 +613,7 @@ def train():
     print(f"[SAVE] Final weights saved → {final_path}")
     if args.wandb_project:
         wandb.finish()
+
 
 # %%
 if __name__ == "__main__":
