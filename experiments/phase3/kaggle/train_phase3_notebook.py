@@ -207,6 +207,11 @@ class BEBLaDIIPhase3(nn.Module):
 
         self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
+        
+        # Патч для DataParallel: ModernBERT пытается определить device через parameters(), 
+        # что иногда вызывает StopIteration на репликах. Мы на CUDA, mps-компиляция не нужна.
+        if hasattr(self.dus, '_maybe_set_compile'):
+            self.dus._maybe_set_compile = lambda *args, **kwargs: None
 
         # 4. Confidence Embedding
         self.confidence_proj = nn.Sequential(
