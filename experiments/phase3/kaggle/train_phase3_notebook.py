@@ -296,9 +296,13 @@ class BEBLaDIIPhase3(nn.Module):
 
             noise_mask = full_noise_mask * attention_mask.to(z_clean.dtype)
 
+            # Масштабируем шум относительно текущей нормы z_clean
+            z_clean_norm = torch.linalg.vector_norm(z_clean.float(), dim=-1, keepdim=True)
             noise = torch.randn_like(z_clean)
             noise = (
-                safe_normalize(noise.float(), dim=-1).to(torch.bfloat16) * low_noise_amp
+                safe_normalize(noise.float(), dim=-1).to(torch.bfloat16) 
+                * low_noise_amp 
+                * z_clean_norm.to(torch.bfloat16)
             )
             z_noisy = z_clean + noise * noise_mask.unsqueeze(-1)
 

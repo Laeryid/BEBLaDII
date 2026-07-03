@@ -139,7 +139,7 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
             dtype = 'raw'
             name_lower = item.lower()
             if 'magpie' in name_lower: dtype = 'magpie'
-            elif 'open_thoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
+            elif 'open_thoughts' in name_lower or 'openthoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
             
             if item.endswith('.parquet'):
                 configs.append({'path': current_scan_path, 'type': dtype, 'pattern': item})
@@ -164,7 +164,7 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
             dtype = 'raw'
             name_lower = item.lower()
             if 'magpie' in name_lower: dtype = 'magpie'
-            elif 'open_thoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
+            elif 'open_thoughts' in name_lower or 'openthoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
             
             if item.endswith('.parquet'):
                 configs.append({'path': data_dir, 'type': dtype, 'pattern': item})
