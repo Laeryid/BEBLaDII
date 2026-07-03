@@ -73,7 +73,7 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase3"
 
     # Гиперпараметры обучения
-    batch_size = 16  # Можно увеличить для T4 x2 (по сравнению с 8 для TPU FSDP)
+    batch_size = 8  # Уменьшено для защиты от OOM
     max_length = 512
     learning_rate = 1e-4
     epochs = 1
@@ -208,6 +208,10 @@ class BEBLaDIIPhase3(nn.Module):
         self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
         
+        # Включаем Gradient Checkpointing для жесточайшей экономии VRAM
+        if hasattr(self.dus, 'gradient_checkpointing_enable'):
+            self.dus.gradient_checkpointing_enable()
+            
         # Патч для DataParallel: ModernBERT пытается определить device и dtype через parameters(), 
         # что иногда вызывает StopIteration на репликах в новых версиях PyTorch.
         if hasattr(self.dus, '_maybe_set_compile'):
