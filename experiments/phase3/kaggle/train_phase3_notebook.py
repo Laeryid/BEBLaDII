@@ -465,10 +465,30 @@ def train():
         # Автоматический вход через Kaggle Secrets, если ключ привязан к ноутбуку
         try:
             from kaggle_secrets import UserSecretsClient
+            import json, os, subprocess
             user_secrets = UserSecretsClient()
             wandb_api = user_secrets.get_secret("WANDB_API_KEY")
             wandb.login(key=wandb_api)
             print("[Init] W&B login successful via Kaggle Secrets.")
+            
+            # GCP Auth
+            try:
+                gcp_sa = user_secrets.get_secret("GCP_SA_JSON")
+                with open("gcp_sa.json", "w") as f:
+                    f.write(gcp_sa)
+                subprocess.run(["gcloud", "auth", "activate-service-account", "--key-file", "gcp_sa.json"], check=True)
+                print("[Init] GCP Authentication successful via Kaggle Secrets.")
+                
+                # Test GCS Sync
+                print("[Init] Testing GCS write access...")
+                with open("gcs_test.txt", "w") as f:
+                    f.write("GCS Auth Test Successful")
+                subprocess.run(["gsutil", "cp", "gcs_test.txt", "gs://bebladii-weigths-us/planB/phase3/checkpoints/gcs_test.txt"], check=True)
+                print("[Init] GCS write access verified successfully.")
+                
+            except Exception as e_gcp:
+                print(f"[Init] WARN: Could not authenticate GCP automatically or GCS test failed: {e_gcp}")
+                
         except Exception as e:
             print(f"[Init] WARN: Could not login to W&B automatically: {e}")
 
@@ -623,6 +643,12 @@ def train():
                     ckpt_path,
                 )
                 print(f"\n[SAVE] Checkpoint saved → {ckpt_path}")
+                try:
+                    import subprocess
+                    subprocess.Popen(["gsutil", "-q", "cp", ckpt_path, "gs://bebladii-weigths-us/planB/phase3/checkpoints/"])
+                    print(f"[SYNC] Started background sync to GCS: {ckpt_path}")
+                except Exception as e:
+                    print(f"[SYNC] Error syncing to GCS: {e}")
 
             step += 1
             pbar.update(1)
@@ -657,6 +683,12 @@ def train():
         final_path,
     )
     print(f"[SAVE] Final weights saved → {final_path}")
+    try:
+        import subprocess
+        subprocess.run(["gsutil", "-q", "cp", final_path, "gs://bebladii-weigths-us/planB/phase3/checkpoints/"])
+        print(f"[SYNC] Final sync to GCS complete: {final_path}")
+    except Exception as e:
+        print(f"[SYNC] Error syncing final to GCS: {e}")
     if args.wandb_project:
         wandb.finish()
 
