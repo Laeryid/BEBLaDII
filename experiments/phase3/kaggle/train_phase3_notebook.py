@@ -171,9 +171,10 @@ class BEBLaDIIPhase3(nn.Module):
                 flush=True,
             )
         else:
-            print(
-                f"[Init] WARN: encoder_weights not found ({encoder_weights}), using random init",
-                flush=True,
+            raise FileNotFoundError(
+                f"CRITICAL: encoder_weights not found at '{encoder_weights}'. "
+                f"Phase 3 CANNOT be trained with a random LatentEncoder. "
+                f"Please verify the dataset paths."
             )
 
         for p in self.encoder.parameters():

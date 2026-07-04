@@ -141,7 +141,7 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
         configs = []
         print(f"DEBUG DATA: Scanning directory: {current_scan_path}")
         try:
-            items = os.listdir(current_scan_path)
+            items = sorted(os.listdir(current_scan_path))  # sorted → детерминированный split при перезапуске
         except Exception as e:
             print(f"DEBUG DATA: Error listing directory: {e}")
             items = []
@@ -173,7 +173,7 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
         # 1.5 Если папки стадии нет, но в data_dir лежат файлы (как на Kaggle после gcloud cp)
         print(f"Stage folder {stage_capitalized} not found, but parquet files found in {data_dir}. Using them.")
         configs = []
-        for item in os.listdir(data_dir):
+        for item in sorted(os.listdir(data_dir)):  # sorted → детерминированный split при перезапуске
             item_path = os.path.join(data_dir, item)
             dtype = 'raw'
             name_lower = item.lower()

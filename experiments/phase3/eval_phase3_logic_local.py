@@ -38,11 +38,17 @@ def recover_z(dus_final, c_embed, r_sq):
 def load_dus_checkpoint(dus, conf_proj, path):
     state = torch.load(path, map_location="cpu", weights_only=False)
 
+    # --- ДИАГНОСТИКА: top-level ключи чекпоинта ---
+    print(f"[DIAG] Checkpoint top-level keys: {list(state.keys())}")
+
     dus_state = state.get("dus", state)
     if "latentBERT_state_dict" in dus_state:
         dus_state = dus_state["latentBERT_state_dict"]
     elif "model_state_dict" in dus_state:
         dus_state = dus_state["model_state_dict"]
+
+    print(f"[DIAG] DUS state_dict total keys in checkpoint: {len(dus_state)}")
+    print(f"[DIAG] First 5 checkpoint DUS keys: {list(dus_state.keys())[:5]}")
 
     clean_dus = {}
     for k, v in dus_state.items():
@@ -53,6 +59,21 @@ def load_dus_checkpoint(dus, conf_proj, path):
             .replace("_fsdp_wrapped_module.", "")
         )
         clean_dus[k_clean] = v
+
+    model_dus_keys = set(dus.state_dict().keys())
+    matched_dus = set(clean_dus.keys()) & model_dus_keys
+    missing_dus = model_dus_keys - set(clean_dus.keys())   # есть в модели, нет в чекпоинте
+    extra_dus = set(clean_dus.keys()) - model_dus_keys     # есть в чекпоинте, нет в модели
+
+    print(f"[DIAG] DUS matched:  {len(matched_dus)} / {len(model_dus_keys)}")
+    print(f"[DIAG] DUS missing (in model, not in ckpt): {len(missing_dus)}")
+    if missing_dus:
+        print(f"[DIAG]   Examples missing: {list(missing_dus)[:5]}")
+    print(f"[DIAG] DUS extra   (in ckpt, not in model): {len(extra_dus)}")
+    if extra_dus:
+        print(f"[DIAG]   Examples extra:   {list(extra_dus)[:5]}")
+    print(f"[DIAG] First 5 cleaned checkpoint DUS keys: {list(clean_dus.keys())[:5]}")
+    print(f"[DIAG] First 5 model DUS keys:              {list(model_dus_keys)[:5]}")
 
     dus.load_state_dict(clean_dus, strict=False)
 
@@ -213,6 +234,7 @@ def main():
 
             dus_outputs = dus(
                 inputs_embeds=dus_input,
+                attention_mask=attn_mask,
                 output_hidden_states=True,
             )
             clean_pre_norm = dus_outputs.hidden_states[-1] - c_embed
@@ -277,6 +299,7 @@ def main():
 
         dus_outputs = dus(
             inputs_embeds=dus_input,
+            attention_mask=attn_mask,
             output_hidden_states=True,
         )
         clean_pre_norm = dus_outputs.hidden_states[-1] - c_embed
