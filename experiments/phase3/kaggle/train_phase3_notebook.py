@@ -205,6 +205,12 @@ class BEBLaDIIPhase3(nn.Module):
                 f"[Init] Awakened DUS weights loaded from {dus_weights} (Matched {matched}/{total_keys} params)",
                 flush=True,
             )
+        else:
+            raise FileNotFoundError(
+                f"CRITICAL: dus_weights not found at '{dus_weights}'. "
+                f"Phase 3 CANNOT be trained with a random DUS model. "
+                f"Please verify the dataset paths."
+            )
 
         self.dus = dus_wrapper.model
         self.dus.to(torch.bfloat16)
@@ -610,6 +616,45 @@ def train():
 
             # Сохранение чекпоинта
             if step > 0 and step % args.save_steps == 0:
+                
+                # --- Validation Loop ---
+                model.eval()
+                val_metrics_sum = {}
+                val_batches = 0
+                
+                with torch.no_grad():
+                    for val_batch in val_dataloader:
+                        val_input_ids = val_batch["input_ids"].to(device)
+                        val_attention_mask = val_batch["attention_mask"].to(device)
+                        val_outputs = model(
+                            val_input_ids,
+                            attention_mask=val_attention_mask,
+                            low_noise_amp=args.low_noise_amp,
+                        )
+                        val_loss, val_batch_metrics = compute_phase3_loss(
+                            val_outputs,
+                            gamma=args.gamma,
+                            w_denoise=args.w_denoise,
+                            w_identity=args.w_identity,
+                        )
+                        for k, v in val_batch_metrics.items():
+                            val_v = v.mean().item() if isinstance(v, torch.Tensor) else v
+                            val_metrics_sum[f"val_{k}"] = val_metrics_sum.get(f"val_{k}", 0) + val_v
+                        val_l = val_loss.mean().item() if isinstance(val_loss, torch.Tensor) else val_loss
+                        val_metrics_sum["val_loss"] = val_metrics_sum.get("val_loss", 0) + val_l
+                        val_batches += 1
+                        if val_batches >= 50:
+                            break
+                            
+                if val_batches > 0:
+                    val_metrics_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
+                    if args.wandb_project:
+                        wandb.log(val_metrics_avg, step=step)
+                    print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_denoise: {val_metrics_avg.get('val_cos_denoise_on_noised', 0):.4f}")
+                
+                model.train()
+                # --- End Validation Loop ---
+
                 ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
 
                 # Извлекаем state_dict с учетом DataParallel (module.)

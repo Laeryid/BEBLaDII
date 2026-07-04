@@ -14,8 +14,7 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from src.beb_la_dii.model.dus import DUSModel
-from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
-from src.beb_la_dii.model.vae import LatentEncoder
+from src.beb_la_dii.model.vae import LatentEncoder, LatentDecoder
 from src.beb_la_dii.utils.loss import safe_normalize
 
 
@@ -138,7 +137,7 @@ def main():
         default=r"experiments\phase 2\planB_phase2_phase2_decoder_step_8000.pth",
     )
     parser.add_argument(
-        "--embed_model", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"
+        "--embed_model", type=str, default="Qwen/Qwen2.5-1.5B"
     )
 
     default_device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -158,17 +157,12 @@ def main():
     embeddings.requires_grad_(False)
     lm_head_weight = causal_model.lm_head.weight.data.to(device)
 
-    print("[*] Loading LatentEncoder & ModernLatentDecoder")
+    print("[*] Loading LatentEncoder & LatentDecoder (Phase 1)")
     encoder = LatentEncoder().to(device).to(torch.bfloat16)
     encoder.eval()
 
-    decoder = ModernLatentDecoder(
-        latent_dim=1024, qwen_dim=1536, num_layers=3, dus_weights_path=None
-    ).to(device).to(torch.bfloat16)
-    dus_for_dec = DUSModel.from_scratch(weights_path=None).model.to(device).to(torch.bfloat16)
-    decoder.backbone = dus_for_dec
-    decoder.backbone.layers = decoder.backbone.layers[-3:]
-    decoder.use_modern_bert = True
+    decoder = LatentDecoder().to(device).to(torch.bfloat16)
+    decoder.eval()
 
     def load_with_stats(module, state_dict, name):
         model_keys = set(module.state_dict().keys())
@@ -178,19 +172,16 @@ def main():
 
     if os.path.exists(args.encoder):
         state = torch.load(args.encoder, map_location="cpu", weights_only=False)
-        state_dict = state.get("encoder", state)
-        clean_state = {k.replace("encoder.", ""): v for k, v in state_dict.items()}
-        load_with_stats(encoder, clean_state, "LatentEncoder")
+        # Load Encoder
+        state_dict_enc = state.get("encoder", state)
+        clean_state_enc = {k.replace("encoder.", ""): v for k, v in state_dict_enc.items()}
+        load_with_stats(encoder, clean_state_enc, "LatentEncoder")
+        # Load Decoder
+        state_dict_dec = state.get("decoder", state)
+        clean_state_dec = {k.replace("decoder.", ""): v for k, v in state_dict_dec.items()}
+        load_with_stats(decoder, clean_state_dec, "LatentDecoder")
     else:
-        print(f"[!] Warning: Encoder weights not found at {args.encoder}")
-
-    if os.path.exists(args.decoder):
-        state = torch.load(args.decoder, map_location="cpu", weights_only=False)
-        state_dict = state.get("decoder", state)
-        clean_state = {k.replace("decoder.", ""): v for k, v in state_dict.items()}
-        load_with_stats(decoder, clean_state, "ModernLatentDecoder")
-    else:
-        print(f"[!] Warning: Decoder weights not found at {args.decoder}")
+        print(f"[!] Warning: Phase 1 weights not found at {args.encoder}")
 
     print(f"[*] Loading DUS Model and Confidence Proj from {args.checkpoint}")
     dus_wrapper = DUSModel.from_scratch(weights_path=None)
