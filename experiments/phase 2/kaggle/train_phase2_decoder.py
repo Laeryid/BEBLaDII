@@ -10,6 +10,10 @@ import os
 import subprocess
 import sys
 
+# Установка необходимых пакетов для Kaggle
+print("Установка зависимостей...")
+subprocess.run([sys.executable, "-m", "pip", "install", "-q", "einops", "wandb", "indexed_parquet_dataset"], check=True)
+
 PROJECT_ROOT = "/kaggle/working/BEBLaDII"
 REPO_URL = "https://github.com/Laeryid/BEBLaDII.git"
 
