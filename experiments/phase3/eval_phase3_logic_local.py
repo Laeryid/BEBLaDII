@@ -34,13 +34,18 @@ def recover_z(dus_final, c_embed, r_sq):
     return safe_normalize(z_rec, dim=-1) * torch.sqrt(r_sq)
 
 
-def load_dus_checkpoint(dus, conf_proj, path):
+def load_dus_checkpoint(dus, conf_proj, path, use_ema=True):
     state = torch.load(path, map_location="cpu", weights_only=False)
 
     # --- ДИАГНОСТИКА: top-level ключи чекпоинта ---
     print(f"[DIAG] Checkpoint top-level keys: {list(state.keys())}")
 
-    dus_state = state.get("dus", state)
+    dus_key = "dus"
+    proj_key = "confidence_proj"
+    
+    print(f"[*] Loading weights from keys: {dus_key}, {proj_key}")
+
+    dus_state = state.get(dus_key, state)
     if "latentBERT_state_dict" in dus_state:
         dus_state = dus_state["latentBERT_state_dict"]
     elif "model_state_dict" in dus_state:
@@ -71,12 +76,21 @@ def load_dus_checkpoint(dus, conf_proj, path):
     print(f"[DIAG] DUS extra   (in ckpt, not in model): {len(extra_dus)}")
     if extra_dus:
         print(f"[DIAG]   Examples extra:   {list(extra_dus)[:5]}")
+    
+    if hasattr(dus, 'final_norm') and hasattr(dus.final_norm, 'weight') and dus.final_norm.weight is not None:
+        import torch.nn as nn
+        if "final_norm.weight" not in clean_dus:
+            nn.init.ones_(dus.final_norm.weight)
+            if hasattr(dus.final_norm, 'bias') and dus.final_norm.bias is not None:
+                nn.init.zeros_(dus.final_norm.bias)
+            print("[*] Fixed final_norm weights to Identity (1.0) to match Kaggle architecture.")
+
     print(f"[DIAG] First 5 cleaned checkpoint DUS keys: {list(clean_dus.keys())[:5]}")
     print(f"[DIAG] First 5 model DUS keys:              {list(model_dus_keys)[:5]}")
 
     dus.load_state_dict(clean_dus, strict=False)
 
-    proj_state = state.get("confidence_proj", None)
+    proj_state = state.get(proj_key, None)
     if proj_state:
         clean_proj = {k.replace("_orig_module.", "").replace("_fsdp_wrapped_module.", ""): v for k, v in proj_state.items()}
         model_keys = set(conf_proj.state_dict().keys())
@@ -139,18 +153,22 @@ def main():
     parser.add_argument(
         "--embed_model", type=str, default="Qwen/Qwen2.5-1.5B"
     )
+    parser.add_argument(
+        "--use_ema", action="store_true", default=True, help="Использовать EMA веса из чекпоинта"
+    )
 
     default_device = "cuda" if torch.cuda.is_available() else "cpu"
     parser.add_argument("--device", type=str, default=default_device)
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    print(f"[*] Running LOCAL evaluation on device: {device}")
+    eval_dtype = torch.float32 if args.device == "cpu" else torch.bfloat16
+    print(f"[*] Running LOCAL evaluation on device: {device} | dtype: {eval_dtype}")
 
     print(f"[*] Loading Tokenizer and Embedding Model: {args.embed_model}")
     tokenizer = AutoTokenizer.from_pretrained(args.embed_model)
     causal_model = AutoModelForCausalLM.from_pretrained(
-        args.embed_model, torch_dtype=torch.bfloat16
+        args.embed_model, torch_dtype=eval_dtype
     )
     embeddings = causal_model.get_input_embeddings()
     embeddings.to(device)
@@ -158,10 +176,10 @@ def main():
     lm_head_weight = causal_model.lm_head.weight.data.to(device)
 
     print("[*] Loading LatentEncoder & LatentDecoder (Phase 1)")
-    encoder = LatentEncoder().to(device).to(torch.bfloat16)
+    encoder = LatentEncoder().to(device).to(eval_dtype)
     encoder.eval()
 
-    decoder = LatentDecoder().to(device).to(torch.bfloat16)
+    decoder = LatentDecoder().to(device).to(eval_dtype)
     decoder.eval()
 
     def load_with_stats(module, state_dict, name):
@@ -185,17 +203,17 @@ def main():
 
     print(f"[*] Loading DUS Model and Confidence Proj from {args.checkpoint}")
     dus_wrapper = DUSModel.from_scratch(weights_path=None)
-    dus = dus_wrapper.model.to(device).to(torch.bfloat16)
+    dus = dus_wrapper.model.to(device).to(eval_dtype)
 
     confidence_proj = (
         torch.nn.Sequential(
             torch.nn.Linear(1, 256), torch.nn.SiLU(), torch.nn.Linear(256, 1024)
         )
         .to(device)
-        .to(torch.bfloat16)
+        .to(eval_dtype)
     )
 
-    load_dus_checkpoint(dus, confidence_proj, args.checkpoint)
+    load_dus_checkpoint(dus, confidence_proj, args.checkpoint, use_ema=args.use_ema)
     dus.eval()
     confidence_proj.eval()
 
@@ -209,19 +227,23 @@ def main():
     ]
 
     for i, phrase in enumerate(phrases, 1):
-        input_ids = torch.tensor([tokenizer.encode(phrase)]).to(device)
-        attn_mask = torch.ones_like(input_ids).to(device)
+        chatml_phrase = f"<|im_start|>user\n{phrase}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n"
+        tokens = tokenizer.encode(chatml_phrase)
+        pad_len = 512 - len(tokens)
+        pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+        input_ids = torch.tensor([tokens + [pad_id] * pad_len]).to(device)
+        attn_mask = torch.tensor([[1] * len(tokens) + [0] * pad_len]).to(device)
 
         with torch.no_grad():
             qwen_embeds = embeddings(input_ids)
             z_clean, _, _ = encoder(qwen_embeds)
 
             c_true = torch.ones(
-                (1, z_clean.size(1)), device=device, dtype=torch.bfloat16
+                (1, z_clean.size(1)), device=device, dtype=eval_dtype
             )
             c_embed_raw = confidence_proj(c_true.unsqueeze(-1))
-            c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(torch.bfloat16) * 0.1
-            dus_input = (z_clean + c_embed).to(torch.bfloat16)
+            c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(eval_dtype) * 0.1
+            dus_input = (z_clean + c_embed).to(eval_dtype)
 
             dus_outputs = dus(
                 inputs_embeds=dus_input,
@@ -231,7 +253,7 @@ def main():
             clean_pre_norm = dus_outputs.hidden_states[-1] - c_embed
             dus_out_raw = dus.final_norm(clean_pre_norm)
             dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(
-                torch.bfloat16
+                eval_dtype
             )
 
             z_recovered = dus_out_norm
@@ -242,11 +264,12 @@ def main():
                 raw_norm = dus_out_raw.float().norm(dim=-1)[0,0].item()
                 print(f"  [DEBUG] Norm l40 (raw DUS): {raw_norm:.4f}")
 
-            text_ae = decode_to_text(z_clean, decoder, lm_head_weight, tokenizer)
-            text_dus = decode_to_text(z_recovered, decoder, lm_head_weight, tokenizer)
-
             active_z_clean = z_clean[attn_mask.bool()]
             active_z_rec = z_recovered[attn_mask.bool()]
+            
+            text_ae = decode_to_text(active_z_clean.unsqueeze(0), decoder, lm_head_weight, tokenizer)
+            text_dus = decode_to_text(active_z_rec.unsqueeze(0), decoder, lm_head_weight, tokenizer)
+
             cos_sim = (
                 F.cosine_similarity(active_z_clean, active_z_rec, dim=-1).mean().item()
             )
@@ -256,37 +279,45 @@ def main():
         print(f"  [DUS Rec] -> {text_dus}")
         print(f"  [Cos Sim] -> {cos_sim:.4f}")
 
-    # TEST 2: Light noise
+    # TEST 2: Heavy noise
     print("\n" + "=" * 50)
-    print("TEST 2: Light noise (15% tokens)")
+    print("TEST 2: Heavy noise (100% tokens noised) - Check Denoising")
     print("=" * 50)
     test2_phrase = "Neural networks possess an incredible ability to generalize data from massive amounts of information."
-    input_ids = torch.tensor([tokenizer.encode(test2_phrase)]).to(device)
-    attn_mask = torch.ones_like(input_ids).to(device)
+    chatml_test2 = f"<|im_start|>user\n{test2_phrase}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n"
+    tokens2 = tokenizer.encode(chatml_test2)
+    pad_len2 = 512 - len(tokens2)
+    pad_id2 = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    input_ids = torch.tensor([tokens2 + [pad_id2] * pad_len2]).to(device)
+    attn_mask = torch.tensor([[1] * len(tokens2) + [0] * pad_len2]).to(device)
 
     with torch.no_grad():
         qwen_embeds = embeddings(input_ids)
         z_clean, _, _ = encoder(qwen_embeds)
 
         T = z_clean.size(1)
-        noise_mask = (torch.rand(1, T).to(device) < 0.15).float().unsqueeze(-1)
+        # СЕЙЧАС ДЕЛАЕМ 100% ЗАШУМЛЕНИЕ
+        noise_mask = torch.ones((1, T, 1), device=device, dtype=torch.float32)
 
         noise = torch.randn_like(z_clean)
         noise = safe_normalize(noise, dim=-1) * 0.5
         z_noisy = z_clean + noise * noise_mask
 
         z_clean_norm = torch.norm(z_clean, p=2, dim=-1, keepdim=True)
+        # Убираем умножение на z_clean_norm для зашумленных токенов,
+        # так как в train_phase3_notebook.py это умножение отсутствовало (бага/фича).
+        # Там зашумленные токены имели норму 1. Мы должны повторить это для DUS.
         z_noisy = torch.where(
-            noise_mask > 0, safe_normalize(z_noisy, dim=-1) * z_clean_norm, z_noisy
-        ).to(torch.bfloat16)
+            noise_mask > 0, safe_normalize(z_noisy, dim=-1), z_noisy
+        ).to(eval_dtype)
         r_sq = z_clean_norm**2
 
         c_true = torch.clamp(
             F.cosine_similarity(z_clean.float(), z_noisy.float(), dim=-1), min=0.0
-        ).to(torch.bfloat16)
+        ).to(eval_dtype)
         c_embed_raw = confidence_proj(c_true.unsqueeze(-1))
-        c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(torch.bfloat16) * 0.1
-        dus_input = (z_noisy + c_embed).to(torch.bfloat16)
+        c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(eval_dtype) * 0.1
+        dus_input = (z_noisy + c_embed).to(eval_dtype)
 
         dus_outputs = dus(
             inputs_embeds=dus_input,
@@ -295,14 +326,16 @@ def main():
         )
         clean_pre_norm = dus_outputs.hidden_states[-1] - c_embed
         dus_out_raw = dus.final_norm(clean_pre_norm)
-        dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(torch.bfloat16)
+        dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(eval_dtype)
         z_recovered = dus_out_norm
 
-        text_noisy = decode_to_text(z_noisy, decoder, lm_head_weight, tokenizer)
-        text_recovered = decode_to_text(z_recovered, decoder, lm_head_weight, tokenizer)
-
+        active_z_noisy = z_noisy[attn_mask.bool()]
         active_z_clean = z_clean[attn_mask.bool()]
         active_z_rec = z_recovered[attn_mask.bool()]
+
+        text_noisy = decode_to_text(active_z_noisy.unsqueeze(0), decoder, lm_head_weight, tokenizer)
+        text_recovered = decode_to_text(active_z_rec.unsqueeze(0), decoder, lm_head_weight, tokenizer)
+
         sim_recov = (
             F.cosine_similarity(active_z_clean, active_z_rec, dim=-1).mean().item()
         )
