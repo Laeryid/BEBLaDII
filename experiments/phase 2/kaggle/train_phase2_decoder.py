@@ -52,7 +52,7 @@ class Config:
     qwen_model_path = "/kaggle/input/datasets/ragnar123/qwen2-5-1-5b" 
     
     # Пути к данным
-    dataset_path = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/phase 2/train_data/data"
+    dataset_path = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/phase 3/train_data/data"
     
     # Пути к весам
     local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
