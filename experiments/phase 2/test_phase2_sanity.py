@@ -1,5 +1,9 @@
 import os
 import sys
+
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -55,11 +59,15 @@ class Phase2SanityTester:
         self.encoder.eval()
         
         print(f"Loading Phase 2 Modern Decoder from {phase2_ckpt_path}...")
+        
+        if dus_weights_path and dus_weights_path.lower() == "none":
+            dus_weights_path = None
+            
         self.decoder = ModernLatentDecoder(
             latent_dim=1024, 
             qwen_dim=1536, 
             num_layers=3, 
-            dus_weights_path=dus_weights_path
+            dus_weights_path=dus_weights_path if (dus_weights_path and os.path.exists(dus_weights_path)) else None
         ).to(device).to(torch.bfloat16)
         
         ckpt2 = torch.load(phase2_ckpt_path, map_location=device)

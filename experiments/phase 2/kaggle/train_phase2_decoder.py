@@ -78,7 +78,7 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase2"
 
     # Параметры архитектуры и обучения
-    batch_size = 16
+    batch_size = 4
     max_length = 1024
     learning_rate = 1e-4
     epochs = 1
@@ -140,7 +140,7 @@ class Phase2DecoderWrapper(nn.Module):
 
 
 # %%
-def get_dataloader(data_path, batch_size=8, max_length=1024, tokenizer=None):
+def get_dataloader(data_path, batch_size=4, max_length=1024, tokenizer=None):
     from indexed_parquet_dataset import IndexedParquetDataset
 
     print(f"Loading parquet dataset from {data_path} using IndexedParquetDataset...")

@@ -14,7 +14,7 @@ class ModernLatentDecoder(nn.Module):
             self.backbone = dus.model
             
             # Берем ПОСЛЕДНИЕ слои (они лучше всего знают финальную грамматику и работают с глубокой семантикой)
-            self.backbone.layers = self.backbone.layers[-num_layers:]
+            self.backbone.layers = nn.ModuleList(self.backbone.layers[-num_layers:])
             self.use_modern_bert = True
         else:
             print("Warning: No DUS weights provided. Using random TransformerEncoder for PoC.")
