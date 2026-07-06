@@ -189,6 +189,10 @@ def train_local(args):
     # Автоматическое приведение типов для CPU/GPU
     autocast_device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
     
+    optimizer.zero_grad()
+    accum_loss = 0.0
+    micro_step = 0
+    
     for batch in data_iter:
         if step >= args.max_steps:
             break
@@ -196,8 +200,6 @@ def train_local(args):
         input_ids = batch["input_ids"].to(device)
         attention_mask = batch["attention_mask"].to(device)
     
-        optimizer.zero_grad()
-        
         with torch.autocast(device_type=autocast_device_type, dtype=torch.bfloat16):
             logits = model(input_ids, attention_mask)
             ce_loss_raw = loss_fct(logits.view(-1, logits.size(-1)), input_ids.view(-1))
@@ -205,63 +207,73 @@ def train_local(args):
             
             attention_mask_bf = attention_mask.to(torch.bfloat16)
             ce_loss = (ce_loss_raw * attention_mask_bf).sum() / (attention_mask_bf.sum() + 1e-6)
+            
+            # Масштабируем лосс для backward
+            loss = ce_loss / args.accum_steps
     
-        ce_loss.backward()
-        optimizer.step()
+        loss.backward()
+        accum_loss += ce_loss.item() / args.accum_steps
+        micro_step += 1
         
-        step += 1
-        loss_val = ce_loss.item()
-        loss_history.append((step, loss_val))
-        
-        # Дописываем текущий шаг в актуальный лог
-        with open(current_log_file, "a", newline="") as f:
-            writer = csv.writer(f)
-            writer.writerow([step, loss_val])
+        if micro_step % args.accum_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
             
-        pbar.set_postfix({"Loss": f"{loss_val:.4f}"})
-        pbar.update(1)
-        
-        if step % args.save_every == 0:
-            # Сохраняем веса, шаг и историю
-            save_path = os.path.join(args.ckpt_dir, f"decoder_local_step_{step}.pth")
-            torch.save({
-                "decoder": model.decoder.state_dict(),
-                "step": step,
-                "loss_history": loss_history
-            }, save_path)
+            step += 1
+            loss_val = accum_loss
+            accum_loss = 0.0
             
-            # Сохраняем "снапшот" лога
-            shutil.copy2(current_log_file, os.path.join(args.ckpt_dir, f"loss_log_step_{step}.csv"))
+            loss_history.append((step, loss_val))
             
-            # Строим и сохраняем график
-            try:
-                import matplotlib.pyplot as plt
-                plt.figure(figsize=(10, 6))
-                steps, losses = zip(*loss_history)
+            # Дописываем текущий шаг в актуальный лог
+            with open(current_log_file, "a", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow([step, loss_val])
                 
-                # Сглаживание лосса
-                smoothed_losses = []
-                alpha = 0.95 # Сильное сглаживание для красоты
-                for i, l in enumerate(losses):
-                    if i == 0: smoothed_losses.append(l)
-                    else: smoothed_losses.append(alpha * smoothed_losses[-1] + (1 - alpha) * l)
-                
-                plt.plot(steps, losses, alpha=0.3, color='blue', label="Raw Loss")
-                plt.plot(steps, smoothed_losses, color='blue', linewidth=2, label="Smoothed Loss")
-                plt.xlabel("Steps")
-                plt.ylabel("Cross Entropy Loss")
-                plt.title(f"Phase 2 Local Training Loss (Step {step})")
-                plt.legend()
-                plt.grid(True)
-                
-                plot_path = os.path.join(args.ckpt_dir, f"loss_plot_step_{step}.png")
-                plt.savefig(plot_path)
-                plt.close()
-            except ImportError:
-                print("\n[Warning] matplotlib is not installed. Plot was not generated.")
+            pbar.set_postfix({"Loss": f"{loss_val:.4f}"})
+            pbar.update(1)
             
-            # Очищаем старые версии
-            cleanup_old_checkpoints(args.ckpt_dir, keep_last=4)
+            if step % args.save_every == 0:
+                # Сохраняем веса, шаг и историю
+                save_path = os.path.join(args.ckpt_dir, f"decoder_local_step_{step}.pth")
+                torch.save({
+                    "decoder": model.decoder.state_dict(),
+                    "step": step,
+                    "loss_history": loss_history
+                }, save_path)
+            
+                # Сохраняем "снапшот" лога
+                shutil.copy2(current_log_file, os.path.join(args.ckpt_dir, f"loss_log_step_{step}.csv"))
+                
+                # Строим и сохраняем график
+                try:
+                    import matplotlib.pyplot as plt
+                    plt.figure(figsize=(10, 6))
+                    steps, losses = zip(*loss_history)
+                    
+                    # Сглаживание лосса
+                    smoothed_losses = []
+                    alpha = 0.95 # Сильное сглаживание для красоты
+                    for i, l in enumerate(losses):
+                        if i == 0: smoothed_losses.append(l)
+                        else: smoothed_losses.append(alpha * smoothed_losses[-1] + (1 - alpha) * l)
+                    
+                    plt.plot(steps, losses, alpha=0.3, color='blue', label="Raw Loss")
+                    plt.plot(steps, smoothed_losses, color='blue', linewidth=2, label="Smoothed Loss")
+                    plt.xlabel("Steps")
+                    plt.ylabel("Cross Entropy Loss")
+                    plt.title(f"Phase 2 Local Training Loss (Step {step})")
+                    plt.legend()
+                    plt.grid(True)
+                    
+                    plot_path = os.path.join(args.ckpt_dir, f"loss_plot_step_{step}.png")
+                    plt.savefig(plot_path)
+                    plt.close()
+                except ImportError:
+                    print("\n[Warning] matplotlib is not installed. Plot was not generated.")
+                
+                # Очищаем старые версии
+                cleanup_old_checkpoints(args.ckpt_dir, keep_last=4)
             
     pbar.close()
 
@@ -275,6 +287,7 @@ if __name__ == "__main__":
     default_ckpt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
     parser.add_argument("--ckpt_dir", type=str, default=default_ckpt_dir)
     parser.add_argument("--batch_size", type=int, default=2)
+    parser.add_argument("--accum_steps", type=int, default=8)
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--max_steps", type=int, default=2000)
     parser.add_argument("--save_every", type=int, default=500)
