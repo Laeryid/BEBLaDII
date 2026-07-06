@@ -7,9 +7,14 @@ import gc
 from tqdm.auto import tqdm
 import argparse
 
-# Добавляем src в путь
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../'))
-sys.path.append(os.path.join(project_root, 'src'))
+# Добавляем src в путь (более надежный способ)
+current_dir = os.path.abspath(os.path.dirname(__file__))
+project_root = os.path.abspath(os.path.join(current_dir, '../../../'))
+src_path = os.path.join(project_root, 'src')
+sys.path.insert(0, src_path)
+
+# Для отладки импортов:
+print(f"Debug: src_path = {src_path}")
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from beb_la_dii.model.modern_decoder import ModernLatentDecoder
