@@ -50,15 +50,14 @@ class ModernLatentDecoder(nn.Module):
         self.output_proj = nn.Linear(latent_dim, qwen_dim)
 
     def forward(self, z, attention_mask=None):
-        # ВАЖНО ДЛЯ XLA: Мы не передаем attention_mask в ModernBERT!
-        # ModernBERT при получении маски может использовать unpadding (удаление pad-токенов),
-        # что делает длину тензора (Total_Active_Tokens) динамической.
-        # Динамические формы заставляют XLA перекомпилировать граф на КАЖДОМ шаге (отсюда 48 секунд/шаг).
-        # Так как мы умножаем финальный Loss на attention_mask, нам не страшно, что слои увидят PAD-токены.
+        # Ранее мы убирали attention_mask, боясь рекомпиляций XLA из-за unpadding.
+        # Но без маски RoPE поворачивает PAD-токены и модель сжигает ёмкость на их подавление.
+        # Возвращаем attention_mask. В режиме SDPA unpadding не используется, 
+        # поэтому XLA не должен падать на динамических формах.
         
         if self.use_modern_bert:
             # ModernBERT сам применит RoPE к inputs_embeds
-            outputs = self.backbone(inputs_embeds=z) # Убрали attention_mask!
+            outputs = self.backbone(inputs_embeds=z, attention_mask=attention_mask)
             hidden = outputs.last_hidden_state
         else:
             pytorch_mask = (attention_mask == 0) if attention_mask is not None else None
