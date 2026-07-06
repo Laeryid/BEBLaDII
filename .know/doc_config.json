@@ -475,6 +475,14 @@
       "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
       "depends_on": ["experiments/phase3/train_phase3_logic.py"]
     },
+    "decisions/054_modernbert_dataparallel_rope_masking.md": {
+      "description": "ADR: Совместимость ModernBERT с DataParallel и влияние RoPE на PAD-токены.",
+      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases", "Model Core"],
+      "depends_on": [
+        "src/beb_la_dii/model/modern_decoder.py",
+        "experiments/phase 2/train_phase2_decoder.py"
+      ]
+    },
 
     "KI_metrics_reference.md": {
       "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
