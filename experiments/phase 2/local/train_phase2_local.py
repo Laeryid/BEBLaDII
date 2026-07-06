@@ -174,13 +174,22 @@ def train_local(args):
     
     dataloader = get_dataloader(args.data_path, batch_size=args.batch_size, max_length=args.max_length, tokenizer=tokenizer)
     
+    data_iter = iter(dataloader)
+    if start_step > 0:
+        print(f"Fast-forwarding dataloader by {start_step} steps...")
+        for _ in tqdm(range(start_step), desc="Skipping batches"):
+            try:
+                next(data_iter)
+            except StopIteration:
+                break
+                
     step = start_step
     pbar = tqdm(total=args.max_steps, desc="Phase 2 Local Training", initial=start_step)
     
     # Автоматическое приведение типов для CPU/GPU
     autocast_device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
     
-    for batch in dataloader:
+    for batch in data_iter:
         if step >= args.max_steps:
             break
             
@@ -263,7 +272,8 @@ if __name__ == "__main__":
     parser.add_argument("--dus_weights", type=str, default=r"..\..\..\storage\components\model\latentBERT\v1.0\weights.pt")
     parser.add_argument("--phase2_resume_ckpt", type=str, default="")
     parser.add_argument("--data_path", type=str, default=r"..\..\..\experiments\phase 3\train_data\data")
-    parser.add_argument("--ckpt_dir", type=str, default="checkpoints")
+    default_ckpt_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoints")
+    parser.add_argument("--ckpt_dir", type=str, default=default_ckpt_dir)
     parser.add_argument("--batch_size", type=int, default=2)
     parser.add_argument("--max_length", type=int, default=128)
     parser.add_argument("--max_steps", type=int, default=2000)
