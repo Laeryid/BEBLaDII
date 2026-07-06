@@ -15,6 +15,11 @@ class ModernLatentDecoder(nn.Module):
             
             # Берем ПОСЛЕДНИЕ слои (они лучше всего знают финальную грамматику и работают с глубокой семантикой)
             self.backbone.layers = nn.ModuleList(self.backbone.layers[-num_layers:])
+            
+            # Hotfix for HuggingFace ModernBERT + PyTorch DataParallel bug:
+            # Replicas sometimes fail to resolve `param.device` inside `_maybe_set_compile`.
+            self.backbone._maybe_set_compile = lambda *args, **kwargs: None
+            
             self.use_modern_bert = True
         else:
             print("Warning: No DUS weights provided. Using random TransformerEncoder for PoC.")
