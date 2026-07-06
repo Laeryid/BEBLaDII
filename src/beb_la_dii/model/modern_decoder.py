@@ -17,7 +17,19 @@ class ModernLatentDecoder(nn.Module):
             self.backbone.layers = nn.ModuleList(self.backbone.layers[-num_layers:])
             
             # Hotfix for HuggingFace ModernBERT + PyTorch DataParallel bug:
-            # Replicas sometimes fail to resolve `param.device` inside `_maybe_set_compile`.
+            class SafeModernBertModel(type(self.backbone)):
+                @property
+                def device(self):
+                    # Безопасный fallback, если DataParallel replica вернула пустой список
+                    params = list(self.parameters())
+                    return params[0].device if params else torch.device("cuda")
+                
+                @property
+                def dtype(self):
+                    # Принудительно возвращаем bfloat16 для _update_attention_mask
+                    return torch.bfloat16
+            
+            self.backbone.__class__ = SafeModernBertModel
             self.backbone._maybe_set_compile = lambda *args, **kwargs: None
             
             self.use_modern_bert = True
