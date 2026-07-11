@@ -31,6 +31,14 @@ class ModernLatentDecoder(nn.Module):
         if hasattr(full_model.config, "reference_compile"):
             full_model.config.reference_compile = False
             
+        # Патч свойства dtype для DataParallel (иначе падает со StopIteration при генерации маски)
+        PatchedClass = type(
+            "PatchedModernBertModel",
+            (type(full_model),),
+            {"dtype": property(lambda self: torch.bfloat16)}
+        )
+        full_model.__class__ = PatchedClass
+        
         self.modernbert = full_model
 
         print(f"Backbone loaded: last {num_layers} layers of ModernBERT-large.")
