@@ -483,6 +483,14 @@
         "experiments/phase 2/train_phase2_decoder.py"
       ]
     },
+    "decisions/055_pretrained_modernbert_large_decoder_transition.md": {
+      "description": "ADR: Предобученные веса ModernBERT-large для декодера Фазы 2 с целью устранения плато сжатия.",
+      "covers": ["Knowledge Infrastructure", "Model Core"],
+      "depends_on": [
+        "src/beb_la_dii/model/modern_decoder.py",
+        "experiments/phase 2/train_phase2_decoder.py"
+      ]
+    },
 
     "KI_metrics_reference.md": {
       "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
