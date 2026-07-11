@@ -1,0 +1,83 @@
+(.venv) hp@t1v-n-dedc9329-w-0:~/projects/BEBLaDII$ python "experiments/phase 2/test_phase2_sanity.py" --phase2_ckpt "checkpoints/phase2/decoder_step_8000.pth"
+Loading Qwen Tokenizer from deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B...
+Loading Qwen Embeddings and LM Head...
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading Phase 1 VAE Encoder from /home/hp/projects/BEBLaDII/checkpoints/phase1/phase1_vae_step_20000.pth...
+/home/hp/projects/BEBLaDII/experiments/phase 2/test_phase2_sanity.py:53: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  ckpt1 = torch.load(phase1_ckpt_path, map_location=device)
+Loading Phase 2 Modern Decoder from /home/hp/projects/BEBLaDII/checkpoints/phase2/decoder_step_8000.pth...
+Loading first 3 layers from DUS latentBERT: /home/hp/projects/BEBLaDII/storage/components/model/latentBERT/v1.0/weights.pt
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+/home/hp/projects/BEBLaDII/src/beb_la_dii/model/dus.py:47: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  state = torch.load(weights_path, map_location="cpu")
+  Weights loaded: /home/hp/projects/BEBLaDII/storage/components/model/latentBERT/v1.0/weights.pt
+/home/hp/projects/BEBLaDII/experiments/phase 2/test_phase2_sanity.py:65: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
+  ckpt2 = torch.load(phase2_ckpt_path, map_location=device)
+Initialization complete!
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : The quick brown fox jumps over the lazy dog.
+DECODED  :  cenaTheho mo fox jumps over the But dog.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.
+DECODED  :  cena converum computing is a masses-emerging technology that noves the laws of quantum mechanics to solve problems too complex for a computers.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Мама мыла раму, а папа чинил телевизор.
+DECODED  : ��作Мама мылаалиу, а папа чинил телевизор.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Neural networks learn representations from data.
+DECODED  :  váNe drawing systems find representations from data.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Artificial intelligence and machine learning have revolutionized the way we interact with technology, enabling computers to understand natural language, recognize complex patterns in images, and make decisions with unprecedented accuracy. As these systems become more integrated into our daily lives, it is crucial to address the ethical implications and ensure that they are developed responsibly, with a focus on fairness, transparency, and human well-being.
+DECODED  :  pó better getC-digit and machine learning have understandized the way we interact with technology, enabling computers to understand natural language, recognize complex patterns in equations, and make decisions with-cancel accuracy. As these systems become more integrated into our daily lives, it is crucial to address the possible implications and ensure that they are used moments, with a focus on It, temperature, and human well-being.
+
+--- SPHERICAL INTERPOLATION (SLERP) ---
+A: A little cat is sleeping comfortably on a soft pillow.
+B: A huge black dog barks aggressively at the passing car.
+Step 0/5 (t=0.00): žeA little cat iszen� on aJustоль..
+Step 1/5 (t=0.20):  rejA little cat iszenма on a justov..
+Step 2/5 (t=0.40):  váA small red is workches on a the pass..
+Step 3/5 (t=0.60):  váA large red in bches on at the passing..
+Step 4/5 (t=0.80):  váA huge black dog barks larger at the passing car.
+Step 5/5 (t=1.00):  cenaA huge black dog barks aggressively at the passing car.
+
+--- SEMANTIC NEIGHBORS (MEAN POOLING) ---
+Query: 'I love eating pizza with extra cheese.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.562)
+
+Query: 'The theory of relativity was developed by Albert Einstein.'
+Nearest: 'Quantum physics describes the behavior of subatomic particles.' (Cosine: 0.539)
+
+Query: 'Burgers and fries are my favorite fast food.'
+Nearest: 'I love eating pizza with extra cheese.' (Cosine: 0.562)
+
+Query: 'Quantum physics describes the behavior of subatomic particles.'
+Nearest: 'The theory of relativity was developed by Albert Einstein.' (Cosine: 0.539)
+
+Query: 'It's raining heavily outside, I need an umbrella.'
+Nearest: 'The weather today is stormy and wet.' (Cosine: 0.523)
+
+Query: 'The weather today is stormy and wet.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.527)
+
+--- PRIOR SAMPLING TEST (hole detection) ---
+  Real text CE: 14.8410
+  Prior z ~ N(0,I) entropy: 10.1797
+  Normalized prior entropy: 0.853
+  Gap (prior_entropy - real_CE): -4.6613
+  Verdict: WARN: prior выглядит как равномерное распределение (collapsed decoder?)
+
+--- NEIGHBOUR CONSISTENCY TEST (smoothness) ---
+  Noise (eps)    Mean cos-sim     Verdict
+  --------------------------------------------------
+  eps=0.01       0.9557           WARN
+  eps=0.05       0.3867           WARN
+  eps=0.10       0.1468           WARN
+  eps=0.30       0.0312           WARN
+
+  Overall smoothness: DEGRADED

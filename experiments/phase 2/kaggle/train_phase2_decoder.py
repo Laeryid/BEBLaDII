@@ -279,9 +279,6 @@ def train():
         latent_dim=1024,
         qwen_dim=1536,
         num_layers=3,
-        dus_weights_path=args.local_dus_weights
-        if os.path.exists(args.local_dus_weights)
-        else None,
     ).to(torch.bfloat16)
 
     # 4. Сборка финальной модели

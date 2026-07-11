@@ -1,83 +1,399 @@
-(.venv) hp@t1v-n-dedc9329-w-0:~/projects/BEBLaDII$ python "experiments/phase 2/test_phase2_sanity.py" --phase2_ckpt "checkpoints/phase2/decoder_step_8000.pth"
-Loading Qwen Tokenizer from deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B...
+(.venv) PS C:\Experiments\BEBLaDII> .venv\Scripts\python.exe "experiments\phase 2\test_phase2_sanity.py" --phase1_ckpt "experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth" --phase2_ckpt "experiments\phase 2\planB_phase2_checkpoints_decoder_step_1000.pth" --dus_weights "kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+Loading Qwen Tokenizer from Qwen/Qwen2.5-1.5B...
 Loading Qwen Embeddings and LM Head...
 `torch_dtype` is deprecated! Use `dtype` instead!
-Loading Phase 1 VAE Encoder from /home/hp/projects/BEBLaDII/checkpoints/phase1/phase1_vae_step_20000.pth...
-/home/hp/projects/BEBLaDII/experiments/phase 2/test_phase2_sanity.py:53: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  ckpt1 = torch.load(phase1_ckpt_path, map_location=device)
-Loading Phase 2 Modern Decoder from /home/hp/projects/BEBLaDII/checkpoints/phase2/decoder_step_8000.pth...
-Loading first 3 layers from DUS latentBERT: /home/hp/projects/BEBLaDII/storage/components/model/latentBERT/v1.0/weights.pt
+Loading Phase 1 VAE Encoder from C:\Experiments\BEBLaDII\experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth...
+Loading Phase 2 Modern Decoder from C:\Experiments\BEBLaDII\experiments\phase 2\planB_phase2_checkpoints_decoder_step_1000.pth...
+Loading first 3 layers from DUS latentBERT: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
 Loading model architecture from answerdotai/ModernBERT-large...
 Created 40 layers from 28 base layers (DUS applied).
-/home/hp/projects/BEBLaDII/src/beb_la_dii/model/dus.py:47: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  state = torch.load(weights_path, map_location="cpu")
-  Weights loaded: /home/hp/projects/BEBLaDII/storage/components/model/latentBERT/v1.0/weights.pt
-/home/hp/projects/BEBLaDII/experiments/phase 2/test_phase2_sanity.py:65: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  ckpt2 = torch.load(phase2_ckpt_path, map_location=device)
+  Weights loaded: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
 Initialization complete!
 
 --- RECONSTRUCTION TEST ---
 ORIGINAL : The quick brown fox jumps over the lazy dog.
-DECODED  :  cenaTheho mo fox jumps over the But dog.
+DECODED  : A set part left direction over the once mod.
 
 --- RECONSTRUCTION TEST ---
 ORIGINAL : Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.
-DECODED  :  cena converum computing is a masses-emerging technology that noves the laws of quantum mechanics to solve problems too complex for a computers.
+DECODED  :  polom compute is a again sequence combinations can that setes the points of elements elements to solve problems too ( for similar numbers.
 
 --- RECONSTRUCTION TEST ---
 ORIGINAL : Мама мыла раму, а папа чинил телевизор.
-DECODED  : ��作Мама мылаалиу, а папа чинил телевизор.
+DECODED  : Мама мыла гору, а папа чинил телевизор.
 
 --- RECONSTRUCTION TEST ---
 ORIGINAL : Neural networks learn representations from data.
-DECODED  :  váNe drawing systems find representations from data.
+DECODED  :  Н divided transitions two points from multiple.
 
 --- RECONSTRUCTION TEST ---
 ORIGINAL : Artificial intelligence and machine learning have revolutionized the way we interact with technology, enabling computers to understand natural language, recognize complex patterns in images, and make decisions with unprecedented accuracy. As these systems become more integrated into our daily lives, it is crucial to address the ethical implications and ensure that they are developed responsibly, with a focus on fairness, transparency, and human well-being.
-DECODED  :  pó better getC-digit and machine learning have understandized the way we interact with technology, enabling computers to understand natural language, recognize complex patterns in equations, and make decisions with-cancel accuracy. As these systems become more integrated into our daily lives, it is crucial to address the possible implications and ensure that they are used moments, with a focus on It, temperature, and human well-being.
+DECODED  :  edge unnecessary probabilities and machine read haveivized the way we available with data, available compute to understand prime language, recognize complex matrix in dimensions, and make operations with specific general. As these? become more integrated into how day rows, it is possible to position the bis implications and ensure that they are will again, with a relationship on based, denominator, and valid yes\_.
 
 --- SPHERICAL INTERPOLATION (SLERP) ---
 A: A little cat is sleeping comfortably on a soft pillow.
 B: A huge black dog barks aggressively at the passing car.
-Step 0/5 (t=0.00): žeA little cat iszen� on aJustоль..
-Step 1/5 (t=0.20):  rejA little cat iszenма on a justov..
-Step 2/5 (t=0.40):  váA small red is workches on a the pass..
-Step 3/5 (t=0.60):  váA large red in bches on at the passing..
-Step 4/5 (t=0.80):  váA huge black dog barks larger at the passing car.
-Step 5/5 (t=1.00):  cenaA huge black dog barks aggressively at the passing car.
+Step 0/5 (t=0.00):  A one an is yes another on a pr column..
+Step 1/5 (t=0.20): A one cat is one exactly on a inner price..
+Step 2/5 (t=0.40): A large par is one directly ( a en next..
+Step 3/5 (t=0.60): A large par is p directly ( a re next..
+Step 4/5 (t=0.80): A largest par of b according all a the next (.
+Step 5/5 (t=1.00): A length  dog b according ( at the next car.
 
 --- SEMANTIC NEIGHBORS (MEAN POOLING) ---
 Query: 'I love eating pizza with extra cheese.'
-Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.562)
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.479)
 
 Query: 'The theory of relativity was developed by Albert Einstein.'
-Nearest: 'Quantum physics describes the behavior of subatomic particles.' (Cosine: 0.539)
+Nearest: 'Quantum physics describes the behavior of subatomic particles.' (Cosine: 0.527)
 
 Query: 'Burgers and fries are my favorite fast food.'
-Nearest: 'I love eating pizza with extra cheese.' (Cosine: 0.562)
+Nearest: 'I love eating pizza with extra cheese.' (Cosine: 0.479)
 
 Query: 'Quantum physics describes the behavior of subatomic particles.'
-Nearest: 'The theory of relativity was developed by Albert Einstein.' (Cosine: 0.539)
+Nearest: 'The theory of relativity was developed by Albert Einstein.' (Cosine: 0.527)
 
 Query: 'It's raining heavily outside, I need an umbrella.'
-Nearest: 'The weather today is stormy and wet.' (Cosine: 0.523)
+Nearest: 'The weather today is stormy and wet.' (Cosine: 0.420)
 
 Query: 'The weather today is stormy and wet.'
-Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.527)
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.443)
 
 --- PRIOR SAMPLING TEST (hole detection) ---
-  Real text CE: 14.8410
-  Prior z ~ N(0,I) entropy: 10.1797
-  Normalized prior entropy: 0.853
-  Gap (prior_entropy - real_CE): -4.6613
+  Real text CE: 5.3695
+  Prior z ~ N(0,I) entropy: 10.7891
+  Normalized prior entropy: 0.904
+  Gap (prior_entropy - real_CE): 5.4195
   Verdict: WARN: prior выглядит как равномерное распределение (collapsed decoder?)
 
 --- NEIGHBOUR CONSISTENCY TEST (smoothness) ---
   Noise (eps)    Mean cos-sim     Verdict
   --------------------------------------------------
-  eps=0.01       0.9557           WARN
-  eps=0.05       0.3867           WARN
-  eps=0.10       0.1468           WARN
-  eps=0.30       0.0312           WARN
+  eps=0.01       0.9089           WARN
+  eps=0.05       0.3203           WARN
+  eps=0.10       0.2637           WARN
+  eps=0.30       0.1370           WARN
+
+  Overall smoothness: DEGRADED
+
+=========================================================================
+
+
+(.venv) PS C:\Experiments\BEBLaDII> .venv\Scripts\python.exe "experiments\phase 2\test_phase2_sanity.py" --phase1_ckpt "experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth" --phase2_ckpt "experiments\phase 2\planB_phase2_checkpoints_decoder_step_2000.pth" --dus_weights "kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+Loading Qwen Tokenizer from Qwen/Qwen2.5-1.5B...
+Loading Qwen Embeddings and LM Head...
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading Phase 1 VAE Encoder from C:\Experiments\BEBLaDII\experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth...
+Loading Phase 2 Modern Decoder from C:\Experiments\BEBLaDII\experiments\phase 2\planB_phase2_checkpoints_decoder_step_2000.pth...
+Loading first 3 layers from DUS latentBERT: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+  Weights loaded: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Initialization complete!
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : The quick brown fox jumps over the lazy dog.
+DECODED  : A set left red paths over the lazy dog.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.
+DECODED  :  polom computing is a again sequence combinations data that setes the rows of quantum mechanics to solve problems too complex for empty numbers.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Мама мыла раму, а папа чинил телевизор.
+DECODED  : Мама мыла раму, а папа чинил телевизор.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Neural networks learn representations from data.
+DECODED  :  Neупつな show points from data.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Artificial intelligence and machine learning have revolutionized the way we interact with technology, enabling computers to understand natural language, recognize complex patterns in images, and make decisions with unprecedented accuracy. As these systems become more integrated into our daily lives, it is crucial to address the ethical implications and ensure that they are developed responsibly, with a focus on fairness, transparency, and human well-being.
+DECODED  :  edge unnecessary intelligence and machine learning have revolutionized the way we available with technology, available computers to understand natural language, recognize complex patterns in dimensions, and make operations with meaningful accuracy. As these systems become more integrated into our day lives, it is possible to address the- implications and ensure that they are would correctly, with a configuration on feasible, numerical, and valid well-being.
+
+--- SPHERICAL INTERPOLATION (SLERP) ---
+A: A little cat is sleeping comfortably on a soft pillow.
+B: A huge black dog barks aggressively at the passing car.
+Step 0/5 (t=0.00): A one cat is possible acceptable on a soft size..
+Step 1/5 (t=0.20): A one cat is one tangent on a mid price..
+Step 2/5 (t=0.40): A little black is s directly ( a en next..
+Step 3/5 (t=0.60): A large black is b terms ( a the next..
+Step 4/5 (t=0.80): A large par of b terms A a the passing .
+Step 5/5 (t=1.00): A list  dog b roots If at the being car.
+
+--- SEMANTIC NEIGHBORS (MEAN POOLING) ---
+Query: 'I love eating pizza with extra cheese.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.479)
+
+Query: 'The theory of relativity was developed by Albert Einstein.'
+Nearest: 'Quantum physics describes the behavior of subatomic particles.' (Cosine: 0.527)
+
+Query: 'Burgers and fries are my favorite fast food.'
+Nearest: 'I love eating pizza with extra cheese.' (Cosine: 0.479)
+
+Query: 'Quantum physics describes the behavior of subatomic particles.'
+Nearest: 'The theory of relativity was developed by Albert Einstein.' (Cosine: 0.527)
+
+Query: 'It's raining heavily outside, I need an umbrella.'
+Nearest: 'The weather today is stormy and wet.' (Cosine: 0.420)
+
+Query: 'The weather today is stormy and wet.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.443)
+
+--- PRIOR SAMPLING TEST (hole detection) ---
+  Real text CE: 4.6096
+  Prior z ~ N(0,I) entropy: 10.7891
+  Normalized prior entropy: 0.904
+  Gap (prior_entropy - real_CE): 6.1794
+  Verdict: WARN: prior выглядит как равномерное распределение (collapsed decoder?)
+
+--- NEIGHBOUR CONSISTENCY TEST (smoothness) ---
+  Noise (eps)    Mean cos-sim     Verdict
+  --------------------------------------------------
+  eps=0.01       0.9128           WARN
+  eps=0.05       0.3301           WARN
+  eps=0.10       0.1969           WARN
+  eps=0.30       0.1746           WARN
+
+  Overall smoothness: DEGRADED
+
+=================================================================
+
+
+(.venv) PS C:\Experiments\BEBLaDII> .venv\Scripts\python.exe "experiments\phase 2\test_phase2_sanity.py" --phase1_ckpt "experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth" --phase2_ckpt "experiments\phase 2\planB_phase2_checkpoints_decoder_step_3000.pth" --dus_weights "kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+Loading Qwen Tokenizer from Qwen/Qwen2.5-1.5B...
+Loading Qwen Embeddings and LM Head...
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading Phase 1 VAE Encoder from C:\Experiments\BEBLaDII\experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth...
+Loading Phase 2 Modern Decoder from C:\Experiments\BEBLaDII\experiments\phase 2\planB_phase2_checkpoints_decoder_step_3000.pth...
+Loading first 3 layers from DUS latentBERT: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+  Weights loaded: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Initialization complete!
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : The quick brown fox jumps over the lazy dog.
+DECODED  : A quick left red paths over the lazy dog.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.
+DECODED  :  polum computing is a again sequence.union data that setes the rows of quantum mechanics to solve problems too complex for empty numbers.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Мама мыла раму, а папа чинил телевизор.
+DECODED  : Мама мыла раму, а папа чинил телевизор.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Neural networks learn representations from data.
+DECODED  :  Neупつな show points from data.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Artificial intelligence and machine learning have revolutionized the way we interact with technology, enabling computers to understand natural language, recognize complex patterns in images, and make decisions with unprecedented accuracy. As these systems become more integrated into our daily lives, it is crucial to address the ethical implications and ensure that they are developed responsibly, with a focus on fairness, transparency, and human well-being.
+DECODED  :  edge unnecessary intelligence and machine learning have revolutionized the way we interaction with technology, available computers to understand natural language, recognize complex patterns in B, and make operations with meaningful accuracy. As these systems become more integrated into our day lives, it is possible to address the- implications and ensure that they are will correctly, with a focus on fairness, numerical, and valid well-being.
+
+--- SPHERICAL INTERPOLATION (SLERP) ---
+A: A little cat is sleeping comfortably on a soft pillow.
+B: A huge black dog barks aggressively at the passing car.
+Step 0/5 (t=0.00): A one cat is solved strictly on a soft size..
+Step 1/5 (t=0.20): A one cat is one tangent on a mid price..
+Step 2/5 (t=0.40): A little black is s directly ( a mid plan..
+Step 3/5 (t=0.60): A large black is b satisfies ( a the perfect..
+Step 4/5 (t=0.80): A large black of b terms A a the passing car.
+Step 5/5 (t=1.00): A list  dog b roots If at the up car.
+
+--- SEMANTIC NEIGHBORS (MEAN POOLING) ---
+Query: 'I love eating pizza with extra cheese.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.479)
+
+Query: 'The theory of relativity was developed by Albert Einstein.'
+Nearest: 'Quantum physics describes the behavior of subatomic particles.' (Cosine: 0.527)
+
+Query: 'Burgers and fries are my favorite fast food.'
+Nearest: 'I love eating pizza with extra cheese.' (Cosine: 0.479)
+
+Query: 'Quantum physics describes the behavior of subatomic particles.'
+Nearest: 'The theory of relativity was developed by Albert Einstein.' (Cosine: 0.527)
+
+Query: 'It's raining heavily outside, I need an umbrella.'
+Nearest: 'The weather today is stormy and wet.' (Cosine: 0.420)
+
+Query: 'The weather today is stormy and wet.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.443)
+
+--- PRIOR SAMPLING TEST (hole detection) ---
+  Real text CE: 4.3287
+  Prior z ~ N(0,I) entropy: 10.7266
+  Normalized prior entropy: 0.899
+  Gap (prior_entropy - real_CE): 6.3979
+  Verdict: WARN: prior выглядит как равномерное распределение (collapsed decoder?)
+
+--- NEIGHBOUR CONSISTENCY TEST (smoothness) ---
+  Noise (eps)    Mean cos-sim     Verdict
+  --------------------------------------------------
+  eps=0.01       0.9036           WARN
+  eps=0.05       0.3607           WARN
+  eps=0.10       0.2269           WARN
+  eps=0.30       0.0812           WARN
+
+  Overall smoothness: DEGRADED
+
+  ======================================================================
+
+(.venv) PS C:\Experiments\BEBLaDII> .venv\Scripts\python.exe "experiments\phase 2\test_phase2_sanity.py" --phase1_ckpt "experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth" --phase2_ckpt "experiments\phase 2\planB_phase2_checkpoints_decoder_step_4000.pth" --dus_weights "kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+Loading Qwen Tokenizer from Qwen/Qwen2.5-1.5B...
+Loading Qwen Embeddings and LM Head...
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading Phase 1 VAE Encoder from C:\Experiments\BEBLaDII\experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth...
+Loading Phase 2 Modern Decoder from C:\Experiments\BEBLaDII\experiments\phase 2\planB_phase2_checkpoints_decoder_step_4000.pth...
+Loading first 3 layers from DUS latentBERT: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+  Weights loaded: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Initialization complete!
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : The quick brown fox jumps over the lazy dog.
+DECODED  : The quick left red paths over the lazy dog.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.
+DECODED  : quantum computing is a again sequence interchangeable technology that presentes the rows of quantum mechanics to solve problems too complex for empty numbers.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Мама мыла раму, а папа чинил телевизор.
+DECODED  : Мама мыла раму, а папа чинил телевизор.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Neural networks learn representations from data.
+DECODED  :  Neупつな show points from data.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Artificial intelligence and machine learning have revolutionized the way we interact with technology, enabling computers to understand natural language, recognize complex patterns in images, and make decisions with unprecedented accuracy. As these systems become more integrated into our daily lives, it is crucial to address the ethical implications and ensure that they are developed responsibly, with a focus on fairness, transparency, and human well-being.
+DECODED  :  edgeificial intelligence and machine learning have revolutionized the way we interaction with technology, available computers to understand natural language, recognize complex patterns in B, and make operations with meaningful accuracy. As these systems become more integrated into our day lives, it is possible to address the- implications and ensure that they are will correctly, with a focus on fairness, intelligence, and valid well-being.
+
+--- SPHERICAL INTERPOLATION (SLERP) ---
+A: A little cat is sleeping comfortably on a soft pillow.
+B: A huge black dog barks aggressively at the passing car.
+Step 0/5 (t=0.00): A one cat is solved acceptable on a soft size..
+Step 1/5 (t=0.20): A little cat is one tangent on a soft price..
+Step 2/5 (t=0.40): A little black is s directly ( a the plan..
+Step 3/5 (t=0.60): A large black is b satisfies ( a the perfect..
+Step 4/5 (t=0.80): A large black of b terms A a the passing car.
+Step 5/5 (t=1.00): A^  dog b roots If at the up car.
+
+--- SEMANTIC NEIGHBORS (MEAN POOLING) ---
+Query: 'I love eating pizza with extra cheese.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.479)
+
+Query: 'The theory of relativity was developed by Albert Einstein.'
+Nearest: 'Quantum physics describes the behavior of subatomic particles.' (Cosine: 0.527)
+
+Query: 'Burgers and fries are my favorite fast food.'
+Nearest: 'I love eating pizza with extra cheese.' (Cosine: 0.479)
+
+Query: 'Quantum physics describes the behavior of subatomic particles.'
+Nearest: 'The theory of relativity was developed by Albert Einstein.' (Cosine: 0.527)
+
+Query: 'It's raining heavily outside, I need an umbrella.'
+Nearest: 'The weather today is stormy and wet.' (Cosine: 0.420)
+
+Query: 'The weather today is stormy and wet.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.443)
+
+--- PRIOR SAMPLING TEST (hole detection) ---
+  Real text CE: 4.2062
+  Prior z ~ N(0,I) entropy: 10.6641
+  Normalized prior entropy: 0.894
+  Gap (prior_entropy - real_CE): 6.4578
+  Verdict: WARN: prior выглядит как равномерное распределение (collapsed decoder?)
+
+--- NEIGHBOUR CONSISTENCY TEST (smoothness) ---
+  Noise (eps)    Mean cos-sim     Verdict
+  --------------------------------------------------
+  eps=0.01       0.9049           WARN
+  eps=0.05       0.3431           WARN
+  eps=0.10       0.2438           WARN
+  eps=0.30       0.1250           WARN
+
+  Overall smoothness: DEGRADED
+
+  ========================================================================
+
+(.venv) PS C:\Experiments\BEBLaDII> .venv\Scripts\python.exe "experiments\phase 2\test_phase2_sanity.py" --phase1_ckpt "experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth" --phase2_ckpt "experiments\phase 2\planB_phase2_checkpoints_decoder_step_5000.pth" --dus_weights "kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+Loading Qwen Tokenizer from Qwen/Qwen2.5-1.5B...
+Loading Qwen Embeddings and LM Head...
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading Phase 1 VAE Encoder from C:\Experiments\BEBLaDII\experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth...
+Loading Phase 2 Modern Decoder from C:\Experiments\BEBLaDII\experiments\phase 2\planB_phase2_checkpoints_decoder_step_5000.pth...
+Loading first 3 layers from DUS latentBERT: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+  Weights loaded: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Initialization complete!
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : The quick brown fox jumps over the lazy dog.
+DECODED  : The quick left red paths over the lazy dog.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers.
+DECODED  : quantum computing is a laterEM interchangeable technology that presentes the rows of quantum mechanics to solve problems too complex for classical numbers.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Мама мыла раму, а папа чинил телевизор.
+DECODED  : Мама мыла раму, а папа чинил телевизор.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Neural networks learn representations from data.
+DECODED  :  Neупつな show points from data.
+
+--- RECONSTRUCTION TEST ---
+ORIGINAL : Artificial intelligence and machine learning have revolutionized the way we interact with technology, enabling computers to understand natural language, recognize complex patterns in images, and make decisions with unprecedented accuracy. As these systems become more integrated into our daily lives, it is crucial to address the ethical implications and ensure that they are developed responsibly, with a focus on fairness, transparency, and human well-being.
+DECODED  :  ACificial intelligence and machine learning have revolutionized the way we interaction with technology, available computers to understand natural language, recognize complex patterns in B, and make operations with meaningful accuracy. As these systems become more integrated into our day lives, it is possible to address the- implications and ensure that they are will properly, with a focus on fairness, intelligence, and valid well-being.
+
+--- SPHERICAL INTERPOLATION (SLERP) ---
+A: A little cat is sleeping comfortably on a soft pillow.
+B: A huge black dog barks aggressively at the passing car.
+Step 0/5 (t=0.00): A one cat is solved strictly on a soft price..
+Step 1/5 (t=0.20): A little cat is one strictly on a soft price..
+Step 2/5 (t=0.40): A little black is s directly ( a the plan..
+Step 3/5 (t=0.60): A large black of b satisfies ( a the perfect..
+Step 4/5 (t=0.80): A large black of bries A a the passing car.
+Step 5/5 (t=1.00): A^ black dog b roots If at the up car.
+
+--- SEMANTIC NEIGHBORS (MEAN POOLING) ---
+Query: 'I love eating pizza with extra cheese.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.479)
+
+Query: 'The theory of relativity was developed by Albert Einstein.'
+Nearest: 'Quantum physics describes the behavior of subatomic particles.' (Cosine: 0.527)
+
+Query: 'Burgers and fries are my favorite fast food.'
+Nearest: 'I love eating pizza with extra cheese.' (Cosine: 0.479)
+
+Query: 'Quantum physics describes the behavior of subatomic particles.'
+Nearest: 'The theory of relativity was developed by Albert Einstein.' (Cosine: 0.527)
+
+Query: 'It's raining heavily outside, I need an umbrella.'
+Nearest: 'The weather today is stormy and wet.' (Cosine: 0.420)
+
+Query: 'The weather today is stormy and wet.'
+Nearest: 'Burgers and fries are my favorite fast food.' (Cosine: 0.443)
+
+--- PRIOR SAMPLING TEST (hole detection) ---
+  Real text CE: 4.1270
+  Prior z ~ N(0,I) entropy: 10.7305
+  Normalized prior entropy: 0.899
+  Gap (prior_entropy - real_CE): 6.6035
+  Verdict: WARN: prior выглядит как равномерное распределение (collapsed decoder?)
+
+--- NEIGHBOUR CONSISTENCY TEST (smoothness) ---
+  Noise (eps)    Mean cos-sim     Verdict
+  --------------------------------------------------
+  eps=0.01       0.8958           WARN
+  eps=0.05       0.3411           WARN
+  eps=0.10       0.1862           WARN
+  eps=0.30       0.1139           WARN
 
   Overall smoothness: DEGRADED

@@ -64,11 +64,10 @@ class Phase2SanityTester:
             dus_weights_path = None
             
         self.decoder = ModernLatentDecoder(
-            latent_dim=1024, 
-            qwen_dim=1536, 
-            num_layers=3, 
-            dus_weights_path=dus_weights_path if (dus_weights_path and os.path.exists(dus_weights_path)) else None
-        ).to(device).to(torch.bfloat16)
+            latent_dim=1024,
+            qwen_dim=1536,
+            num_layers=3,
+        ).to(device)
         
         ckpt2 = torch.load(phase2_ckpt_path, map_location=device)
         # Обратная совместимость на случай если ключи сохранены как decoder.xxx или без префикса
@@ -172,9 +171,9 @@ class Phase2SanityTester:
             projected = self.decoder(z)
             logits = F.linear(projected, self.qwen_lm_head_weight)
 
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = inputs.input_ids[..., 1:].contiguous()
-            shift_mask = inputs.attention_mask[..., 1:].float()
+            shift_logits = logits.contiguous()
+            shift_labels = inputs.input_ids.contiguous()
+            shift_mask = inputs.attention_mask.float()
             
             ce_raw = torch.nn.CrossEntropyLoss(reduction="none")(
                 shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1)
@@ -267,7 +266,7 @@ class Phase2SanityTester:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--qwen_path", type=str, default="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B")
+    parser.add_argument("--qwen_path", type=str, default="Qwen/Qwen2.5-1.5B")
     parser.add_argument("--phase1_ckpt", type=str, default="checkpoints/phase1/phase1_vae_step_20000.pth")
     parser.add_argument("--phase2_ckpt", type=str, required=True, help="Path to phase2 decoder_step_X.pth")
     parser.add_argument("--dus_weights", type=str, default="storage/components/model/latentBERT/v1.0/weights.pt")

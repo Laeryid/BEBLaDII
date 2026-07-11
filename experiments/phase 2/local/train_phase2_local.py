@@ -132,10 +132,9 @@ def train_local(args):
     
     # 3. Инициализация Декодера
     decoder = ModernLatentDecoder(
-        latent_dim=1024, 
-        qwen_dim=1536, 
-        num_layers=3, 
-        dus_weights_path=args.dus_weights
+        latent_dim=1024,
+        qwen_dim=1536,
+        num_layers=3,
     ).to(torch.bfloat16)
     
     start_step = 0

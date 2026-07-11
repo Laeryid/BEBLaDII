@@ -1,68 +1,69 @@
 import torch
 import torch.nn as nn
-from .dus import DUSModel
+from transformers import AutoModel
 
 class ModernLatentDecoder(nn.Module):
-    def __init__(self, latent_dim=1024, qwen_dim=1536, num_layers=3, dus_weights_path=None):
-        super().__init__()
-        self.latent_dim = latent_dim
-        
-        # Загружаем DUS Model (latentBERT)
-        if dus_weights_path:
-            print(f"Loading first {num_layers} layers from DUS latentBERT: {dus_weights_path}")
-            dus = DUSModel.from_scratch(weights_path=dus_weights_path)
-            self.backbone = dus.model
-            
-            # Берем ПОСЛЕДНИЕ слои (они лучше всего знают финальную грамматику и работают с глубокой семантикой)
-            self.backbone.layers = nn.ModuleList(self.backbone.layers[-num_layers:])
-            
-            # Hotfix for HuggingFace ModernBERT + PyTorch DataParallel bug:
-            class SafeModernBertModel(type(self.backbone)):
-                @property
-                def device(self):
-                    # Безопасный fallback, если DataParallel replica вернула пустой список
-                    params = list(self.parameters())
-                    return params[0].device if params else torch.device("cuda")
-                
-                @property
-                def dtype(self):
-                    # Принудительно возвращаем bfloat16 для _update_attention_mask
-                    return torch.bfloat16
-            
-            self.backbone.__class__ = SafeModernBertModel
-            self.backbone._maybe_set_compile = lambda *args, **kwargs: None
-            
-            self.use_modern_bert = True
-        else:
-            print("Warning: No DUS weights provided. Using random TransformerEncoder for PoC.")
-            encoder_layer = nn.TransformerEncoderLayer(
-                d_model=latent_dim, 
-                nhead=16, 
-                dim_feedforward=latent_dim * 4, 
-                activation="gelu",
-                batch_first=True,
-                norm_first=True
-            )
-            self.backbone = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-            self.use_modern_bert = False
+    """
+    Decoder для Phase 2: берет последние num_layers слоев ModernBERT-large
+    с предобученными весами и проецирует результат в пространство Qwen.
 
-        # Проекция из размерности латентов (1024) обратно в размерность Qwen (1536) для LM Head
+    Входной тензор z: (B, T, 1024) — сферический латент из VAE Phase 1.
+    Выходной тензор:  (B, T, qwen_dim) — для умножения на Qwen LM Head.
+
+    Layer forward signature (ModernBertEncoderLayer):
+        hidden_states, attention_mask=None, sliding_window_mask=None,
+        position_ids=None, cu_seqlens=None, max_seqlen=None,
+        output_attentions=False -> Tensor
+    """
+    def __init__(self, num_layers=3, latent_dim=1024, qwen_dim=1536,
+                 model_name="answerdotai/ModernBERT-large"):
+        super().__init__()
+
+        print(f"Loading ModernBERT-large backbone from '{model_name}'...")
+        full_model = AutoModel.from_pretrained(model_name, torch_dtype=torch.bfloat16)
+
+        # AutoModel возвращает ModernBertModel напрямую (без вложенного .model)
+        # Берем последние num_layers слоев + финальную нормализацию
+        self.layers = nn.ModuleList(full_model.layers[-num_layers:])
+        self.final_norm = full_model.final_norm
+
+        del full_model
+        print(f"Backbone loaded: last {num_layers} layers of ModernBERT-large.")
+
+        # Проекция из latent_dim (1024) в qwen_dim (1536)
         self.output_proj = nn.Linear(latent_dim, qwen_dim)
 
     def forward(self, z, attention_mask=None):
-        # Ранее мы убирали attention_mask, боясь рекомпиляций XLA из-за unpadding.
-        # Но без маски RoPE поворачивает PAD-токены и модель сжигает ёмкость на их подавление.
-        # Возвращаем attention_mask. В режиме SDPA unpadding не используется, 
-        # поэтому XLA не должен падать на динамических формах.
-        
-        if self.use_modern_bert:
-            # ModernBERT сам применит RoPE к inputs_embeds
-            outputs = self.backbone(inputs_embeds=z, attention_mask=attention_mask)
-            hidden = outputs.last_hidden_state
+        """
+        z: (B, T, 1024) — сферические латенты, работаем как hidden_states.
+        attention_mask: (B, T) — стандартная маска (1=реальный токен, 0=pad).
+        """
+        hidden = z.to(torch.bfloat16)
+
+        # ModernBERT ожидает additive bias в формате (B, 1, T, T):
+        # 0.0 для реальных пар токенов, -inf для pad-токенов.
+        if attention_mask is not None:
+            # (B, T) -> (B, 1, 1, T) -> broadcast в (B, 1, T, T)
+            pad_mask = (1.0 - attention_mask.float()).unsqueeze(1).unsqueeze(2)
+            attn_bias = pad_mask * torch.finfo(torch.bfloat16).min
+            attn_bias = attn_bias.to(dtype=torch.bfloat16)
+
+            # sliding_window_mask: ModernBERT-large не использует sliding window
+            # (sliding_window=-1 в конфиге), передаем ту же маску
+            sliding_window_mask = attn_bias
         else:
-            pytorch_mask = (attention_mask == 0) if attention_mask is not None else None
-            hidden = self.backbone(z, src_key_padding_mask=pytorch_mask)
-            
-        # Проекция в пространство Qwen
-        out = self.output_proj(hidden) # (B, T, 1536)
+            attn_bias = None
+            sliding_window_mask = None
+
+        for layer in self.layers:
+            hidden = layer(
+                hidden_states=hidden,
+                attention_mask=attn_bias,
+                sliding_window_mask=sliding_window_mask,
+            )
+
+        hidden = self.final_norm(hidden)
+
+        # Проекция в пространство Qwen (bfloat16 -> float32 для стабильности лосса)
+        out = self.output_proj(hidden.float())  # (B, T, 1536)
         return out
