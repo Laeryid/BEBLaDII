@@ -61,6 +61,7 @@ class ModernLatentDecoder(nn.Module):
         )
         hidden = outputs.last_hidden_state
 
-        # Проекция в пространство Qwen (bfloat16 -> float32 для стабильности лосса)
-        out = self.output_proj(hidden.float())  # (B, T, 1536)
+        # Проекция в пространство Qwen — остаёмся в bfloat16 для совместимости с весами,
+        # затем конвертируем в float32 для стабильности лосса
+        out = self.output_proj(hidden).float()  # (B, T, 1536)
         return out
