@@ -20,7 +20,7 @@ sys.path.insert(0, src_path)
 # Для отладки импортов:
 # print(f"Debug: src_path = {src_path}")
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, get_cosine_schedule_with_warmup
 from beb_la_dii.model.modern_decoder import ModernLatentDecoder
 from beb_la_dii.model.vae import LatentEncoder 
 
@@ -154,7 +154,12 @@ def train_local(args):
     model = Phase2DecoderWrapper(encoder, decoder, embed_weight, lm_head_weight)
     model = model.to(device)
     
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
+    scheduler = get_cosine_schedule_with_warmup(optimizer, num_warmup_steps=100, num_training_steps=args.max_steps)
+    if start_step > 0:
+        for _ in range(start_step):
+            scheduler.step()
+
     loss_fct = nn.CrossEntropyLoss(reduction="none")
     
     model.train()
@@ -216,6 +221,7 @@ def train_local(args):
         
         if micro_step % args.accum_steps == 0:
             optimizer.step()
+            scheduler.step()
             optimizer.zero_grad()
             
             step += 1

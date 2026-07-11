@@ -47,7 +47,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 from torch.utils.data import DataLoader
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, get_cosine_schedule_with_warmup
 
 try:
     from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
@@ -81,7 +81,8 @@ class Config:
     batch_size = 2
     grad_accum_steps = 4
     max_length = 1024
-    learning_rate = 1e-4
+    learning_rate = 5e-5
+    warmup_steps = 1000
     epochs = 1
     max_steps = 10000
     log_steps = 10
@@ -322,6 +323,13 @@ def train():
         if len(dataloader) > 0
         else args.max_steps
     )
+    
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=args.warmup_steps,
+        num_training_steps=total_steps,
+    )
+    
     pbar = tqdm(total=total_steps, desc="Phase 2 Decoder")
 
     optimizer.zero_grad()
@@ -353,15 +361,21 @@ def train():
 
             if (batch_idx + 1) % args.grad_accum_steps == 0 or (batch_idx + 1) == len(dataloader):
                 optimizer.step()
+                scheduler.step()
                 optimizer.zero_grad()
                 step += 1
 
                 if step % args.log_steps == 0:
+                    current_lr = scheduler.get_last_lr()[0]
                     if args.wandb_project:
                         wandb.log(
-                            {"train/ce_loss": ce_loss.item() * args.grad_accum_steps, "step": step}, step=step
+                            {
+                                "train/ce_loss": ce_loss.item() * args.grad_accum_steps,
+                                "train/lr": current_lr,
+                                "step": step
+                            }, step=step
                         )
-                    pbar.set_postfix({"Loss": f"{ce_loss.item() * args.grad_accum_steps:.4f}"})
+                    pbar.set_postfix({"Loss": f"{ce_loss.item() * args.grad_accum_steps:.4f}", "LR": f"{current_lr:.2e}"})
 
                 if step > 0 and step % args.save_steps == 0:
                     ckpt_path = os.path.join(args.output_dir, f"decoder_step_{step}.pth")
