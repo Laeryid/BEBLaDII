@@ -79,6 +79,7 @@ class Config:
 
     # Параметры архитектуры и обучения
     batch_size = 4
+    grad_accum_steps = 4
     max_length = 1024
     learning_rate = 1e-4
     epochs = 1
@@ -320,21 +321,21 @@ def train():
 
     step = 0
     total_steps = (
-        min(args.max_steps, len(dataloader) * args.epochs)
+        min(args.max_steps, ((len(dataloader) + args.grad_accum_steps - 1) // args.grad_accum_steps) * args.epochs)
         if len(dataloader) > 0
         else args.max_steps
     )
     pbar = tqdm(total=total_steps, desc="Phase 2 Decoder")
 
+    optimizer.zero_grad()
     for epoch in range(args.epochs):
-        for batch in dataloader:
+        for batch_idx, batch in enumerate(dataloader):
             if step >= total_steps:
                 break
 
             input_ids = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
-            optimizer.zero_grad()
             logits = model(input_ids, attention_mask)
 
             # Вычисляем Loss
@@ -350,39 +351,42 @@ def train():
             if ce_loss.dim() > 0:
                 ce_loss = ce_loss.mean()
 
+            ce_loss = ce_loss / args.grad_accum_steps
             ce_loss.backward()
-            optimizer.step()
 
-            step += 1
+            if (batch_idx + 1) % args.grad_accum_steps == 0 or (batch_idx + 1) == len(dataloader):
+                optimizer.step()
+                optimizer.zero_grad()
+                step += 1
 
-            if step % args.log_steps == 0:
-                if args.wandb_project:
-                    wandb.log(
-                        {"train/ce_loss": ce_loss.item(), "step": step}, step=step
+                if step % args.log_steps == 0:
+                    if args.wandb_project:
+                        wandb.log(
+                            {"train/ce_loss": ce_loss.item() * args.grad_accum_steps, "step": step}, step=step
+                        )
+                    pbar.set_postfix({"Loss": f"{ce_loss.item() * args.grad_accum_steps:.4f}"})
+
+                if step > 0 and step % args.save_steps == 0:
+                    ckpt_path = os.path.join(args.output_dir, f"decoder_step_{step}.pth")
+                    actual_model = (
+                        model.module if isinstance(model, nn.DataParallel) else model
                     )
-                pbar.set_postfix({"Loss": f"{ce_loss.item():.4f}"})
+                    torch.save({"decoder": actual_model.decoder.state_dict()}, ckpt_path)
+                    print(f"\n[SAVE] Saved checkpoint to {ckpt_path}")
+                    try:
+                        subprocess.Popen(
+                            [
+                                "gsutil",
+                                "-q",
+                                "cp",
+                                ckpt_path,
+                                "gs://bebladii-weigths-us/planB/phase2/checkpoints/",
+                            ]
+                        )
+                    except Exception:
+                        pass
 
-            if step > 0 and step % args.save_steps == 0:
-                ckpt_path = os.path.join(args.output_dir, f"decoder_step_{step}.pth")
-                actual_model = (
-                    model.module if isinstance(model, nn.DataParallel) else model
-                )
-                torch.save({"decoder": actual_model.decoder.state_dict()}, ckpt_path)
-                print(f"\n[SAVE] Saved checkpoint to {ckpt_path}")
-                try:
-                    subprocess.Popen(
-                        [
-                            "gsutil",
-                            "-q",
-                            "cp",
-                            ckpt_path,
-                            "gs://bebladii-weigths-us/planB/phase2/checkpoints/",
-                        ]
-                    )
-                except Exception:
-                    pass
-
-            pbar.update(1)
+                pbar.update(1)
 
         if step >= total_steps:
             break
