@@ -25,6 +25,12 @@ class ModernLatentDecoder(nn.Module):
         # Оставляем только последние num_layers слоев в модели
         full_model.layers = nn.ModuleList(full_model.layers[-num_layers:])
         full_model.config.num_hidden_layers = num_layers
+        
+        # Фикс для DataParallel: отключаем torch.compile(), чтобы 
+        # ModernBERT не пытался искать device внутри пустого генератора self.parameters() на репликах
+        if hasattr(full_model.config, "reference_compile"):
+            full_model.config.reference_compile = False
+            
         self.modernbert = full_model
 
         print(f"Backbone loaded: last {num_layers} layers of ModernBERT-large.")
