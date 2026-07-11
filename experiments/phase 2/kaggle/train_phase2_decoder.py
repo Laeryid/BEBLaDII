@@ -78,7 +78,7 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase2"
 
     # Параметры архитектуры и обучения
-    batch_size = 4
+    batch_size = 2
     grad_accum_steps = 4
     max_length = 1024
     learning_rate = 1e-4
