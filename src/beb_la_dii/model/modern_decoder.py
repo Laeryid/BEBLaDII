@@ -1,66 +1,68 @@
 import torch
 import torch.nn as nn
-from transformers import AutoModel
+from .dus import DUSModel
 
 class ModernLatentDecoder(nn.Module):
-    """
-    Decoder для Phase 2: берет последние num_layers слоев ModernBERT-large
-    с предобученными весами и проецирует результат в пространство Qwen.
-
-    Входной тензор z: (B, T, 1024) — сферический латент из VAE Phase 1.
-    Выходной тензор:  (B, T, qwen_dim) — для умножения на Qwen LM Head.
-
-    Layer forward signature (ModernBertEncoderLayer):
-        hidden_states, attention_mask=None, sliding_window_mask=None,
-        position_ids=None, cu_seqlens=None, max_seqlen=None,
-        output_attentions=False -> Tensor
-    """
-    def __init__(self, num_layers=3, latent_dim=1024, qwen_dim=1536,
-                 model_name="answerdotai/ModernBERT-large"):
+    def __init__(self, latent_dim=1024, qwen_dim=1536, num_layers=3, dus_weights_path=None):
         super().__init__()
-
-        print(f"Loading ModernBERT-large backbone from '{model_name}'...")
-        full_model = AutoModel.from_pretrained(model_name, torch_dtype=torch.bfloat16)
-
-        # Оставляем только последние num_layers слоев в модели
-        full_model.layers = nn.ModuleList(full_model.layers[-num_layers:])
-        full_model.config.num_hidden_layers = num_layers
+        self.latent_dim = latent_dim
         
-        # Фикс для DataParallel: отключаем torch.compile(), чтобы 
-        # ModernBERT не пытался искать device внутри пустого генератора self.parameters() на репликах
-        if hasattr(full_model.config, "reference_compile"):
-            full_model.config.reference_compile = False
+        # Загружаем DUS Model (latentBERT)
+        if dus_weights_path:
+            print(f"Loading first {num_layers} layers from DUS latentBERT: {dus_weights_path}")
+            dus = DUSModel.from_scratch(weights_path=dus_weights_path)
+            self.backbone = dus.model
             
-        # Патч свойства dtype для DataParallel (иначе падает со StopIteration при генерации маски)
-        PatchedClass = type(
-            "PatchedModernBertModel",
-            (type(full_model),),
-            {"dtype": property(lambda self: torch.bfloat16)}
-        )
-        full_model.__class__ = PatchedClass
-        
-        self.modernbert = full_model
+            # Берем ПОСЛЕДНИЕ слои (они лучше всего знают финальную грамматику и работают с глубокой семантикой)
+            self.backbone.layers = nn.ModuleList(self.backbone.layers[-num_layers:])
+            
+            # Hotfix for HuggingFace ModernBERT + PyTorch DataParallel bug:
+            class SafeModernBertModel(type(self.backbone)):
+                @property
+                def device(self):
+                    # Безопасный fallback, если DataParallel replica вернула пустой список
+                    params = list(self.parameters())
+                    return params[0].device if params else torch.device("cuda")
+                
+                @property
+                def dtype(self):
+                    # Принудительно возвращаем bfloat16 для _update_attention_mask
+                    return torch.bfloat16
+            
+            self.backbone.__class__ = SafeModernBertModel
+            self.backbone._maybe_set_compile = lambda *args, **kwargs: None
+            
+            self.use_modern_bert = True
+        else:
+            print("Warning: No DUS weights provided. Using random TransformerEncoder for PoC.")
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=latent_dim, 
+                nhead=16, 
+                dim_feedforward=latent_dim * 4, 
+                activation="gelu",
+                batch_first=True,
+                norm_first=True
+            )
+            self.backbone = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+            self.use_modern_bert = False
 
-        print(f"Backbone loaded: last {num_layers} layers of ModernBERT-large.")
-
-        # Проекция из latent_dim (1024) в qwen_dim (1536)
+        # Проекция из размерности латентов (1024) обратно в размерность Qwen (1536) для LM Head
         self.output_proj = nn.Linear(latent_dim, qwen_dim)
 
     def forward(self, z, attention_mask=None):
-        """
-        z: (B, T, 1024) — сферические латенты, работаем как hidden_states.
-        attention_mask: (B, T) — стандартная маска (1=реальный токен, 0=pad).
-        """
-        hidden = z.to(torch.bfloat16)
-
-        # Делегируем всю логику (RoPE, attention_mask, sliding_window) 
-        # встроенному forward() ModernBERT через inputs_embeds
-        outputs = self.modernbert(
-            inputs_embeds=hidden,
-            attention_mask=attention_mask
-        )
-        hidden = outputs.last_hidden_state
-
-        # Проекция в пространство Qwen — остаёмся в bfloat16 для совместимости с весами Qwen LM Head
-        out = self.output_proj(hidden)  # (B, T, 1536)
+        # Ранее мы убирали attention_mask, боясь рекомпиляций XLA из-за unpadding.
+        # Но без маски RoPE поворачивает PAD-токены и модель сжигает ёмкость на их подавление.
+        # Возвращаем attention_mask. В режиме SDPA unpadding не используется, 
+        # поэтому XLA не должен падать на динамических формах.
+        
+        if self.use_modern_bert:
+            # ModernBERT сам применит RoPE к inputs_embeds
+            outputs = self.backbone(inputs_embeds=z, attention_mask=attention_mask)
+            hidden = outputs.last_hidden_state
+        else:
+            pytorch_mask = (attention_mask == 0) if attention_mask is not None else None
+            hidden = self.backbone(z, src_key_padding_mask=pytorch_mask)
+            
+        # Проекция в пространство Qwen
+        out = self.output_proj(hidden) # (B, T, 1536)
         return out
