@@ -7,6 +7,10 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
+
 project_root = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
@@ -18,20 +22,6 @@ from src.beb_la_dii.model.vae import LatentEncoder, LatentDecoder
 from src.beb_la_dii.utils.loss import safe_normalize
 
 
-def recover_z(dus_final, c_embed, r_sq):
-    """
-    Математически точное восстановление z_clean из выхода DUS.
-    Если нейросеть предсказывает y = (z+c)/||z+c||,
-    то мы можем восстановить z через квадратное уравнение.
-    """
-    y_dot_c = (dus_final * c_embed).sum(dim=-1, keepdim=True)
-    c_norm_sq = (c_embed * c_embed).sum(dim=-1, keepdim=True)
-    
-    discriminant = torch.clamp((y_dot_c ** 2) - c_norm_sq + r_sq, min=1e-6)
-    alpha = y_dot_c + torch.sqrt(discriminant)
-    
-    z_rec = alpha * dus_final - c_embed
-    return safe_normalize(z_rec, dim=-1) * torch.sqrt(r_sq)
 
 
 def load_dus_checkpoint(dus, conf_proj, path, use_ema=True):
@@ -40,8 +30,8 @@ def load_dus_checkpoint(dus, conf_proj, path, use_ema=True):
     # --- ДИАГНОСТИКА: top-level ключи чекпоинта ---
     print(f"[DIAG] Checkpoint top-level keys: {list(state.keys())}")
 
-    dus_key = "dus"
-    proj_key = "confidence_proj"
+    dus_key = "dus_ema" if use_ema else "dus"
+    proj_key = "confidence_proj_ema" if use_ema else "confidence_proj"
     
     print(f"[*] Loading weights from keys: {dus_key}, {proj_key}")
 
@@ -148,7 +138,7 @@ def main():
     parser.add_argument(
         "--decoder",
         type=str,
-        default=r"experiments\phase 2\planB_phase2_phase2_decoder_step_8000.pth",
+        default=r"experiments\phase 2\planB_phase2_checkpoints_decoder_step_6000.pth",
     )
     parser.add_argument(
         "--embed_model", type=str, default="Qwen/Qwen2.5-1.5B"
@@ -162,7 +152,7 @@ def main():
     args = parser.parse_args()
 
     device = torch.device(args.device)
-    eval_dtype = torch.float32 if args.device == "cpu" else torch.bfloat16
+    eval_dtype = torch.bfloat16
     print(f"[*] Running LOCAL evaluation on device: {device} | dtype: {eval_dtype}")
 
     print(f"[*] Loading Tokenizer and Embedding Model: {args.embed_model}")
@@ -175,11 +165,18 @@ def main():
     embeddings.requires_grad_(False)
     lm_head_weight = causal_model.lm_head.weight.data.to(device)
 
-    print("[*] Loading LatentEncoder & LatentDecoder (Phase 1)")
-    encoder = LatentEncoder().to(device).to(eval_dtype)
-    encoder.eval()
-
-    decoder = LatentDecoder().to(device).to(eval_dtype)
+    # Используем ModernLatentDecoder, так как это Фаза 2
+    from src.beb_la_dii.model.vae import LatentEncoder
+    from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
+    
+    encoder = LatentEncoder(1536, 1024).to(device).to(eval_dtype)
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    decoder = ModernLatentDecoder(
+        latent_dim=1024,
+        qwen_dim=1536,
+        num_layers=3,
+        dus_weights_path=r"C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+    ).to(device).to(eval_dtype)
     decoder.eval()
 
     def load_with_stats(module, state_dict, name):
@@ -194,12 +191,16 @@ def main():
         state_dict_enc = state.get("encoder", state)
         clean_state_enc = {k.replace("encoder.", ""): v for k, v in state_dict_enc.items()}
         load_with_stats(encoder, clean_state_enc, "LatentEncoder")
-        # Load Decoder
-        state_dict_dec = state.get("decoder", state)
+    else:
+        print(f"[!] Warning: Phase 1 weights not found at {args.encoder}")
+
+    if os.path.exists(args.decoder):
+        dec_state = torch.load(args.decoder, map_location="cpu", weights_only=False)
+        state_dict_dec = dec_state.get("decoder", dec_state)
         clean_state_dec = {k.replace("decoder.", ""): v for k, v in state_dict_dec.items()}
         load_with_stats(decoder, clean_state_dec, "LatentDecoder")
     else:
-        print(f"[!] Warning: Phase 1 weights not found at {args.encoder}")
+        print(f"[!] Warning: Phase 2 decoder weights not found at {args.decoder}")
 
     print(f"[*] Loading DUS Model and Confidence Proj from {args.checkpoint}")
     dus_wrapper = DUSModel.from_scratch(weights_path=None)
@@ -242,7 +243,8 @@ def main():
                 (1, z_clean.size(1)), device=device, dtype=eval_dtype
             )
             c_embed_raw = confidence_proj(c_true.unsqueeze(-1))
-            c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(eval_dtype) * 0.1
+            # ABLATION: force c_embed to 0
+            c_embed = torch.zeros_like(z_clean)
             dus_input = (z_clean + c_embed).to(eval_dtype)
 
             dus_outputs = dus(

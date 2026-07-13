@@ -491,7 +491,23 @@
         "experiments/phase 2/train_phase2_decoder.py"
       ]
     },
-
+    "decisions/056_decoder_learning_rate_plateau.md": {
+      "description": "ADR: Опровержение ADR 055 (отсутствие Encoder Bias) и обоснование необходимости высокого LR для случайно инициализированного слоя проекции декодера.",
+      "covers": ["Knowledge Infrastructure", "Model Core", "Utilities"],
+      "depends_on": [
+        "src/beb_la_dii/model/modern_decoder.py",
+        "experiments/phase 2/train_phase2_decoder.py",
+        ".know/decisions/055_pretrained_modernbert_large_decoder_transition.md"
+      ]
+    },
+    "decisions/057_phase3_bfloat16_gradient_collapse.md": {
+      "description": "ADR: Описание коллапса градиентов bfloat16 в Phase 3 из-за множителя gamma=20 и округления.",
+      "covers": ["Knowledge Infrastructure", "Model Core", "Utilities"],
+      "depends_on": [
+        "experiments/phase3/train_phase3_notebook.py",
+        "experiments/phase3/eval_phase3_logic_local.py"
+      ]
+    },
     "KI_metrics_reference.md": {
       "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
       "covers": ["Utilities", "Experiments"],

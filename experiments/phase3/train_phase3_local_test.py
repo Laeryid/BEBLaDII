@@ -26,15 +26,7 @@ import wandb
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer
 
-PROJECT_ROOT = "/kaggle/working/BEBLaDII"
-REPO_URL = "https://github.com/Laeryid/BEBLaDII.git"
-
-if not os.path.exists(PROJECT_ROOT):
-    print(f"Клонирование репозитория из {REPO_URL}...")
-    subprocess.run(["git", "clone", REPO_URL, PROJECT_ROOT], check=True)
-else:
-    print("Репозиторий уже существует. Выполняю git pull...")
-    subprocess.run(["git", "-C", PROJECT_ROOT, "pull"], check=True)
+PROJECT_ROOT = "C:/Experiments/BEBLaDII"
 
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -58,29 +50,29 @@ except ImportError as e:
 
 # %%
 class Config:
-    # Пути к базовым моделям (используйте Kaggle Models или Datasets)
-    embedding_model_path = "/kaggle/input/datasets/ragnar123/qwen2-5-1-5b"
-    modernbert_path = "/kaggle/input/models/answer-ai/modernbert/transformers/large/2"
+    # Пути к базовым моделям
+    embedding_model_path = "Qwen/Qwen2.5-1.5B"
+    modernbert_path = "answerdotai/ModernBERT-large"
 
     # Пути к данным
-    dataset_path = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/phase 3/train_data/data"
+    dataset_path = r"experiments\phase3\kaggle\kaggle_dataset\phase 3\train_data\data"
 
-    # Пути к весам (из ваших предыдущих загрузок)
-    local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
-    local_dus_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
+    # Пути к весам
+    local_encoder_weights = r"experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth"
+    local_dus_weights = r"kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
 
     # Директории вывода (доступны для записи)
-    output_dir = "/kaggle/working/checkpoints/phase3"
+    output_dir = r"experiments\phase3\local_checkpoints"
 
     # Гиперпараметры обучения
-    batch_size = 8  # Уменьшено для защиты от OOM
-    max_length = 512
+    batch_size = 1  # Для сверхбыстрого локального теста
+    max_length = 8 # Снижено до предела для ускорения на CPU
     learning_rate = 5e-4
     epochs = 1
-    max_steps = 40000
-    log_steps = 10
-    val_steps = 1000
-    save_steps = 1000
+    max_steps = 5
+    log_steps = 1
+    val_steps = 500
+    save_steps = 500
 
     # Специфика Phase 3
     low_noise_amp = 0.5
@@ -254,52 +246,55 @@ class BEBLaDIIPhase3(nn.Module):
             B, T, D = z_clean.shape
 
             # --- Windows generation ---
-            noise_window_size = 5
-            num_windows = 5
-            block_size = T // num_windows
+            if T < 60:
+                full_noise_mask = (torch.rand((B, T), device=z_clean.device) > 0.5).to(z_clean.dtype)
+            else:
+                noise_window_size = 12
+                num_windows = 5
+                block_size = T // num_windows
 
-            starts = []
-            for w in range(num_windows):
-                min_start = 0
-                max_start = max(min_start + 1, block_size - noise_window_size)
-                start = torch.randint(
-                    w * block_size + min_start,
-                    w * block_size + max_start,
-                    (B, 1),
-                    device=z_clean.device,
-                )
-                starts.append(start)
-            starts = torch.cat(starts, dim=1)
+                starts = []
+                for w in range(num_windows):
+                    min_start = 0
+                    max_start = max(min_start + 1, block_size - noise_window_size)
+                    start = torch.randint(
+                        w * block_size + min_start,
+                        w * block_size + max_start,
+                        (B, 1),
+                        device=z_clean.device,
+                    )
+                    starts.append(start)
+                starts = torch.cat(starts, dim=1)
 
-            noise_offsets = torch.arange(noise_window_size, device=z_clean.device).view(
-                1, 1, noise_window_size
-            )
-            noise_window_indices = starts.unsqueeze(-1) + noise_offsets
-
-            rand_noise = torch.rand(
-                (B, num_windows, noise_window_size), device=z_clean.device
-            )
-            num_to_noise = torch.randint(
-                1, noise_window_size + 1, (B, num_windows, 1), device=z_clean.device
-            )
-            _, noise_ranks = torch.sort(rand_noise, dim=-1)
-            noise_subset_mask = (
-                torch.arange(noise_window_size, device=z_clean.device).view(
+                noise_offsets = torch.arange(noise_window_size, device=z_clean.device).view(
                     1, 1, noise_window_size
                 )
-                < num_to_noise
-            ).to(z_clean.dtype)
-            noise_subset_mask = torch.gather(
-                noise_subset_mask, 2, noise_ranks.argsort(dim=-1)
-            )
+                noise_window_indices = starts.unsqueeze(-1) + noise_offsets
 
-            flat_noise_indices = noise_window_indices.view(B, -1)
-            full_noise_mask = torch.zeros(
-                (B, T), device=z_clean.device, dtype=z_clean.dtype
-            )
-            full_noise_mask.scatter_(
-                1, flat_noise_indices, noise_subset_mask.view(B, -1)
-            )
+                rand_noise = torch.rand(
+                    (B, num_windows, noise_window_size), device=z_clean.device
+                )
+                num_to_noise = torch.randint(
+                    1, noise_window_size + 1, (B, num_windows, 1), device=z_clean.device
+                )
+                _, noise_ranks = torch.sort(rand_noise, dim=-1)
+                noise_subset_mask = (
+                    torch.arange(noise_window_size, device=z_clean.device).view(
+                        1, 1, noise_window_size
+                    )
+                    < num_to_noise
+                ).to(z_clean.dtype)
+                noise_subset_mask = torch.gather(
+                    noise_subset_mask, 2, noise_ranks.argsort(dim=-1)
+                )
+
+                flat_noise_indices = noise_window_indices.view(B, -1)
+                full_noise_mask = torch.zeros(
+                    (B, T), device=z_clean.device, dtype=z_clean.dtype
+                )
+                full_noise_mask.scatter_(
+                    1, flat_noise_indices, noise_subset_mask.view(B, -1)
+                )
 
             noise_mask = full_noise_mask * attention_mask.to(z_clean.dtype)
 
@@ -439,8 +434,9 @@ def compute_phase3_loss(
 
 # %%
 def train():
+    import os
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Init] Using device: {device}")
+    print("[Init] Using device:", device)
     num_gpus = torch.cuda.device_count()
     print(f"[Init] Available GPUs: {num_gpus}")
 
@@ -462,8 +458,8 @@ def train():
 
     # Оптимизатор
     trainable_params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = torch.optim.AdamW(
-        trainable_params, lr=args.learning_rate, weight_decay=1e-2
+    optimizer = torch.optim.SGD(
+        trainable_params, lr=args.learning_rate
     )
 
     # Из-за DataParallel доступ к модулям внутри EMA будет идти как model.module
@@ -501,7 +497,8 @@ def train():
         except Exception as e:
             print(f"[Init] WARN: Could not login to W&B automatically: {e}")
 
-        wandb.init(project=args.wandb_project, config=vars(args))
+   # Disable wandb for local test
+# wandb.init(project=args.wandb_project, config=vars(args))
 
     # Даталоадеры
     try:
@@ -533,11 +530,7 @@ def train():
 
     model.train()
     step = 0
-    total_steps = (
-        min(args.max_steps, len(dataloader) * args.epochs)
-        if len(dataloader) > 0
-        else args.max_steps
-    )
+    total_steps = 10
 
     from tqdm.auto import tqdm
 
@@ -575,7 +568,8 @@ def train():
                 loss = loss.mean()
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            total_grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            print(f"Step {step} - Gradient norm before clip: {total_grad_norm.item():.6f}")
 
             optimizer.step()
             ema.step(model)
@@ -597,6 +591,11 @@ def train():
                     for idx_p, param_group in enumerate(optimizer.param_groups):
                         param_group["lr"] = param_group["lr"] * lr_warmup_factor
 
+        # For local testing, just print instead of wandb
+        print(f"Step {step}: Total Loss: {metrics['total_loss'].item():.4f} | Denoise: {metrics['denoise_loss'].item():.4f} | Identity: {metrics['identity_penalty'].item():.4f}")
+        for param_group in optimizer.param_groups:
+            print(f"  LR: {param_group['lr']:.6f}")
+
             # Логирование
             if step % args.log_steps == 0:
                 metrics_dict = {
@@ -607,7 +606,8 @@ def train():
                 metrics_dict["lr"] = optimizer.param_groups[0]["lr"]
 
                 if args.wandb_project:
-                    wandb.log(metrics_dict, step=step)
+                    # wandb.log(metrics_dict, step=step)
+                    pass
 
                 pbar.set_postfix(
                     {

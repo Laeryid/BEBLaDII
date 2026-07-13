@@ -1,65 +1,63 @@
-(.venv) hp@t1v-n-dedc9329-w-0:~/projects/BEBLaDII$ .venv/bin/python experiments/phase3/eval_phase3_logic.py  --checkpoint "checkpoints/phase3/phase3_step_10000.pth"  --encoder  "checkpoints/phase1/phase1_vae_step_20000.pth"  --decoder  "checkpoints/phase2/decoder_step_8000.pth"
+.venv\Scripts\python.exe experiments\phase3\eval_phase3_logic.py --checkpoint "experiments\phase3\planB_phase3_checkpoints_phase3_step_8000.pth" --encoder "experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth" --decoder "experiments\phase 2\planB_phase2_checkpoints_decoder_step_6000.pth"
 [*] Loading Tokenizer and Embedding Model: deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
 `torch_dtype` is deprecated! Use `dtype` instead!
 [*] Loading LatentEncoder & ModernLatentDecoder
-Warning: No DUS weights provided. Using random TransformerEncoder for PoC.
-/home/hp/projects/BEBLaDII/.venv/lib/python3.10/site-packages/torch/nn/modules/transformer.py:307: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
-  warnings.warn(f"enable_nested_tensor is True, but self.use_nested_tensor is False because {why_not_sparsity_fast_path}")
+Loading first 3 layers from DUS latentBERT: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
 Loading model architecture from answerdotai/ModernBERT-large...
 Created 40 layers from 28 base layers (DUS applied).
-/home/hp/projects/BEBLaDII/experiments/phase3/eval_phase3_logic.py:134: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  state = torch.load(args.encoder, map_location="cpu")
+  Weights loaded: C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
 [*] LatentEncoder loaded:
     - Matched parameters: 10 / 10
-/home/hp/projects/BEBLaDII/experiments/phase3/eval_phase3_logic.py:140: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  state = torch.load(args.decoder, map_location="cpu")
 [*] LatentDecoder loaded:
     - Matched parameters: 23 / 23
-[*] Loading DUS Model from checkpoints/phase3/phase3_step_10000.pth
+[*] Loading DUS Model and Confidence Proj from C:\Experiments\BEBLaDII\experiments\phase3\planB_phase3_checkpoints_phase3_step_8000.pth
 Loading model architecture from answerdotai/ModernBERT-large...
 Created 40 layers from 28 base layers (DUS applied).
-/home/hp/projects/BEBLaDII/experiments/phase3/eval_phase3_logic.py:20: FutureWarning: You are using `torch.load` with `weights_only=False` (the current default value), which uses the default pickle module implicitly. It is possible to construct malicious pickle data which will execute arbitrary code during unpickling (See https://github.com/pytorch/pytorch/blob/main/SECURITY.md#untrusted-models for more details). In a future release, the default value for `weights_only` will be flipped to `True`. This limits the functions that could be executed during unpickling. Arbitrary objects will no longer be allowed to be loaded via this mode unless they are explicitly allowlisted by the user via `torch.serialization.add_safe_globals`. We recommend you start setting `weights_only=True` for any use case where you don't have full control of the loaded file. Please open an issue on GitHub for any issues related to this experimental feature.
-  state = torch.load(path, map_location="cpu")
-[*] DUS weights loaded from checkpoints/phase3/phase3_step_10000.pth
-    - Matched parameters: 242 / 242
+[*] DUS and ConfidenceProj weights loaded from C:\Experiments\BEBLaDII\experiments\phase3\planB_phase3_checkpoints_phase3_step_8000.pth (EMA preferred)
 
 ==================================================
 ТЕСТ 1: Без шума (Проверка Identity через DUS)
 ==================================================
 
 Фраза 1: Machine learning allows computers to solve complex problems without explicit programming.
-  [AutoEncoder Only] ->  cena machine man allowsно to solve complex problems without explicit programming.
-  [AutoEncoder + DUS]->  = = front =thichiithnith expression
-  [Metrics DUS vs AE]-> Cosine Similarity: 0.0303 | L2 Distance: 23.0810
+  [AutoEncoder Only] ->  facult bran)?.}}"-sn to corp corp problems without explicit programming
+  [AutoEncoder + DUS]-> AGAGAGAGAGAGAGAGAGAGAGAGAG
+  [Metrics DUS vs AE]-> Cosine Similarity: -0.0217 | L2 Distance: 1.4296
 
 Фраза 2: It rained heavily last night, and huge puddles formed on the street.
-  [AutoEncoder Only] ->  cenaIt r pick heavily last night, and huge Solveles formed on the street.
-  [AutoEncoder + DUS]->  bottom that that,,, that, by front front,,, =,,
-  [Metrics DUS vs AE]-> Cosine Similarity: 0.0089 | L2 Distance: 23.0354
+  [AutoEncoder Only] ->  😉
+
+ runwayRiewally last Viet, and huge@propertyles formed on ( street,
+  [AutoEncoder + DUS]-> AGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAG
+  [Metrics DUS vs AE]-> Cosine Similarity: -0.0145 | L2 Distance: 1.4238
 
 Фраза 3: The singularity is a hypothetical moment in the future when technological growth becomes uncontrollable.
-  [AutoEncoder Only] ->  cenaThe nodeolar is a hypothetical moment in the future whenag growth becomes�rollable.
-  [AutoEncoder + DUS]-> 4ry¼ variableer “ in a of}th “ where by due t =
-  [Metrics DUS vs AE]-> Cosine Similarity: 0.0192 | L2 Distance: 23.0346
+  [AutoEncoder Only] -> comicTriple sing Cele is a ze毛 in the future when stealing growth becomes uncontrollable
+  [AutoEncoder + DUS]-> AGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAG
+  [Metrics DUS vs AE]-> Cosine Similarity: -0.0175 | L2 Distance: 1.4266
 
 Фраза 4: The cat is sleeping on the windowsill while fluffy snow falls slowly outside.
-  [AutoEncoder Only] ->  cenaThe cat iszen on the Butill whileFull snow falls slowly outside.
-  [AutoEncoder + DUS]-> ast} In Inle,. ( Sge remainingyl leading end In The
-  [Metrics DUS vs AE]-> Cosine Similarity: 0.0210 | L2 Distance: 23.0649
+  [AutoEncoder Only] -> maniaThe赞 is Gast on the隅ill whileboo.'"
+
+ (++ slowly必需
+  [AutoEncoder + DUS]-> AGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAG
+  [Metrics DUS vs AE]-> Cosine Similarity: -0.0091 | L2 Distance: 1.4205
 
 Фраза 5: Transformer architecture revolutionized the field of natural language processing.
-  [AutoEncoder Only] ->  cenaков architectureovized the field of natural language processing.
-  [AutoEncoder + DUS]-> 44in answer radius end.
-  [Metrics DUS vs AE]-> Cosine Similarity: 0.0291 | L2 Distance: 23.0808
+  [AutoEncoder Only] ->  😉
+
+ Vue gracelevarsed a field of natural language processing
+  [AutoEncoder + DUS]-> AGAGAGAGAGAGAGAGAGAGAGAG
+  [Metrics DUS vs AE]-> Cosine Similarity: -0.0236 | L2 Distance: 1.4307
 
 ==================================================
 ТЕСТ 2: Легкий шум (как на обучении, 15% токенов)
 ==================================================
 Оригинал:   Neural networks possess an incredible ability to generalize data from massive amounts of information.
-Зашумлено:   váNe counter systems possess an possible ability to hold data from large amounts of information.
-  [Noisy vs Ideal]   -> Cosine: 0.9810 | L2: 0.0818
-DUS выход:  ),那样的 denominatorj}}\ after variablesdateqiatesч���thertheta
-  [DUS rec vs Ideal] -> Cosine: 0.0203 | L2: 23.0677
+Зашумлено:   playa NSTuralovengross an(verled to lique data from Quantum amounts of like
+  [Noisy vs Ideal]   -> Cosine: 0.9961 | L2: 0.0270
+DUS выход:  AGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAG
+  [DUS rec vs Ideal] -> Cosine: -0.0209 | L2: 1.4285
 
 ==================================================
 ТЕСТ 3: Тяжелый шум (полная замена случайными векторами) + 5 шагов диффузии
@@ -67,9 +65,11 @@ DUS выход:  ),那样的 denominatorj}}\ after variablesdateqiatesч���
 Оригинал (шаблон): The capital of France is the city of [Paris], which is famous for its unique [architecture] and history.
 Индексы для глухого шума: []
 
-Сам шум (итерация 0):  konkThe capital of pounds is the city of But, which is + for its unique architecture and behavior.
-Итерация 1: stst integral., and?0sinv sin.. The \coscosv inst = (Cos: 0.0293, L2: 23.0148)
-Итерация 2:  like like like like in in in other1, which the like like like-, in in in in (Cos: 0.0176, L2: 22.9625)
-Итерация 3:  - - - - - = at - - - - - - at - - - - - - - (Cos: 0.0093, L2: 22.9408)
-Итерация 4:    one one one y y   *   at at at at - - - at at (Cos: 0.0102, L2: 22.9266)
-Итерация 5: iviviviviviviviviviviviviviviv at ativiviviv (Cos: 0.0131, L2: 22.9068)
+Сам шум (итерация 0):  😉
+
+Theflation of)[- is the city intervals ints and which is selection for its uniqueghi and history,
+Итерация 1: AGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAGAG (Cos: -0.0106, L2: 1.4213)
+Итерация 2:  pr pr pr pr pr pr pr pr pr pr pr pr pr pr pr pr pr pr pr pr pr (Cos: -0.0085, L2: 1.4210)
+Итерация 3:  gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb (Cos: -0.0084, L2: 1.4205)
+Итерация 4:  gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb (Cos: -0.0078, L2: 1.4199)
+Итерация 5:  gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb gamb (Cos: -0.0078, L2: 1.4199)

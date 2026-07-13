@@ -67,7 +67,8 @@ class Phase2SanityTester:
             latent_dim=1024,
             qwen_dim=1536,
             num_layers=3,
-        ).to(device)
+            dus_weights_path=dus_weights_path
+        ).to(device).to(torch.bfloat16)
         
         ckpt2 = torch.load(phase2_ckpt_path, map_location=device)
         # Обратная совместимость на случай если ключи сохранены как decoder.xxx или без префикса

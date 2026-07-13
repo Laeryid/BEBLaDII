@@ -5,8 +5,11 @@ import torch
 import torch.nn.functional as F
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# Добавляем корень проекта в sys.path
 import sys
+if sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
+# Добавляем корень проекта в sys.path
 project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
@@ -115,25 +118,39 @@ def main():
     args = parser.parse_args()
 
     device = torch.device(args.device)
+    dtype = torch.bfloat16 # Возвращаем bfloat16, так как float32 сдвигает латенты и ломает хрупкий декодер!
+
+    # Делаем пути абсолютными
+    args.encoder = os.path.join(project_root, args.encoder) if not os.path.isabs(args.encoder) else args.encoder
+    args.decoder = os.path.join(project_root, args.decoder) if not os.path.isabs(args.decoder) else args.decoder
+    args.checkpoint = os.path.join(project_root, args.checkpoint) if not os.path.isabs(args.checkpoint) else args.checkpoint
 
     print(f"[*] Loading Tokenizer and Embedding Model: {args.embed_model}")
     tokenizer = AutoTokenizer.from_pretrained(args.embed_model)
-    causal_model = AutoModelForCausalLM.from_pretrained(args.embed_model, torch_dtype=torch.bfloat16)
+    causal_model = AutoModelForCausalLM.from_pretrained(args.embed_model, torch_dtype=dtype)
     embeddings = causal_model.get_input_embeddings()
     embeddings.to(device)
     embeddings.requires_grad_(False)
-    lm_head_weight = causal_model.lm_head.weight.data.to(device)
+    lm_head_weight = causal_model.lm_head.weight.data.to(device).to(dtype)
 
     print("[*] Loading LatentEncoder & ModernLatentDecoder")
-    encoder = LatentEncoder().to(device).to(torch.bfloat16)
+    encoder = LatentEncoder().to(device).to(dtype)
     encoder.eval()
     
-    decoder = ModernLatentDecoder(dus_weights_path=None)
-    dus_for_dec = DUSModel.from_scratch(weights_path=None).model
-    decoder.backbone = dus_for_dec
-    decoder.backbone.layers = decoder.backbone.layers[-3:]
-    decoder.use_modern_bert = True
-    decoder = decoder.to(device).to(torch.bfloat16)
+    # Инициализация декодера ТОЧНО так же, как в test_phase2_sanity.py
+    dus_weights_path = os.path.join(project_root, "kaggle_upload_1_2", "AWAKENED_WEIGHTS_FINAL.pt")
+    if not os.path.exists(dus_weights_path):
+        print(f"[!] Warning: AWAKENED_WEIGHTS_FINAL not found at {dus_weights_path}. Model will fallback to PoC or fail!")
+        
+    decoder = ModernLatentDecoder(
+        latent_dim=1024,
+        qwen_dim=1536,
+        num_layers=3,
+        dus_weights_path=dus_weights_path
+    ).to(device).to(dtype)
+    
+    # Исправляем жестко зашитый bfloat16 в SafeModernBertModel для тестов на CPU
+    type(decoder.backbone).dtype = property(lambda self: dtype)
     
     def load_with_stats(module, state_dict, name):
         model_keys = set(module.state_dict().keys())
@@ -154,7 +171,13 @@ def main():
 
     if os.path.exists(args.decoder):
         state = torch.load(args.decoder, map_location="cpu")
-        load_with_stats(decoder, state.get("decoder", state), "LatentDecoder")
+        state_dict = state.get("decoder", state)
+        clean_state = {}
+        for k, v in state_dict.items():
+            k = k.replace("decoder.", "")
+            k = k.replace("modernbert.", "backbone.")
+            clean_state[k] = v
+        load_with_stats(decoder, clean_state, "LatentDecoder")
     else:
         print(f"[!] Warning: Decoder weights not found at {args.decoder}")
 
@@ -163,13 +186,13 @@ def main():
 
     print(f"[*] Loading DUS Model and Confidence Proj from {args.checkpoint}")
     dus_wrapper = DUSModel.from_scratch(weights_path=None)
-    dus = dus_wrapper.model.to(device).to(torch.bfloat16)
+    dus = dus_wrapper.model.to(device).to(dtype)
     
     confidence_proj = torch.nn.Sequential(
         torch.nn.Linear(1, 256),
         torch.nn.SiLU(),
         torch.nn.Linear(256, 1024)
-    ).to(device).to(torch.bfloat16)
+    ).to(device).to(dtype)
     
     load_dus_checkpoint(dus, confidence_proj, args.checkpoint)
     dus.eval()
@@ -197,14 +220,14 @@ def main():
             qwen_embeds = embeddings(input_ids)
             z_clean, _, _ = encoder(qwen_embeds)
             
-            c_true = torch.ones((1, z_clean.size(1)), device=device, dtype=torch.bfloat16)
+            c_true = torch.ones((1, z_clean.size(1)), device=device, dtype=dtype)
             c_embed = confidence_proj(c_true.unsqueeze(-1))
-            dus_input = z_clean + c_embed
+            dus_input = (z_clean + c_embed).to(dtype)
             
             dus_out_raw = dus(inputs_embeds=dus_input, attention_mask=attn_mask).last_hidden_state
-            dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(torch.bfloat16)
+            dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(dtype)
             
-            z_recovered = recover_z(dus_out_norm.float(), c_embed.float()).to(torch.bfloat16)
+            z_recovered = recover_z(dus_out_norm.float(), c_embed.float()).to(dtype)
             
             # Декодируем z_clean (чистый автоэнкодер) и z_recovered
             text_ae = decode_to_text(z_clean, decoder, lm_head_weight, tokenizer)
@@ -249,15 +272,15 @@ def main():
             noise_mask > 0,
             safe_normalize(z_noisy, dim=-1) * z_clean_norm,
             z_noisy
-        )
+        ).to(dtype)
         
-        c_true = torch.clamp(F.cosine_similarity(z_clean.float(), z_noisy.float(), dim=-1), min=0.0).to(torch.bfloat16)
+        c_true = torch.clamp(F.cosine_similarity(z_clean, z_noisy, dim=-1), min=0.0).to(dtype)
         c_embed = confidence_proj(c_true.unsqueeze(-1))
-        dus_input = z_noisy + c_embed
+        dus_input = (z_noisy + c_embed).to(dtype)
         
         dus_out_raw = dus(inputs_embeds=dus_input, attention_mask=attn_mask).last_hidden_state
-        dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(torch.bfloat16)
-        z_recovered = recover_z(dus_out_norm.float(), c_embed.float()).to(torch.bfloat16)
+        dus_out_norm = safe_normalize(dus_out_raw.to(dtype), dim=-1).to(dtype)
+        z_recovered = recover_z(dus_out_norm.to(dtype), c_embed.to(dtype)).to(dtype)
         
         text_noisy = decode_to_text(z_noisy, decoder, lm_head_weight, tokenizer)
         text_recovered = decode_to_text(z_recovered, decoder, lm_head_weight, tokenizer)
@@ -313,13 +336,13 @@ def main():
         # Диффузия (5 итераций)
         z_curr = z_heavy.clone()
         for step in range(1, 6):
-            c_true = torch.clamp(F.cosine_similarity(z_clean.float(), z_curr.float(), dim=-1), min=0.0).to(torch.bfloat16)
+            c_true = torch.clamp(F.cosine_similarity(z_clean.to(dtype), z_curr.to(dtype), dim=-1), min=0.0).to(dtype)
             c_embed = confidence_proj(c_true.unsqueeze(-1))
-            dus_input = z_curr + c_embed
+            dus_input = (z_curr + c_embed).to(dtype)
             
             dus_out_raw = dus(inputs_embeds=dus_input, attention_mask=attn_mask).last_hidden_state
-            dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(torch.bfloat16)
-            z_rec = recover_z(dus_out_norm.float(), c_embed.float()).to(torch.bfloat16)
+            dus_out_norm = safe_normalize(dus_out_raw.to(dtype), dim=-1).to(dtype)
+            z_rec = recover_z(dus_out_norm.to(dtype), c_embed.to(dtype)).to(dtype)
             
             text_step = decode_to_text(z_rec, decoder, lm_head_weight, tokenizer)
             

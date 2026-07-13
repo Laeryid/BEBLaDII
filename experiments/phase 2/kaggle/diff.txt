@@ -1,0 +1,427 @@
+--- 
++++ 
+@@ -4,9 +4,9 @@
+       "cell_type": "markdown",
+-      "id": "34c55137",
+-      "metadata": {
+-        "papermill": {
+-          "duration": 0.002843,
+-          "end_time": "2026-07-12T12:27:55.998409+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:27:55.995566+00:00",
++      "id": "f03156c9",
++      "metadata": {
++        "papermill": {
++          "duration": 0.002595,
++          "end_time": "2026-07-11T07:39:02.609619+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:02.607024+00:00",
+           "status": "completed"
+@@ -22,9 +22,9 @@
+       "cell_type": "markdown",
+-      "id": "e3017324",
+-      "metadata": {
+-        "papermill": {
+-          "duration": 0.002231,
+-          "end_time": "2026-07-12T12:27:56.003102+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:27:56.000871+00:00",
++      "id": "e3d40830",
++      "metadata": {
++        "papermill": {
++          "duration": 0.001707,
++          "end_time": "2026-07-11T07:39:02.613251+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:02.611544+00:00",
+           "status": "completed"
+@@ -40,9 +40,9 @@
+       "execution_count": 1,
+-      "id": "18b32e15",
++      "id": "eb4ee62d",
+       "metadata": {
+         "execution": {
+-          "iopub.execute_input": "2026-07-12T12:27:56.008266Z",
+-          "iopub.status.busy": "2026-07-12T12:27:56.007930Z",
+-          "iopub.status.idle": "2026-07-12T12:28:45.983148Z",
+-          "shell.execute_reply": "2026-07-12T12:28:45.982517Z"
++          "iopub.execute_input": "2026-07-11T07:39:02.617860Z",
++          "iopub.status.busy": "2026-07-11T07:39:02.617522Z",
++          "iopub.status.idle": "2026-07-11T07:39:45.565091Z",
++          "shell.execute_reply": "2026-07-11T07:39:45.564238Z"
+         },
+@@ -50,6 +50,6 @@
+         "papermill": {
+-          "duration": 49.980183,
+-          "end_time": "2026-07-12T12:28:45.985117+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:27:56.004934+00:00",
++          "duration": 42.951961,
++          "end_time": "2026-07-11T07:39:45.566943+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:02.614982+00:00",
+           "status": "completed"
+@@ -136,3 +136,3 @@
+       "cell_type": "markdown",
+-      "id": "9c939f0b",
++      "id": "369e3d6f",
+       "metadata": {
+@@ -140,6 +140,6 @@
+         "papermill": {
+-          "duration": 0.001936,
+-          "end_time": "2026-07-12T12:28:45.989286+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:28:45.987350+00:00",
++          "duration": 0.001946,
++          "end_time": "2026-07-11T07:39:45.571100+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:45.569154+00:00",
+           "status": "completed"
+@@ -155,9 +155,9 @@
+       "execution_count": 2,
+-      "id": "edffb3bc",
++      "id": "e97c71e7",
+       "metadata": {
+         "execution": {
+-          "iopub.execute_input": "2026-07-12T12:28:45.994762Z",
+-          "iopub.status.busy": "2026-07-12T12:28:45.994208Z",
+-          "iopub.status.idle": "2026-07-12T12:28:45.998851Z",
+-          "shell.execute_reply": "2026-07-12T12:28:45.998190Z"
++          "iopub.execute_input": "2026-07-11T07:39:45.576282Z",
++          "iopub.status.busy": "2026-07-11T07:39:45.575837Z",
++          "iopub.status.idle": "2026-07-11T07:39:45.581003Z",
++          "shell.execute_reply": "2026-07-11T07:39:45.580249Z"
+         },
+@@ -165,6 +165,6 @@
+         "papermill": {
+-          "duration": 0.008938,
+-          "end_time": "2026-07-12T12:28:46.000310+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:28:45.991372+00:00",
++          "duration": 0.009595,
++          "end_time": "2026-07-11T07:39:45.582557+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:45.572962+00:00",
+           "status": "completed"
+@@ -193,5 +193,5 @@
+         "    max_length = 1024\n",
+-        "    learning_rate = 2e-5\n",
+-        "    epochs = 10\n",
+-        "    max_steps = 40000\n",
++        "    learning_rate = 1e-4\n",
++        "    epochs = 1\n",
++        "    max_steps = 10000\n",
+         "    log_steps = 10\n",
+@@ -207,3 +207,3 @@
+       "cell_type": "markdown",
+-      "id": "e80cf24c",
++      "id": "5979376d",
+       "metadata": {
+@@ -211,6 +211,6 @@
+         "papermill": {
+-          "duration": 0.001957,
+-          "end_time": "2026-07-12T12:28:46.004249+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:28:46.002292+00:00",
++          "duration": 0.002044,
++          "end_time": "2026-07-11T07:39:45.586622+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:45.584578+00:00",
+           "status": "completed"
+@@ -226,9 +226,9 @@
+       "execution_count": 3,
+-      "id": "5d3f68fd",
++      "id": "798daa05",
+       "metadata": {
+         "execution": {
+-          "iopub.execute_input": "2026-07-12T12:28:46.009565Z",
+-          "iopub.status.busy": "2026-07-12T12:28:46.009067Z",
+-          "iopub.status.idle": "2026-07-12T12:28:46.014938Z",
+-          "shell.execute_reply": "2026-07-12T12:28:46.014342Z"
++          "iopub.execute_input": "2026-07-11T07:39:45.592060Z",
++          "iopub.status.busy": "2026-07-11T07:39:45.591462Z",
++          "iopub.status.idle": "2026-07-11T07:39:45.597743Z",
++          "shell.execute_reply": "2026-07-11T07:39:45.597032Z"
+         },
+@@ -236,6 +236,6 @@
+         "papermill": {
+-          "duration": 0.009994,
+-          "end_time": "2026-07-12T12:28:46.016308+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:28:46.006314+00:00",
++          "duration": 0.010493,
++          "end_time": "2026-07-11T07:39:45.599050+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:45.588557+00:00",
+           "status": "completed"
+@@ -286,3 +286,3 @@
+       "cell_type": "markdown",
+-      "id": "c3c99234",
++      "id": "d53fd7ba",
+       "metadata": {
+@@ -290,6 +290,6 @@
+         "papermill": {
+-          "duration": 0.001899,
+-          "end_time": "2026-07-12T12:28:46.020124+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:28:46.018225+00:00",
++          "duration": 0.002012,
++          "end_time": "2026-07-11T07:39:45.603009+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:45.600997+00:00",
+           "status": "completed"
+@@ -305,9 +305,9 @@
+       "execution_count": 4,
+-      "id": "312f2a9b",
++      "id": "41ac790f",
+       "metadata": {
+         "execution": {
+-          "iopub.execute_input": "2026-07-12T12:28:46.025920Z",
+-          "iopub.status.busy": "2026-07-12T12:28:46.025165Z",
+-          "iopub.status.idle": "2026-07-12T12:28:46.032750Z",
+-          "shell.execute_reply": "2026-07-12T12:28:46.032167Z"
++          "iopub.execute_input": "2026-07-11T07:39:45.608628Z",
++          "iopub.status.busy": "2026-07-11T07:39:45.608284Z",
++          "iopub.status.idle": "2026-07-11T07:39:45.615510Z",
++          "shell.execute_reply": "2026-07-11T07:39:45.614705Z"
+         },
+@@ -315,6 +315,6 @@
+         "papermill": {
+-          "duration": 0.011962,
+-          "end_time": "2026-07-12T12:28:46.034192+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:28:46.022230+00:00",
++          "duration": 0.011699,
++          "end_time": "2026-07-11T07:39:45.617034+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:45.605335+00:00",
+           "status": "completed"
+@@ -384,3 +384,3 @@
+       "cell_type": "markdown",
+-      "id": "da6bbbaa",
++      "id": "cf59ae2e",
+       "metadata": {
+@@ -388,6 +388,6 @@
+         "papermill": {
+-          "duration": 0.001913,
+-          "end_time": "2026-07-12T12:28:46.038050+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:28:46.036137+00:00",
++          "duration": 0.002164,
++          "end_time": "2026-07-11T07:39:45.621186+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:45.619022+00:00",
+           "status": "completed"
+@@ -403,15 +403,15 @@
+       "execution_count": 5,
+-      "id": "ae93b58f",
++      "id": "0c2a1f8f",
+       "metadata": {
+         "execution": {
+-          "iopub.execute_input": "2026-07-12T12:28:46.043484Z",
+-          "iopub.status.busy": "2026-07-12T12:28:46.042972Z",
+-          "iopub.status.idle": "2026-07-12T12:28:46.061025Z",
+-          "shell.execute_reply": "2026-07-12T12:28:46.060239Z"
+-        },
+-        "papermill": {
+-          "duration": 0.022406,
+-          "end_time": "2026-07-12T12:28:46.062482+00:00",
+-          "exception": false,
+-          "start_time": "2026-07-12T12:28:46.040076+00:00",
++          "iopub.execute_input": "2026-07-11T07:39:45.627018Z",
++          "iopub.status.busy": "2026-07-11T07:39:45.626530Z",
++          "iopub.status.idle": "2026-07-11T07:39:45.645868Z",
++          "shell.execute_reply": "2026-07-11T07:39:45.645082Z"
++        },
++        "papermill": {
++          "duration": 0.024042,
++          "end_time": "2026-07-11T07:39:45.647352+00:00",
++          "exception": false,
++          "start_time": "2026-07-11T07:39:45.623310+00:00",
+           "status": "completed"
+@@ -637,7 +637,7 @@
+       "execution_count": 6,
+-      "id": "d40b94f7",
++      "id": "6f1d1df8",
+       "metadata": {
+         "execution": {
+-          "iopub.execute_input": "2026-07-12T12:28:46.067517Z",
+-          "iopub.status.busy": "2026-07-12T12:28:46.067252Z"
++          "iopub.execute_input": "2026-07-11T07:39:45.653058Z",
++          "iopub.status.busy": "2026-07-11T07:39:45.652416Z"
+         },
+@@ -647,3 +647,3 @@
+           "exception": false,
+-          "start_time": "2026-07-12T12:28:46.064469+00:00",
++          "start_time": "2026-07-11T07:39:45.649358+00:00",
+           "status": "running"
+@@ -683,2 +683,9 @@
+         {
++          "name": "stderr",
++          "output_type": "stream",
++          "text": [
++            "\u001b[34m\u001b[1mwandb\u001b[0m: Currently logged in as: \u001b[33mbulyakovbr\u001b[0m (\u001b[33mbulyakovbr-bogdan-buliakov\u001b[0m) to \u001b[32mhttps://api.wandb.ai\u001b[0m. Use \u001b[1m`wandb login --relogin`\u001b[0m to force relogin\n"
++          ]
++        },
++        {
+           "name": "stdout",
+@@ -687,16 +694,3 @@
+             "[Init] Using device: cuda\n",
+-            "[Init] Available GPUs: 2\n"
+-          ]
+-        },
+-        {
+-          "name": "stderr",
+-          "output_type": "stream",
+-          "text": [
+-            "\u001b[34m\u001b[1mwandb\u001b[0m: Currently logged in as: \u001b[33mbulyakovbr\u001b[0m (\u001b[33mbulyakovbr-bogdan-buliakov\u001b[0m) to \u001b[32mhttps://api.wandb.ai\u001b[0m. Use \u001b[1m`wandb login --relogin`\u001b[0m to force relogin\n"
+-          ]
+-        },
+-        {
+-          "name": "stdout",
+-          "output_type": "stream",
+-          "text": [
++            "[Init] Available GPUs: 2\n",
+             "[Init] W&B login successful via Kaggle Secrets.\n"
+@@ -729,3 +723,3 @@
+           "text": [
+-            "\u001b[34m\u001b[1mwandb\u001b[0m: Run data is saved locally in \u001b[35m\u001b[1m/kaggle/working/wandb/run-20260712_122848-quebkgcc\u001b[0m\n",
++            "\u001b[34m\u001b[1mwandb\u001b[0m: Run data is saved locally in \u001b[35m\u001b[1m/kaggle/working/wandb/run-20260711_073947-j12jyxsz\u001b[0m\n",
+             "\u001b[34m\u001b[1mwandb\u001b[0m: Run \u001b[1m`wandb offline`\u001b[0m to turn off syncing.\n"
+@@ -737,3 +731,3 @@
+           "text": [
+-            "\u001b[34m\u001b[1mwandb\u001b[0m: Syncing run \u001b[33mzany-capybara-26\u001b[0m\n"
++            "\u001b[34m\u001b[1mwandb\u001b[0m: Syncing run \u001b[33meternal-donkey-18\u001b[0m\n"
+           ]
+@@ -751,3 +745,3 @@
+           "text": [
+-            "\u001b[34m\u001b[1mwandb\u001b[0m: 🚀 View run at \u001b[34m\u001b[4mhttps://wandb.ai/bulyakovbr-bogdan-buliakov/BEBLaDII-Phase2-Kaggle/runs/quebkgcc\u001b[0m\n"
++            "\u001b[34m\u001b[1mwandb\u001b[0m: 🚀 View run at \u001b[34m\u001b[4mhttps://wandb.ai/bulyakovbr-bogdan-buliakov/BEBLaDII-Phase2-Kaggle/runs/j12jyxsz\u001b[0m\n"
+           ]
+@@ -771,3 +765,3 @@
+             "application/vnd.jupyter.widget-view+json": {
+-              "model_id": "b3c6a6fbb37d443381a5a67abbf9bd02",
++              "model_id": "df08802534284f45991babbfca409b55",
+               "version_major": 2,
+@@ -791,2 +785,9 @@
+         {
++          "name": "stderr",
++          "output_type": "stream",
++          "text": [
++            "Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n"
++          ]
++        },
++        {
+           "name": "stdout",
+@@ -801,3 +802,3 @@
+             "application/vnd.jupyter.widget-view+json": {
+-              "model_id": "58a95834f90a4a08aed55857500ffa71",
++              "model_id": "6064aaf035e749a8812c52e6574f46e9",
+               "version_major": 2,
+@@ -813,12 +814,5 @@
+         {
+-          "name": "stderr",
+-          "output_type": "stream",
+-          "text": [
+-            "Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n"
+-          ]
+-        },
+-        {
+           "data": {
+             "application/vnd.jupyter.widget-view+json": {
+-              "model_id": "18fd66a48aad4f76a1b011b4795d8846",
++              "model_id": "5128896b437e404eb743baabb3324f37",
+               "version_major": 2,
+@@ -836,3 +830,3 @@
+             "application/vnd.jupyter.widget-view+json": {
+-              "model_id": "81a09ee85fb6469a9004e42974292136",
++              "model_id": "9c29803565a243e5a7872abfd9e65295",
+               "version_major": 2,
+@@ -854,5 +848,5 @@
+             "------------------+------------+--+-\n",
+-            "decoder.bias      | UNEXPECTED |  | \n",
+             "head.dense.weight | UNEXPECTED |  | \n",
+             "head.norm.weight  | UNEXPECTED |  | \n",
++            "decoder.bias      | UNEXPECTED |  | \n",
+             "\n",
+@@ -895,3 +889,3 @@
+             "application/vnd.jupyter.widget-view+json": {
+-              "model_id": "29a5420e731b411a8c1e381f0c9c8bd5",
++              "model_id": "25d4eb5e2c3b4ba4a3d0d595679b7847",
+               "version_major": 2,
+@@ -900,3 +894,3 @@
+             "text/plain": [
+-              "Phase 2 Decoder:   0%|          | 0/40000 [00:00<?, ?it/s]"
++              "Phase 2 Decoder:   0%|          | 0/9375 [00:00<?, ?it/s]"
+             ]
+@@ -912,2 +906,66 @@
+             "[SAVE] Saved checkpoint to /kaggle/working/checkpoints/phase2/decoder_step_1000.pth\n"
++          ]
++        },
++        {
++          "name": "stderr",
++          "output_type": "stream",
++          "text": [
++            "/usr/local/lib/python3.12/dist-packages/google/__init__.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.\n",
++            "  import pkg_resources\n"
++          ]
++        },
++        {
++          "name": "stdout",
++          "output_type": "stream",
++          "text": [
++            "\n",
++            "[SAVE] Saved checkpoint to /kaggle/working/checkpoints/phase2/decoder_step_2000.pth\n"
++          ]
++        },
++        {
++          "name": "stderr",
++          "output_type": "stream",
++          "text": [
++            "/usr/local/lib/python3.12/dist-packages/google/__init__.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.\n",
++            "  import pkg_resources\n"
++          ]
++        },
++        {
++          "name": "stdout",
++          "output_type": "stream",
++          "text": [
++            "\n",
++            "[SAVE] Saved checkpoint to /kaggle/working/checkpoints/phase2/decoder_step_3000.pth\n"
++          ]
++        },
++        {
++          "name": "stderr",
++          "output_type": "stream",
++          "text": [
++            "/usr/local/lib/python3.12/dist-packages/google/__init__.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.\n",
++            "  import pkg_resources\n"
++          ]
++        },
++        {
++          "name": "stdout",
++          "output_type": "stream",
++          "text": [
++            "\n",
++            "[SAVE] Saved checkpoint to /kaggle/working/checkpoints/phase2/decoder_step_4000.pth\n"
++          ]
++        },
++        {
++          "name": "stderr",
++          "output_type": "stream",
++          "text": [
++            "/usr/local/lib/python3.12/dist-packages/google/__init__.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.\n",
++            "  import pkg_resources\n"
++          ]
++        },
++        {
++          "name": "stdout",
++          "output_type": "stream",
++          "text": [
++            "\n",
++            "[SAVE] Saved checkpoint to /kaggle/working/checkpoints/phase2/decoder_step_5000.pth\n"
+           ]
+@@ -956,3 +1014,3 @@
+       "parameters": {},
+-      "start_time": "2026-07-12T12:27:53.343194+00:00",
++      "start_time": "2026-07-11T07:39:00.345136+00:00",
+       "version": "2.7.0"

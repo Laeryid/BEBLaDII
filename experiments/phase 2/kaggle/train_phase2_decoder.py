@@ -74,16 +74,20 @@ class Config:
     local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
     local_dus_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
 
+    # Возобновление обучения из чекпоинта
+    resume_from_checkpoint_gs = ""  # пример: "gs://bebladii-weigths-us/planB/phase2/checkpoints/decoder_step_1000.pth"
+    resume_from_checkpoint_local = "/kaggle/working/resume_checkpoint.pth"
+
     # Директория вывода
     output_dir = "/kaggle/working/checkpoints/phase2"
 
     # Параметры архитектуры и обучения
-    batch_size = 2
+    batch_size = 4
     grad_accum_steps = 4
     max_length = 1024
-    learning_rate = 1e-4
-    epochs = 1
-    max_steps = 10000
+    learning_rate = 5e-5
+    epochs = 4
+    max_steps = 20000
     log_steps = 10
     save_steps = 1000
 
@@ -286,6 +290,23 @@ def train():
 
     # 4. Сборка финальной модели
     model = Phase2DecoderWrapper(encoder, decoder, embed_weight, lm_head_weight)
+
+    # 4.5. Загрузка чекпоинта для возобновления (если указан)
+    if getattr(args, "resume_from_checkpoint_gs", ""):
+        print(f"Downloading checkpoint from {args.resume_from_checkpoint_gs}...")
+        try:
+            subprocess.run(["gsutil", "-q", "cp", args.resume_from_checkpoint_gs, args.resume_from_checkpoint_local], check=True)
+            if os.path.exists(args.resume_from_checkpoint_local):
+                print(f"Loading checkpoint {args.resume_from_checkpoint_local}...")
+                ckpt = torch.load(args.resume_from_checkpoint_local, map_location="cpu")
+                if "decoder" in ckpt:
+                    model.decoder.load_state_dict(ckpt["decoder"])
+                else:
+                    model.decoder.load_state_dict(ckpt)
+                print("Checkpoint loaded successfully!")
+        except Exception as e:
+            print(f"Warning: Failed to download or load checkpoint from GS! Error: {e}")
+
     model = model.to(device)
 
     # Оборачиваем модель в DataParallel
@@ -327,6 +348,14 @@ def train():
     )
     pbar = tqdm(total=total_steps, desc="Phase 2 Decoder")
 
+    from transformers import get_cosine_schedule_with_warmup
+    warmup_steps = int(total_steps * 0.05)
+    scheduler = get_cosine_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=warmup_steps,
+        num_training_steps=total_steps
+    )
+
     optimizer.zero_grad()
     for epoch in range(args.epochs):
         for batch_idx, batch in enumerate(dataloader):
@@ -356,15 +385,25 @@ def train():
 
             if (batch_idx + 1) % args.grad_accum_steps == 0 or (batch_idx + 1) == len(dataloader):
                 optimizer.step()
+                scheduler.step()
                 optimizer.zero_grad()
                 step += 1
 
                 if step % args.log_steps == 0:
+                    current_lr = scheduler.get_last_lr()[0]
                     if args.wandb_project:
                         wandb.log(
-                            {"train/ce_loss": ce_loss.item() * args.grad_accum_steps, "step": step}, step=step
+                            {
+                                "train/ce_loss": ce_loss.item() * args.grad_accum_steps, 
+                                "lr": current_lr,
+                                "step": step
+                            }, 
+                            step=step
                         )
-                    pbar.set_postfix({"Loss": f"{ce_loss.item() * args.grad_accum_steps:.4f}"})
+                    pbar.set_postfix({
+                        "Loss": f"{ce_loss.item() * args.grad_accum_steps:.4f}",
+                        "LR": f"{current_lr:.2e}"
+                    })
 
                 if step > 0 and step % args.save_steps == 0:
                     ckpt_path = os.path.join(args.output_dir, f"decoder_step_{step}.pth")

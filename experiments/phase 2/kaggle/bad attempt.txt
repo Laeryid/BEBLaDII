@@ -1,0 +1,963 @@
+{
+  "cells": [
+    {
+      "cell_type": "markdown",
+      "id": "34c55137",
+      "metadata": {
+        "papermill": {
+          "duration": 0.002843,
+          "end_time": "2026-07-12T12:27:55.998409+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:27:55.995566+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "source": [
+        "# BEBLaDII Phase 2 Decoder Training (Kaggle T4 x2)\n",
+        "*Автоматически сгенерировано через jupytext*"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "e3017324",
+      "metadata": {
+        "papermill": {
+          "duration": 0.002231,
+          "end_time": "2026-07-12T12:27:56.003102+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:27:56.000871+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "source": [
+        "## 1. Setup Environment"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 1,
+      "id": "18b32e15",
+      "metadata": {
+        "execution": {
+          "iopub.execute_input": "2026-07-12T12:27:56.008266Z",
+          "iopub.status.busy": "2026-07-12T12:27:56.007930Z",
+          "iopub.status.idle": "2026-07-12T12:28:45.983148Z",
+          "shell.execute_reply": "2026-07-12T12:28:45.982517Z"
+        },
+        "lines_to_next_cell": 2,
+        "papermill": {
+          "duration": 49.980183,
+          "end_time": "2026-07-12T12:28:45.985117+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:27:56.004934+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "outputs": [
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "Установка зависимостей...\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "Клонирование репозитория из https://github.com/Laeryid/BEBLaDII.git...\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "Cloning into '/kaggle/working/BEBLaDII'...\n"
+          ]
+        }
+      ],
+      "source": [
+        "import os\n",
+        "import subprocess\n",
+        "import sys\n",
+        "\n",
+        "# Установка необходимых пакетов для Kaggle\n",
+        "print(\"Установка зависимостей...\")\n",
+        "subprocess.run(\n",
+        "    [\n",
+        "        sys.executable,\n",
+        "        \"-m\",\n",
+        "        \"pip\",\n",
+        "        \"install\",\n",
+        "        \"-q\",\n",
+        "        \"einops\",\n",
+        "        \"wandb\",\n",
+        "        \"indexed_parquet_dataset\",\n",
+        "    ],\n",
+        "    check=True,\n",
+        ")\n",
+        "\n",
+        "PROJECT_ROOT = \"/kaggle/working/BEBLaDII\"\n",
+        "REPO_URL = \"https://github.com/Laeryid/BEBLaDII.git\"\n",
+        "\n",
+        "if not os.path.exists(PROJECT_ROOT):\n",
+        "    print(f\"Клонирование репозитория из {REPO_URL}...\")\n",
+        "    subprocess.run([\"git\", \"clone\", REPO_URL, PROJECT_ROOT], check=True)\n",
+        "else:\n",
+        "    print(\"Репозиторий уже существует. Выполняю git pull...\")\n",
+        "    subprocess.run([\"git\", \"-C\", PROJECT_ROOT, \"pull\"], check=True)\n",
+        "\n",
+        "if PROJECT_ROOT not in sys.path:\n",
+        "    sys.path.insert(0, PROJECT_ROOT)\n",
+        "\n",
+        "import gc\n",
+        "\n",
+        "import numpy as np\n",
+        "import torch\n",
+        "import torch.nn as nn\n",
+        "import torch.nn.functional as F\n",
+        "import wandb\n",
+        "from torch.utils.data import DataLoader\n",
+        "from transformers import AutoModelForCausalLM, AutoTokenizer\n",
+        "\n",
+        "try:\n",
+        "    from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder\n",
+        "    from src.beb_la_dii.model.vae import LatentEncoder\n",
+        "except ImportError as e:\n",
+        "    print(\n",
+        "        f\"Warning: Не удалось импортировать модули проекта. Убедитесь, что PROJECT_ROOT указан верно. Ошибка: {e}\"\n",
+        "    )"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "9c939f0b",
+      "metadata": {
+        "lines_to_next_cell": 2,
+        "papermill": {
+          "duration": 0.001936,
+          "end_time": "2026-07-12T12:28:45.989286+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:28:45.987350+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "source": [
+        "## 2. Configuration"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 2,
+      "id": "edffb3bc",
+      "metadata": {
+        "execution": {
+          "iopub.execute_input": "2026-07-12T12:28:45.994762Z",
+          "iopub.status.busy": "2026-07-12T12:28:45.994208Z",
+          "iopub.status.idle": "2026-07-12T12:28:45.998851Z",
+          "shell.execute_reply": "2026-07-12T12:28:45.998190Z"
+        },
+        "lines_to_next_cell": 2,
+        "papermill": {
+          "duration": 0.008938,
+          "end_time": "2026-07-12T12:28:46.000310+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:28:45.991372+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "outputs": [],
+      "source": [
+        "class Config:\n",
+        "    # Пути к моделям (Qwen2.5-1.5B используется для эмбеддингов и LM Head)\n",
+        "    qwen_model_path = \"/kaggle/input/datasets/ragnar123/qwen2-5-1-5b\"\n",
+        "\n",
+        "    # Пути к данным\n",
+        "    dataset_path = \"/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/phase 3/train_data/data\"\n",
+        "\n",
+        "    # Пути к весам\n",
+        "    local_encoder_weights = \"/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth\"\n",
+        "    local_dus_weights = \"/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt\"\n",
+        "\n",
+        "    # Директория вывода\n",
+        "    output_dir = \"/kaggle/working/checkpoints/phase2\"\n",
+        "\n",
+        "    # Параметры архитектуры и обучения\n",
+        "    batch_size = 4\n",
+        "    grad_accum_steps = 4\n",
+        "    max_length = 1024\n",
+        "    learning_rate = 2e-5\n",
+        "    epochs = 10\n",
+        "    max_steps = 40000\n",
+        "    log_steps = 10\n",
+        "    save_steps = 1000\n",
+        "\n",
+        "    wandb_project = \"BEBLaDII-Phase2-Kaggle\"\n",
+        "\n",
+        "\n",
+        "args = Config()"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "e80cf24c",
+      "metadata": {
+        "lines_to_next_cell": 2,
+        "papermill": {
+          "duration": 0.001957,
+          "end_time": "2026-07-12T12:28:46.004249+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:28:46.002292+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "source": [
+        "## 3. Model Definition"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 3,
+      "id": "5d3f68fd",
+      "metadata": {
+        "execution": {
+          "iopub.execute_input": "2026-07-12T12:28:46.009565Z",
+          "iopub.status.busy": "2026-07-12T12:28:46.009067Z",
+          "iopub.status.idle": "2026-07-12T12:28:46.014938Z",
+          "shell.execute_reply": "2026-07-12T12:28:46.014342Z"
+        },
+        "lines_to_next_cell": 2,
+        "papermill": {
+          "duration": 0.009994,
+          "end_time": "2026-07-12T12:28:46.016308+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:28:46.006314+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "outputs": [],
+      "source": [
+        "class Phase2DecoderWrapper(nn.Module):\n",
+        "    def __init__(self, encoder, decoder, qwen_embed_weight, qwen_lm_head_weight):\n",
+        "        super().__init__()\n",
+        "        self.encoder = encoder\n",
+        "\n",
+        "        # Строгая заморозка энкодера (он обучен в Фазе 1)\n",
+        "        for param in self.encoder.parameters():\n",
+        "            param.requires_grad = False\n",
+        "\n",
+        "        self.decoder = decoder\n",
+        "        # Матрицы Qwen передаем как тензоры\n",
+        "        self.qwen_embed_weight = nn.Parameter(qwen_embed_weight, requires_grad=False)\n",
+        "        self.qwen_lm_head_weight = nn.Parameter(\n",
+        "            qwen_lm_head_weight, requires_grad=False\n",
+        "        )\n",
+        "\n",
+        "    def train(self, mode=True):\n",
+        "        super().train(mode)\n",
+        "        if hasattr(self, \"encoder\"):\n",
+        "            self.encoder.eval()\n",
+        "\n",
+        "    def forward(self, input_ids, attention_mask=None):\n",
+        "        # 1. Извлекаем эмбеддинги вручную из сохраненной матрицы Qwen\n",
+        "        inputs_embeds = F.embedding(input_ids, self.qwen_embed_weight)\n",
+        "\n",
+        "        # 2. VAE Encoder -> Latent Space Z (заморожен)\n",
+        "        with torch.no_grad():\n",
+        "            z, _, _ = self.encoder(inputs_embeds)\n",
+        "\n",
+        "        # 3. Наш новый ModernLatentDecoder\n",
+        "        projected_embeds = self.decoder(z, attention_mask)\n",
+        "\n",
+        "        # 4. Проекция обратно в токены через сохраненную матрицу Qwen LM Head\n",
+        "        logits = F.linear(projected_embeds, self.qwen_lm_head_weight)\n",
+        "\n",
+        "        return logits"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "c3c99234",
+      "metadata": {
+        "lines_to_next_cell": 2,
+        "papermill": {
+          "duration": 0.001899,
+          "end_time": "2026-07-12T12:28:46.020124+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:28:46.018225+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "source": [
+        "## 4. Utilities and Data Loading"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 4,
+      "id": "312f2a9b",
+      "metadata": {
+        "execution": {
+          "iopub.execute_input": "2026-07-12T12:28:46.025920Z",
+          "iopub.status.busy": "2026-07-12T12:28:46.025165Z",
+          "iopub.status.idle": "2026-07-12T12:28:46.032750Z",
+          "shell.execute_reply": "2026-07-12T12:28:46.032167Z"
+        },
+        "lines_to_next_cell": 2,
+        "papermill": {
+          "duration": 0.011962,
+          "end_time": "2026-07-12T12:28:46.034192+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:28:46.022230+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "outputs": [],
+      "source": [
+        "def get_dataloader(data_path, batch_size=4, max_length=1024, tokenizer=None):\n",
+        "    from indexed_parquet_dataset import IndexedParquetDataset\n",
+        "\n",
+        "    print(f\"Loading parquet dataset from {data_path} using IndexedParquetDataset...\")\n",
+        "    ds = IndexedParquetDataset.from_folder(\n",
+        "        data_path, pattern=\"*.parquet\", auto_fill=True\n",
+        "    )\n",
+        "    ds = ds.shuffle(seed=42, rg_buffer=8)\n",
+        "\n",
+        "    def collate_fn(batch):\n",
+        "        if (\n",
+        "            tokenizer is not None\n",
+        "            and \"text\" in batch[0]\n",
+        "            and batch[0][\"text\"] is not None\n",
+        "        ):\n",
+        "            texts = [item[\"text\"] for item in batch]\n",
+        "            encoded = tokenizer(\n",
+        "                texts,\n",
+        "                padding=\"max_length\",\n",
+        "                truncation=True,\n",
+        "                max_length=max_length,\n",
+        "                return_tensors=\"pt\",\n",
+        "            )\n",
+        "            return {\n",
+        "                \"input_ids\": encoded[\"input_ids\"],\n",
+        "                \"attention_mask\": encoded[\"attention_mask\"],\n",
+        "            }\n",
+        "\n",
+        "        input_ids, attention_mask = [], []\n",
+        "        for item in batch:\n",
+        "            seq = item.get(\"input_ids\", [])\n",
+        "            if not isinstance(seq, list):\n",
+        "                seq = list(seq)\n",
+        "            seq = seq[:max_length]\n",
+        "            pad_len = max_length - len(seq)\n",
+        "            # 151643 - padding для Qwen\n",
+        "            padded_seq = seq + [151643] * pad_len\n",
+        "            mask = [1] * len(seq) + [0] * pad_len\n",
+        "            input_ids.append(padded_seq)\n",
+        "            attention_mask.append(mask)\n",
+        "\n",
+        "        return {\n",
+        "            \"input_ids\": torch.tensor(input_ids, dtype=torch.long),\n",
+        "            \"attention_mask\": torch.tensor(attention_mask, dtype=torch.long),\n",
+        "        }\n",
+        "\n",
+        "    return DataLoader(\n",
+        "        ds,\n",
+        "        batch_size=batch_size,\n",
+        "        shuffle=False,\n",
+        "        collate_fn=collate_fn,\n",
+        "        drop_last=True,\n",
+        "        num_workers=4,\n",
+        "        prefetch_factor=2,\n",
+        "    )"
+      ]
+    },
+    {
+      "cell_type": "markdown",
+      "id": "da6bbbaa",
+      "metadata": {
+        "lines_to_next_cell": 2,
+        "papermill": {
+          "duration": 0.001913,
+          "end_time": "2026-07-12T12:28:46.038050+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:28:46.036137+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "source": [
+        "## 5. Training Loop"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 5,
+      "id": "ae93b58f",
+      "metadata": {
+        "execution": {
+          "iopub.execute_input": "2026-07-12T12:28:46.043484Z",
+          "iopub.status.busy": "2026-07-12T12:28:46.042972Z",
+          "iopub.status.idle": "2026-07-12T12:28:46.061025Z",
+          "shell.execute_reply": "2026-07-12T12:28:46.060239Z"
+        },
+        "papermill": {
+          "duration": 0.022406,
+          "end_time": "2026-07-12T12:28:46.062482+00:00",
+          "exception": false,
+          "start_time": "2026-07-12T12:28:46.040076+00:00",
+          "status": "completed"
+        },
+        "tags": []
+      },
+      "outputs": [],
+      "source": [
+        "def train():\n",
+        "    device = torch.device(\"cuda\" if torch.cuda.is_available() else \"cpu\")\n",
+        "    print(f\"[Init] Using device: {device}\")\n",
+        "    num_gpus = torch.cuda.device_count()\n",
+        "    print(f\"[Init] Available GPUs: {num_gpus}\")\n",
+        "\n",
+        "    if args.wandb_project:\n",
+        "        try:\n",
+        "            from kaggle_secrets import UserSecretsClient\n",
+        "\n",
+        "            user_secrets = UserSecretsClient()\n",
+        "            wandb_api = user_secrets.get_secret(\"WANDB_API_KEY\")\n",
+        "            wandb.login(key=wandb_api)\n",
+        "            print(\"[Init] W&B login successful via Kaggle Secrets.\")\n",
+        "\n",
+        "            try:\n",
+        "                gcp_sa = user_secrets.get_secret(\"GCP_SA_JSON\")\n",
+        "                with open(\"gcp_sa.json\", \"w\") as f:\n",
+        "                    f.write(gcp_sa)\n",
+        "                subprocess.run(\n",
+        "                    [\n",
+        "                        \"gcloud\",\n",
+        "                        \"auth\",\n",
+        "                        \"activate-service-account\",\n",
+        "                        \"--key-file\",\n",
+        "                        \"gcp_sa.json\",\n",
+        "                    ],\n",
+        "                    check=True,\n",
+        "                )\n",
+        "                print(\"[Init] GCP Authentication successful via Kaggle Secrets.\")\n",
+        "            except Exception as e_gcp:\n",
+        "                print(f\"[Init] WARN: Could not authenticate GCP automatically: {e_gcp}\")\n",
+        "\n",
+        "        except Exception as e:\n",
+        "            print(f\"[Init] WARN: Could not login to W&B automatically: {e}\")\n",
+        "\n",
+        "        wandb.init(project=args.wandb_project, config=vars(args))\n",
+        "\n",
+        "    # 1. Загрузка Qwen и извлечение матриц\n",
+        "    print(f\"Loading weights from {args.qwen_model_path}...\")\n",
+        "    tokenizer = AutoTokenizer.from_pretrained(args.qwen_model_path)\n",
+        "    if tokenizer.pad_token is None:\n",
+        "        tokenizer.pad_token_id = 151643\n",
+        "\n",
+        "    # Загружаем модель только для того, чтобы вытащить 2 матрицы\n",
+        "    qwen = AutoModelForCausalLM.from_pretrained(\n",
+        "        args.qwen_model_path, torch_dtype=torch.bfloat16\n",
+        "    )\n",
+        "    embed_weight = qwen.model.embed_tokens.weight.detach().clone().to(torch.bfloat16)\n",
+        "    lm_head_weight = qwen.lm_head.weight.detach().clone().to(torch.bfloat16)\n",
+        "\n",
+        "    # СУПЕР-ОПТИМИЗАЦИЯ: Удаляем тушу Qwen из памяти!\n",
+        "    del qwen\n",
+        "    gc.collect()\n",
+        "    if torch.cuda.is_available():\n",
+        "        torch.cuda.empty_cache()\n",
+        "    print(\n",
+        "        \"Qwen deleted from memory. Kept only Embeddings and LM Head. Massive VRAM saving!\"\n",
+        "    )\n",
+        "\n",
+        "    # 2. Загрузка замороженного Encoder из Фазы 1\n",
+        "    encoder = LatentEncoder().to(torch.bfloat16)\n",
+        "    if os.path.exists(args.local_encoder_weights):\n",
+        "        print(f\"Loading Phase 1 Encoder from {args.local_encoder_weights}\")\n",
+        "        ckpt = torch.load(args.local_encoder_weights, map_location=\"cpu\")\n",
+        "        encoder.load_state_dict(ckpt[\"encoder\"] if \"encoder\" in ckpt else ckpt)\n",
+        "    else:\n",
+        "        print(\n",
+        "            f\"Warning: {args.local_encoder_weights} not found. Using random LatentEncoder.\"\n",
+        "        )\n",
+        "\n",
+        "    # 3. Инициализация Декодера\n",
+        "    decoder = ModernLatentDecoder(\n",
+        "        latent_dim=1024,\n",
+        "        qwen_dim=1536,\n",
+        "        num_layers=3,\n",
+        "        dus_weights_path=args.local_dus_weights\n",
+        "        if os.path.exists(args.local_dus_weights)\n",
+        "        else None,\n",
+        "    ).to(torch.bfloat16)\n",
+        "\n",
+        "    # 4. Сборка финальной модели\n",
+        "    model = Phase2DecoderWrapper(encoder, decoder, embed_weight, lm_head_weight)\n",
+        "    model = model.to(device)\n",
+        "\n",
+        "    # Оборачиваем модель в DataParallel\n",
+        "    if num_gpus > 1:\n",
+        "        print(\n",
+        "            f\"[Init] Wrapping model in DataParallel across {num_gpus} GPUs\", flush=True\n",
+        "        )\n",
+        "        model = nn.DataParallel(model)\n",
+        "\n",
+        "    trainable_params = [p for p in model.parameters() if p.requires_grad]\n",
+        "    optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate)\n",
+        "    loss_fct = nn.CrossEntropyLoss(reduction=\"none\")\n",
+        "\n",
+        "    model.train()\n",
+        "    print(\"Model initialized. Ready for training loop.\")\n",
+        "\n",
+        "    os.makedirs(args.output_dir, exist_ok=True)\n",
+        "\n",
+        "    try:\n",
+        "        dataloader = get_dataloader(\n",
+        "            args.dataset_path,\n",
+        "            batch_size=args.batch_size,\n",
+        "            max_length=args.max_length,\n",
+        "            tokenizer=tokenizer,\n",
+        "        )\n",
+        "    except Exception as e:\n",
+        "        print(f\"Dataset warning: {e}. Dataloader is empty.\")\n",
+        "        dataloader = []\n",
+        "\n",
+        "    from tqdm.auto import tqdm\n",
+        "\n",
+        "    print(\"Starting training loop...\")\n",
+        "\n",
+        "    step = 0\n",
+        "    total_steps = (\n",
+        "        min(args.max_steps, ((len(dataloader) + args.grad_accum_steps - 1) // args.grad_accum_steps) * args.epochs)\n",
+        "        if len(dataloader) > 0\n",
+        "        else args.max_steps\n",
+        "    )\n",
+        "    pbar = tqdm(total=total_steps, desc=\"Phase 2 Decoder\")\n",
+        "\n",
+        "    optimizer.zero_grad()\n",
+        "    for epoch in range(args.epochs):\n",
+        "        for batch_idx, batch in enumerate(dataloader):\n",
+        "            if step >= total_steps:\n",
+        "                break\n",
+        "\n",
+        "            input_ids = batch[\"input_ids\"].to(device)\n",
+        "            attention_mask = batch[\"attention_mask\"].to(device)\n",
+        "\n",
+        "            logits = model(input_ids, attention_mask)\n",
+        "\n",
+        "            # Вычисляем Loss\n",
+        "            ce_loss_raw = loss_fct(logits.view(-1, logits.size(-1)), input_ids.view(-1))\n",
+        "            ce_loss_raw = ce_loss_raw.view(input_ids.size())\n",
+        "\n",
+        "            attention_mask_bf = attention_mask.to(torch.bfloat16)\n",
+        "            ce_loss = (ce_loss_raw * attention_mask_bf).sum() / (\n",
+        "                attention_mask_bf.sum() + 1e-6\n",
+        "            )\n",
+        "\n",
+        "            # Если DataParallel - усредняем loss\n",
+        "            if ce_loss.dim() > 0:\n",
+        "                ce_loss = ce_loss.mean()\n",
+        "\n",
+        "            ce_loss = ce_loss / args.grad_accum_steps\n",
+        "            ce_loss.backward()\n",
+        "\n",
+        "            if (batch_idx + 1) % args.grad_accum_steps == 0 or (batch_idx + 1) == len(dataloader):\n",
+        "                optimizer.step()\n",
+        "                optimizer.zero_grad()\n",
+        "                step += 1\n",
+        "\n",
+        "                if step % args.log_steps == 0:\n",
+        "                    if args.wandb_project:\n",
+        "                        wandb.log(\n",
+        "                            {\"train/ce_loss\": ce_loss.item() * args.grad_accum_steps, \"step\": step}, step=step\n",
+        "                        )\n",
+        "                    pbar.set_postfix({\"Loss\": f\"{ce_loss.item() * args.grad_accum_steps:.4f}\"})\n",
+        "\n",
+        "                if step > 0 and step % args.save_steps == 0:\n",
+        "                    ckpt_path = os.path.join(args.output_dir, f\"decoder_step_{step}.pth\")\n",
+        "                    actual_model = (\n",
+        "                        model.module if isinstance(model, nn.DataParallel) else model\n",
+        "                    )\n",
+        "                    torch.save({\"decoder\": actual_model.decoder.state_dict()}, ckpt_path)\n",
+        "                    print(f\"\\n[SAVE] Saved checkpoint to {ckpt_path}\")\n",
+        "                    try:\n",
+        "                        subprocess.Popen(\n",
+        "                            [\n",
+        "                                \"gsutil\",\n",
+        "                                \"-q\",\n",
+        "                                \"cp\",\n",
+        "                                ckpt_path,\n",
+        "                                \"gs://bebladii-weigths-us/planB/phase2/checkpoints/\",\n",
+        "                            ]\n",
+        "                        )\n",
+        "                    except Exception:\n",
+        "                        pass\n",
+        "\n",
+        "                pbar.update(1)\n",
+        "\n",
+        "        if step >= total_steps:\n",
+        "            break\n",
+        "\n",
+        "    pbar.close()\n",
+        "\n",
+        "    # Final save\n",
+        "    final_path = os.path.join(args.output_dir, \"decoder_final.pth\")\n",
+        "    actual_model = model.module if isinstance(model, nn.DataParallel) else model\n",
+        "    torch.save({\"decoder\": actual_model.decoder.state_dict()}, final_path)\n",
+        "    print(f\"[SAVE] Final weights saved → {final_path}\")\n",
+        "    try:\n",
+        "        subprocess.run(\n",
+        "            [\n",
+        "                \"gsutil\",\n",
+        "                \"-q\",\n",
+        "                \"cp\",\n",
+        "                final_path,\n",
+        "                \"gs://bebladii-weigths-us/planB/phase2/checkpoints/\",\n",
+        "            ]\n",
+        "        )\n",
+        "    except Exception:\n",
+        "        pass\n",
+        "\n",
+        "    if args.wandb_project:\n",
+        "        wandb.finish()"
+      ]
+    },
+    {
+      "cell_type": "code",
+      "execution_count": 6,
+      "id": "d40b94f7",
+      "metadata": {
+        "execution": {
+          "iopub.execute_input": "2026-07-12T12:28:46.067517Z",
+          "iopub.status.busy": "2026-07-12T12:28:46.067252Z"
+        },
+        "papermill": {
+          "duration": null,
+          "end_time": null,
+          "exception": false,
+          "start_time": "2026-07-12T12:28:46.064469+00:00",
+          "status": "running"
+        },
+        "tags": []
+      },
+      "outputs": [
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: \u001b[33mWARNING\u001b[0m If you're specifying your api key in code, ensure this code is not shared publicly.\n",
+            "\u001b[34m\u001b[1mwandb\u001b[0m: \u001b[33mWARNING\u001b[0m Consider setting the WANDB_API_KEY environment variable, or running `wandb login` from the command line.\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: [wandb.login()] Using explicit session credentials for https://api.wandb.ai.\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: No netrc file found, creating one.\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: Appending key for api.wandb.ai to your netrc file: /root/.netrc\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "[Init] Using device: cuda\n",
+            "[Init] Available GPUs: 2\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: Currently logged in as: \u001b[33mbulyakovbr\u001b[0m (\u001b[33mbulyakovbr-bogdan-buliakov\u001b[0m) to \u001b[32mhttps://api.wandb.ai\u001b[0m. Use \u001b[1m`wandb login --relogin`\u001b[0m to force relogin\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "[Init] W&B login successful via Kaggle Secrets.\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "Activated service account credentials for: [kaggle-backuper@bebladii.iam.gserviceaccount.com]\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "[Init] GCP Authentication successful via Kaggle Secrets.\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: Tracking run with wandb version 0.26.1\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: Run data is saved locally in \u001b[35m\u001b[1m/kaggle/working/wandb/run-20260712_122848-quebkgcc\u001b[0m\n",
+            "\u001b[34m\u001b[1mwandb\u001b[0m: Run \u001b[1m`wandb offline`\u001b[0m to turn off syncing.\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: Syncing run \u001b[33mzany-capybara-26\u001b[0m\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: ⭐️ View project at \u001b[34m\u001b[4mhttps://wandb.ai/bulyakovbr-bogdan-buliakov/BEBLaDII-Phase2-Kaggle\u001b[0m\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "\u001b[34m\u001b[1mwandb\u001b[0m: 🚀 View run at \u001b[34m\u001b[4mhttps://wandb.ai/bulyakovbr-bogdan-buliakov/BEBLaDII-Phase2-Kaggle/runs/quebkgcc\u001b[0m\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "Loading weights from /kaggle/input/datasets/ragnar123/qwen2-5-1-5b...\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "`torch_dtype` is deprecated! Use `dtype` instead!\n"
+          ]
+        },
+        {
+          "data": {
+            "application/vnd.jupyter.widget-view+json": {
+              "model_id": "b3c6a6fbb37d443381a5a67abbf9bd02",
+              "version_major": 2,
+              "version_minor": 0
+            },
+            "text/plain": [
+              "Loading weights:   0%|          | 0/338 [00:00<?, ?it/s]"
+            ]
+          },
+          "metadata": {},
+          "output_type": "display_data"
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "Qwen deleted from memory. Kept only Embeddings and LM Head. Massive VRAM saving!\n",
+            "Loading Phase 1 Encoder from /kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "Loading first 3 layers from DUS latentBERT: /kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt\n",
+            "Loading model architecture from answerdotai/ModernBERT-large...\n"
+          ]
+        },
+        {
+          "data": {
+            "application/vnd.jupyter.widget-view+json": {
+              "model_id": "58a95834f90a4a08aed55857500ffa71",
+              "version_major": 2,
+              "version_minor": 0
+            },
+            "text/plain": [
+              "config.json: 0.00B [00:00, ?B/s]"
+            ]
+          },
+          "metadata": {},
+          "output_type": "display_data"
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "Warning: You are sending unauthenticated requests to the HF Hub. Please set a HF_TOKEN to enable higher rate limits and faster downloads.\n"
+          ]
+        },
+        {
+          "data": {
+            "application/vnd.jupyter.widget-view+json": {
+              "model_id": "18fd66a48aad4f76a1b011b4795d8846",
+              "version_major": 2,
+              "version_minor": 0
+            },
+            "text/plain": [
+              "model.safetensors:   0%|          | 0.00/1.58G [00:00<?, ?B/s]"
+            ]
+          },
+          "metadata": {},
+          "output_type": "display_data"
+        },
+        {
+          "data": {
+            "application/vnd.jupyter.widget-view+json": {
+              "model_id": "81a09ee85fb6469a9004e42974292136",
+              "version_major": 2,
+              "version_minor": 0
+            },
+            "text/plain": [
+              "Loading weights:   0%|          | 0/170 [00:00<?, ?it/s]"
+            ]
+          },
+          "metadata": {},
+          "output_type": "display_data"
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "ModernBertModel LOAD REPORT from: answerdotai/ModernBERT-large\n",
+            "Key               | Status     |  | \n",
+            "------------------+------------+--+-\n",
+            "decoder.bias      | UNEXPECTED |  | \n",
+            "head.dense.weight | UNEXPECTED |  | \n",
+            "head.norm.weight  | UNEXPECTED |  | \n",
+            "\n",
+            "Notes:\n",
+            "- UNEXPECTED\t:can be ignored when loading from different task/architecture; not ok if you expect identical arch.\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "Created 40 layers from 28 base layers (DUS applied).\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "  Weights loaded: /kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "[Init] Wrapping model in DataParallel across 2 GPUs\n"
+          ]
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "Model initialized. Ready for training loop.\n",
+            "Loading parquet dataset from /kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/phase 3/train_data/data using IndexedParquetDataset...\n",
+            "Starting training loop...\n"
+          ]
+        },
+        {
+          "data": {
+            "application/vnd.jupyter.widget-view+json": {
+              "model_id": "29a5420e731b411a8c1e381f0c9c8bd5",
+              "version_major": 2,
+              "version_minor": 0
+            },
+            "text/plain": [
+              "Phase 2 Decoder:   0%|          | 0/40000 [00:00<?, ?it/s]"
+            ]
+          },
+          "metadata": {},
+          "output_type": "display_data"
+        },
+        {
+          "name": "stdout",
+          "output_type": "stream",
+          "text": [
+            "\n",
+            "[SAVE] Saved checkpoint to /kaggle/working/checkpoints/phase2/decoder_step_1000.pth\n"
+          ]
+        },
+        {
+          "name": "stderr",
+          "output_type": "stream",
+          "text": [
+            "/usr/local/lib/python3.12/dist-packages/google/__init__.py:18: UserWarning: pkg_resources is deprecated as an API. See https://setuptools.pypa.io/en/latest/pkg_resources.html. The pkg_resources package is slated for removal as early as 2025-11-30. Refrain from using this package or pin to Setuptools<81.\n",
+            "  import pkg_resources\n"
+          ]
+        }
+      ],
+      "source": [
+        "if __name__ == \"__main__\":\n",
+        "    train()"
+      ]
+    }
+  ],
+  "metadata": {
+    "kernelspec": {
+      "display_name": "Python 3",
+      "language": "python",
+      "name": "python3"
+    },
+    "language_info": {
+      "codemirror_mode": {
+        "name": "ipython",
+        "version": 3
+      },
+      "file_extension": ".py",
+      "mimetype": "text/x-python",
+      "name": "python",
+      "nbconvert_exporter": "python",
+      "pygments_lexer": "ipython3",
+      "version": "3.6.4"
+    },
+    "papermill": {
+      "default_parameters": {},
+      "duration": null,
+      "end_time": null,
+      "environment_variables": {},
+      "exception": null,
+      "input_path": "__notebook__.ipynb",
+      "output_path": "__notebook__.ipynb",
+      "parameters": {},
+      "start_time": "2026-07-12T12:27:53.343194+00:00",
+      "version": "2.7.0"
+    }
+  },
+  "nbformat": 4,
+  "nbformat_minor": 5
+}
