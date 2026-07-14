@@ -156,15 +156,20 @@ def train():
     print(f"[Init] Available GPUs: {num_gpus}")
 
     # Auth logic for GCP and WandB
+    gcp_sa = os.environ.get("GCP_STORAGE_API_KEY")
+    if gcp_sa:
+        with open("gcp_sa.json", "w") as f:
+            f.write(gcp_sa)
+
     if os.path.exists("gcp_sa.json"):
         try:
             subprocess.run(["gcloud", "auth", "activate-service-account", "--key-file", "gcp_sa.json"], check=True)
-            print("[Init] GCP Authentication successful via gcp_sa.json.")
+            print("[Init] GCP Authentication successful.")
         except Exception as e_gcp:
             print(f"[Init] WARN: Could not authenticate GCP: {e_gcp}")
     
     if args.wandb_project:
-        wandb_api = os.environ.get("WANDB_API_KEY")
+        wandb_api = os.environ.get("WANDB")
         if wandb_api:
             wandb.login(key=wandb_api)
         wandb.init(project=args.wandb_project, config=vars(args), resume="allow")
