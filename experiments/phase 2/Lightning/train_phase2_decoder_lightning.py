@@ -156,11 +156,6 @@ def train():
     print(f"[Init] Available GPUs: {num_gpus}")
 
     # Auth logic for GCP and WandB
-    gcp_sa = os.environ.get("GCP_STORAGE_API_KEY")
-    if gcp_sa:
-        with open("gcp_sa.json", "w") as f:
-            f.write(gcp_sa)
-
     if os.path.exists("gcp_sa.json"):
         try:
             subprocess.run(["gcloud", "auth", "activate-service-account", "--key-file", "gcp_sa.json"], check=True)
