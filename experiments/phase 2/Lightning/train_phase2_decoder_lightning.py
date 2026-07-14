@@ -33,8 +33,8 @@ class Config:
     qwen_model_path = "Qwen/Qwen2.5-1.5B" # Uses HuggingFace Hub directly
     dataset_path = "./data/train_data/data"
     
-    local_encoder_weights = "./weights/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
-    local_dus_weights = "./weights/AWAKENED_WEIGHTS_FINAL.pt"
+    local_encoder_weights = "gs://bebladii-weigths-us/planB/phase1/checkpoints/phase1_vae_step_20000.pth"
+    local_dus_weights = "gs://bebladii-weigths-us/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt"
     
     # Checkpointing and GCS
     resume_from_checkpoint = True
@@ -192,17 +192,37 @@ def train():
 
     # 2. Load Phase 1 Encoder
     encoder = LatentEncoder().to(torch.bfloat16)
-    if os.path.exists(args.local_encoder_weights):
-        print(f"Loading Phase 1 Encoder from {args.local_encoder_weights}")
-        ckpt = torch.load(args.local_encoder_weights, map_location="cpu")
+    
+    # Auto-download encoder if it's a gs:// link
+    enc_path = args.local_encoder_weights
+    if enc_path.startswith("gs://"):
+        local_enc = os.path.join("./weights", os.path.basename(enc_path))
+        if not os.path.exists(local_enc):
+            os.makedirs("./weights", exist_ok=True)
+            print(f"Downloading Encoder from {enc_path}...")
+            subprocess.run(["gsutil", "-q", "cp", enc_path, local_enc], check=True)
+        enc_path = local_enc
+
+    if os.path.exists(enc_path):
+        print(f"Loading Phase 1 Encoder from {enc_path}")
+        ckpt = torch.load(enc_path, map_location="cpu")
         encoder.load_state_dict(ckpt.get("encoder", ckpt))
     else:
-        print(f"Warning: {args.local_encoder_weights} not found. Using random LatentEncoder.")
+        print(f"Warning: {enc_path} not found. Using random LatentEncoder.")
 
     # 3. Init Decoder
+    dus_path = args.local_dus_weights
+    if dus_path and dus_path.startswith("gs://"):
+        local_dus = os.path.join("./weights", os.path.basename(dus_path))
+        if not os.path.exists(local_dus):
+            os.makedirs("./weights", exist_ok=True)
+            print(f"Downloading DUS weights from {dus_path}...")
+            subprocess.run(["gsutil", "-q", "cp", dus_path, local_dus], check=True)
+        dus_path = local_dus
+
     decoder = ModernLatentDecoder(
         latent_dim=1024, qwen_dim=1536, num_layers=3,
-        dus_weights_path=args.local_dus_weights if os.path.exists(args.local_dus_weights) else None,
+        dus_weights_path=dus_path if os.path.exists(dus_path) else None,
     ).to(torch.bfloat16)
 
     # 4. Assemble Wrapper
