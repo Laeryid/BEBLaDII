@@ -41,4 +41,7 @@
 Когда всё готово (машина переключена на T4, зависимости установлены, ключи добавлены в настройки Студии), запуск производится командой:
 ```bash
 python experiments/phase\ 2/Lightning/train_phase2_decoder_lightning.py
+
+python experiments/phase3/Lightning/train_phase3_lightning.py
+
 ```

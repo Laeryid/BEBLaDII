@@ -36,14 +36,14 @@ class Config:
     embedding_model_path = "Qwen/Qwen2.5-1.5B"
     modernbert_path = "answer-ai/ModernBERT-large"
 
-    dataset_path = "./data/phase3_train_data/data"
+    dataset_path = "./data/train_data/data"
     
     local_encoder_weights = "gs://bebladii-weigths-us/planB/phase1/checkpoints/phase1_vae_step_20000.pth"
     local_dus_weights = "gs://bebladii-weigths-us/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt"
     local_sep_token = "storage/components/sep_token.pt"
     
     # Checkpointing and GCS
-    resume_from_checkpoint = True
+    resume_from_checkpoint = False
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase3/checkpoints/"
     output_dir = "./checkpoints/phase3"
     
@@ -552,8 +552,12 @@ def train():
                     ckpt = torch.load(local_ckpt_path, map_location="cpu")
                     
                     actual_model = model.module if isinstance(model, nn.DataParallel) else model
-                    if "dus" in ckpt: actual_model.dus.load_state_dict(ckpt["dus"])
-                    if "confidence_proj" in ckpt: actual_model.confidence_proj.load_state_dict(ckpt["confidence_proj"])
+                    if "dus" in ckpt: 
+                        clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
+                        actual_model.dus.load_state_dict(clean_dus)
+                    if "confidence_proj" in ckpt: 
+                        clean_proj = {k.replace("_orig_module.", ""): v for k, v in ckpt["confidence_proj"].items()}
+                        actual_model.confidence_proj.load_state_dict(clean_proj)
                     
                     if "dus_ema" in ckpt and "confidence_proj_ema" in ckpt:
                         ema.shadow = {
