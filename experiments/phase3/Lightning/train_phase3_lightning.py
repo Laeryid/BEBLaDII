@@ -40,6 +40,7 @@ class Config:
     
     local_encoder_weights = "gs://bebladii-weigths-us/planB/phase1/checkpoints/phase1_vae_step_20000.pth"
     local_dus_weights = "gs://bebladii-weigths-us/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt"
+    local_sep_token = "storage/components/sep_token.pt"
     
     # Checkpointing and GCS
     resume_from_checkpoint = True
@@ -195,6 +196,7 @@ class BEBLaDIIPhase3(nn.Module):
         modernbert_path: str,
         dus_weights: str | None,
         encoder_weights: str | None,
+        sep_token_path: str | None,
     ):
         super().__init__()
 
@@ -262,6 +264,16 @@ class BEBLaDIIPhase3(nn.Module):
         )
         nn.init.zeros_(self.confidence_proj[-1].weight)
         nn.init.zeros_(self.confidence_proj[-1].bias)
+
+        # 5. Токен-разделитель (ADR 058)
+        if sep_token_path and os.path.exists(sep_token_path):
+            sep_tensor = torch.load(sep_token_path, map_location="cpu").float()
+            self.register_buffer("sep_embed", sep_tensor)
+            print(f"[Init] Separator token loaded from {sep_token_path}", flush=True)
+        else:
+            # Fallback для тестов
+            self.register_buffer("sep_embed", torch.zeros(1024, dtype=torch.float32))
+            print(f"[WARN] Separator token NOT found at {sep_token_path}, initialized to zeros.", flush=True)
 
     def train(self, mode=True):
         super().train(mode)
@@ -340,18 +352,25 @@ class BEBLaDIIPhase3(nn.Module):
         c_embed_raw = self.confidence_proj(c_true.unsqueeze(-1).float())
         # Нормируем и масштабируем в float32; никаких преобразований в bfloat16
         c_embed = safe_normalize(c_embed_raw, dim=-1) * 0.1  # float32
-        dus_input = z_noisy.float() + c_embed
+        x_in = z_noisy.float() + c_embed
+        
+        # Конкатенируем префикс разделителя (ADR 058)
+        B = x_in.size(0)
+        sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
+        dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
+        attention_mask_extended = F.pad(attention_mask, (1, 0), value=1)
 
         # Вычисляем DUS под autocast — операции пойдут в bfloat16 на GPU,
         # но параметры хранятся в float32 (мастер-копии).
         with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
             dus_outputs = self.dus(
-                inputs_embeds=dus_input,
-                attention_mask=attention_mask,
+                inputs_embeds=dus_input_extended,
+                attention_mask=attention_mask_extended,
                 output_hidden_states=True,
             )
 
-        pre_norm = dus_outputs.hidden_states[-1].float()
+        # Отрезаем первый токен (sep_prefix)
+        pre_norm = dus_outputs.hidden_states[-1][:, 1:, :].float()
         clean_pre_norm = pre_norm - c_embed
         dus_final_raw = self.dus.final_norm(clean_pre_norm.to(next(self.dus.final_norm.parameters()).dtype)).float()
 
@@ -367,7 +386,7 @@ class BEBLaDIIPhase3(nn.Module):
             "dus_final": dus_final,
             "attention_mask": attention_mask,
             "c_embed": c_embed,
-            "dus_input": dus_input,
+            "dus_input": x_in,
         }
 
 
@@ -486,9 +505,10 @@ def train():
     print("[Init] Instantiating BEBLaDIIPhase3 model...", flush=True)
     model = BEBLaDIIPhase3(
         embedding_model_path=args.embedding_model_path,
-        modernbert_path=args.modernbert_path,
+        modernbert_path="answerdotai/ModernBERT-large",
         dus_weights=dus_path,
         encoder_weights=enc_path,
+        sep_token_path=args.local_sep_token
     ).to(device)
 
     if num_gpus > 1:

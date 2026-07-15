@@ -508,6 +508,14 @@
         "experiments/phase3/eval_phase3_logic_local.py"
       ]
     },
+    "decisions/058_phase4_canvas_format_and_sep_token.md": {
+      "description": "ADR: Формат холста Фазы 4, шумовой токен и детерминированная генерация якоря <|thoughts|> через LatentEncoder.",
+      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
+      "depends_on": [
+        "experiments/phase3/Lightning/test_thoughts.py",
+        "storage/components/sep_token.pt"
+      ]
+    },
     "KI_metrics_reference.md": {
       "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
       "covers": ["Utilities", "Experiments"],
