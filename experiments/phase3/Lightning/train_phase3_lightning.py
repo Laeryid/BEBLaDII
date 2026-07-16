@@ -264,7 +264,7 @@ class BEBLaDIIPhase3(nn.Module):
             nn.GELU(),
             nn.Linear(256, 1024)
         )
-        
+
         # 5. C_Embed Layer Hooks
         # Инициализируем не нулями, чтобы разорвать градиентный дедлок (dL/d_alpha != 0)
         self.c_embed_alphas = nn.Parameter(torch.ones(len(self.dus.layers)) * 0.01)
