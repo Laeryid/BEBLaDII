@@ -227,12 +227,19 @@ def run_test(model, tokenizer, phrase, device, eval_dtype, decoder, lm_head_weig
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--checkpoint", type=str, required=True, help="Путь к локальному чекпоинту DUS"
+        "--checkpoint",
+        type=str,
+        default="experiments/phase 3/planB_phase3_checkpoints_phase3_step_1000.pth",
+    )
+    parser.add_argument(
+        "--dus_init",
+        type=str,
+        default="experiments/phase 3/AWAKENED_WEIGHTS_FINAL.pt",
     )
     parser.add_argument(
         "--encoder",
         type=str,
-        default="experiments/phase 1/planB_phase1_checkpoints_phase1_vae_step_20000.pth",
+        default="experiments/phase 2/planB_phase2_checkpoints_decoder_step_6000.pth",
     )
     parser.add_argument(
         "--decoder",
@@ -277,7 +284,7 @@ def main():
         latent_dim=1024,
         qwen_dim=1536,
         num_layers=3,
-        dus_weights_path=r"C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+        dus_weights_path=args.dus_init
     ).to(device).to(eval_dtype)
     decoder.eval()
 
@@ -303,6 +310,7 @@ def main():
     args.decoder = resolve_path(args.decoder)
     args.checkpoint = resolve_path(args.checkpoint)
     args.sep_token = resolve_path(args.sep_token)
+    args.dus_init = resolve_path(args.dus_init)
 
     if os.path.exists(args.encoder):
         state = torch.load(args.encoder, map_location="cpu", weights_only=False)
@@ -326,7 +334,7 @@ def main():
     model = BEBLaDIIPhase3(
         embedding_model_path=args.embed_model,
         modernbert_path="answerdotai/ModernBERT-large",
-        dus_weights=args.checkpoint,
+        dus_weights=args.dus_init,
         encoder_weights=args.encoder,
         sep_token_path=args.sep_token
     ).to(device)
