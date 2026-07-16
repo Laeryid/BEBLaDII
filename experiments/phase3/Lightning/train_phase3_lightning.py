@@ -37,16 +37,16 @@ class Config:
     modernbert_path = "answer-ai/ModernBERT-large"
 
     dataset_path = "./data/train_data/data"
-    
+
     local_encoder_weights = "gs://bebladii-weigths-us/planB/phase1/checkpoints/phase1_vae_step_20000.pth"
     local_dus_weights = "gs://bebladii-weigths-us/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt"
     local_sep_token = "storage/components/sep_token.pt"
-    
+
     # Checkpointing and GCS
     resume_from_checkpoint = False
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase3/checkpoints/"
     output_dir = "./checkpoints/phase3"
-    
+
     # Training Hyperparameters
     batch_size = 8
     max_length = 512
@@ -54,7 +54,7 @@ class Config:
     epochs = 1
     max_steps = 40000
     log_steps = 10
-    val_steps = 1000
+    val_steps = 200
     save_steps = 1000
 
     # Phase 3 Specifics
@@ -62,7 +62,7 @@ class Config:
     gamma = 20.0
     w_denoise = 10.0
     w_identity = 5.0
-    
+
     wandb_project = "BEBLaDII-Phase3-Lightning"
 
 
@@ -172,13 +172,13 @@ def get_latest_gcs_checkpoint(gcs_dir):
         ckpt_files = [f for f in files if "phase3_step_" in f and f.endswith(".pth")]
         if not ckpt_files:
             return None
-        
+
         def extract_step(filename):
             try:
                 return int(filename.split("_step_")[-1].split(".pth")[0])
             except ValueError:
                 return -1
-                
+
         ckpt_files.sort(key=extract_step)
         return ckpt_files[-1]
     except Exception as e:
@@ -264,11 +264,10 @@ class BEBLaDIIPhase3(nn.Module):
             nn.GELU(),
             nn.Linear(256, 1024)
         )
-        nn.init.zeros_(self.confidence_proj[-1].weight)
-        nn.init.zeros_(self.confidence_proj[-1].bias)
-
+        
         # 5. C_Embed Layer Hooks
-        self.c_embed_alphas = nn.Parameter(torch.zeros(len(self.dus.layers)))
+        # Инициализируем не нулями, чтобы разорвать градиентный дедлок (dL/d_alpha != 0)
+        self.c_embed_alphas = nn.Parameter(torch.ones(len(self.dus.layers)) * 0.01)
         for i, layer in enumerate(self.dus.layers):
             layer.register_forward_pre_hook(self._make_c_embed_hook(i))
 
@@ -346,8 +345,8 @@ class BEBLaDIIPhase3(nn.Module):
             z_clean_norm = torch.linalg.vector_norm(z_clean.float(), dim=-1, keepdim=True)
             noise = torch.randn_like(z_clean)
             noise = (
-                safe_normalize(noise.float(), dim=-1).to(torch.bfloat16) 
-                * low_noise_amp 
+                safe_normalize(noise.float(), dim=-1).to(torch.bfloat16)
+                * low_noise_amp
                 * z_clean_norm.to(torch.bfloat16)
             )
             z_noisy = z_clean + noise * noise_mask.unsqueeze(-1)
@@ -364,10 +363,10 @@ class BEBLaDIIPhase3(nn.Module):
 
         c_embed_raw = self.confidence_proj(c_true.unsqueeze(-1).float())
         c_embed = safe_normalize(c_embed_raw, dim=-1) * 0.1  # float32
-        
+
         # Убираем жесткое прибавление к входу, отдаем контроль хукам
         x_in = z_noisy.float()
-        
+
         # Конкатенируем префикс разделителя (ADR 058)
         B = x_in.size(0)
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
@@ -419,28 +418,28 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.1):
     # Denoise/Identity Loss (Unified Target)
     target = safe_normalize(z_clean, dim=-1)
     cos_sim = (dus_final * target).sum(dim=-1)
-    
+
     # 1.0 - cos_sim for all active tokens
     loss_elementwise = 1.0 - cos_sim
     main_loss = (loss_elementwise * attn_f).sum() / active_tokens
-    
+
     metrics["unified_loss"] = main_loss.detach()
     metrics["cos_sim_all"] = (cos_sim * attn_f).sum().detach() / active_tokens
-    
+
     # Prior Loss
     z_flat = dus_final.view(-1, D)
     mask_flat = attn_f.view(-1, 1)
     m_state = (z_flat * mask_flat).sum(dim=0) / active_tokens
     z_centered = z_flat - m_state
-    
+
     v_state = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
     var_floor = 1.0 / (D * 2)
     var_loss = F.relu(var_floor - v_state).mean()
-    
+
     cov = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
     cov_off_diag = cov - torch.diag(torch.diag(cov))
     cov_loss = cov_off_diag.pow(2).sum() / D
-    
+
     prior_loss = m_state.pow(2).mean() + var_loss + 0.1 * cov_loss
     metrics["prior_loss"] = prior_loss.detach()
     metrics["var_loss"] = var_loss.detach()
@@ -454,7 +453,7 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.1):
         metrics["norm_L0"] = l0_norm.detach()
         l40_norm = hidden_states[-1][:, 1:, :].float().norm(dim=-1).mean()
         metrics["norm_Llast"] = l40_norm.detach()
-        
+
         total_delta_norm = 0.0
         for i in range(len(hidden_states) - 1):
             delta = hidden_states[i+1][:, 1:, :].float() - hidden_states[i][:, 1:, :].float()
@@ -499,7 +498,7 @@ def train():
 
     # Download Weights if necessary
     os.makedirs("./weights", exist_ok=True)
-    
+
     enc_path = args.local_encoder_weights
     if enc_path.startswith("gs://"):
         local_enc = os.path.join("./weights", os.path.basename(enc_path))
@@ -564,26 +563,26 @@ def train():
                 if os.path.exists(local_ckpt_path):
                     print(f"Loading checkpoint {local_ckpt_path}...")
                     ckpt = torch.load(local_ckpt_path, map_location="cpu")
-                    
+
                     actual_model = model.module if isinstance(model, nn.DataParallel) else model
-                    if "dus" in ckpt: 
+                    if "dus" in ckpt:
                         clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
                         actual_model.dus.load_state_dict(clean_dus)
-                    if "confidence_proj" in ckpt: 
+                    if "confidence_proj" in ckpt:
                         clean_proj = {k.replace("_orig_module.", ""): v for k, v in ckpt["confidence_proj"].items()}
                         actual_model.confidence_proj.load_state_dict(clean_proj)
-                    
+
                     if "dus_ema" in ckpt and "confidence_proj_ema" in ckpt:
                         ema.shadow = {
                             **{f"dus.{k}": v for k, v in ckpt["dus_ema"].items()},
                             **{f"confidence_proj.{k}": v for k, v in ckpt["confidence_proj_ema"].items()}
                         }
-                    
+
                     if "optimizer" in ckpt: optimizer.load_state_dict(ckpt["optimizer"])
                     if "scheduler" in ckpt: scheduler.load_state_dict(ckpt["scheduler"])
                     if "step" in ckpt: start_step = ckpt["step"]
                     if "metrics_history" in ckpt: metrics_history = ckpt["metrics_history"]
-                    
+
                     print(f"Successfully resumed from step {start_step}!")
             except Exception as e:
                 print(f"Warning: Failed to resume from GS checkpoint! Error: {e}")
@@ -688,7 +687,7 @@ def train():
 
                 ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
                 actual_model = model.module if isinstance(model, nn.DataParallel) else model
-                
+
                 dus_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
                 proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
 
@@ -741,12 +740,12 @@ def train():
         "step": step,
         "metrics_history": metrics_history
     }, final_path)
-    
+
     print(f"[SAVE] Final weights saved → {final_path}")
     try:
         subprocess.run(["gsutil", "-q", "cp", final_path, args.gcs_checkpoint_dir])
     except Exception: pass
-    
+
     if args.wandb_project:
         wandb.finish()
 
