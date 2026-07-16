@@ -397,6 +397,7 @@ class BEBLaDIIPhase3(nn.Module):
             "dus_final": dus_final,
             "attention_mask": attention_mask,
             "c_embed": c_embed,
+            "c_embed_raw": c_embed_raw,
             "dus_input": x_in,
             "hidden_states": dus_outputs.hidden_states,
             "c_embed_alphas": self.c_embed_alphas,
@@ -466,6 +467,11 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.1):
         metrics["c_embed_alphas_mean"] = alphas.mean().detach()
         metrics["c_embed_alphas_abs_mean"] = alphas.abs().mean().detach()
         metrics["c_embed_alphas_max"] = alphas.abs().max().detach()
+
+    if "c_embed_raw" in outputs:
+        # Считаем среднюю норму сырого выхода проектора (до нормализации)
+        c_raw = outputs["c_embed_raw"].float()
+        metrics["c_embed_raw_norm"] = c_raw.norm(dim=-1).mean().detach()
 
     # Log old diagnostics so wandb doesn't break
     metrics["c_true_mean"] = (outputs["c_true"].float() * attn_f).sum().detach() / active_tokens
