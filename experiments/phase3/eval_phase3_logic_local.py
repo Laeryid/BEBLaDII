@@ -20,6 +20,7 @@ if project_root not in sys.path:
 from src.beb_la_dii.model.dus import DUSModel
 from src.beb_la_dii.model.vae import LatentEncoder, LatentDecoder
 from src.beb_la_dii.utils.loss import safe_normalize
+from Lightning.train_phase3_lightning import BEBLaDIIPhase3, EMA
 
 
 
@@ -144,15 +145,18 @@ def main():
         "--embed_model", type=str, default="Qwen/Qwen2.5-1.5B"
     )
     parser.add_argument(
+        "--sep_token", type=str, default=r"C:\Experiments\BEBLaDII\storage\components\sep_token.pt"
+    )
+    parser.add_argument(
         "--use_ema", action="store_true", default=True, help="Использовать EMA веса из чекпоинта"
     )
 
     default_device = "cuda" if torch.cuda.is_available() else "cpu"
     parser.add_argument("--device", type=str, default=default_device)
+    # Use bfloat16 to match TPU training behavior exactly
     args = parser.parse_args()
-
+    eval_dtype = torch.float32
     device = torch.device(args.device)
-    eval_dtype = torch.bfloat16
     print(f"[*] Running LOCAL evaluation on device: {device} | dtype: {eval_dtype}")
 
     print(f"[*] Loading Tokenizer and Embedding Model: {args.embed_model}")
@@ -199,153 +203,77 @@ def main():
         state_dict_dec = dec_state.get("decoder", dec_state)
         clean_state_dec = {k.replace("decoder.", ""): v for k, v in state_dict_dec.items()}
         load_with_stats(decoder, clean_state_dec, "LatentDecoder")
+        decoder.to(eval_dtype)
     else:
         print(f"[!] Warning: Phase 2 decoder weights not found at {args.decoder}")
 
-    print(f"[*] Loading DUS Model and Confidence Proj from {args.checkpoint}")
-    dus_wrapper = DUSModel.from_scratch(weights_path=None)
-    dus = dus_wrapper.model.to(device).to(eval_dtype)
+    print(f"[*] Instantiating BEBLaDIIPhase3...")
+    model = BEBLaDIIPhase3(
+        embedding_model_path=args.embed_model,
+        modernbert_path="answerdotai/ModernBERT-large",
+        dus_weights=args.checkpoint,
+        encoder_weights=args.encoder,
+        sep_token_path=args.sep_token
+    ).to(device)
 
-    confidence_proj = (
-        torch.nn.Sequential(
-            torch.nn.Linear(1, 256), torch.nn.SiLU(), torch.nn.Linear(256, 1024)
-        )
-        .to(device)
-        .to(eval_dtype)
-    )
-
-    load_dus_checkpoint(dus, confidence_proj, args.checkpoint, use_ema=args.use_ema)
-    dus.eval()
-    confidence_proj.eval()
+    # Load Phase 3 Checkpoint fully
+    print(f"[*] Loading Phase 3 checkpoint weights into BEBLaDIIPhase3...")
+    ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+    if "dus" in ckpt: 
+        clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
+        model.dus.load_state_dict(clean_dus)
+    if "confidence_proj" in ckpt: 
+        clean_proj = {k.replace("_orig_module.", ""): v for k, v in ckpt["confidence_proj"].items()}
+        model.confidence_proj.load_state_dict(clean_proj)
+    
+    if args.use_ema and "dus_ema" in ckpt and "confidence_proj_ema" in ckpt:
+        print("[*] Applying EMA weights...")
+        ema = EMA(model, decay=0.998)
+        ema.shadow = {
+            **{f"dus.{k}": v for k, v in ckpt["dus_ema"].items()},
+            **{f"confidence_proj.{k}": v for k, v in ckpt["confidence_proj_ema"].items()}
+        }
+        ema.apply(model)
+        
+    model.eval()
 
     # TEST 1: No noise
     print("\n" + "=" * 50)
     print("TEST 1: No noise (Identity Check via DUS)")
     print("=" * 50)
-    phrases = [
-        "Machine learning allows computers to solve complex problems without explicit programming.",
-        "The cat is sleeping on the windowsill while fluffy snow falls slowly outside.",
-    ]
+    test_phrase = "Machine learning allows computers to solve complex problems without explicit programming."
+    cos_sim1, ae_decoded1, dus_decoded1, c_embed_norm1, z_clean_norm1, dus_final1, hidden_states1, phase3_metrics1 = run_test(
+        model, tokenizer, test_phrase, device, eval_dtype, low_noise_amp=0.0
+    )
+    
+    print(f"  [DEBUG] Norm z_clean: {z_clean_norm1:.4f}")
+    print(f"  [DEBUG] Norm c_embed: {c_embed_norm1:.4f}")
+    print(f"  [Cos Sim to z_clean] -> {cos_sim1:.4f}")
+    print(f"  [c_true_mean] -> {phase3_metrics1['c_true_mean']:.4f}")
+    print(f"  [w_c_mean] -> {phase3_metrics1['w_c_mean']:.4f}")
+    print(f"  [identity_penalty] -> {phase3_metrics1['identity_penalty']:.6f}")
+    print(f"  [prior_loss] -> {phase3_metrics1['prior_loss']:.6f} (var: {phase3_metrics1['var_loss']:.6f}, cov: {phase3_metrics1['cov_loss']:.6f})")
 
-    for i, phrase in enumerate(phrases, 1):
-        chatml_phrase = f"<|im_start|>user\n{phrase}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n"
-        tokens = tokenizer.encode(chatml_phrase)
-        pad_len = 512 - len(tokens)
-        pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-        input_ids = torch.tensor([tokens + [pad_id] * pad_len]).to(device)
-        attn_mask = torch.tensor([[1] * len(tokens) + [0] * pad_len]).to(device)
+    print(f"\n  [Layer-wise Analysis]")
+    for i, hs in enumerate(hidden_states1):
+        hs_active = hs[:, 1:, :].float()
+        hs_norm = hs_active.norm(dim=-1).mean().item()
+        print(f"  L{i:<9} | {hs_norm:<10.4f}")
 
-        with torch.no_grad():
-            qwen_embeds = embeddings(input_ids)
-            z_clean, _, _ = encoder(qwen_embeds)
-
-            c_true = torch.ones(
-                (1, z_clean.size(1)), device=device, dtype=eval_dtype
-            )
-            c_embed_raw = confidence_proj(c_true.unsqueeze(-1))
-            # ABLATION: force c_embed to 0
-            c_embed = torch.zeros_like(z_clean)
-            dus_input = (z_clean + c_embed).to(eval_dtype)
-
-            dus_outputs = dus(
-                inputs_embeds=dus_input,
-                attention_mask=attn_mask,
-                output_hidden_states=True,
-            )
-            clean_pre_norm = dus_outputs.hidden_states[-1] - c_embed
-            dus_out_raw = dus.final_norm(clean_pre_norm)
-            dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(
-                eval_dtype
-            )
-
-            z_recovered = dus_out_norm
-            
-            if i == 1:
-                print(f"  [DEBUG] Norm z_clean: {torch.norm(z_clean[0,0]).item():.4f}")
-                print(f"  [DEBUG] Norm c_embed: {torch.norm(c_embed[0,0]).item():.4f}")
-                raw_norm = dus_out_raw.float().norm(dim=-1)[0,0].item()
-                print(f"  [DEBUG] Norm l40 (raw DUS): {raw_norm:.4f}")
-
-            active_z_clean = z_clean[attn_mask.bool()]
-            active_z_rec = z_recovered[attn_mask.bool()]
-            
-            text_ae = decode_to_text(active_z_clean.unsqueeze(0), decoder, lm_head_weight, tokenizer)
-            text_dus = decode_to_text(active_z_rec.unsqueeze(0), decoder, lm_head_weight, tokenizer)
-
-            cos_sim = (
-                F.cosine_similarity(active_z_clean, active_z_rec, dim=-1).mean().item()
-            )
-
-        print(f"\nPhrase {i}: {phrase}")
-        print(f"  [AE Only] -> {text_ae}")
-        print(f"  [DUS Rec] -> {text_dus}")
-        print(f"  [Cos Sim] -> {cos_sim:.4f}")
-
-    # TEST 2: Heavy noise
     print("\n" + "=" * 50)
     print("TEST 2: Heavy noise (100% tokens noised) - Check Denoising")
     print("=" * 50)
-    test2_phrase = "Neural networks possess an incredible ability to generalize data from massive amounts of information."
-    chatml_test2 = f"<|im_start|>user\n{test2_phrase}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n"
-    tokens2 = tokenizer.encode(chatml_test2)
-    pad_len2 = 512 - len(tokens2)
-    pad_id2 = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
-    input_ids = torch.tensor([tokens2 + [pad_id2] * pad_len2]).to(device)
-    attn_mask = torch.tensor([[1] * len(tokens2) + [0] * pad_len2]).to(device)
-
-    with torch.no_grad():
-        qwen_embeds = embeddings(input_ids)
-        z_clean, _, _ = encoder(qwen_embeds)
-
-        T = z_clean.size(1)
-        # СЕЙЧАС ДЕЛАЕМ 100% ЗАШУМЛЕНИЕ
-        noise_mask = torch.ones((1, T, 1), device=device, dtype=torch.float32)
-
-        noise = torch.randn_like(z_clean)
-        noise = safe_normalize(noise, dim=-1) * 0.5
-        z_noisy = z_clean + noise * noise_mask
-
-        z_clean_norm = torch.norm(z_clean, p=2, dim=-1, keepdim=True)
-        # Убираем умножение на z_clean_norm для зашумленных токенов,
-        # так как в train_phase3_notebook.py это умножение отсутствовало (бага/фича).
-        # Там зашумленные токены имели норму 1. Мы должны повторить это для DUS.
-        z_noisy = torch.where(
-            noise_mask > 0, safe_normalize(z_noisy, dim=-1), z_noisy
-        ).to(eval_dtype)
-        r_sq = z_clean_norm**2
-
-        c_true = torch.clamp(
-            F.cosine_similarity(z_clean.float(), z_noisy.float(), dim=-1), min=0.0
-        ).to(eval_dtype)
-        c_embed_raw = confidence_proj(c_true.unsqueeze(-1))
-        c_embed = safe_normalize(c_embed_raw.float(), dim=-1).to(eval_dtype) * 0.1
-        dus_input = (z_noisy + c_embed).to(eval_dtype)
-
-        dus_outputs = dus(
-            inputs_embeds=dus_input,
-            attention_mask=attn_mask,
-            output_hidden_states=True,
-        )
-        clean_pre_norm = dus_outputs.hidden_states[-1] - c_embed
-        dus_out_raw = dus.final_norm(clean_pre_norm)
-        dus_out_norm = safe_normalize(dus_out_raw.float(), dim=-1).to(eval_dtype)
-        z_recovered = dus_out_norm
-
-        active_z_noisy = z_noisy[attn_mask.bool()]
-        active_z_clean = z_clean[attn_mask.bool()]
-        active_z_rec = z_recovered[attn_mask.bool()]
-
-        text_noisy = decode_to_text(active_z_noisy.unsqueeze(0), decoder, lm_head_weight, tokenizer)
-        text_recovered = decode_to_text(active_z_rec.unsqueeze(0), decoder, lm_head_weight, tokenizer)
-
-        sim_recov = (
-            F.cosine_similarity(active_z_clean, active_z_rec, dim=-1).mean().item()
-        )
-
-    print(f"Original:   {test2_phrase}")
-    print(f"Noised:     {text_noisy}")
-    print(f"DUS out:    {text_recovered}")
-    print(f"  [Cos Sim] -> {sim_recov:.4f}")
+    test_phrase2 = "Neural networks possess an incredible ability to generalize data from massive amounts of information."
+    cos_sim2, ae_decoded2, dus_decoded2, _, _, dus_final2, _, phase3_metrics2 = run_test(
+        model, tokenizer, test_phrase2, device, eval_dtype, low_noise_amp=0.5
+    )
+    print(f"Original:   {test_phrase2}")
+    print(f"DUS out:    {dus_decoded2.strip()}")
+    print(f"  [Cos Sim] -> {cos_sim2:.4f}")
+    print(f"  [Cos Sim on noised tokens] -> {phase3_metrics2['cos_denoise_on_noised']:.4f}")
+    print(f"  [c_true_mean] -> {phase3_metrics2['c_true_mean']:.4f}")
+    print(f"  [identity_penalty] -> {phase3_metrics2['identity_penalty']:.6f}")
+    print(f"  [denoise_loss (approx)] -> {1.0 - phase3_metrics2['cos_denoise_on_noised']:.6f}")
 
 
 if __name__ == "__main__":

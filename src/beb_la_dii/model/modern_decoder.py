@@ -26,8 +26,8 @@ class ModernLatentDecoder(nn.Module):
                 
                 @property
                 def dtype(self):
-                    # Принудительно возвращаем bfloat16 для _update_attention_mask
-                    return torch.bfloat16
+                    params = list(self.parameters())
+                    return params[0].dtype if params else torch.bfloat16
             
             self.backbone.__class__ = SafeModernBertModel
             self.backbone._maybe_set_compile = lambda *args, **kwargs: None
