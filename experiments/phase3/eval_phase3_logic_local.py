@@ -126,14 +126,7 @@ def parse_bracket_phrase(phrase, tokenizer):
     return clean_text, tokens, noise_indices
 
 
-def run_test(model, tokenizer, phrase, device, eval_dtype, low_noise_amp=0.0):
-    decoder = getattr(model, "decoder", None)
-    if decoder is None:
-        # Fallback to globally defined decoder if available
-        import sys
-        decoder = sys.modules[__name__].decoder
-        lm_head_weight = sys.modules[__name__].lm_head_weight
-
+def run_test(model, tokenizer, phrase, device, eval_dtype, decoder, lm_head_weight, low_noise_amp=0.0):
     chatml_phrase = f"<|im_start|>user\n{phrase}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n"
     tokens = tokenizer.encode(chatml_phrase)
     pad_len = 512 - len(tokens)
@@ -239,18 +232,18 @@ def main():
     parser.add_argument(
         "--encoder",
         type=str,
-        default=r"experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth",
+        default="experiments/phase 1/planB_phase1_checkpoints_phase1_vae_step_20000.pth",
     )
     parser.add_argument(
         "--decoder",
         type=str,
-        default=r"experiments\phase 2\planB_phase2_checkpoints_decoder_step_6000.pth",
+        default="experiments/phase 2/planB_phase2_checkpoints_decoder_step_6000.pth",
     )
     parser.add_argument(
         "--embed_model", type=str, default="Qwen/Qwen2.5-1.5B"
     )
     parser.add_argument(
-        "--sep_token", type=str, default=r"C:\Experiments\BEBLaDII\storage\components\sep_token.pt"
+        "--sep_token", type=str, default="storage/components/sep_token.pt"
     )
     parser.add_argument(
         "--use_ema", action="store_true", default=True, help="Использовать EMA веса из чекпоинта"
@@ -365,7 +358,7 @@ def main():
     print("=" * 50)
     test_phrase = "Machine learning allows computers to solve complex problems without explicit programming."
     cos_sim1, ae_decoded1, dus_decoded1, c_embed_norm1, z_clean_norm1, dus_final1, hidden_states1, phase3_metrics1 = run_test(
-        model, tokenizer, test_phrase, device, eval_dtype, low_noise_amp=0.0
+        model, tokenizer, test_phrase, device, eval_dtype, decoder, lm_head_weight, low_noise_amp=0.0
     )
     
     print(f"  [DEBUG] Norm z_clean: {z_clean_norm1:.4f}")
@@ -387,7 +380,7 @@ def main():
     print("=" * 50)
     test_phrase2 = "Neural networks possess an incredible ability to generalize data from massive amounts of information."
     cos_sim2, ae_decoded2, dus_decoded2, _, _, dus_final2, _, phase3_metrics2 = run_test(
-        model, tokenizer, test_phrase2, device, eval_dtype, low_noise_amp=0.5
+        model, tokenizer, test_phrase2, device, eval_dtype, decoder, lm_head_weight, low_noise_amp=0.5
     )
     print(f"Original:   {test_phrase2}")
     print(f"DUS out:    {dus_decoded2.strip()}")
