@@ -266,8 +266,9 @@ class BEBLaDIIPhase3(nn.Module):
         )
 
         # 5. C_Embed Layer Hooks
-        # Инициализируем не нулями, чтобы разорвать градиентный дедлок (dL/d_alpha != 0)
-        self.c_embed_alphas = nn.Parameter(torch.ones(len(self.dus.layers)) * 0.01)
+        # Инициализируем 10.0, чтобы разорвать градиентный дедлок и сделать сигнал
+        # сопоставимым с начальной нормой остаточного потока (которая около 17-30)
+        self.c_embed_alphas = nn.Parameter(torch.ones(len(self.dus.layers)) * 10.0)
         for i, layer in enumerate(self.dus.layers):
             layer.register_forward_pre_hook(self._make_c_embed_hook(i))
 
