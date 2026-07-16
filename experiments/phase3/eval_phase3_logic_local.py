@@ -126,6 +126,111 @@ def parse_bracket_phrase(phrase, tokenizer):
     return clean_text, tokens, noise_indices
 
 
+def run_test(model, tokenizer, phrase, device, eval_dtype, low_noise_amp=0.0):
+    decoder = getattr(model, "decoder", None)
+    if decoder is None:
+        # Fallback to globally defined decoder if available
+        import sys
+        decoder = sys.modules[__name__].decoder
+        lm_head_weight = sys.modules[__name__].lm_head_weight
+
+    chatml_phrase = f"<|im_start|>user\n{phrase}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n"
+    tokens = tokenizer.encode(chatml_phrase)
+    pad_len = 512 - len(tokens)
+    pad_id = tokenizer.pad_token_id if tokenizer.pad_token_id is not None else 0
+    input_ids = torch.tensor([tokens + [pad_id] * pad_len]).to(device)
+    attn_mask = torch.tensor([[1] * len(tokens) + [0] * pad_len]).to(device)
+
+    with torch.no_grad():
+        fwd_outputs = model(input_ids, attention_mask=attn_mask, low_noise_amp=low_noise_amp)
+        z_clean = fwd_outputs["z_clean"]
+        z_noisy = fwd_outputs["z_noisy"]
+        z_recovered = fwd_outputs["dus_final"]
+        c_embed = fwd_outputs["c_embed"]
+        noise_mask = fwd_outputs["noise_mask"]
+        
+        c_embed_norm = c_embed.norm(dim=-1).mean().item()
+        z_clean_norm = z_clean.norm(dim=-1).mean().item()
+
+        # Вручную прогоним DUS чтобы достать hidden_states
+        x_in = z_clean.float() + c_embed
+        sep_prefix = model.sep_embed.unsqueeze(0).unsqueeze(0).expand(1, 1, -1).to(x_in.dtype)
+        dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
+        attention_mask_extended = F.pad(attn_mask, (1, 0), value=1)
+        
+        with torch.autocast(device.type if device.type != 'cpu' else 'cpu', dtype=eval_dtype, enabled=(device.type != 'cpu')):
+            z_clean_normed = safe_normalize(z_clean, dim=-1)
+            z_noisy_normed = safe_normalize(z_noisy, dim=-1)
+            c_true = torch.clamp((z_clean_normed * z_noisy_normed).sum(dim=-1), min=0.0)
+
+            dus_outputs = model.dus(
+                inputs_embeds=dus_input_extended,
+                attention_mask=attention_mask_extended,
+                output_hidden_states=True,
+            )
+
+            pre_norm = dus_outputs.hidden_states[-1][:, 1:, :].float()
+            clean_pre_norm = pre_norm - c_embed
+            dus_final_raw = model.dus.final_norm(clean_pre_norm.to(next(model.dus.final_norm.parameters()).dtype)).float()
+            dus_final = safe_normalize(dus_final_raw, dim=-1)
+            
+            # --- PHASE 3 METRICS MATCHING WANDB ---
+            B, T, D = z_clean.size()
+            active_tokens = attn_mask.sum().clamp(min=1.0)
+            noised_tokens = noise_mask.sum().clamp(min=1.0) if low_noise_amp > 0 else 1.0
+
+            z_flat = dus_final.view(-1, D)
+            mask_flat = attn_mask.float().view(-1, 1)
+            m_state = (z_flat * mask_flat).sum(dim=0) / active_tokens
+            z_centered = z_flat - m_state
+            v_state = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
+            var_floor = 1.0 / (D * 2)
+            var_loss = F.relu(var_floor - v_state).mean().item()
+            
+            cov = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
+            cov_off_diag = cov - torch.diag(torch.diag(cov))
+            cov_loss = cov_off_diag.pow(2).sum().item() / D
+            prior_loss = m_state.pow(2).mean().item() + var_loss + 0.1 * cov_loss
+
+            denoise_target = safe_normalize(z_clean, dim=-1)
+            cos_denoise_full = (dus_final * denoise_target).sum(dim=-1)
+            cos_denoise_val = cos_denoise_full.mean().item()
+            
+            if low_noise_amp > 0:
+                cos_denoise_on_noised = ((cos_denoise_full * noise_mask).sum() / noised_tokens).item()
+            else:
+                cos_denoise_on_noised = cos_denoise_val
+
+            w_c = c_true.pow(20.0)
+            identity_target = safe_normalize(z_noisy, dim=-1)
+            cos_identity = (dus_final * identity_target).sum(dim=-1)
+            penalty_elementwise = 1.0 - cos_identity
+            identity_penalty = ((penalty_elementwise * w_c * attn_mask.float()).sum() / active_tokens).item()
+            
+            c_true_mean = c_true.mean().item()
+            w_c_mean = w_c.mean().item()
+
+        metrics = {
+            "var_loss": var_loss,
+            "cov_loss": cov_loss,
+            "prior_loss": prior_loss,
+            "c_true_mean": c_true_mean,
+            "w_c_mean": w_c_mean,
+            "identity_penalty": identity_penalty,
+            "cos_denoise_on_noised": cos_denoise_on_noised,
+        }
+
+        active_z_clean = z_clean[attn_mask.bool()]
+        active_z_rec = z_recovered[attn_mask.bool()]
+        
+        text_ae = decode_to_text(active_z_clean.to(eval_dtype).unsqueeze(0), decoder, lm_head_weight, tokenizer)
+        text_dus = decode_to_text(active_z_rec.to(eval_dtype).unsqueeze(0), decoder, lm_head_weight, tokenizer)
+
+        cos_sim = F.cosine_similarity(active_z_clean, active_z_rec, dim=-1).mean().item()
+
+        return cos_sim, text_ae, text_dus, c_embed_norm, z_clean_norm, dus_final_raw, dus_outputs.hidden_states, metrics
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
