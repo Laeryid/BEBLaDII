@@ -189,6 +189,23 @@ def main():
         module.load_state_dict(state_dict, strict=False)
         print(f"[*] {name} loaded ({len(matched_keys)} / {len(model_keys)} keys)")
 
+    def resolve_path(path):
+        if not path:
+            return path
+        if path.startswith("gs://"):
+            local_path = os.path.join(".", os.path.basename(path))
+            if not os.path.exists(local_path):
+                print(f"[*] Downloading {path} from GCS...")
+                import subprocess
+                subprocess.run(["gsutil", "-q", "cp", path, local_path], check=True)
+            return local_path
+        return path
+
+    args.encoder = resolve_path(args.encoder)
+    args.decoder = resolve_path(args.decoder)
+    args.checkpoint = resolve_path(args.checkpoint)
+    args.sep_token = resolve_path(args.sep_token)
+
     if os.path.exists(args.encoder):
         state = torch.load(args.encoder, map_location="cpu", weights_only=False)
         # Load Encoder
