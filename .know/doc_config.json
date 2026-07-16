@@ -235,6 +235,11 @@
       "covers": ["Knowledge Infrastructure"],
       "depends_on": []
     },
+    "decisions/059_phase3_residual_stream_norm_explosion.md": {
+      "description": "ADR: Решение проблемы 'глухоты' DUS к c_embed из-за взрыва нормы (Phase 3) через Layer Hooks и unified loss в float32.",
+      "covers": ["Architecture & Training Phases"],
+      "depends_on": []
+    },
     "KI_training_infrastructure.md": {
       "description": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler.",
       "covers": ["Experiments", "Data & Ops Scripts"],

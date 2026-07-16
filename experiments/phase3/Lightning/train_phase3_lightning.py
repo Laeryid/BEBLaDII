@@ -258,14 +258,21 @@ class BEBLaDIIPhase3(nn.Module):
         # Не патчим dtype-свойство: модель теперь float32.
         type(self.dus).device = property(lambda self: torch.device("cuda"))
 
-        # 4. Confidence Embedding — тоже float32
+        # 4. Confidence Projector
         self.confidence_proj = nn.Sequential(
-            nn.Linear(1, 256), nn.SiLU(), nn.Linear(256, 1024)
+            nn.Linear(1, 256),
+            nn.GELU(),
+            nn.Linear(256, 1024)
         )
         nn.init.zeros_(self.confidence_proj[-1].weight)
         nn.init.zeros_(self.confidence_proj[-1].bias)
 
-        # 5. Токен-разделитель (ADR 058)
+        # 5. C_Embed Layer Hooks
+        self.c_embed_alphas = nn.Parameter(torch.zeros(len(self.dus.layers)))
+        for i, layer in enumerate(self.dus.layers):
+            layer.register_forward_pre_hook(self._make_c_embed_hook(i))
+
+        # 6. Токен-разделитель (ADR 058)
         if sep_token_path and os.path.exists(sep_token_path):
             sep_tensor = torch.load(sep_token_path, map_location="cpu").float()
             self.register_buffer("sep_embed", sep_tensor)
@@ -274,6 +281,14 @@ class BEBLaDIIPhase3(nn.Module):
             # Fallback для тестов
             self.register_buffer("sep_embed", torch.zeros(1024, dtype=torch.float32))
             print(f"[WARN] Separator token NOT found at {sep_token_path}, initialized to zeros.", flush=True)
+
+    def _make_c_embed_hook(self, layer_idx):
+        def hook(module, args):
+            hidden_states = args[0]
+            if hasattr(self, '_current_c_embed') and self._current_c_embed is not None:
+                hidden_states = hidden_states + self.c_embed_alphas[layer_idx] * self._current_c_embed
+            return (hidden_states,) + args[1:]
+        return hook
 
     def train(self, mode=True):
         super().train(mode)
@@ -347,12 +362,11 @@ class BEBLaDIIPhase3(nn.Module):
             z_noisy_normed = safe_normalize(z_noisy, dim=-1)
             c_true = torch.clamp((z_clean_normed * z_noisy_normed).sum(dim=-1), min=0.0)
 
-        # ADR 057: DUS и confidence_proj в float32, forward — под autocast.
-        # c_true из no_grad-блока выходит float32 (clamp выше).
         c_embed_raw = self.confidence_proj(c_true.unsqueeze(-1).float())
-        # Нормируем и масштабируем в float32; никаких преобразований в bfloat16
         c_embed = safe_normalize(c_embed_raw, dim=-1) * 0.1  # float32
-        x_in = z_noisy.float() + c_embed
+        
+        # Убираем жесткое прибавление к входу, отдаем контроль хукам
+        x_in = z_noisy.float()
         
         # Конкатенируем префикс разделителя (ADR 058)
         B = x_in.size(0)
@@ -360,19 +374,16 @@ class BEBLaDIIPhase3(nn.Module):
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
         attention_mask_extended = F.pad(attention_mask, (1, 0), value=1)
 
-        # Вычисляем DUS под autocast — операции пойдут в bfloat16 на GPU,
-        # но параметры хранятся в float32 (мастер-копии).
-        with torch.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
-            dus_outputs = self.dus(
-                inputs_embeds=dus_input_extended,
-                attention_mask=attention_mask_extended,
-                output_hidden_states=True,
-            )
+        # Вычисляем DUS в float32 (без autocast)
+        dus_outputs = self.dus(
+            inputs_embeds=dus_input_extended,
+            attention_mask=attention_mask_extended,
+            output_hidden_states=True,
+        )
 
         # Отрезаем первый токен (sep_prefix)
         pre_norm = dus_outputs.hidden_states[-1][:, 1:, :].float()
-        clean_pre_norm = pre_norm - c_embed
-        dus_final_raw = self.dus.final_norm(clean_pre_norm.to(next(self.dus.final_norm.parameters()).dtype)).float()
+        dus_final_raw = self.dus.final_norm(pre_norm.to(next(self.dus.final_norm.parameters()).dtype)).float()
 
         dus_delta = dus_final_raw - z_noisy.float()
         dus_final = safe_normalize(dus_final_raw, dim=-1)  # float32
@@ -387,74 +398,77 @@ class BEBLaDIIPhase3(nn.Module):
             "attention_mask": attention_mask,
             "c_embed": c_embed,
             "dus_input": x_in,
+            "hidden_states": dus_outputs.hidden_states,
+            "c_embed_alphas": self.c_embed_alphas,
         }
 
 
 # ==========================================
 # 4. Loss Function
 # ==========================================
-def compute_phase3_loss(outputs: dict, gamma: float = 20.0, w_denoise: float = 1.0, w_identity: float = 5.0):
-    # ADR 057: все вычисления строго в float32 для надёжности градиентов.
+def compute_phase3_loss(outputs: dict, w_prior: float = 0.1):
     z_clean = outputs["z_clean"].float()
-    z_noisy = outputs["z_noisy"].float()
-    c_true = outputs["c_true"].float()
-    noise_mask = outputs["noise_mask"].float()
-    dus_final = outputs["dus_final"].float()  # уже float32 после forward
+    dus_final = outputs["dus_final"].float()
     attn_f = outputs["attention_mask"].float()
+    hidden_states = outputs.get("hidden_states", [])
 
     metrics = {}
     B, T, D = z_clean.size()
     active_tokens = attn_f.sum().clamp(min=1.0)
-    noised_tokens = noise_mask.sum().clamp(min=1.0)
 
-    # 4.1 Prior Loss — полностью в float32
+    # Denoise/Identity Loss (Unified Target)
+    target = safe_normalize(z_clean, dim=-1)
+    cos_sim = (dus_final * target).sum(dim=-1)
+    
+    # 1.0 - cos_sim for all active tokens
+    loss_elementwise = 1.0 - cos_sim
+    main_loss = (loss_elementwise * attn_f).sum() / active_tokens
+    
+    metrics["unified_loss"] = main_loss.detach()
+    metrics["cos_sim_all"] = (cos_sim * attn_f).sum().detach() / active_tokens
+    
+    # Prior Loss
     z_flat = dus_final.view(-1, D)
     mask_flat = attn_f.view(-1, 1)
     m_state = (z_flat * mask_flat).sum(dim=0) / active_tokens
     z_centered = z_flat - m_state
-
+    
     v_state = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
     var_floor = 1.0 / (D * 2)
     var_loss = F.relu(var_floor - v_state).mean()
-
+    
     cov = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
     cov_off_diag = cov - torch.diag(torch.diag(cov))
     cov_loss = cov_off_diag.pow(2).sum() / D
-
+    
     prior_loss = m_state.pow(2).mean() + var_loss + 0.1 * cov_loss
     metrics["prior_loss"] = prior_loss.detach()
+    metrics["var_loss"] = var_loss.detach()
     metrics["cov_loss"] = cov_loss.detach()
 
-    total_loss = 0.1 * prior_loss
+    total_loss = main_loss + w_prior * prior_loss
 
-    # 4.2 Denoising Loss
-    denoise_target = safe_normalize(z_clean, dim=-1)
-    cos_denoise = (dus_final * denoise_target).sum(dim=-1)
-    denoise_elementwise = 1.0 - cos_denoise
-    denoise_loss = (denoise_elementwise * noise_mask).sum() / noised_tokens
-    metrics["denoise_loss"] = denoise_loss.detach()
-    metrics["cos_denoise_on_noised"] = ((cos_denoise * noise_mask).sum() / noised_tokens).detach()
+    # Diagnostic Norms
+    if hidden_states and len(hidden_states) > 1:
+        l0_norm = hidden_states[0][:, 1:, :].float().norm(dim=-1).mean()
+        metrics["norm_L0"] = l0_norm.detach()
+        l40_norm = hidden_states[-1][:, 1:, :].float().norm(dim=-1).mean()
+        metrics["norm_Llast"] = l40_norm.detach()
+        
+        total_delta_norm = 0.0
+        for i in range(len(hidden_states) - 1):
+            delta = hidden_states[i+1][:, 1:, :].float() - hidden_states[i][:, 1:, :].float()
+            total_delta_norm += delta.norm(dim=-1).mean()
+        metrics["delta_norm_avg"] = (total_delta_norm / (len(hidden_states) - 1)).detach()
 
-    total_loss = total_loss + w_denoise * denoise_loss
+    if "c_embed_alphas" in outputs:
+        alphas = outputs["c_embed_alphas"]
+        metrics["c_embed_alphas_mean"] = alphas.mean().detach()
+        metrics["c_embed_alphas_abs_mean"] = alphas.abs().mean().detach()
+        metrics["c_embed_alphas_max"] = alphas.abs().max().detach()
 
-    # 4.4 Identity Penalty
-    # ADR 057: восстанавливаем c_true ** gamma.
-    # gamma=20 используется ТОЛЬКО как вес потерь (не в c_embed).
-    # Смысл: токены с c_true≈1 (почти без шума) вносят значимый вклад,
-    # токены с малым c_true (сильно зашумленные) почти не мешают identity-сигналу.
-    # С float32 мастер-копиями градиенты теперь не обнуляются при округлении.
-    w_c = c_true.pow(gamma)  # float32 ** 20 — безопасно
-    identity_target = safe_normalize(z_noisy, dim=-1)
-    cos_identity = (dus_final * identity_target).sum(dim=-1)
-    penalty_elementwise = 1.0 - cos_identity
-    identity_penalty = (penalty_elementwise * w_c * attn_f).sum() / active_tokens
-    metrics["identity_penalty"] = identity_penalty.detach()
-    metrics["w_c_mean"] = (w_c * attn_f).sum().detach() / active_tokens  # диагностика
-
-    total_loss = total_loss + w_identity * identity_penalty
-
-    c_true_mean = (c_true * attn_f).sum() / active_tokens
-    metrics["c_true_mean"] = c_true_mean.detach()
+    # Log old diagnostics so wandb doesn't break
+    metrics["c_true_mean"] = (outputs["c_true"].float() * attn_f).sum().detach() / active_tokens
 
     return total_loss, metrics
 
@@ -594,7 +608,7 @@ def train():
             # точечно только для DUS. Параметры — float32, обновления точные.
             fwd_outputs = model(input_ids, attention_mask=attention_mask, low_noise_amp=args.low_noise_amp)
             # compute_phase3_loss работает полностью в float32
-            loss, metrics = compute_phase3_loss(fwd_outputs, gamma=args.gamma, w_denoise=args.w_denoise, w_identity=args.w_identity)
+            loss, metrics = compute_phase3_loss(fwd_outputs)
 
             if loss.dim() > 0:
                 loss = loss.mean()
@@ -659,7 +673,7 @@ def train():
                         v_attention_mask = val_batch["attention_mask"].to(device)
                         # autocast применяется внутри model.forward(), здесь не нужен
                         v_outputs = model(v_input_ids, attention_mask=v_attention_mask, low_noise_amp=args.low_noise_amp)
-                        v_loss, v_metrics = compute_phase3_loss(v_outputs, gamma=args.gamma, w_denoise=args.w_denoise, w_identity=args.w_identity)
+                        v_loss, v_metrics = compute_phase3_loss(v_outputs)
                         for k, v in v_metrics.items():
                             val_metrics_sum[f"val_{k}"] = val_metrics_sum.get(f"val_{k}", 0) + (v.mean().item() if isinstance(v, torch.Tensor) else v)
                         val_metrics_sum["val_loss"] = val_metrics_sum.get("val_loss", 0) + (v_loss.mean().item() if isinstance(v_loss, torch.Tensor) else v_loss)
@@ -669,7 +683,7 @@ def train():
                 if val_batches > 0:
                     val_metrics_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
                     if args.wandb_project: wandb.log(val_metrics_avg, step=step)
-                    print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_denoise: {val_metrics_avg.get('val_cos_denoise_on_noised', 0):.4f}")
+                    print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_sim_all: {val_metrics_avg.get('val_cos_sim_all', 0):.4f}")
                 model.train()
 
                 ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
