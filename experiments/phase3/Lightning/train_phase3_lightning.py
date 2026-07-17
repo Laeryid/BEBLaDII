@@ -589,11 +589,17 @@ def train():
                         clean_proj = {k.replace("_orig_module.", ""): v for k, v in ckpt["confidence_proj"].items()}
                         actual_model.confidence_proj.load_state_dict(clean_proj)
 
+                    if "c_embed_alphas" in ckpt:
+                        actual_model.c_embed_alphas.data.copy_(ckpt["c_embed_alphas"].to(device))
+
                     if "dus_ema" in ckpt and "confidence_proj_ema" in ckpt:
-                        ema.shadow = {
+                        shadow_update = {
                             **{f"dus.{k}": v for k, v in ckpt["dus_ema"].items()},
                             **{f"confidence_proj.{k}": v for k, v in ckpt["confidence_proj_ema"].items()}
                         }
+                        if "c_embed_alphas_ema" in ckpt:
+                            shadow_update["c_embed_alphas"] = ckpt["c_embed_alphas_ema"]
+                        ema.shadow.update(shadow_update)
 
                     if "optimizer" in ckpt: optimizer.load_state_dict(ckpt["optimizer"])
                     if "scheduler" in ckpt: scheduler.load_state_dict(ckpt["scheduler"])
@@ -708,17 +714,21 @@ def train():
 
                 dus_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
                 proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+                alphas_state = actual_model.c_embed_alphas.detach().cpu()
 
                 ema.apply(model)
                 dus_ema_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
                 proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+                alphas_ema_state = actual_model.c_embed_alphas.detach().cpu()
                 ema.restore(model)
 
                 torch.save({
                     "dus": dus_state,
                     "confidence_proj": proj_state,
+                    "c_embed_alphas": alphas_state,
                     "dus_ema": dus_ema_state,
                     "confidence_proj_ema": proj_ema_state,
+                    "c_embed_alphas_ema": alphas_ema_state,
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                     "step": step,
@@ -742,17 +752,21 @@ def train():
     actual_model = model.module if isinstance(model, nn.DataParallel) else model
     dus_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
     proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+    alphas_state = actual_model.c_embed_alphas.detach().cpu()
 
     ema.apply(model)
     dus_ema_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
     proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+    alphas_ema_state = actual_model.c_embed_alphas.detach().cpu()
     ema.restore(model)
 
     torch.save({
         "dus": dus_state,
         "confidence_proj": proj_state,
+        "c_embed_alphas": alphas_state,
         "dus_ema": dus_ema_state,
         "confidence_proj_ema": proj_ema_state,
+        "c_embed_alphas_ema": alphas_ema_state,
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "step": step,

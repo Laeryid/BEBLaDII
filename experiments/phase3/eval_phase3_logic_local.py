@@ -127,6 +127,8 @@ def parse_bracket_phrase(phrase, tokenizer):
 
 
 def run_test(model, tokenizer, phrase, device, eval_dtype, decoder, lm_head_weight, low_noise_amp=0.0):
+    from Lightning.train_phase3_lightning import compute_phase3_loss
+    
     chatml_phrase = f"<|im_start|>user\n{phrase}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n"
     tokens = tokenizer.encode(chatml_phrase)
     pad_len = 512 - len(tokens)
@@ -140,78 +142,12 @@ def run_test(model, tokenizer, phrase, device, eval_dtype, decoder, lm_head_weig
         z_noisy = fwd_outputs["z_noisy"]
         z_recovered = fwd_outputs["dus_final"]
         c_embed = fwd_outputs["c_embed"]
-        noise_mask = fwd_outputs["noise_mask"]
+        hidden_states = fwd_outputs["hidden_states"]
         
         c_embed_norm = c_embed.norm(dim=-1).mean().item()
         z_clean_norm = z_clean.norm(dim=-1).mean().item()
 
-        # Вручную прогоним DUS чтобы достать hidden_states
-        x_in = z_clean.float() + c_embed
-        sep_prefix = model.sep_embed.unsqueeze(0).unsqueeze(0).expand(1, 1, -1).to(x_in.dtype)
-        dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
-        attention_mask_extended = F.pad(attn_mask, (1, 0), value=1)
-        
-        with torch.autocast(device.type if device.type != 'cpu' else 'cpu', dtype=eval_dtype, enabled=(device.type != 'cpu')):
-            z_clean_normed = safe_normalize(z_clean, dim=-1)
-            z_noisy_normed = safe_normalize(z_noisy, dim=-1)
-            c_true = torch.clamp((z_clean_normed * z_noisy_normed).sum(dim=-1), min=0.0)
-
-            dus_outputs = model.dus(
-                inputs_embeds=dus_input_extended,
-                attention_mask=attention_mask_extended,
-                output_hidden_states=True,
-            )
-
-            pre_norm = dus_outputs.hidden_states[-1][:, 1:, :].float()
-            clean_pre_norm = pre_norm - c_embed
-            dus_final_raw = model.dus.final_norm(clean_pre_norm.to(next(model.dus.final_norm.parameters()).dtype)).float()
-            dus_final = safe_normalize(dus_final_raw, dim=-1)
-            
-            # --- PHASE 3 METRICS MATCHING WANDB ---
-            B, T, D = z_clean.size()
-            active_tokens = attn_mask.sum().clamp(min=1.0)
-            noised_tokens = noise_mask.sum().clamp(min=1.0) if low_noise_amp > 0 else 1.0
-
-            z_flat = dus_final.view(-1, D)
-            mask_flat = attn_mask.float().view(-1, 1)
-            m_state = (z_flat * mask_flat).sum(dim=0) / active_tokens
-            z_centered = z_flat - m_state
-            v_state = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
-            var_floor = 1.0 / (D * 2)
-            var_loss = F.relu(var_floor - v_state).mean().item()
-            
-            cov = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
-            cov_off_diag = cov - torch.diag(torch.diag(cov))
-            cov_loss = cov_off_diag.pow(2).sum().item() / D
-            prior_loss = m_state.pow(2).mean().item() + var_loss + 0.1 * cov_loss
-
-            denoise_target = safe_normalize(z_clean, dim=-1)
-            cos_denoise_full = (dus_final * denoise_target).sum(dim=-1)
-            cos_denoise_val = cos_denoise_full.mean().item()
-            
-            if low_noise_amp > 0:
-                cos_denoise_on_noised = ((cos_denoise_full * noise_mask).sum() / noised_tokens).item()
-            else:
-                cos_denoise_on_noised = cos_denoise_val
-
-            w_c = c_true.pow(20.0)
-            identity_target = safe_normalize(z_noisy, dim=-1)
-            cos_identity = (dus_final * identity_target).sum(dim=-1)
-            penalty_elementwise = 1.0 - cos_identity
-            identity_penalty = ((penalty_elementwise * w_c * attn_mask.float()).sum() / active_tokens).item()
-            
-            c_true_mean = c_true.mean().item()
-            w_c_mean = w_c.mean().item()
-
-        metrics = {
-            "var_loss": var_loss,
-            "cov_loss": cov_loss,
-            "prior_loss": prior_loss,
-            "c_true_mean": c_true_mean,
-            "w_c_mean": w_c_mean,
-            "identity_penalty": identity_penalty,
-            "cos_denoise_on_noised": cos_denoise_on_noised,
-        }
+        loss, metrics = compute_phase3_loss(fwd_outputs)
 
         active_z_clean = z_clean[attn_mask.bool()]
         active_z_rec = z_recovered[attn_mask.bool()]
@@ -221,7 +157,9 @@ def run_test(model, tokenizer, phrase, device, eval_dtype, decoder, lm_head_weig
 
         cos_sim = F.cosine_similarity(active_z_clean, active_z_rec, dim=-1).mean().item()
 
-        return cos_sim, text_ae, text_dus, c_embed_norm, z_clean_norm, dus_final_raw, dus_outputs.hidden_states, metrics
+        metrics_dict = {k: v.item() if isinstance(v, torch.Tensor) else v for k, v in metrics.items()}
+        
+        return cos_sim, text_ae, text_dus, c_embed_norm, z_clean_norm, z_recovered, hidden_states, metrics_dict
 
 
 def main():
@@ -352,10 +290,10 @@ def main():
     if args.use_ema and "dus_ema" in ckpt and "confidence_proj_ema" in ckpt:
         print("[*] Applying EMA weights...")
         ema = EMA(model, decay=0.998)
-        ema.shadow = {
+        ema.shadow.update({
             **{f"dus.{k}": v for k, v in ckpt["dus_ema"].items()},
             **{f"confidence_proj.{k}": v for k, v in ckpt["confidence_proj_ema"].items()}
-        }
+        })
         ema.apply(model)
         
     model.eval()
@@ -372,10 +310,9 @@ def main():
     print(f"  [DEBUG] Norm z_clean: {z_clean_norm1:.4f}")
     print(f"  [DEBUG] Norm c_embed: {c_embed_norm1:.4f}")
     print(f"  [Cos Sim to z_clean] -> {cos_sim1:.4f}")
-    print(f"  [c_true_mean] -> {phase3_metrics1['c_true_mean']:.4f}")
-    print(f"  [w_c_mean] -> {phase3_metrics1['w_c_mean']:.4f}")
-    print(f"  [identity_penalty] -> {phase3_metrics1['identity_penalty']:.6f}")
-    print(f"  [prior_loss] -> {phase3_metrics1['prior_loss']:.6f} (var: {phase3_metrics1['var_loss']:.6f}, cov: {phase3_metrics1['cov_loss']:.6f})")
+    print(f"  [c_true_mean] -> {phase3_metrics1.get('c_true_mean', 0):.4f}")
+    print(f"  [unified_loss] -> {phase3_metrics1.get('unified_loss', 0):.6f}")
+    print(f"  [prior_loss] -> {phase3_metrics1.get('prior_loss', 0):.6f} (var: {phase3_metrics1.get('var_loss', 0):.6f}, cov: {phase3_metrics1.get('cov_loss', 0):.6f})")
 
     print(f"\n  [Layer-wise Analysis]")
     for i, hs in enumerate(hidden_states1):
@@ -393,10 +330,9 @@ def main():
     print(f"Original:   {test_phrase2}")
     print(f"DUS out:    {dus_decoded2.strip()}")
     print(f"  [Cos Sim] -> {cos_sim2:.4f}")
-    print(f"  [Cos Sim on noised tokens] -> {phase3_metrics2['cos_denoise_on_noised']:.4f}")
-    print(f"  [c_true_mean] -> {phase3_metrics2['c_true_mean']:.4f}")
-    print(f"  [identity_penalty] -> {phase3_metrics2['identity_penalty']:.6f}")
-    print(f"  [denoise_loss (approx)] -> {1.0 - phase3_metrics2['cos_denoise_on_noised']:.6f}")
+    print(f"  [Cos Sim all] -> {phase3_metrics2.get('cos_sim_all', 0):.4f}")
+    print(f"  [c_true_mean] -> {phase3_metrics2.get('c_true_mean', 0):.4f}")
+    print(f"  [unified_loss] -> {phase3_metrics2.get('unified_loss', 0):.6f}")
 
 
 if __name__ == "__main__":
