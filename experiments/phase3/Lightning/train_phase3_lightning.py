@@ -250,7 +250,12 @@ class BEBLaDIIPhase3(nn.Module):
         # Forward pass будет идти в bfloat16 через torch.autocast.
 
         if hasattr(self.dus, 'gradient_checkpointing_enable'):
-            self.dus.gradient_checkpointing_enable()
+            # use_reentrant=False обязателен: reentrant-режим повторно прогоняет forward
+            # при backward, что вызывает "backward through the graph a second time"
+            # из-за self._current_c_embed, хранящего граф вычислений confidence_proj.
+            self.dus.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs={"use_reentrant": False}
+            )
 
         if hasattr(self.dus, '_maybe_set_compile'):
             self.dus._maybe_set_compile = lambda *args, **kwargs: None
