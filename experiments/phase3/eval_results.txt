@@ -1,0 +1,168 @@
+(.venv) PS C:\Experiments\BEBLaDII> .venv\Scripts\python.exe experiments\phase3\eval_phase3_logic_local.py --checkpoint "experiments\phase3\planB_phase3_checkpoints_phase3_step_995.pth" --encoder "experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth" --decoder "experiments\phase 2\planB_phase2_checkpoints_decoder_step_9000.pth" --sep_token "storage/components/sep_token.pt" --dus_init "kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+[*] Running LOCAL evaluation on device: cpu | dtype: torch.float32
+[*] Loading Tokenizer and Embedding Model: Qwen/Qwen2.5-1.5B
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading first 3 layers from DUS latentBERT: kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+  Weights loaded: kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+[*] LatentEncoder loaded (10 / 10 keys)
+[*] LatentDecoder loaded (23 / 23 keys)
+[*] Instantiating BEBLaDIIPhase3...
+[Init] LatentEncoder weights loaded from experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+[Init] Awakened DUS weights loaded from kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+[Init] Separator token loaded from storage/components/sep_token.pt
+[*] Loading Phase 3 checkpoint weights into BEBLaDIIPhase3...
+[*] Applying EMA weights...
+
+==================================================
+TEST 1: No noise (Identity Check via DUS)
+==================================================
+  [DEBUG] Norm z_clean: 0.9961
+  [DEBUG] Norm c_embed: 0.1000
+  [Cos Sim to z_clean] -> 0.3553
+  [c_true_mean] -> 1.0044
+  [unified_loss] -> 0.644846
+  [prior_loss] -> 0.001186 (var: 0.000375, cov: 0.000017)
+
+  [Layer-wise Analysis]
+  L0         | 17.8292
+  L1         | 24.0930
+  L2         | 42.3753
+  L3         | 157.1644
+  L4         | 169.8894
+  L5         | 169.1427
+  L6         | 177.4807
+  L7         | 186.8308
+  L8         | 194.4363
+  L9         | 250.9163
+  L10        | 309.2175
+  L11        | 391.8768
+  L12        | 399.2437
+  L13        | 436.8231
+  L14        | 436.5234
+  L15        | 375.3788
+  L16        | 345.6284
+  L17        | 320.7269
+  L18        | 330.2336
+  L19        | 410.1211
+  L20        | 1273.1978
+  L21        | 1281.8542
+  L22        | 1292.4791
+  L23        | 1293.8134
+  L24        | 1307.6084
+  L25        | 1289.3381
+  L26        | 1287.2156
+  L27        | 1309.2941
+  L28        | 1306.7710
+  L29        | 1311.7562
+  L30        | 1341.2106
+  L31        | 1283.1782
+  L32        | 1236.5131
+  L33        | 1208.5481
+  L34        | 1146.2740
+  L35        | 1115.9624
+  L36        | 1081.1272
+  L37        | 914.3586
+  L38        | 754.7706
+  L39        | 674.7405
+  L40        | 589.4348
+
+==================================================
+TEST 2: Heavy noise (100% tokens noised) - Check Denoising
+==================================================
+Original:   Neural networks possess an incredible ability to generalize data from massive amounts of information.
+DUS out:    ательатель_
+ательательательательательательательательательательательательательательательательатель_
+gratisformats_
+formatsательательатель_
+  [Cos Sim] -> 0.3154
+  [Cos Sim all] -> 0.3152
+  [c_true_mean] -> 1.0043
+  [unified_loss] -> 0.684770
+(.venv) PS C:\Experiments\BEBLaDII> .venv\Scripts\python.exe experiments\phase3\eval_phase3_logic_local.py --checkpoint "experiments\phase3\planB_phase3_checkpoints_phase3_step_1995.pth" --encoder "experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth" --decoder "experiments\phase 2\planB_phase2_checkpoints_decoder_step_9000.pth" --sep_token "storage/components/sep_token.pt" --dus_init "kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+[*] Running LOCAL evaluation on device: cpu | dtype: torch.float32
+[*] Loading Tokenizer and Embedding Model: Qwen/Qwen2.5-1.5B
+`torch_dtype` is deprecated! Use `dtype` instead!
+Loading first 3 layers from DUS latentBERT: kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+  Weights loaded: kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+[*] LatentEncoder loaded (10 / 10 keys)
+[*] LatentDecoder loaded (23 / 23 keys)
+[*] Instantiating BEBLaDIIPhase3...
+[Init] LatentEncoder weights loaded from experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth
+Loading model architecture from answerdotai/ModernBERT-large...
+Created 40 layers from 28 base layers (DUS applied).
+[Init] Awakened DUS weights loaded from kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt
+[Init] Separator token loaded from storage/components/sep_token.pt
+[*] Loading Phase 3 checkpoint weights into BEBLaDIIPhase3...
+[*] Applying EMA weights...
+
+==================================================
+TEST 1: No noise (Identity Check via DUS)
+==================================================
+  [DEBUG] Norm z_clean: 0.9961
+  [DEBUG] Norm c_embed: 0.1000
+  [Cos Sim to z_clean] -> 0.4065
+  [c_true_mean] -> 1.0044
+  [unified_loss] -> 0.593686
+  [prior_loss] -> 0.001020 (var: 0.000306, cov: 0.000038)
+
+  [Layer-wise Analysis]
+  L0         | 17.8106
+  L1         | 23.5943
+  L2         | 44.6269
+  L3         | 182.9366
+  L4         | 193.7100
+  L5         | 193.2681
+  L6         | 203.1635
+  L7         | 214.6760
+  L8         | 224.2653
+  L9         | 295.9698
+  L10        | 362.9514
+  L11        | 457.4692
+  L12        | 469.9032
+  L13        | 524.5460
+  L14        | 526.4053
+  L15        | 461.1552
+  L16        | 435.9471
+  L17        | 410.8287
+  L18        | 392.8642
+  L19        | 395.8950
+  L20        | 1041.6466
+  L21        | 1052.5455
+  L22        | 1059.7657
+  L23        | 1062.8273
+  L24        | 1077.8405
+  L25        | 1058.0183
+  L26        | 1055.8065
+  L27        | 1075.7839
+  L28        | 1066.4373
+  L29        | 1064.3571
+  L30        | 1088.4768
+  L31        | 1040.7927
+  L32        | 1001.6770
+  L33        | 985.3427
+  L34        | 934.9608
+  L35        | 923.8335
+  L36        | 911.4113
+  L37        | 784.9928
+  L38        | 698.8708
+  L39        | 687.4758
+  L40        | 612.3438
+
+==================================================
+TEST 2: Heavy noise (100% tokens noised) - Check Denoising
+==================================================
+Original:   Neural networks possess an incredible ability to generalize data from massive amounts of information.
+DUS out:    serterserter
+serterVERSVERSsertersertersertersertersertersertersertersertersertersertersertersertersertergratis
+serter erotica
+serter используетсяserterassistanterg
+  [Cos Sim] -> 0.3577
+  [Cos Sim all] -> 0.3575
+  [c_true_mean] -> 1.0043
+  [unified_loss] -> 0.642504

@@ -196,14 +196,15 @@ def main():
 
     default_device = "cuda" if torch.cuda.is_available() else "cpu"
     parser.add_argument("--device", type=str, default=default_device)
-    # Use bfloat16 to match TPU training behavior exactly
+    # Use bfloat16 to match TPU training behavior exactly for Encoder/Decoder
     args = parser.parse_args()
     eval_dtype = torch.float32
     device = torch.device(args.device)
     print(f"[*] Running LOCAL evaluation on device: {device} | dtype: {eval_dtype}")
 
     print(f"[*] Loading Tokenizer and Embedding Model: {args.embed_model}")
-    tokenizer = AutoTokenizer.from_pretrained(args.embed_model)
+    from src.beb_la_dii.utils.tokenizer import get_tokenizer
+    tokenizer = get_tokenizer(args.embed_model)
     causal_model = AutoModelForCausalLM.from_pretrained(
         args.embed_model, torch_dtype=eval_dtype
     )
@@ -280,6 +281,12 @@ def main():
     # Load Phase 3 Checkpoint fully
     print(f"[*] Loading Phase 3 checkpoint weights into BEBLaDIIPhase3...")
     ckpt = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
+
+    # Force model subcomponents to eval_dtype (float32 on CPU) to avoid CPU bfloat16 precision bugs
+    model.qwen_embeddings.to(eval_dtype)
+    model.encoder.to(eval_dtype)
+    if hasattr(model, 'sep_embed'):
+        model.sep_embed = model.sep_embed.to(eval_dtype)
     if "dus" in ckpt: 
         clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
         model.dus.load_state_dict(clean_dus)

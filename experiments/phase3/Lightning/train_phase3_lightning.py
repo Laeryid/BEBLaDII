@@ -351,15 +351,15 @@ class BEBLaDIIPhase3(nn.Module):
             z_clean_norm = torch.linalg.vector_norm(z_clean.float(), dim=-1, keepdim=True)
             noise = torch.randn_like(z_clean)
             noise = (
-                safe_normalize(noise.float(), dim=-1).to(torch.bfloat16)
+                safe_normalize(noise.float(), dim=-1).to(z_clean.dtype)
                 * low_noise_amp
-                * z_clean_norm.to(torch.bfloat16)
+                * z_clean_norm.to(z_clean.dtype)
             )
             z_noisy = z_clean + noise * noise_mask.unsqueeze(-1)
 
             z_noisy = torch.where(
                 noise_mask.unsqueeze(-1) > 0,
-                safe_normalize(z_noisy.float(), dim=-1).to(torch.bfloat16),
+                safe_normalize(z_noisy.float(), dim=-1).to(z_clean.dtype),
                 z_noisy,
             )
 
