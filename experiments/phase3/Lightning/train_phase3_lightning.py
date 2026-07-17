@@ -365,8 +365,10 @@ class BEBLaDIIPhase3(nn.Module):
         c_embed_raw = self.confidence_proj(c_true.unsqueeze(-1).float())
         c_embed = safe_normalize(c_embed_raw, dim=-1) * 0.1  # float32
 
-        # Сохраняем c_embed для использования в forward pre-hooks
-        self._current_c_embed = c_embed
+        # Сохраняем c_embed для использования в forward pre-hooks.
+        # DUS получает на вход расширенную последовательность (sep_prefix + input),
+        # поэтому добавляем нулевой вектор на позицию 0 для sep_token.
+        self._current_c_embed = F.pad(c_embed, (0, 0, 1, 0), value=0.0)  # [B, T+1, D]
 
         # Убираем жесткое прибавление к входу, отдаем контроль хукам
         x_in = z_noisy.float()
