@@ -365,6 +365,9 @@ class BEBLaDIIPhase3(nn.Module):
         c_embed_raw = self.confidence_proj(c_true.unsqueeze(-1).float())
         c_embed = safe_normalize(c_embed_raw, dim=-1) * 0.1  # float32
 
+        # Сохраняем c_embed для использования в forward pre-hooks
+        self._current_c_embed = c_embed
+
         # Убираем жесткое прибавление к входу, отдаем контроль хукам
         x_in = z_noisy.float()
 
@@ -660,7 +663,7 @@ def train():
                     "c_true": f"{metrics_dict.get('c_true_mean', 0):.4f}",
                 })
 
-            if step > start_step and step % args.save_steps == 0:
+            if step > start_step and (step + 5) % args.val_steps == 0:
                 # --- Layer Divergence (до eval, пока модель в train-параметрах) ---
                 actual_model_ref = model.module if isinstance(model, nn.DataParallel) else model
                 layer_div = compute_layer_divergence(actual_model_ref.dus)
@@ -692,6 +695,7 @@ def train():
                     print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_sim_all: {val_metrics_avg.get('val_cos_sim_all', 0):.4f}")
                 model.train()
 
+            if step > start_step and (step + 5) % args.save_steps == 0:
                 ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
                 actual_model = model.module if isinstance(model, nn.DataParallel) else model
 
