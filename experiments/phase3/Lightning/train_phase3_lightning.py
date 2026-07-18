@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import wandb
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer
-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+from torch.optim.lr_scheduler import LambdaLR
 
 # Ensure the root of the project is in path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
@@ -50,7 +50,7 @@ class Config:
     # Training Hyperparameters
     batch_size = 8
     max_length = 512
-    learning_rate = 3e-4
+    learning_rate = 2e-4
     epochs = 1
     max_steps = 40000
     log_steps = 10
@@ -547,7 +547,15 @@ def train():
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=2000, T_mult=1, eta_min=1e-6)
+
+    # ConstantLR с однократным warmup в начале (нет периодических падений).
+    warmup_steps = min(1000, int(args.max_steps * 0.1))
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            return max(0.01, current_step / warmup_steps)
+        return 1.0  # константный LR после warmup
+
+    scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
     ema = EMA(model, decay=0.998)
 
     # Dataloaders
@@ -642,21 +650,6 @@ def train():
             optimizer.step()
             ema.step(model)
             scheduler.step()
-
-            # Warmup
-            current_optim_step = step + 1
-            warmup_steps = min(1000, int(args.max_steps * 0.1))
-            if current_optim_step <= warmup_steps:
-                lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
-                for idx_p, param_group in enumerate(optimizer.param_groups):
-                    param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
-            else:
-                rel_step = current_optim_step % 2000
-                restart_warmup_steps = 200
-                if rel_step < restart_warmup_steps:
-                    lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
-                    for idx_p, param_group in enumerate(optimizer.param_groups):
-                        param_group["lr"] = param_group["lr"] * lr_warmup_factor
 
             if step % args.log_steps == 0:
                 metrics_dict = {k: (v.mean().item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}

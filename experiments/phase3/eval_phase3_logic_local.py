@@ -293,14 +293,22 @@ def main():
     if "confidence_proj" in ckpt: 
         clean_proj = {k.replace("_orig_module.", ""): v for k, v in ckpt["confidence_proj"].items()}
         model.confidence_proj.load_state_dict(clean_proj)
+    if "c_embed_alphas" in ckpt:
+        model.c_embed_alphas.data.copy_(ckpt["c_embed_alphas"].to(device))
+        print(f"[*] c_embed_alphas loaded from checkpoint (mean={ckpt['c_embed_alphas'].mean():.4f})")
     
     if args.use_ema and "dus_ema" in ckpt and "confidence_proj_ema" in ckpt:
         print("[*] Applying EMA weights...")
         ema = EMA(model, decay=0.998)
-        ema.shadow.update({
+        shadow = {
             **{f"dus.{k}": v for k, v in ckpt["dus_ema"].items()},
             **{f"confidence_proj.{k}": v for k, v in ckpt["confidence_proj_ema"].items()}
-        })
+        }
+        # Загружаем EMA-версию c_embed_alphas если есть
+        if "c_embed_alphas_ema" in ckpt:
+            shadow["c_embed_alphas"] = ckpt["c_embed_alphas_ema"]
+            print(f"[*] c_embed_alphas_ema loaded (mean={ckpt['c_embed_alphas_ema'].mean():.4f})")
+        ema.shadow.update(shadow)
         ema.apply(model)
         
     model.eval()
