@@ -117,7 +117,7 @@ class Config:
     modernbert_path      = resolve_model_path("/kaggle/input/models/answer-ai/modernbert/transformers/large/2")
 
     # Пути к данным
-    dataset_path = "/kaggle/input/bebladii-planb-phase3-data/phase 3/train_data/data"
+    dataset_path = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/phase 3/train_data/data"
 
     # Пути к весам
     local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
