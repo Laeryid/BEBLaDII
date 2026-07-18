@@ -277,6 +277,7 @@ class BEBLaDIIPhase3(nn.Module):
         if hasattr(self.dus, "_maybe_set_compile"):
             self.dus._maybe_set_compile = lambda *a, **kw: None
         type(self.dus).device = property(lambda self: torch.device("cuda"))
+        type(self.dus).dtype = property(lambda self: torch.float32)
 
         # 4. Confidence Projector (обучаемый)
         self.confidence_proj = nn.Sequential(
@@ -304,7 +305,9 @@ class BEBLaDIIPhase3(nn.Module):
         def hook(module, args):
             hidden_states = args[0]
             if hasattr(self, "_current_c_embed") and self._current_c_embed is not None:
-                hidden_states = hidden_states + self.c_embed_alphas[layer_idx] * self._current_c_embed
+                current_alpha = self.c_embed_alphas[layer_idx].to(hidden_states.device)
+                current_c = self._current_c_embed.to(hidden_states.device)
+                hidden_states = hidden_states + current_alpha * current_c
             return (hidden_states,) + args[1:]
         return hook
 
@@ -564,6 +567,10 @@ def train():
         print(f"WARN: Failed to load dataset: {e}. Using dummy dataloaders.")
         dataloader, val_dataloader = [], []
 
+    if len(dataloader) == 0:
+        raise RuntimeError(f"[FATAL] Dataset is empty or not found at: '{args.dataset_path}'. "
+                           f"Training cannot start.")
+
     total_steps = (
         min(args.max_steps, len(dataloader) * args.epochs)
         if len(dataloader) > 0 else args.max_steps
@@ -605,9 +612,21 @@ def train():
                             print(f"[Resume] c_embed_alphas_ema loaded (mean={ckpt['c_embed_alphas_ema'].mean():.4f})")
                         ema.shadow.update(shadow_update)
 
-                    if "optimizer" in ckpt: optimizer.load_state_dict(ckpt["optimizer"])
-                    if "scheduler" in ckpt: scheduler.load_state_dict(ckpt["scheduler"])
-                    if "step" in ckpt: start_step = ckpt["step"]
+                    if "optimizer" in ckpt:
+                        try:
+                            optimizer.load_state_dict(ckpt["optimizer"])
+                        except Exception as e:
+                            print(f"[Resume] WARN: Skipping optimizer load ({e}).")
+                    if "scheduler" in ckpt:
+                        try:
+                            scheduler.load_state_dict(ckpt["scheduler"])
+                        except Exception as e:
+                            print(f"[Resume] INFO: Skipping scheduler state load ({e}).")
+                    if "step" in ckpt:
+                        start_step = ckpt["step"]
+                        if start_step > 0:
+                            for _ in range(start_step):
+                                scheduler.step()
                     if "metrics_history" in ckpt: metrics_history = ckpt["metrics_history"]
 
                     print(f"Successfully resumed from step {start_step}!")
