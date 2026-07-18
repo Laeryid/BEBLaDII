@@ -46,14 +46,41 @@ except ImportError as e:
     print(f"Warning: Не удалось импортировать модули проекта. Ошибка: {e}")
 
 
+def resolve_model_path(base_path: str) -> str:
+    """
+    Находит директорию с config.json начиная с base_path.
+    Нужно из-за того, что Kaggle монтирует модели в вложенных папках,
+    а путь /kaggle/input/model/transformers/default/1 не всегда точен.
+    transformers требует, чтобы путь был директорией с config.json внутри.
+    """
+    import pathlib
+    p = pathlib.Path(base_path)
+    # 1. Если в указанном пути уже есть config.json — всё ok
+    if (p / "config.json").exists():
+        print(f"[resolve_model_path] Found config.json at: {p}")
+        return str(p)
+    # 2. Ищем вверх по дереву родителей (макс 3 уровня)
+    for parent in list(p.parents)[:3]:
+        if (parent / "config.json").exists():
+            print(f"[resolve_model_path] Found config.json in parent: {parent}")
+            return str(parent)
+    # 3. Ищем рекурсивно в дочерних директориях с base_path
+    if p.exists():
+        for config_file in sorted(p.rglob("config.json")):
+            print(f"[resolve_model_path] Found config.json recursively: {config_file.parent}")
+            return str(config_file.parent)
+    print(f"[resolve_model_path] WARNING: config.json not found under {base_path}, using as-is")
+    return base_path
+
+
 # %% [markdown]
 # ## 2. Configuration
 
 # %%
 class Config:
     # Пути к базовым моделям
-    embedding_model_path = "/kaggle/input/qwen2-5-1-5b/transformers/default/1"
-    modernbert_path = "/kaggle/input/modernbert-large/transformers/large/1"
+    embedding_model_path = resolve_model_path("/kaggle/input/qwen2-5-1-5b/transformers/default/1")
+    modernbert_path      = resolve_model_path("/kaggle/input/modernbert-large/transformers/large/1")
 
     # Пути к данным
     dataset_path = "/kaggle/input/bebladii-planb-phase3-data/phase 3/train_data/data"
