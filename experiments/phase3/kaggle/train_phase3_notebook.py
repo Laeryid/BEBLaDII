@@ -209,6 +209,44 @@ def get_latest_gcs_checkpoint(gcs_dir):
         return None
 
 
+def compute_layer_divergence(model_module):
+    """
+    Вычисляет нормализованную L2-дистанцию между парными слоями DUS (Block 1: 8-19 и Block 2: 20-31).
+    Используется для диагностики специализации клонированных слоев.
+    Адаптировано для работы с DataParallel.
+    """
+    layer_params = {}
+    for name, param in model_module.named_parameters():
+        m = re.search(r'layers\.([0-9]+)\.', name)
+        if m and param.requires_grad:
+            idx = int(m.group(1))
+            suffix = name[m.end():]
+            if idx not in layer_params:
+                layer_params[idx] = {}
+            layer_params[idx][suffix] = param.data
+
+    divergences = []
+    # Сравниваем слои Block 1 (8-19) и Block 2 (20-31)
+    for k in range(8, 20):
+        pair_k = k + 12
+        if k in layer_params and pair_k in layer_params:
+            diff_sq = 0.0
+            norm_sq = 0.0
+            keys_intersect = set(layer_params[k].keys()).intersection(layer_params[pair_k].keys())
+            for suffix in keys_intersect:
+                w1 = layer_params[k][suffix]
+                w2 = layer_params[pair_k][suffix]
+                diff_sq += (w1 - w2).pow(2).sum().item()
+                norm_sq += w1.pow(2).sum().item()
+
+            if norm_sq > 0:
+                divergences.append(math.sqrt(diff_sq) / math.sqrt(norm_sq))
+
+    if not divergences:
+        return 0.0
+    return sum(divergences) / len(divergences)
+
+
 # %% [markdown]
 # ## 4. Model Definition
 # Архитектура: ADR 058 (sep_token) + ADR 059 (c_embed per-layer hooks, float32 DUS)
@@ -664,6 +702,8 @@ def train():
             # Логирование
             if step % args.log_steps == 0:
                 metrics_dict = {k: (v.mean().item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
+
+
                 metrics_dict["loss"]      = loss.item()
                 metrics_dict["lr"]        = optimizer.param_groups[0]["lr"]
                 metrics_dict["step"]      = step
@@ -700,6 +740,11 @@ def train():
                         wandb.log(val_metrics_avg, step=step)
                     print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_sim_all: {val_metrics_avg.get('val_cos_sim_all', 0):.4f}")
                 model.train()
+
+                # Добавляем вычисление дивергенции слоев
+                actual_model = model.module if isinstance(model, nn.DataParallel) else model
+                layer_div = compute_layer_divergence(actual_model.dus)
+                metrics_dict["layer_divergence"] = layer_div
 
             # Сохранение чекпоинта
             if step > start_step and (step + 5) % args.save_steps == 0:
