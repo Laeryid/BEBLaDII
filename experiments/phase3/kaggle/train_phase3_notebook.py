@@ -38,6 +38,7 @@ import wandb
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LambdaLR
 from transformers import AutoModel, AutoTokenizer
+from accelerate import Accelerator, notebook_launcher
 
 PROJECT_ROOT = "/kaggle/working/BEBLaDII"
 REPO_URL = "https://github.com/Laeryid/BEBLaDII.git"
@@ -406,7 +407,7 @@ class BEBLaDIIPhase3(nn.Module):
 
         # Отрезаем sep_prefix, нормализуем
         pre_norm = dus_outputs.hidden_states[-1][:, 1:, :].float()
-        dus_final_raw = self.dus.final_norm(pre_norm.to(next(self.dus.final_norm.parameters()).dtype)).float()
+        dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
         dus_delta = dus_final_raw - z_noisy.float()
         dus_final = safe_normalize(dus_final_raw, dim=-1)  # float32
 
@@ -497,14 +498,15 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.1):
 # ## 6. Training Loop
 
 # %%
-def train():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+def train_loop(args):
+    accelerator = Accelerator()
+    device = accelerator.device
     print(f"[Init] Using device: {device}")
     num_gpus = torch.cuda.device_count()
     print(f"[Init] Available GPUs: {num_gpus}")
 
     # WandB + GCP Auth
-    if args.wandb_project:
+    if args.wandb_project and accelerator.is_main_process:
         try:
             from kaggle_secrets import UserSecretsClient
             user_secrets = UserSecretsClient()
@@ -537,9 +539,7 @@ def train():
         sep_token_path=args.local_sep_token,
     ).to(device)
 
-    if num_gpus > 1:
-        print(f"[Init] Wrapping model in DataParallel across {num_gpus} GPUs", flush=True)
-        model = nn.DataParallel(model)
+
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
@@ -552,6 +552,10 @@ def train():
         return 1.0
     scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
     ema = EMA(model, decay=0.998)
+
+    model, optimizer, dataloader, val_dataloader, scheduler = accelerator.prepare(
+        model, optimizer, dataloader, val_dataloader, scheduler
+    )
 
     # Dataloaders
     try:
@@ -590,7 +594,7 @@ def train():
                 if os.path.exists(local_ckpt_path):
                     print(f"Loading checkpoint {local_ckpt_path}...")
                     ckpt = torch.load(local_ckpt_path, map_location="cpu")
-                    actual_model = model.module if isinstance(model, nn.DataParallel) else model
+                    actual_model = accelerator.unwrap_model(model)
 
                     if "dus" in ckpt:
                         clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
@@ -633,7 +637,7 @@ def train():
             except Exception as e:
                 print(f"Warning: Failed to resume from GCS checkpoint! Error: {e}")
 
-    model.train()
+    model.notebook_launcher(train_loop, args=(args,), num_processes=torch.cuda.device_count() if torch.cuda.is_available() else 1)
     step = start_step
 
     from tqdm.auto import tqdm
@@ -645,8 +649,8 @@ def train():
             if step >= total_steps:
                 break
 
-            input_ids      = batch["input_ids"].to(device)
-            attention_mask = batch["attention_mask"].to(device)
+            input_ids      = batch["input_ids"]
+            attention_mask = batch["attention_mask"]
 
             optimizer.zero_grad()
             fwd_outputs = model(input_ids, attention_mask=attention_mask, low_noise_amp=args.low_noise_amp)
@@ -655,7 +659,7 @@ def train():
             if loss.dim() > 0:
                 loss = loss.mean()
 
-            loss.backward()
+            accelerator.backward(loss)
             grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0).item()
             optimizer.step()
             ema.step(model)
@@ -669,7 +673,7 @@ def train():
                 metrics_dict["step"]      = step
                 metrics_dict["grad_norm"] = grad_norm
                 metrics_history.append(metrics_dict)
-                if args.wandb_project:
+                if args.wandb_project and accelerator.is_main_process:
                     wandb.log(metrics_dict, step=step)
                 pbar.set_postfix({
                     "loss": f"{metrics_dict['loss']:.4f}",
@@ -684,8 +688,8 @@ def train():
                 val_batches = 0
                 with torch.no_grad():
                     for val_batch in val_dataloader:
-                        v_input_ids      = val_batch["input_ids"].to(device)
-                        v_attention_mask = val_batch["attention_mask"].to(device)
+                        v_input_ids      = val_batch["input_ids"]
+                        v_attention_mask = val_batch["attention_mask"]
                         v_outputs = model(v_input_ids, attention_mask=v_attention_mask, low_noise_amp=args.low_noise_amp)
                         v_loss, v_metrics = compute_phase3_loss(v_outputs)
                         for k, v in v_metrics.items():
@@ -696,15 +700,16 @@ def train():
                             break
                 if val_batches > 0:
                     val_metrics_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
-                    if args.wandb_project:
+                    if args.wandb_project and accelerator.is_main_process:
                         wandb.log(val_metrics_avg, step=step)
-                    print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_sim_all: {val_metrics_avg.get('val_cos_sim_all', 0):.4f}")
-                model.train()
+                    if accelerator.is_main_process:
+                        print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_sim_all: {val_metrics_avg.get('val_cos_sim_all', 0):.4f}")
+                model.notebook_launcher(train_loop, args=(args,), num_processes=torch.cuda.device_count() if torch.cuda.is_available() else 1)
 
             # Сохранение чекпоинта
-            if step > start_step and (step + 5) % args.save_steps == 0:
+            if step > start_step and (step + 5) % args.save_steps == 0 and accelerator.is_main_process:
                 ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
-                actual_model = model.module if isinstance(model, nn.DataParallel) else model
+                actual_model = accelerator.unwrap_model(model)
 
                 dus_state  = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
                 proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
@@ -743,40 +748,41 @@ def train():
     pbar.close()
 
     # Финальное сохранение
-    final_path = os.path.join(args.output_dir, "phase3_final.pth")
-    actual_model = model.module if isinstance(model, nn.DataParallel) else model
-    dus_state  = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-    alphas_state = actual_model.c_embed_alphas.detach().cpu()
+    if accelerator.is_main_process:
+        final_path = os.path.join(args.output_dir, "phase3_final.pth")
+        actual_model = accelerator.unwrap_model(model)
+        dus_state  = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
+        proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+        alphas_state = actual_model.c_embed_alphas.detach().cpu()
 
-    ema.apply(model)
-    dus_ema_state  = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-    alphas_ema_state = actual_model.c_embed_alphas.detach().cpu()
-    ema.restore(model)
+        ema.apply(model)
+        dus_ema_state  = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
+        proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
+        alphas_ema_state = actual_model.c_embed_alphas.detach().cpu()
+        ema.restore(model)
 
-    torch.save({
-        "dus": dus_state,
-        "confidence_proj": proj_state,
-        "c_embed_alphas": alphas_state,
-        "dus_ema": dus_ema_state,
-        "confidence_proj_ema": proj_ema_state,
-        "c_embed_alphas_ema": alphas_ema_state,
-        "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
-        "step": step,
-        "metrics_history": metrics_history,
-    }, final_path)
-    print(f"[SAVE] Final weights saved → {final_path}")
-    try:
-        subprocess.run(["gsutil", "-q", "cp", final_path, args.gcs_checkpoint_dir])
-        print(f"[SYNC] Final sync to GCS complete.")
-    except Exception as e:
-        print(f"[SYNC] Error syncing final: {e}")
+        torch.save({
+            "dus": dus_state,
+            "confidence_proj": proj_state,
+            "c_embed_alphas": alphas_state,
+            "dus_ema": dus_ema_state,
+            "confidence_proj_ema": proj_ema_state,
+            "c_embed_alphas_ema": alphas_ema_state,
+            "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(),
+            "step": step,
+            "metrics_history": metrics_history,
+        }, final_path)
+        print(f"[SAVE] Final weights saved → {final_path}")
+        try:
+            subprocess.run(["gsutil", "-q", "cp", final_path, args.gcs_checkpoint_dir])
+            print(f"[SYNC] Final sync to GCS complete.")
+        except Exception as e:
+            print(f"[SYNC] Error syncing final: {e}")
 
-    if args.wandb_project:
-        wandb.finish()
+        if args.wandb_project:
+            wandb.finish()
 
 
 # %%
-train()
+notebook_launcher(train_loop, args=(args,), num_processes=torch.cuda.device_count() if torch.cuda.is_available() else 1)
