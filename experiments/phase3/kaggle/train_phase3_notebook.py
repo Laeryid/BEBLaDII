@@ -165,7 +165,9 @@ class BEBLaDIIPhase3(nn.Module):
         super().__init__()
 
         # 1. Qwen Embeddings (заморожены)
-        _qwen_base = AutoModel.from_pretrained(embedding_model_path, torch_dtype=torch.bfloat16)
+        _qwen_base = AutoModel.from_pretrained(
+            embedding_model_path, torch_dtype=torch.bfloat16, local_files_only=True
+        )
         self.qwen_embeddings = _qwen_base.get_input_embeddings()
         del _qwen_base
         for p in self.qwen_embeddings.parameters():
@@ -186,7 +188,9 @@ class BEBLaDIIPhase3(nn.Module):
         self.encoder.to(torch.bfloat16)
 
         # 3. DUS Backbone (обучаемый, в float32 — ADR 059)
-        dus_wrapper = DUSModel.from_scratch(config={"base_model_id": modernbert_path}, weights_path=None)
+        dus_wrapper = DUSModel.from_scratch(
+            config={"base_model_id": modernbert_path}, weights_path=None, local_files_only=True
+        )
         if dus_weights and os.path.exists(dus_weights):
             state = torch.load(dus_weights, map_location="cpu")
             if "latentBERT_state_dict" in state:

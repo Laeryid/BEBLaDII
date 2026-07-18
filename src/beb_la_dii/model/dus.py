@@ -10,7 +10,7 @@ class DUSModel(BEComponent):
     Скелет (40-слойная архитектура) всегда создаётся заново через DUS из ModernBERT-large.
     Предобученные веса опционально загружаются поверх скелета из файла.
     """
-    def __init__(self, component_id="latentBERT", version="v1.0", config=None):
+    def __init__(self, component_id="latentBERT", version="v1.0", config=None, local_files_only=False):
         config = config or {}
         base_model_id = config.get("base_model_id", "answerdotai/ModernBERT-large")
         target_layers = config.get("target_layers", 40)
@@ -18,7 +18,7 @@ class DUSModel(BEComponent):
         super().__init__(component_id, version, {"base_model_id": base_model_id, "target_layers": target_layers})
         
         # Create model skeleton via DUS
-        self.model = create_latentbert(base_model_id, target_layers)
+        self.model = create_latentbert(base_model_id, target_layers, local_files_only=local_files_only)
         
     @classmethod
     def from_scratch(cls, component_id="latentBERT", version="v1.0",
@@ -31,7 +31,9 @@ class DUSModel(BEComponent):
             "base_model_id": "answerdotai/ModernBERT-large",
             "target_layers": 40
         })
-        instance = cls(component_id=component_id, version=version, config=config)
+        local_files_only = kwargs.get("local_files_only", False)
+        instance = cls(component_id=component_id, version=version, config=config,
+                       local_files_only=local_files_only)
         # Для DUSModel weights_path загружает поверх DUS-инициализированных весов
         instance.load_weights(weights_path)
         return instance
@@ -67,7 +69,7 @@ class DUSModel(BEComponent):
         return self.model.parameters(recurse)
 
 
-def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40):
+def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40, local_files_only=False):
     """
     Creates latentBERT via Depth Up-Scaling (DUS).
     Always builds the skeleton from scratch from ModernBERT-large.
@@ -76,11 +78,12 @@ def create_latentbert(model_id="answerdotai/ModernBERT-large", target_layers=40)
     print(f"Loading model architecture from {model_id}...")
     
     # Пытаемся загрузить конфиг. Если это папка, он загрузится локально.
-    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+    config = AutoConfig.from_pretrained(model_id, trust_remote_code=True, local_files_only=local_files_only)
     base_model = AutoModel.from_pretrained(
         model_id, 
         trust_remote_code=True,
-        attn_implementation="sdpa"
+        attn_implementation="sdpa",
+        local_files_only=local_files_only,
     )
     
     # If model already has target_layers (e.g. saved skeleton), skip DUS
