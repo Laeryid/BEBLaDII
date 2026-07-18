@@ -736,15 +736,16 @@ def train():
                             break
                 if val_batches > 0:
                     val_metrics_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
+
+                    # Добавляем вычисление дивергенции слоев
+                    actual_model = model.module if isinstance(model, nn.DataParallel) else model
+                    layer_div = compute_layer_divergence(actual_model.dus)
+                    val_metrics_avg["val_layer_divergence"] = layer_div
+
                     if args.wandb_project:
                         wandb.log(val_metrics_avg, step=step)
                     print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_sim_all: {val_metrics_avg.get('val_cos_sim_all', 0):.4f}")
                 model.train()
-
-                # Добавляем вычисление дивергенции слоев
-                actual_model = model.module if isinstance(model, nn.DataParallel) else model
-                layer_div = compute_layer_divergence(actual_model.dus)
-                metrics_dict["layer_divergence"] = layer_div
 
             # Сохранение чекпоинта
             if step > start_step and (step + 5) % args.save_steps == 0:
