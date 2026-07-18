@@ -123,7 +123,7 @@ class Config:
     local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
     local_dus_weights     = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
     # sep_token из датасета (загруженного в Kaggle)
-    local_sep_token       = "/kaggle/input/bebladii-planb-phase3-data/sep_token.pt"
+    local_sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
 
     # GCS (для resume и сохранения чекпоинтов)
     resume_from_checkpoint = True
