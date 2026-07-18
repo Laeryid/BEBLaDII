@@ -7,7 +7,7 @@
 # ## 1. Setup Environment
 
 # %%
-# !pip install -q einops wandb
+# !pip install -q einops wandb indexed_parquet_dataset
 
 # %%
 import math
@@ -15,6 +15,21 @@ import os
 import re
 import subprocess
 import sys
+
+# --- Отладочный вывод структуры Kaggle ---
+if os.path.exists("/kaggle/input"):
+    print("=== Kaggle Input Structure ===")
+    for root, dirs, files in os.walk("/kaggle/input"):
+        level = root.replace("/kaggle/input", "").count(os.sep)
+        if level < 3: # Ограничиваем глубину вывода
+            indent = " " * 4 * level
+            print(f"{indent}{os.path.basename(root)}/")
+            subindent = " " * 4 * (level + 1)
+            for f in files:
+                if f.endswith(".json") or f.endswith(".pt") or f.endswith(".pth"):
+                    print(f"{subindent}{f}")
+    print("==============================")
+# -----------------------------------------
 
 import torch
 import torch.nn as nn
@@ -49,27 +64,46 @@ except ImportError as e:
 def resolve_model_path(base_path: str) -> str:
     """
     Находит директорию с config.json начиная с base_path.
-    Нужно из-за того, что Kaggle монтирует модели в вложенных папках,
-    а путь /kaggle/input/model/transformers/default/1 не всегда точен.
-    transformers требует, чтобы путь был директорией с config.json внутри.
+    Если не находит — делает глобальный fallback-поиск по /kaggle/input/.
     """
     import pathlib
     p = pathlib.Path(base_path)
-    # 1. Если в указанном пути уже есть config.json — всё ok
-    if (p / "config.json").exists():
+
+    def check_dir(dir_path):
+        return (dir_path / "config.json").exists()
+
+    # 1. Точный путь
+    if check_dir(p):
         print(f"[resolve_model_path] Found config.json at: {p}")
         return str(p)
-    # 2. Ищем вверх по дереву родителей (макс 3 уровня)
-    for parent in list(p.parents)[:3]:
-        if (parent / "config.json").exists():
+
+    # 2. Вверх по родителям
+    for parent in list(p.parents)[:4]:
+        if check_dir(parent):
             print(f"[resolve_model_path] Found config.json in parent: {parent}")
             return str(parent)
-    # 3. Ищем рекурсивно в дочерних директориях с base_path
+
+    # 3. Вниз рекурсивно
     if p.exists():
         for config_file in sorted(p.rglob("config.json")):
             print(f"[resolve_model_path] Found config.json recursively: {config_file.parent}")
             return str(config_file.parent)
-    print(f"[resolve_model_path] WARNING: config.json not found under {base_path}, using as-is")
+
+    # 4. Глобальный fallback по ключевому слову
+    print(f"[resolve_model_path] WARNING: config.json not found under {base_path}. Searching globally...")
+    keyword = ""
+    if "qwen" in base_path.lower(): keyword = "qwen"
+    elif "modernbert" in base_path.lower(): keyword = "modernbert"
+
+    if keyword:
+        kaggle_input = pathlib.Path("/kaggle/input")
+        if kaggle_input.exists():
+            for config_file in kaggle_input.rglob("config.json"):
+                if keyword in str(config_file).lower():
+                    print(f"[resolve_model_path] Found fallback config for '{keyword}': {config_file.parent}")
+                    return str(config_file.parent)
+
+    print(f"[resolve_model_path] FAILED to resolve {base_path}, using as-is")
     return base_path
 
 
@@ -79,15 +113,15 @@ def resolve_model_path(base_path: str) -> str:
 # %%
 class Config:
     # Пути к базовым моделям
-    embedding_model_path = resolve_model_path("/kaggle/input/qwen2-5-1-5b/transformers/default/1")
-    modernbert_path      = resolve_model_path("/kaggle/input/modernbert-large/transformers/large/1")
+    embedding_model_path = resolve_model_path("/kaggle/input/datasets/ragnar123/qwen2-5-1-5b")
+    modernbert_path      = resolve_model_path("/kaggle/input/models/answer-ai/modernbert/transformers/large/2")
 
     # Пути к данным
     dataset_path = "/kaggle/input/bebladii-planb-phase3-data/phase 3/train_data/data"
 
     # Пути к весам
-    local_encoder_weights = "/kaggle/input/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
-    local_dus_weights     = "/kaggle/input/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
+    local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
+    local_dus_weights     = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
     # sep_token из датасета (загруженного в Kaggle)
     local_sep_token       = "/kaggle/input/bebladii-planb-phase3-data/sep_token.pt"
 
