@@ -177,21 +177,21 @@ class EMA:
     def step(self, model):
         with torch.no_grad():
             for name, param in model.named_parameters():
-                if param.requires_grad:
+                if param.requires_grad and name in self.shadow:
                     param_cpu = param.data.float().cpu()
                     self.shadow[name].mul_(self.decay).add_(param_cpu, alpha=1.0 - self.decay)
 
     def apply(self, model):
         with torch.no_grad():
             for name, param in model.named_parameters():
-                if param.requires_grad:
+                if param.requires_grad and name in self.shadow:
                     self.backup[name] = param.data.clone().detach().cpu()
                     param.data.copy_(self.shadow[name].to(param.device, dtype=param.dtype))
 
     def restore(self, model):
         with torch.no_grad():
             for name, param in model.named_parameters():
-                if param.requires_grad:
+                if param.requires_grad and name in self.backup:
                     param.data.copy_(self.backup[name].to(param.device, dtype=param.dtype))
         self.backup = {}
 
@@ -890,7 +890,7 @@ def train():
     # Параметры warmup
     warmup_steps = min(1000, int(total_steps * 0.1))  # 10% от total_steps или 1000
     restart_warmup_steps = 200  # Warmup внутри каждого цикла
-    ema = EMA(model, decay=0.998)
+    ema = EMA(actual_model, decay=0.998)
 
     # --- Resume ---
     actual_model = model.module if isinstance(model, nn.DataParallel) else model
@@ -937,7 +937,7 @@ def train():
             loss.backward()
             grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0).item()
             optimizer.step()
-            ema.step(model)
+            ema.step(actual_model)
             scheduler.step()
 
             # Цикличная warmup логика (как в коммите bdd4ec3)
