@@ -890,6 +890,7 @@ def train():
     # Параметры warmup
     warmup_steps = min(1000, int(total_steps * 0.1))  # 10% от total_steps или 1000
     restart_warmup_steps = 200  # Warmup внутри каждого цикла
+    ema = EMA(model, decay=0.998)
 
     # --- Resume ---
     actual_model = model.module if isinstance(model, nn.DataParallel) else model
