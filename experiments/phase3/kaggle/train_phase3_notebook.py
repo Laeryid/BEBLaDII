@@ -41,7 +41,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import wandb
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingWarmRestarts
 from transformers import AutoModel, AutoTokenizer
 
 PROJECT_ROOT = "/kaggle/working/BEBLaDII"
@@ -130,12 +130,18 @@ class Config:
     # Гиперпараметры
     batch_size    = 8
     max_length    = 512
-    learning_rate = 2e-6
-    epochs        = 100
-    max_steps     = 400000
-    log_steps     = 10
-    val_steps     = 200
-    save_steps    = 1000
+    # LR для разных групп параметров (ADR-060 + рекомендации)
+    dus_learning_rate    = 2e-5   # Пиковый LR для тела BERT (ModernBERT)
+    new_layers_lr        = 1e-4   # Пиковый LR для новых слоев (AdaLN, t_proj)
+    epochs               = 100
+    max_steps            = 400000
+    log_steps            = 10
+    val_steps            = 200
+    save_steps           = 1000
+    
+    # Параметры расписания LR: Linear Warmup + Cosine Decay
+    warmup_steps_ratio = 0.05    # 5% от max_steps для warmup
+    min_lr_ratio       = 0.01    # Минимальный LR относительно base_lr в конце
 
     # ADR-060: Диффузия — параметры расписания шума
     t_min = 0.02          # минимальный уровень шума (не 0 — избегаем κ→∞)
@@ -819,16 +825,31 @@ def train():
     n_trainable = sum(p.numel() for p in trainable_params)
     print(f"[Init] Trainable parameters: {n_trainable:,}", flush=True)
 
-    optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
-
-    warmup_steps = min(1000, int(args.max_steps * 0.05))
-    def lr_lambda(current_step):
-        if current_step < warmup_steps:
-            return max(0.01, current_step / warmup_steps)
-        return 1.0
-    scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
-    ema = EMA(model, decay=0.998)
-
+    # Разделяем параметры на группы: тело BERT (DUS) и новые слои (AdaLN, t_proj)
+    dus_params = []
+    new_layers_params = []
+    
+    actual_model = model.module if isinstance(model, nn.DataParallel) else model
+    
+    # Параметры DUS (тело BERT) — низкий LR
+    for name, param in actual_model.named_parameters():
+        if param.requires_grad:
+            if name.startswith('dus.'):
+                dus_params.append(param)
+            else:
+                new_layers_params.append(param)
+    
+    print(f"[Init] DUS params: {sum(p.numel() for p in dus_params):,}", flush=True)
+    print(f"[Init] New layers params: {sum(p.numel() for p in new_layers_params):,}", flush=True)
+    
+    # Создаем группы параметров с разными base LR
+    param_groups = [
+        {'params': dus_params, 'lr': args.dus_learning_rate},
+        {'params': new_layers_params, 'lr': args.new_layers_lr},
+    ]
+    
+    optimizer = torch.optim.AdamW(param_groups, lr=0.0, weight_decay=1e-2)
+    
     # --- DataLoaders ---
     try:
         dataloader = get_dataloader(
@@ -852,6 +873,23 @@ def train():
         min(args.max_steps, len(dataloader) * args.epochs)
         if len(dataloader) > 0 else args.max_steps
     )
+
+    # Цикличное расписание LR: CosineAnnealingWarmRestarts с ручной warmup логикой
+    # (как в коммите bdd4ec3)
+    cosine_T0 = 2000  # Длина первого цикла
+    cosine_T_mult = 1  # Множитель для следующих циклов (1 = одинаковая длина)
+    cosine_eta_min = args.dus_learning_rate * 0.01  # Минимальный LR (1% от base_lr для DUS)
+    
+    scheduler = CosineAnnealingWarmRestarts(
+        optimizer, 
+        T_0=cosine_T0, 
+        T_mult=cosine_T_mult, 
+        eta_min=cosine_eta_min
+    )
+    
+    # Параметры warmup
+    warmup_steps = min(1000, int(total_steps * 0.1))  # 10% от total_steps или 1000
+    restart_warmup_steps = 200  # Warmup внутри каждого цикла
 
     # --- Resume ---
     actual_model = model.module if isinstance(model, nn.DataParallel) else model
@@ -901,6 +939,22 @@ def train():
             ema.step(model)
             scheduler.step()
 
+            # Цикличная warmup логика (как в коммите bdd4ec3)
+            current_optim_step = step + 1
+            
+            if current_optim_step <= warmup_steps:
+                # Основной warmup в начале обучения
+                lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+                for idx_p, param_group in enumerate(optimizer.param_groups):
+                    param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+            else:
+                # Warmup внутри каждого цикла CosineAnnealingWarmRestarts
+                rel_step = current_optim_step % cosine_T0
+                if rel_step < restart_warmup_steps:
+                    lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
+                    for idx_p, param_group in enumerate(optimizer.param_groups):
+                        param_group["lr"] = param_group["lr"] * lr_warmup_factor
+
             # Логирование
             if step % args.log_steps == 0:
                 metrics_dict = {
@@ -908,7 +962,8 @@ def train():
                     for k, v in metrics.items()
                 }
                 metrics_dict["loss"]      = loss.item()
-                metrics_dict["lr"]        = optimizer.param_groups[0]["lr"]
+                metrics_dict["lr_dus"]   = optimizer.param_groups[0]["lr"]  # DUS LR
+                metrics_dict["lr_new"]   = optimizer.param_groups[1]["lr"]  # New layers LR
                 metrics_dict["step"]      = step
                 metrics_dict["grad_norm"] = grad_norm
                 metrics_history.append(metrics_dict)
