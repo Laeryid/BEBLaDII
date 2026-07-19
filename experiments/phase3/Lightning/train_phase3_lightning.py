@@ -11,7 +11,7 @@ import torch.nn.functional as F
 import wandb
 from torch.utils.data import DataLoader
 from transformers import AutoModel, AutoTokenizer
-from torch.optim.lr_scheduler import LambdaLR
+from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 # Ensure the root of the project is in path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
@@ -50,7 +50,7 @@ class Config:
     # Training Hyperparameters
     batch_size = 8
     max_length = 512
-    learning_rate = 2e-4
+    learning_rate = 3e-4
     epochs = 1
     max_steps = 40000
     log_steps = 10
@@ -250,12 +250,7 @@ class BEBLaDIIPhase3(nn.Module):
         # Forward pass будет идти в bfloat16 через torch.autocast.
 
         if hasattr(self.dus, 'gradient_checkpointing_enable'):
-            # use_reentrant=False обязателен: reentrant-режим повторно прогоняет forward
-            # при backward, что вызывает "backward through the graph a second time"
-            # из-за self._current_c_embed, хранящего граф вычислений confidence_proj.
-            self.dus.gradient_checkpointing_enable(
-                gradient_checkpointing_kwargs={"use_reentrant": False}
-            )
+            self.dus.gradient_checkpointing_enable()
 
         if hasattr(self.dus, '_maybe_set_compile'):
             self.dus._maybe_set_compile = lambda *args, **kwargs: None
@@ -351,15 +346,15 @@ class BEBLaDIIPhase3(nn.Module):
             z_clean_norm = torch.linalg.vector_norm(z_clean.float(), dim=-1, keepdim=True)
             noise = torch.randn_like(z_clean)
             noise = (
-                safe_normalize(noise.float(), dim=-1).to(z_clean.dtype)
+                safe_normalize(noise.float(), dim=-1).to(torch.bfloat16)
                 * low_noise_amp
-                * z_clean_norm.to(z_clean.dtype)
+                * z_clean_norm.to(torch.bfloat16)
             )
             z_noisy = z_clean + noise * noise_mask.unsqueeze(-1)
 
             z_noisy = torch.where(
                 noise_mask.unsqueeze(-1) > 0,
-                safe_normalize(z_noisy.float(), dim=-1).to(z_clean.dtype),
+                safe_normalize(z_noisy.float(), dim=-1).to(torch.bfloat16),
                 z_noisy,
             )
 
@@ -369,11 +364,6 @@ class BEBLaDIIPhase3(nn.Module):
 
         c_embed_raw = self.confidence_proj(c_true.unsqueeze(-1).float())
         c_embed = safe_normalize(c_embed_raw, dim=-1) * 0.1  # float32
-
-        # Сохраняем c_embed для использования в forward pre-hooks.
-        # DUS получает на вход расширенную последовательность (sep_prefix + input),
-        # поэтому добавляем нулевой вектор на позицию 0 для sep_token.
-        self._current_c_embed = F.pad(c_embed, (0, 0, 1, 0), value=0.0)  # [B, T+1, D]
 
         # Убираем жесткое прибавление к входу, отдаем контроль хукам
         x_in = z_noisy.float()
@@ -547,15 +537,7 @@ def train():
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
-
-    # ConstantLR с однократным warmup в начале (нет периодических падений).
-    warmup_steps = min(1000, int(args.max_steps * 0.1))
-    def lr_lambda(current_step):
-        if current_step < warmup_steps:
-            return max(0.01, current_step / warmup_steps)
-        return 1.0  # константный LR после warmup
-
-    scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
+    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=2000, T_mult=1, eta_min=1e-6)
     ema = EMA(model, decay=0.998)
 
     # Dataloaders
@@ -597,17 +579,11 @@ def train():
                         clean_proj = {k.replace("_orig_module.", ""): v for k, v in ckpt["confidence_proj"].items()}
                         actual_model.confidence_proj.load_state_dict(clean_proj)
 
-                    if "c_embed_alphas" in ckpt:
-                        actual_model.c_embed_alphas.data.copy_(ckpt["c_embed_alphas"].to(device))
-
                     if "dus_ema" in ckpt and "confidence_proj_ema" in ckpt:
-                        shadow_update = {
+                        ema.shadow = {
                             **{f"dus.{k}": v for k, v in ckpt["dus_ema"].items()},
                             **{f"confidence_proj.{k}": v for k, v in ckpt["confidence_proj_ema"].items()}
                         }
-                        if "c_embed_alphas_ema" in ckpt:
-                            shadow_update["c_embed_alphas"] = ckpt["c_embed_alphas_ema"]
-                        ema.shadow.update(shadow_update)
 
                     if "optimizer" in ckpt: optimizer.load_state_dict(ckpt["optimizer"])
                     if "scheduler" in ckpt: scheduler.load_state_dict(ckpt["scheduler"])
@@ -651,6 +627,21 @@ def train():
             ema.step(model)
             scheduler.step()
 
+            # Warmup
+            current_optim_step = step + 1
+            warmup_steps = min(1000, int(args.max_steps * 0.1))
+            if current_optim_step <= warmup_steps:
+                lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+                for idx_p, param_group in enumerate(optimizer.param_groups):
+                    param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+            else:
+                rel_step = current_optim_step % 2000
+                restart_warmup_steps = 200
+                if rel_step < restart_warmup_steps:
+                    lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
+                    for idx_p, param_group in enumerate(optimizer.param_groups):
+                        param_group["lr"] = param_group["lr"] * lr_warmup_factor
+
             if step % args.log_steps == 0:
                 metrics_dict = {k: (v.mean().item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
                 metrics_dict["loss"] = loss.item()
@@ -669,7 +660,7 @@ def train():
                     "c_true": f"{metrics_dict.get('c_true_mean', 0):.4f}",
                 })
 
-            if step > start_step and (step + 5) % args.val_steps == 0:
+            if step > start_step and step % args.save_steps == 0:
                 # --- Layer Divergence (до eval, пока модель в train-параметрах) ---
                 actual_model_ref = model.module if isinstance(model, nn.DataParallel) else model
                 layer_div = compute_layer_divergence(actual_model_ref.dus)
@@ -701,27 +692,22 @@ def train():
                     print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_sim_all: {val_metrics_avg.get('val_cos_sim_all', 0):.4f}")
                 model.train()
 
-            if step > start_step and (step + 5) % args.save_steps == 0:
                 ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
                 actual_model = model.module if isinstance(model, nn.DataParallel) else model
 
                 dus_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
                 proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-                alphas_state = actual_model.c_embed_alphas.detach().cpu()
 
                 ema.apply(model)
                 dus_ema_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
                 proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-                alphas_ema_state = actual_model.c_embed_alphas.detach().cpu()
                 ema.restore(model)
 
                 torch.save({
                     "dus": dus_state,
                     "confidence_proj": proj_state,
-                    "c_embed_alphas": alphas_state,
                     "dus_ema": dus_ema_state,
                     "confidence_proj_ema": proj_ema_state,
-                    "c_embed_alphas_ema": alphas_ema_state,
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict(),
                     "step": step,
@@ -745,21 +731,17 @@ def train():
     actual_model = model.module if isinstance(model, nn.DataParallel) else model
     dus_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
     proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-    alphas_state = actual_model.c_embed_alphas.detach().cpu()
 
     ema.apply(model)
     dus_ema_state = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
     proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-    alphas_ema_state = actual_model.c_embed_alphas.detach().cpu()
     ema.restore(model)
 
     torch.save({
         "dus": dus_state,
         "confidence_proj": proj_state,
-        "c_embed_alphas": alphas_state,
         "dus_ema": dus_ema_state,
         "confidence_proj_ema": proj_ema_state,
-        "c_embed_alphas_ema": alphas_ema_state,
         "optimizer": optimizer.state_dict(),
         "scheduler": scheduler.state_dict(),
         "step": step,

@@ -1,0 +1,39 @@
+# Это восстанавливаемо по pyproject.toml
+.venv/
+
+
+# Агентские правила и состояния
+.agent/
+AGENTS.md
+
+# Локальные состояния
+.local/
+.vscode
+.gitignore
+
+# Датасеты
+data/**/*.parquet
+kaggle_upload
+storage/**/weights.pt
+*.safetensors
+*.parquet
+*.pt
+*.pth
+
+# KI_base: Ignore functional files, keep only data
+.know/*
+!.know/knowledge/
+!.know/decisions/
+!.know/doc_config.json
+*.pt
+!storage/components/sep_token.pt
+
+# Keys
+.keys/*
+wandb_key.txt
+
+# Визуализация, сэмплы и графики
+*.png
+*.jpg
+*.jpeg
+*.webp
