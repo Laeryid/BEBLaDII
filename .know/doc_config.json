@@ -240,6 +240,11 @@
       "covers": ["Architecture & Training Phases"],
       "depends_on": []
     },
+    "decisions/060_phase3_canonical_diffusion_redesign.md": {
+      "description": "ADR: Переход к канонической диффузии на сфере (Phase 3): полный диапазон t, косинусное расписание κ(t), зашумление всех токенов, AdaLN вместо c_embed. Переопределение Phase 3/4 в плане обучения.",
+      "covers": ["Architecture & Training Phases"],
+      "depends_on": []
+    },
     "KI_training_infrastructure.md": {
       "description": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler.",
       "covers": ["Experiments", "Data & Ops Scripts"],

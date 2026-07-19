@@ -1,7 +1,12 @@
 # %% [markdown]
-# # BEBLaDII Phase 3 Training (Kaggle T4 x2)
-# *Архитектура: ADR 058 (sep_token) + ADR 059 (c_embed hooks, unified_loss)*
-# *LR: ConstantLR с однократным warmup (без CosineAnnealingWarmRestarts)*
+# # BEBLaDII Phase 3 Training — Canonical Spherical Diffusion (Kaggle T4 x2)
+# *Архитектура: ADR 060 (каноническая диффузия на сфере)*
+# *Ключевые изменения:*
+# *- Полный диапазон t∈[0,1] с косинусным расписанием κ(t)*
+# *- Зашумление ВСЕХ токенов (не частичное)*
+# *- AdaLN вместо c_embed (нейтральная инициализация)*
+# *- x0-prediction: Loss = 1 - cos(DUS_out, z_clean)*
+# *- Разделённые чекпоинты: модель и оптимайзер по очереди → GCS → удаление*
 
 # %% [markdown]
 # ## 1. Setup Environment
@@ -21,7 +26,7 @@ if os.path.exists("/kaggle/input"):
     print("=== Kaggle Input Structure ===")
     for root, dirs, files in os.walk("/kaggle/input"):
         level = root.replace("/kaggle/input", "").count(os.sep)
-        if level < 3: # Ограничиваем глубину вывода
+        if level < 3:
             indent = " " * 4 * level
             print(f"{indent}{os.path.basename(root)}/")
             subindent = " " * 4 * (level + 1)
@@ -72,29 +77,21 @@ def resolve_model_path(base_path: str) -> str:
     def check_dir(dir_path):
         return (dir_path / "config.json").exists()
 
-    # 1. Точный путь
     if check_dir(p):
         print(f"[resolve_model_path] Found config.json at: {p}")
         return str(p)
-
-    # 2. Вверх по родителям
     for parent in list(p.parents)[:4]:
         if check_dir(parent):
             print(f"[resolve_model_path] Found config.json in parent: {parent}")
             return str(parent)
-
-    # 3. Вниз рекурсивно
     if p.exists():
         for config_file in sorted(p.rglob("config.json")):
             print(f"[resolve_model_path] Found config.json recursively: {config_file.parent}")
             return str(config_file.parent)
-
-    # 4. Глобальный fallback по ключевому слову
     print(f"[resolve_model_path] WARNING: config.json not found under {base_path}. Searching globally...")
     keyword = ""
     if "qwen" in base_path.lower(): keyword = "qwen"
     elif "modernbert" in base_path.lower(): keyword = "modernbert"
-
     if keyword:
         kaggle_input = pathlib.Path("/kaggle/input")
         if kaggle_input.exists():
@@ -102,7 +99,6 @@ def resolve_model_path(base_path: str) -> str:
                 if keyword in str(config_file).lower():
                     print(f"[resolve_model_path] Found fallback config for '{keyword}': {config_file.parent}")
                     return str(config_file.parent)
-
     print(f"[resolve_model_path] FAILED to resolve {base_path}, using as-is")
     return base_path
 
@@ -122,28 +118,32 @@ class Config:
     # Пути к весам
     local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
     local_dus_weights     = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
-    # sep_token из датасета (загруженного в Kaggle)
     local_sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
 
     # GCS (для resume и сохранения чекпоинтов)
-    resume_from_checkpoint = True
+    resume_from_checkpoint = False
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase3/checkpoints/"
 
     # Директория вывода
     output_dir = "/kaggle/working/checkpoints/phase3"
 
     # Гиперпараметры
-    batch_size   = 8
-    max_length   = 512
-    learning_rate = 2e-4   # ConstantLR после warmup
-    epochs       = 1
-    max_steps    = 40000
-    log_steps    = 10
-    val_steps    = 200
-    save_steps   = 1000
+    batch_size    = 8
+    max_length    = 512
+    learning_rate = 2e-6
+    epochs        = 100
+    max_steps     = 400000
+    log_steps     = 10
+    val_steps     = 200
+    save_steps    = 1000
 
-    # Phase 3
-    low_noise_amp = 0.5
+    # ADR-060: Диффузия — параметры расписания шума
+    t_min = 0.02          # минимальный уровень шума (не 0 — избегаем κ→∞)
+    t_max = 1.00          # максимальный уровень шума
+    t_emb_dim = 256       # размерность синусоидального t-эмбеддинга
+
+    # Вес геометрического лосса
+    w_prior = 0.05
 
     wandb_project = "BEBLaDII-Phase3-Kaggle"
 
@@ -190,16 +190,24 @@ class EMA:
         self.backup = {}
 
 
-def get_latest_gcs_checkpoint(gcs_dir):
+def get_latest_gcs_checkpoint(gcs_dir: str, suffix: str = ".pth"):
+    """
+    Возвращает путь к последнему чекпоинту модели в GCS.
+    suffix: ".pth" (модель) или "_opt.pth" (оптимайзер).
+    """
     try:
         result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True, check=True)
         files = result.stdout.splitlines()
-        ckpt_files = [f for f in files if "phase3_step_" in f and f.endswith(".pth")]
+        ckpt_files = [f for f in files if "phase3_step_" in f and f.endswith(suffix)]
+        # Исключаем optimizer-файлы при поиске модели
+        if suffix == ".pth":
+            ckpt_files = [f for f in ckpt_files if "_opt.pth" not in f]
         if not ckpt_files:
             return None
         def extract_step(filename):
             try:
-                return int(filename.split("_step_")[-1].split(".pth")[0])
+                base = filename.split("_step_")[-1].replace(suffix, "")
+                return int(base)
             except ValueError:
                 return -1
         ckpt_files.sort(key=extract_step)
@@ -209,11 +217,21 @@ def get_latest_gcs_checkpoint(gcs_dir):
         return None
 
 
+def sync_to_gcs_and_delete(local_path: str, gcs_dir: str):
+    """Копирует файл в GCS и удаляет локально для освобождения дискового пространства."""
+    gcs_path = gcs_dir + os.path.basename(local_path)
+    try:
+        subprocess.run(["gsutil", "-q", "cp", local_path, gcs_path], check=True)
+        os.remove(local_path)
+        print(f"[GCS] Synced and deleted: {local_path} → {gcs_path}")
+    except Exception as e:
+        print(f"[GCS] Error syncing {local_path}: {e}")
+
+
 def compute_layer_divergence(model_module):
     """
-    Вычисляет нормализованную L2-дистанцию между парными слоями DUS (Block 1: 8-19 и Block 2: 20-31).
-    Используется для диагностики специализации клонированных слоев.
-    Адаптировано для работы с DataParallel.
+    Нормализованная L2-дистанция между парными слоями DUS (Block 1: 8-19 и Block 2: 20-31).
+    Диагностика специализации клонированных слоёв.
     """
     layer_params = {}
     for name, param in model_module.named_parameters():
@@ -226,7 +244,6 @@ def compute_layer_divergence(model_module):
             layer_params[idx][suffix] = param.data
 
     divergences = []
-    # Сравниваем слои Block 1 (8-19) и Block 2 (20-31)
     for k in range(8, 20):
         pair_k = k + 12
         if k in layer_params and pair_k in layer_params:
@@ -238,18 +255,105 @@ def compute_layer_divergence(model_module):
                 w2 = layer_params[pair_k][suffix]
                 diff_sq += (w1 - w2).pow(2).sum().item()
                 norm_sq += w1.pow(2).sum().item()
-
             if norm_sq > 0:
                 divergences.append(math.sqrt(diff_sq) / math.sqrt(norm_sq))
-
     if not divergences:
         return 0.0
     return sum(divergences) / len(divergences)
 
 
 # %% [markdown]
-# ## 4. Model Definition
-# Архитектура: ADR 058 (sep_token) + ADR 059 (c_embed per-layer hooks, float32 DUS)
+# ## 4. Noise Schedule & Diffusion Utilities (ADR-060)
+#
+# Косинусное расписание параметра концентрации κ(t) vMF:
+#   μ(t) = cos(t · π/2)   — средний косинус угла между x_t и x_0
+#   Зашумление через slerp(x_0, ε_uniform, t)
+
+# %%
+class SinusoidalEmbedding(nn.Module):
+    """Синусоидальное позиционное кодирование для t ∈ [0, 1]."""
+    def __init__(self, dim: int):
+        super().__init__()
+        assert dim % 2 == 0
+        self.dim = dim
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        # t: [B] float, values in [0, 1]
+        device = t.device
+        half = self.dim // 2
+        freqs = torch.exp(
+            -math.log(10000) * torch.arange(half, device=device) / (half - 1)
+        )  # [half]
+        args = t.unsqueeze(1) * freqs.unsqueeze(0)  # [B, half]
+        return torch.cat([torch.sin(args), torch.cos(args)], dim=-1)  # [B, dim]
+
+
+def cosine_noise_schedule(t: torch.Tensor) -> torch.Tensor:
+    """
+    μ(t) = cos(t · π/2) — средний косинус угла x_t с x_0.
+    t=0 → μ=1 (чистый вектор), t=1 → μ=0 (равномерно на сфере).
+    """
+    return torch.cos(t * (math.pi / 2))
+
+
+def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """
+    Зашумление через slerp по схеме vMF:
+      x_t = slerp(x_0, ε, μ(t))
+    где ε ~ Uniform(S^{d-1}).
+
+    x0: [B, T, D] нормализованный
+    t:  [B] float ∈ [0, 1]
+    returns: x_t [B, T, D] нормализованный
+    """
+    B, T, D = x0.shape
+    # Сэмплируем случайные точки на сфере
+    eps = safe_normalize(torch.randn_like(x0), dim=-1)  # [B, T, D]
+    # Параметр смешения μ(t): близко к 1 = чисто, близко к 0 = шум
+    mu = cosine_noise_schedule(t).view(B, 1, 1)  # [B, 1, 1]
+    # Slerp: x_t = normalize(μ · x_0 + (1-μ) · ε)
+    # (точный slerp требует arccos, но при нормализации результата
+    #  это эквивалентно для целей обучения Score Field)
+    x_t = mu * x0 + (1.0 - mu) * eps
+    return safe_normalize(x_t, dim=-1)
+
+
+# %% [markdown]
+# ## 5. AdaLN Module (ADR-060)
+#
+# Adaptive Layer Normalization: кондиционирование DUS по уровню шума t.
+# Инициализация: scale=1, shift=0 → нулевое влияние на старте.
+
+# %%
+class AdaLNModulation(nn.Module):
+    """
+    Тонкий модуль AdaLN для одного блока DUS.
+    Применяется как forward-hook к каждому слою DUS.
+    """
+    def __init__(self, t_emb_dim: int, hidden_dim: int):
+        super().__init__()
+        self.modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(t_emb_dim, 2 * hidden_dim, bias=True),
+        )
+        # Нейтральная инициализация: scale→1, shift→0
+        nn.init.zeros_(self.modulation[-1].weight)
+        bias = torch.zeros(2 * hidden_dim)
+        bias[hidden_dim:] = 1.0  # scale часть = 1.0
+        self.modulation[-1].bias = nn.Parameter(bias)
+
+    def forward(self, t_emb: torch.Tensor) -> tuple:
+        """Возвращает (shift, scale) — оба [B, 1, D]."""
+        out = self.modulation(t_emb)  # [B, 2*D]
+        shift, scale = out.chunk(2, dim=-1)
+        return shift.unsqueeze(1), scale.unsqueeze(1)  # [B, 1, D]
+
+
+# %% [markdown]
+# ## 6. Model Definition (ADR-060)
+#
+# Удалено: confidence_proj, c_embed_alphas, hooks c_embed.
+# Добавлено: SinusoidalEmbedding + MLP (t_proj) + AdaLNModulation per layer.
 
 # %%
 class BEBLaDIIPhase3(nn.Module):
@@ -260,6 +364,7 @@ class BEBLaDIIPhase3(nn.Module):
         dus_weights: str | None,
         encoder_weights: str | None,
         sep_token_path: str | None,
+        t_emb_dim: int = 256,
     ):
         super().__init__()
 
@@ -286,7 +391,7 @@ class BEBLaDIIPhase3(nn.Module):
             p.requires_grad = False
         self.encoder.to(torch.bfloat16)
 
-        # 3. DUS Backbone (обучаемый, в float32 — ADR 059)
+        # 3. DUS Backbone (обучаемый, float32 — ADR 057)
         dus_wrapper = DUSModel.from_scratch(
             config={"base_model_id": modernbert_path}, weights_path=None, local_files_only=True
         )
@@ -299,15 +404,16 @@ class BEBLaDIIPhase3(nn.Module):
             clean_state = {}
             for k, v in state.items():
                 k_clean = k.replace("student.model.", "").replace("model.", "")
+                # Пропускаем устаревшие ключи c_embed
+                if "confidence_proj" in k_clean or "c_embed_alphas" in k_clean:
+                    continue
                 clean_state[k_clean] = v
             dus_wrapper.model.load_state_dict(clean_state, strict=False)
-            print(f"[Init] Awakened DUS weights loaded from {dus_weights}", flush=True)
+            print(f"[Init] DUS weights loaded from {dus_weights}", flush=True)
         else:
             raise FileNotFoundError(f"CRITICAL: dus_weights not found at '{dus_weights}'.")
 
         self.dus = dus_wrapper.model
-        # DUS в float32 для корректного обновления оптимайзером (ADR 057)
-        # gradient_checkpointing с use_reentrant=False — обязателен при хуках (ADR 059)
         if hasattr(self.dus, "gradient_checkpointing_enable"):
             self.dus.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}
@@ -315,20 +421,26 @@ class BEBLaDIIPhase3(nn.Module):
         if hasattr(self.dus, "_maybe_set_compile"):
             self.dus._maybe_set_compile = lambda *a, **kw: None
         type(self.dus).device = property(lambda self: torch.device("cuda"))
-        type(self.dus).dtype = property(lambda self: torch.float32)
+        type(self.dus).dtype  = property(lambda self: torch.float32)
 
-        # 4. Confidence Projector (обучаемый)
-        self.confidence_proj = nn.Sequential(
-            nn.Linear(1, 256),
-            nn.GELU(),
-            nn.Linear(256, 1024)
+        # 4. Time Embedding (ADR-060)
+        hidden_dim = 1024  # размерность DUS/ModernBERT-large
+        self.t_sin_embed = SinusoidalEmbedding(t_emb_dim)
+        self.t_proj = nn.Sequential(
+            nn.Linear(t_emb_dim, t_emb_dim * 4),
+            nn.SiLU(),
+            nn.Linear(t_emb_dim * 4, t_emb_dim),
         )
 
-        # 5. C_Embed Layer Hooks (ADR 059)
-        # Инициализируем 10.0 — нужно для преодоления начальной нормы residual stream (~17-30)
-        self.c_embed_alphas = nn.Parameter(torch.ones(len(self.dus.layers)) * 10.0)
+        # 5. AdaLN per DUS layer (ADR-060)
+        # Один AdaLNModulation на каждый трансформерный блок DUS
+        num_layers = len(self.dus.layers)
+        self.adaLN = nn.ModuleList([
+            AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(num_layers)
+        ])
+        # Регистрируем forward pre-hooks
         for i, layer in enumerate(self.dus.layers):
-            layer.register_forward_pre_hook(self._make_c_embed_hook(i))
+            layer.register_forward_pre_hook(self._make_adaLN_hook(i))
 
         # 6. Токен-разделитель (ADR 058)
         if sep_token_path and os.path.exists(sep_token_path):
@@ -336,16 +448,20 @@ class BEBLaDIIPhase3(nn.Module):
             self.register_buffer("sep_embed", sep_tensor)
             print(f"[Init] Separator token loaded from {sep_token_path}", flush=True)
         else:
-            self.register_buffer("sep_embed", torch.zeros(1024, dtype=torch.float32))
+            self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
             print(f"[WARN] Separator token NOT found at {sep_token_path}, initialized to zeros.", flush=True)
 
-    def _make_c_embed_hook(self, layer_idx):
+    def _make_adaLN_hook(self, layer_idx: int):
+        """Forward pre-hook: применяет AdaLN к входным hidden_states перед слоем."""
         def hook(module, args):
+            if not hasattr(self, "_current_t_emb") or self._current_t_emb is None:
+                return args
             hidden_states = args[0]
-            if hasattr(self, "_current_c_embed") and self._current_c_embed is not None:
-                current_alpha = self.c_embed_alphas[layer_idx].to(hidden_states.device)
-                current_c = self._current_c_embed.to(hidden_states.device)
-                hidden_states = hidden_states + current_alpha * current_c
+            shift, scale = self.adaLN[layer_idx](self._current_t_emb)
+            shift = shift.to(hidden_states.dtype)
+            scale = scale.to(hidden_states.dtype)
+            # LayerNorm уже применён внутри блока — мы модулируем вход
+            hidden_states = hidden_states * scale + shift
             return (hidden_states,) + args[1:]
         return hook
 
@@ -360,155 +476,126 @@ class BEBLaDIIPhase3(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        low_noise_amp: float = 0.5,
+        t: torch.Tensor | None = None,  # [B] float ∈ [t_min, t_max]; None → сэмплируем
+        t_min: float = 0.02,
+        t_max: float = 1.0,
     ) -> dict:
         with torch.no_grad():
+            # --- Получаем чистые латентные векторы ---
             qwen_embeds = self.qwen_embeddings(input_ids)
-            z_clean, _, _ = self.encoder(qwen_embeds)
+            z_clean, _, _ = self.encoder(qwen_embeds)  # [B, T, 1024], нормализованы
             B, T, D = z_clean.shape
 
-            # Генерация маски шума (5 окон × 5 токенов)
-            noise_window_size = 5
-            num_windows = 5
-            block_size = T // num_windows
+            # --- Сэмплируем t если не передан ---
+            if t is None:
+                t = torch.rand(B, device=z_clean.device) * (t_max - t_min) + t_min
 
-            starts = []
-            for w in range(num_windows):
-                min_start = 0
-                max_start = max(min_start + 1, block_size - noise_window_size)
-                start = torch.randint(
-                    w * block_size + min_start,
-                    w * block_size + max_start,
-                    (B, 1),
-                    device=z_clean.device,
-                )
-                starts.append(start)
-            starts = torch.cat(starts, dim=1)
+            # --- Зашумляем ВСЕ токены (ADR-060) ---
+            z_clean_f = z_clean.float()
+            z_clean_f = safe_normalize(z_clean_f, dim=-1)  # страховка
+            z_noisy = spherical_noise(z_clean_f, t)  # [B, T, D], float32
 
-            noise_offsets = torch.arange(noise_window_size, device=z_clean.device).view(1, 1, noise_window_size)
-            noise_window_indices = starts.unsqueeze(-1) + noise_offsets
+        # --- Time Embedding (обучаемые параметры) ---
+        t_sin = self.t_sin_embed(t)           # [B, t_emb_dim]
+        t_emb = self.t_proj(t_sin)            # [B, t_emb_dim]
+        self._current_t_emb = t_emb           # сохраняем для hooks
 
-            rand_noise = torch.rand((B, num_windows, noise_window_size), device=z_clean.device)
-            num_to_noise = torch.randint(1, noise_window_size + 1, (B, num_windows, 1), device=z_clean.device)
-            _, noise_ranks = torch.sort(rand_noise, dim=-1)
-            noise_subset_mask = (
-                torch.arange(noise_window_size, device=z_clean.device).view(1, 1, noise_window_size)
-                < num_to_noise
-            ).to(z_clean.dtype)
-            noise_subset_mask = torch.gather(noise_subset_mask, 2, noise_ranks.argsort(dim=-1))
-
-            flat_noise_indices = noise_window_indices.view(B, -1)
-            full_noise_mask = torch.zeros((B, T), device=z_clean.device, dtype=z_clean.dtype)
-            full_noise_mask.scatter_(1, flat_noise_indices, noise_subset_mask.view(B, -1))
-            noise_mask = full_noise_mask * attention_mask.to(z_clean.dtype)
-
-            # Применение шума
-            z_clean_norm = torch.linalg.vector_norm(z_clean.float(), dim=-1, keepdim=True)
-            noise = torch.randn_like(z_clean)
-            noise = (
-                safe_normalize(noise.float(), dim=-1).to(z_clean.dtype)
-                * low_noise_amp
-                * z_clean_norm.to(z_clean.dtype)
-            )
-            z_noisy = z_clean + noise * noise_mask.unsqueeze(-1)
-            z_noisy = torch.where(
-                noise_mask.unsqueeze(-1) > 0,
-                safe_normalize(z_noisy.float(), dim=-1).to(z_clean.dtype),
-                z_noisy,
-            )
-
-            # Confidence signal
-            z_clean_normed = safe_normalize(z_clean, dim=-1)
-            z_noisy_normed = safe_normalize(z_noisy, dim=-1)
-            c_true = torch.clamp((z_clean_normed * z_noisy_normed).sum(dim=-1), min=0.0)
-
-        # Confidence embedding (float32, норма 0.1 — ADR 047, 051)
-        c_embed_raw = self.confidence_proj(c_true.unsqueeze(-1).float())
-        c_embed = safe_normalize(c_embed_raw, dim=-1) * 0.1  # float32
-
-        # Сохраняем c_embed для хуков (с нулевым вектором на позицию sep_prefix)
-        self._current_c_embed = F.pad(c_embed, (0, 0, 1, 0), value=0.0)  # [B, T+1, D]
-
-        # Конкатенируем sep_prefix (ADR 058)
+        # --- Конкатенируем sep_prefix (ADR 058) ---
         x_in = z_noisy.float()
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
-        dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
-        attention_mask_extended = F.pad(attention_mask, (1, 0), value=1)
+        dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)            # [B, T+1, D]
+        attention_mask_extended = F.pad(attention_mask, (1, 0), value=1)    # [B, T+1]
 
-        # DUS forward в float32 (ADR 059)
+        # --- DUS forward (float32, ADR 059) ---
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
             attention_mask=attention_mask_extended,
             output_hidden_states=True,
         )
 
-        # Отрезаем sep_prefix, нормализуем
+        # --- Финальная нормализация (отрезаем sep) ---
         pre_norm = dus_outputs.hidden_states[-1][:, 1:, :].float()
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
-        dus_delta = dus_final_raw - z_noisy.float()
-        dus_final = safe_normalize(dus_final_raw, dim=-1)  # float32
+        dus_final = safe_normalize(dus_final_raw, dim=-1)  # [B, T, D]
+
+        # Очищаем сохранённый t_emb после forward
+        self._current_t_emb = None
 
         return {
-            "z_clean": z_clean,
-            "z_noisy": z_noisy,
-            "c_true": c_true,
-            "noise_mask": noise_mask,
-            "dus_delta": dus_delta,
-            "dus_final": dus_final,
+            "z_clean":       z_clean_f,
+            "z_noisy":       z_noisy,
+            "t":             t,
+            "dus_final":     dus_final,
             "dus_final_raw": dus_final_raw,
             "attention_mask": attention_mask,
-            "c_embed": c_embed,
-            "c_embed_raw": c_embed_raw,
             "hidden_states": dus_outputs.hidden_states,
-            "c_embed_alphas": self.c_embed_alphas,
         }
 
 
 # %% [markdown]
-# ## 5. Loss Function
-# Unified Loss: 1 - cos(dus_final, normalize(z_clean)) для всех активных токенов (ADR 059)
+# ## 7. Loss Function (ADR-060)
+#
+# Unified Cosine Loss (x0-prediction):
+#   L = mean(1 - cos(DUS_out, z_clean)) по всем активным токенам
+# + Prior Loss (геометрия сферы)
 
 # %%
-def compute_phase3_loss(outputs: dict, w_prior: float = 0.1):
+def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
     z_clean   = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
     attn_f    = outputs["attention_mask"].float()
+    t         = outputs["t"]
     hidden_states = outputs.get("hidden_states", [])
 
     metrics = {}
     B, T, D = z_clean.size()
     active_tokens = attn_f.sum().clamp(min=1.0)
 
-    # Unified Loss (ADR 059)
-    target = safe_normalize(z_clean, dim=-1)
-    cos_sim = (dus_final * target).sum(dim=-1)
-    loss_elementwise = 1.0 - cos_sim
-    main_loss = (loss_elementwise * attn_f).sum() / active_tokens
-    metrics["unified_loss"] = main_loss.detach()
-    metrics["cos_sim_all"] = (cos_sim * attn_f).sum().detach() / active_tokens
+    # --- x0-prediction Cosine Loss ---
+    target  = safe_normalize(z_clean, dim=-1)
+    cos_sim = (dus_final * target).sum(dim=-1)           # [B, T]
+    loss_el = 1.0 - cos_sim
+    main_loss = (loss_el * attn_f).sum() / active_tokens
 
-    # Prior Loss
-    z_flat = dus_final.view(-1, D)
+    metrics["denoising_loss"] = main_loss.detach()
+    metrics["cos_sim_all"]    = (cos_sim * attn_f).sum().detach() / active_tokens
+
+    # Метрики по уровням шума (диагностика)
+    t_mean = t.mean()
+    metrics["t_mean"] = t_mean.detach()
+    # Косинусное сходство на низком (t<0.3) и высоком (t>0.7) шуме
+    lo_mask = (t < 0.3).float()
+    hi_mask = (t > 0.7).float()
+    if lo_mask.sum() > 0:
+        cos_sim_lo = (cos_sim.mean(dim=1) * lo_mask).sum() / lo_mask.sum()
+        metrics["cos_sim_t_low"] = cos_sim_lo.detach()
+    if hi_mask.sum() > 0:
+        cos_sim_hi = (cos_sim.mean(dim=1) * hi_mask).sum() / hi_mask.sum()
+        metrics["cos_sim_t_high"] = cos_sim_hi.detach()
+
+    # --- Prior Loss (геометрия сферы) ---
+    z_flat    = dus_final.view(-1, D)
     mask_flat = attn_f.view(-1, 1)
-    m_state = (z_flat * mask_flat).sum(dim=0) / active_tokens
+    m_state   = (z_flat * mask_flat).sum(dim=0) / active_tokens
     z_centered = z_flat - m_state
-    v_state = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
+    v_state   = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
     var_floor = 1.0 / (D * 2)
-    var_loss = F.relu(var_floor - v_state).mean()
-    cov = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
-    cov_off_diag = cov - torch.diag(torch.diag(cov))
-    cov_loss = cov_off_diag.pow(2).sum() / D
+    var_loss  = F.relu(var_floor - v_state).mean()
+    cov       = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
+    cov_off   = cov - torch.diag(torch.diag(cov))
+    cov_loss  = cov_off.pow(2).sum() / D
     prior_loss = m_state.pow(2).mean() + var_loss + 0.1 * cov_loss
+
     metrics["prior_loss"] = prior_loss.detach()
     metrics["var_loss"]   = var_loss.detach()
     metrics["cov_loss"]   = cov_loss.detach()
 
     total_loss = main_loss + w_prior * prior_loss
 
-    # Diagnostic Norms
+    # --- Diagnostic Norms ---
     if hidden_states and len(hidden_states) > 1:
-        l0_norm   = hidden_states[0][:, 1:, :].float().norm(dim=-1).mean()
-        l40_norm  = hidden_states[-1][:, 1:, :].float().norm(dim=-1).mean()
+        l0_norm  = hidden_states[0][:, 1:, :].float().norm(dim=-1).mean()
+        l40_norm = hidden_states[-1][:, 1:, :].float().norm(dim=-1).mean()
         metrics["norm_L0"]    = l0_norm.detach()
         metrics["norm_Llast"] = l40_norm.detach()
         total_delta = 0.0
@@ -517,22 +604,163 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.1):
             total_delta += delta.norm(dim=-1).mean()
         metrics["delta_norm_avg"] = (total_delta / (len(hidden_states) - 1)).detach()
 
-    if "c_embed_alphas" in outputs:
-        alphas = outputs["c_embed_alphas"]
-        metrics["c_embed_alphas_mean"]     = alphas.mean().detach()
-        metrics["c_embed_alphas_abs_mean"] = alphas.abs().mean().detach()
-        metrics["c_embed_alphas_max"]      = alphas.abs().max().detach()
-
-    if "c_embed_raw" in outputs:
-        metrics["c_embed_raw_norm"] = outputs["c_embed_raw"].float().norm(dim=-1).mean().detach()
-
-    metrics["c_true_mean"] = (outputs["c_true"].float() * attn_f).sum().detach() / active_tokens
-
     return total_loss, metrics
 
 
 # %% [markdown]
-# ## 6. Training Loop
+# ## 8. Checkpoint Helpers (разделённое сохранение)
+#
+# Стратегия: модель и оптимайзер сохраняются в отдельные файлы,
+# синхронизируются в GCS и удаляются локально — обходим лимиты Kaggle ~5 ГБ.
+
+# %%
+def save_checkpoint_split(
+    actual_model,
+    optimizer,
+    scheduler,
+    ema,
+    step: int,
+    metrics_history: list,
+    output_dir: str,
+    gcs_checkpoint_dir: str,
+):
+    """
+    Сохраняет чекпоинт двумя файлами:
+      - phase3_step_{step}.pth       (веса DUS + AdaLN + t_proj + EMA)
+      - phase3_step_{step}_opt.pth   (состояние оптимайзера + шедулера)
+    После синхронизации каждый файл удаляется локально.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    model_path = os.path.join(output_dir, f"phase3_step_{step}.pth")
+    opt_path   = os.path.join(output_dir, f"phase3_step_{step}_opt.pth")
+
+    # --- Веса модели ---
+    dus_state   = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
+    adaLN_state = {k: v.cpu() for k, v in actual_model.adaLN.state_dict().items()}
+    t_proj_state = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}
+
+    ema.apply(actual_model)
+    dus_ema_state    = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
+    adaLN_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN.state_dict().items()}
+    t_proj_ema_state = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}
+    ema.restore(actual_model)
+
+    torch.save({
+        "dus":            dus_state,
+        "adaLN":          adaLN_state,
+        "t_proj":         t_proj_state,
+        "dus_ema":        dus_ema_state,
+        "adaLN_ema":      adaLN_ema_state,
+        "t_proj_ema":     t_proj_ema_state,
+        "step":           step,
+        "metrics_history": metrics_history,
+    }, model_path)
+    print(f"[SAVE] Model weights → {model_path}")
+    sync_to_gcs_and_delete(model_path, gcs_checkpoint_dir)
+
+    # --- Оптимайзер (сохраняем отдельно и тоже удаляем) ---
+    torch.save({
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "step":      step,
+    }, opt_path)
+    print(f"[SAVE] Optimizer state → {opt_path}")
+    sync_to_gcs_and_delete(opt_path, gcs_checkpoint_dir)
+
+
+def load_checkpoint_split(
+    actual_model,
+    optimizer,
+    scheduler,
+    ema,
+    gcs_checkpoint_dir: str,
+    output_dir: str,
+    device,
+):
+    """
+    Загружает модель и (если доступен) оптимайзер из GCS.
+    Возвращает start_step и metrics_history.
+    """
+    start_step = 0
+    metrics_history = []
+
+    latest_model_gs = get_latest_gcs_checkpoint(gcs_checkpoint_dir, suffix=".pth")
+    if not latest_model_gs:
+        print("[Resume] No checkpoints found on GCS. Starting from scratch.")
+        return start_step, metrics_history
+
+    print(f"[Resume] Found model checkpoint: {latest_model_gs}")
+    os.makedirs(output_dir, exist_ok=True)
+    local_model = os.path.join(output_dir, "resume_model.pth")
+
+    try:
+        subprocess.run(["gsutil", "-q", "cp", latest_model_gs, local_model], check=True)
+        ckpt = torch.load(local_model, map_location="cpu")
+
+        if "dus" in ckpt:
+            clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
+            missing, unexpected = actual_model.dus.load_state_dict(clean_dus, strict=False)
+            if missing:
+                print(f"[Resume] DUS missing keys: {missing[:5]}")
+            print(f"[Resume] DUS weights loaded.")
+
+        if "adaLN" in ckpt:
+            actual_model.adaLN.load_state_dict(ckpt["adaLN"], strict=True)
+            print(f"[Resume] AdaLN weights loaded.")
+
+        if "t_proj" in ckpt:
+            actual_model.t_proj.load_state_dict(ckpt["t_proj"], strict=True)
+            print(f"[Resume] t_proj weights loaded.")
+
+        # EMA shadows
+        ema_update = {}
+        if "dus_ema" in ckpt:
+            for k, v in ckpt["dus_ema"].items():
+                ema_update[f"dus.{k}"] = v
+        if "adaLN_ema" in ckpt:
+            for k, v in ckpt["adaLN_ema"].items():
+                ema_update[f"adaLN.{k}"] = v
+        if "t_proj_ema" in ckpt:
+            for k, v in ckpt["t_proj_ema"].items():
+                ema_update[f"t_proj.{k}"] = v
+        if ema_update:
+            ema.shadow.update(ema_update)
+            print(f"[Resume] EMA shadows updated ({len(ema_update)} tensors).")
+
+        if "step" in ckpt:
+            start_step = ckpt["step"]
+        if "metrics_history" in ckpt:
+            metrics_history = ckpt["metrics_history"]
+
+        os.remove(local_model)
+        print(f"[Resume] Model resumed from step {start_step}.")
+
+    except Exception as e:
+        print(f"[Resume] WARN: Failed to load model checkpoint: {e}")
+        return 0, []
+
+    # Пробуем загрузить оптимайзер
+    step_num = int(latest_model_gs.split("_step_")[-1].replace(".pth", ""))
+    opt_gcs = gcs_checkpoint_dir + f"phase3_step_{step_num}_opt.pth"
+    local_opt = os.path.join(output_dir, "resume_opt.pth")
+    try:
+        subprocess.run(["gsutil", "-q", "cp", opt_gcs, local_opt], check=True, timeout=120)
+        opt_ckpt = torch.load(local_opt, map_location="cpu")
+        optimizer.load_state_dict(opt_ckpt["optimizer"])
+        print(f"[Resume] Optimizer state loaded.")
+        try:
+            scheduler.load_state_dict(opt_ckpt["scheduler"])
+        except Exception as e:
+            print(f"[Resume] Scheduler load skipped: {e}")
+        os.remove(local_opt)
+    except Exception as e:
+        print(f"[Resume] WARN: Optimizer checkpoint not found or failed ({e}). Fresh optimizer.")
+
+    return start_step, metrics_history
+
+
+# %% [markdown]
+# ## 9. Training Loop
 
 # %%
 def train():
@@ -553,12 +781,18 @@ def train():
                 gcp_sa = user_secrets.get_secret("GCP_SA_JSON")
                 with open("gcp_sa.json", "w") as f:
                     f.write(gcp_sa)
-                subprocess.run(["gcloud", "auth", "activate-service-account", "--key-file", "gcp_sa.json"], check=True)
+                subprocess.run(
+                    ["gcloud", "auth", "activate-service-account", "--key-file", "gcp_sa.json"],
+                    check=True,
+                )
                 print("[Init] GCP Authentication successful.")
                 with open("gcs_test.txt", "w") as f:
                     f.write("GCS Auth Test Successful")
-                subprocess.run(["gsutil", "cp", "gcs_test.txt",
-                                "gs://bebladii-weigths-us/planB/phase3/checkpoints/gcs_test.txt"], check=True)
+                subprocess.run(
+                    ["gsutil", "cp", "gcs_test.txt",
+                     "gs://bebladii-weigths-us/planB/phase3/checkpoints/gcs_test.txt"],
+                    check=True,
+                )
                 print("[Init] GCS write access verified.")
             except Exception as e_gcp:
                 print(f"[Init] WARN: GCP auth failed: {e_gcp}")
@@ -566,6 +800,7 @@ def train():
             print(f"[Init] WARN: Could not login to W&B: {e}")
         wandb.init(project=args.wandb_project, config=vars(args), resume="allow")
 
+    # --- Модель ---
     print("[Init] Instantiating BEBLaDIIPhase3 model...", flush=True)
     model = BEBLaDIIPhase3(
         embedding_model_path=args.embedding_model_path,
@@ -573,6 +808,7 @@ def train():
         dus_weights=args.local_dus_weights,
         encoder_weights=args.local_encoder_weights,
         sep_token_path=args.local_sep_token,
+        t_emb_dim=args.t_emb_dim,
     ).to(device)
 
     if num_gpus > 1:
@@ -580,10 +816,12 @@ def train():
         model = nn.DataParallel(model)
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
+    n_trainable = sum(p.numel() for p in trainable_params)
+    print(f"[Init] Trainable parameters: {n_trainable:,}", flush=True)
+
     optimizer = torch.optim.AdamW(trainable_params, lr=args.learning_rate, weight_decay=1e-2)
 
-    # ConstantLR с однократным warmup (ADR: замена CosineAnnealingWarmRestarts)
-    warmup_steps = min(1000, int(args.max_steps * 0.1))
+    warmup_steps = min(1000, int(args.max_steps * 0.05))
     def lr_lambda(current_step):
         if current_step < warmup_steps:
             return max(0.01, current_step / warmup_steps)
@@ -591,7 +829,7 @@ def train():
     scheduler = LambdaLR(optimizer, lr_lambda=lr_lambda)
     ema = EMA(model, decay=0.998)
 
-    # Dataloaders
+    # --- DataLoaders ---
     try:
         dataloader = get_dataloader(
             stage="reasoning", batch_size=args.batch_size, max_length=args.max_length,
@@ -606,76 +844,35 @@ def train():
         dataloader, val_dataloader = [], []
 
     if len(dataloader) == 0:
-        raise RuntimeError(f"[FATAL] Dataset is empty or not found at: '{args.dataset_path}'. "
-                           f"Training cannot start.")
+        raise RuntimeError(
+            f"[FATAL] Dataset is empty or not found at: '{args.dataset_path}'. Training cannot start."
+        )
 
     total_steps = (
         min(args.max_steps, len(dataloader) * args.epochs)
         if len(dataloader) > 0 else args.max_steps
     )
 
-    # Resume from GCS checkpoint
+    # --- Resume ---
+    actual_model = model.module if isinstance(model, nn.DataParallel) else model
     start_step = 0
     metrics_history = []
     if getattr(args, "resume_from_checkpoint", False):
-        latest_gs_ckpt = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir)
-        if latest_gs_ckpt:
-            print(f"Found latest checkpoint on GCS: {latest_gs_ckpt}")
-            os.makedirs(args.output_dir, exist_ok=True)
-            local_ckpt_path = os.path.join(args.output_dir, "resume_checkpoint.pth")
-            try:
-                subprocess.run(["gsutil", "-q", "cp", latest_gs_ckpt, local_ckpt_path], check=True)
-                if os.path.exists(local_ckpt_path):
-                    print(f"Loading checkpoint {local_ckpt_path}...")
-                    ckpt = torch.load(local_ckpt_path, map_location="cpu")
-                    actual_model = model.module if isinstance(model, nn.DataParallel) else model
+        start_step, metrics_history = load_checkpoint_split(
+            actual_model, optimizer, scheduler, ema,
+            args.gcs_checkpoint_dir, args.output_dir, device,
+        )
+        if start_step > 0:
+            # Восстанавливаем состояние шедулера (fast-forward)
+            for _ in range(start_step):
+                scheduler.step()
 
-                    if "dus" in ckpt:
-                        clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
-                        actual_model.dus.load_state_dict(clean_dus)
-                    if "confidence_proj" in ckpt:
-                        clean_proj = {k.replace("_orig_module.", ""): v for k, v in ckpt["confidence_proj"].items()}
-                        actual_model.confidence_proj.load_state_dict(clean_proj)
-                    if "c_embed_alphas" in ckpt:
-                        actual_model.c_embed_alphas.data.copy_(ckpt["c_embed_alphas"].to(device))
-                        print(f"[Resume] c_embed_alphas loaded (mean={ckpt['c_embed_alphas'].mean():.4f})")
-
-                    if "dus_ema" in ckpt and "confidence_proj_ema" in ckpt:
-                        shadow_update = {
-                            **{f"dus.{k}": v for k, v in ckpt["dus_ema"].items()},
-                            **{f"confidence_proj.{k}": v for k, v in ckpt["confidence_proj_ema"].items()},
-                        }
-                        if "c_embed_alphas_ema" in ckpt:
-                            shadow_update["c_embed_alphas"] = ckpt["c_embed_alphas_ema"]
-                            print(f"[Resume] c_embed_alphas_ema loaded (mean={ckpt['c_embed_alphas_ema'].mean():.4f})")
-                        ema.shadow.update(shadow_update)
-
-                    if "optimizer" in ckpt:
-                        try:
-                            optimizer.load_state_dict(ckpt["optimizer"])
-                        except Exception as e:
-                            print(f"[Resume] WARN: Skipping optimizer load ({e}).")
-                    if "scheduler" in ckpt:
-                        try:
-                            scheduler.load_state_dict(ckpt["scheduler"])
-                        except Exception as e:
-                            print(f"[Resume] INFO: Skipping scheduler state load ({e}).")
-                    if "step" in ckpt:
-                        start_step = ckpt["step"]
-                        if start_step > 0:
-                            for _ in range(start_step):
-                                scheduler.step()
-                    if "metrics_history" in ckpt: metrics_history = ckpt["metrics_history"]
-
-                    print(f"Successfully resumed from step {start_step}!")
-            except Exception as e:
-                print(f"Warning: Failed to resume from GCS checkpoint! Error: {e}")
-
+    # --- Training Loop ---
     model.train()
     step = start_step
 
     from tqdm.auto import tqdm
-    pbar = tqdm(total=total_steps, initial=start_step, desc="Training Phase 3")
+    pbar = tqdm(total=total_steps, initial=start_step, desc="Phase 3 Diffusion")
     os.makedirs(args.output_dir, exist_ok=True)
 
     for epoch in range(args.epochs):
@@ -687,8 +884,13 @@ def train():
             attention_mask = batch["attention_mask"].to(device)
 
             optimizer.zero_grad()
-            fwd_outputs = model(input_ids, attention_mask=attention_mask, low_noise_amp=args.low_noise_amp)
-            loss, metrics = compute_phase3_loss(fwd_outputs)
+            fwd_outputs = model(
+                input_ids,
+                attention_mask=attention_mask,
+                t_min=args.t_min,
+                t_max=args.t_max,
+            )
+            loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior)
 
             if loss.dim() > 0:
                 loss = loss.mean()
@@ -701,9 +903,10 @@ def train():
 
             # Логирование
             if step % args.log_steps == 0:
-                metrics_dict = {k: (v.mean().item() if isinstance(v, torch.Tensor) else v) for k, v in metrics.items()}
-
-
+                metrics_dict = {
+                    k: (v.mean().item() if isinstance(v, torch.Tensor) else v)
+                    for k, v in metrics.items()
+                }
                 metrics_dict["loss"]      = loss.item()
                 metrics_dict["lr"]        = optimizer.param_groups[0]["lr"]
                 metrics_dict["step"]      = step
@@ -712,9 +915,10 @@ def train():
                 if args.wandb_project:
                     wandb.log(metrics_dict, step=step)
                 pbar.set_postfix({
-                    "loss": f"{metrics_dict['loss']:.4f}",
-                    "grad": f"{grad_norm:.3f}",
-                    "c_true": f"{metrics_dict.get('c_true_mean', 0):.4f}",
+                    "loss":  f"{metrics_dict['loss']:.4f}",
+                    "cos":   f"{metrics_dict.get('cos_sim_all', 0):.4f}",
+                    "t":     f"{metrics_dict.get('t_mean', 0):.3f}",
+                    "grad":  f"{grad_norm:.3f}",
                 })
 
             # Validation
@@ -724,61 +928,42 @@ def train():
                 val_batches = 0
                 with torch.no_grad():
                     for val_batch in val_dataloader:
-                        v_input_ids      = val_batch["input_ids"].to(device)
-                        v_attention_mask = val_batch["attention_mask"].to(device)
-                        v_outputs = model(v_input_ids, attention_mask=v_attention_mask, low_noise_amp=args.low_noise_amp)
-                        v_loss, v_metrics = compute_phase3_loss(v_outputs)
+                        v_ids  = val_batch["input_ids"].to(device)
+                        v_mask = val_batch["attention_mask"].to(device)
+                        v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max)
+                        v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior)
                         for k, v in v_metrics.items():
-                            val_metrics_sum[f"val_{k}"] = val_metrics_sum.get(f"val_{k}", 0) + (v.mean().item() if isinstance(v, torch.Tensor) else v)
-                        val_metrics_sum["val_loss"] = val_metrics_sum.get("val_loss", 0) + (v_loss.mean().item() if isinstance(v_loss, torch.Tensor) else v_loss)
+                            val_metrics_sum[f"val_{k}"] = (
+                                val_metrics_sum.get(f"val_{k}", 0)
+                                + (v.mean().item() if isinstance(v, torch.Tensor) else v)
+                            )
+                        val_metrics_sum["val_loss"] = (
+                            val_metrics_sum.get("val_loss", 0)
+                            + (v_loss.mean().item() if isinstance(v_loss, torch.Tensor) else v_loss)
+                        )
                         val_batches += 1
                         if val_batches >= 50:
                             break
                 if val_batches > 0:
-                    val_metrics_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
-
-                    # Добавляем вычисление дивергенции слоев
-                    actual_model = model.module if isinstance(model, nn.DataParallel) else model
+                    val_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
                     layer_div = compute_layer_divergence(actual_model.dus)
-                    val_metrics_avg["val_layer_divergence"] = layer_div
-
+                    val_avg["val_layer_divergence"] = layer_div
                     if args.wandb_project:
-                        wandb.log(val_metrics_avg, step=step)
-                    print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_sim_all: {val_metrics_avg.get('val_cos_sim_all', 0):.4f}")
+                        wandb.log(val_avg, step=step)
+                    print(
+                        f"\n[VAL] Step {step} | loss: {val_avg.get('val_loss', 0):.4f} "
+                        f"| cos_all: {val_avg.get('val_cos_sim_all', 0):.4f} "
+                        f"| cos_lo: {val_avg.get('val_cos_sim_t_low', 0):.4f} "
+                        f"| cos_hi: {val_avg.get('val_cos_sim_t_high', 0):.4f}"
+                    )
                 model.train()
 
-            # Сохранение чекпоинта
+            # Checkpoint (разделённый: модель + оптимайзер → GCS → удалить)
             if step > start_step and (step + 5) % args.save_steps == 0:
-                ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
-                actual_model = model.module if isinstance(model, nn.DataParallel) else model
-
-                dus_state  = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-                proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-                alphas_state = actual_model.c_embed_alphas.detach().cpu()
-
-                ema.apply(model)
-                dus_ema_state  = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-                proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-                alphas_ema_state = actual_model.c_embed_alphas.detach().cpu()
-                ema.restore(model)
-
-                torch.save({
-                    "dus": dus_state,
-                    "confidence_proj": proj_state,
-                    "c_embed_alphas": alphas_state,
-                    "dus_ema": dus_ema_state,
-                    "confidence_proj_ema": proj_ema_state,
-                    "c_embed_alphas_ema": alphas_ema_state,
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(),
-                    "step": step,
-                    "metrics_history": metrics_history,
-                }, ckpt_path)
-                print(f"\n[SAVE] Checkpoint saved → {ckpt_path}")
-                try:
-                    subprocess.Popen(["gsutil", "-q", "cp", ckpt_path, args.gcs_checkpoint_dir])
-                except Exception as e_sync:
-                    print(f"[SYNC] Error syncing to GCS: {e_sync}")
+                save_checkpoint_split(
+                    actual_model, optimizer, scheduler, ema,
+                    step, metrics_history, args.output_dir, args.gcs_checkpoint_dir,
+                )
 
             step += 1
             pbar.update(1)
@@ -789,36 +974,11 @@ def train():
     pbar.close()
 
     # Финальное сохранение
-    final_path = os.path.join(args.output_dir, "phase3_final.pth")
-    actual_model = model.module if isinstance(model, nn.DataParallel) else model
-    dus_state  = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    proj_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-    alphas_state = actual_model.c_embed_alphas.detach().cpu()
-
-    ema.apply(model)
-    dus_ema_state  = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    proj_ema_state = {k: v.cpu() for k, v in actual_model.confidence_proj.state_dict().items()}
-    alphas_ema_state = actual_model.c_embed_alphas.detach().cpu()
-    ema.restore(model)
-
-    torch.save({
-        "dus": dus_state,
-        "confidence_proj": proj_state,
-        "c_embed_alphas": alphas_state,
-        "dus_ema": dus_ema_state,
-        "confidence_proj_ema": proj_ema_state,
-        "c_embed_alphas_ema": alphas_ema_state,
-        "optimizer": optimizer.state_dict(),
-        "scheduler": scheduler.state_dict(),
-        "step": step,
-        "metrics_history": metrics_history,
-    }, final_path)
-    print(f"[SAVE] Final weights saved → {final_path}")
-    try:
-        subprocess.run(["gsutil", "-q", "cp", final_path, args.gcs_checkpoint_dir])
-        print(f"[SYNC] Final sync to GCS complete.")
-    except Exception as e:
-        print(f"[SYNC] Error syncing final: {e}")
+    print("[SAVE] Final checkpoint...")
+    save_checkpoint_split(
+        actual_model, optimizer, scheduler, ema,
+        step, metrics_history, args.output_dir, args.gcs_checkpoint_dir,
+    )
 
     if args.wandb_project:
         wandb.finish()

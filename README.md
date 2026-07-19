@@ -92,8 +92,8 @@ graph TD
 **Phase 2: Decoder training**
 - **Goal**: Обучение компактного декодера, способного без авторегрессии улучшить грамматику ответа.
 
-**Phase 3: Low-noise latentBackbone training, without CA-prompt**
-- **Goal**: Train the core diffusion backbone on low noise settings, focusing on internal consistency without user prompt conditioning (CA-prompt disabled).
+**Phase 3: Base diffusion latentBackbone training, without CA-prompt**
+- **Goal**: Train the core diffusion backbone to diffuse some random phrases, focusing on internal consistency without user prompt conditioning (CA-prompt disabled).
 
 **Phase 4: Prompt Conditioning (CA_Prompt)**
 - **Goal**: Train `CA_Prompt` layers to inject the rigid quality criteria (the user prompt) directly into the diffusion process.
