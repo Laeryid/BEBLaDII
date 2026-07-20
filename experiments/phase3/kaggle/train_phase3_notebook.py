@@ -685,15 +685,16 @@ def load_checkpoint_split(
 ):
     """
     Загружает модель и (если доступен) оптимайзер из GCS.
-    Возвращает start_step и metrics_history.
+    Возвращает start_step, metrics_history и флаг загрузки планировщика scheduler_loaded.
     """
     start_step = 0
     metrics_history = []
+    scheduler_loaded = False
 
     latest_model_gs = get_latest_gcs_checkpoint(gcs_checkpoint_dir, suffix=".pth")
     if not latest_model_gs:
         print("[Resume] No checkpoints found on GCS. Starting from scratch.")
-        return start_step, metrics_history
+        return start_step, metrics_history, scheduler_loaded
 
     print(f"[Resume] Found model checkpoint: {latest_model_gs}")
     os.makedirs(output_dir, exist_ok=True)
@@ -743,7 +744,7 @@ def load_checkpoint_split(
 
     except Exception as e:
         print(f"[Resume] WARN: Failed to load model checkpoint: {e}")
-        return 0, []
+        return 0, [], False
 
     # Пробуем загрузить оптимайзер
     step_num = int(latest_model_gs.split("_step_")[-1].replace(".pth", ""))
@@ -756,13 +757,15 @@ def load_checkpoint_split(
         print(f"[Resume] Optimizer state loaded.")
         try:
             scheduler.load_state_dict(opt_ckpt["scheduler"])
+            scheduler_loaded = True
+            print(f"[Resume] Scheduler state loaded successfully.")
         except Exception as e:
             print(f"[Resume] Scheduler load skipped: {e}")
         os.remove(local_opt)
     except Exception as e:
         print(f"[Resume] WARN: Optimizer checkpoint not found or failed ({e}). Fresh optimizer.")
 
-    return start_step, metrics_history
+    return start_step, metrics_history, scheduler_loaded
 
 
 # %% [markdown]
@@ -896,13 +899,14 @@ def train():
     actual_model = model.module if isinstance(model, nn.DataParallel) else model
     start_step = 0
     metrics_history = []
+    scheduler_loaded = False
     if getattr(args, "resume_from_checkpoint", False):
-        start_step, metrics_history = load_checkpoint_split(
+        start_step, metrics_history, scheduler_loaded = load_checkpoint_split(
             actual_model, optimizer, scheduler, ema,
             args.gcs_checkpoint_dir, args.output_dir, device,
         )
-        if start_step > 0:
-            # Восстанавливаем состояние шедулера (fast-forward)
+        if start_step > 0 and not scheduler_loaded:
+            # Восстанавливаем состояние шедулера (fast-forward) только если он не был загружен
             for _ in range(start_step):
                 scheduler.step()
 
