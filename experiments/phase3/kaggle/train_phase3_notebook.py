@@ -1016,9 +1016,6 @@ def train():
             ema.step(actual_model)
             scheduler.step()
 
-            # --- Explicit memory cleanup (OOM Fix) ---
-            del fwd_outputs, loss, metrics
-            # -----------------------------------------
 
             # Цикличная warmup логика (как в коммите bdd4ec3)
             current_optim_step = step + 1
@@ -1108,6 +1105,11 @@ def train():
                     actual_model, optimizer, scheduler, ema,
                     step, metrics_history, args.output_dir, args.gcs_checkpoint_dir,
                 )
+
+            # --- Explicit memory cleanup (OOM Fix) ---
+            if 'fwd_outputs' in locals():
+                del fwd_outputs, loss, metrics
+            # -----------------------------------------
 
             step += 1
             pbar.update(1)
