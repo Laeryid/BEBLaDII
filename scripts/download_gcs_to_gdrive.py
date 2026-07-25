@@ -1,10 +1,10 @@
 """
-Скрипт переноса весов из GCP Cloud Storage (GCS) на Google Drive для Google Colab.
+Скрипт синхронизации весов из GCP Cloud Storage (GCS) на Google Drive с поддержкой докачки (rsync).
 
 Использование в Google Colab:
     1. Примонтировать Google Drive
     2. Выполнить auth.authenticate_user()
-    3. Запустить данный скрипт через python scripts/download_gcs_to_gdrive.py
+    3. Запустить скрипт через python scripts/download_gcs_to_gdrive.py
 """
 
 import os
@@ -21,12 +21,12 @@ def check_colab_environment():
         return False
 
 
-def setup_and_download(
+def setup_and_rsync(
     gcs_src_path: str = "gs://bebladii-weigths/checkpoints/",
     gdrive_dest_dir: str = "/content/drive/MyDrive/BEBLaDII_weights/",
 ):
     """
-    Выполняет подготовку директорий и высокоскоростной перенос файлов из GCS на Google Drive.
+    Выполняет подготовку директорий и синхронизацию файлов (rsync) из GCS на Google Drive.
     """
     if check_colab_environment():
         from google.colab import auth, drive
@@ -40,16 +40,16 @@ def setup_and_download(
     print(f"[3/4] Создание целевой директории: {gdrive_dest_dir}")
     os.makedirs(gdrive_dest_dir, exist_ok=True)
 
-    print(f"[4/4] Запуск скачивания: {gcs_src_path} -> {gdrive_dest_dir}")
-    cmd = ["gcloud", "storage", "cp", "-r", f"{gcs_src_path}*", gdrive_dest_dir]
+    print(f"[4/4] Запуск синхронизации (rsync): {gcs_src_path} -> {gdrive_dest_dir}")
+    cmd = ["gcloud", "storage", "rsync", "-r", gcs_src_path, gdrive_dest_dir]
 
     try:
         subprocess.run(cmd, check=True)
-        print("Скачивание успешно завершено!")
+        print("Синхронизация успешно завершена!")
     except subprocess.CalledProcessError as err:
-        print(f"Ошибка при выполнении gcloud storage: {err}")
-        print("Пробуем резервный вариант с gsutil -m...")
-        backup_cmd = ["gsutil", "-m", "cp", "-r", f"{gcs_src_path}*", gdrive_dest_dir]
+        print(f"Ошибка при выполнении gcloud storage rsync: {err}")
+        print("Пробуем резервный вариант с gsutil -m rsync...")
+        backup_cmd = ["gsutil", "-m", "rsync", "-r", gcs_src_path, gdrive_dest_dir]
         subprocess.run(backup_cmd, check=True)
 
     print("\nФайлы на Google Drive:")
@@ -63,4 +63,4 @@ def setup_and_download(
 if __name__ == "__main__":
     src_path = sys.argv[1] if len(sys.argv) > 1 else "gs://bebladii-weigths/checkpoints/"
     dest_dir = sys.argv[2] if len(sys.argv) > 2 else "/content/drive/MyDrive/BEBLaDII_weights/"
-    setup_and_download(src_path, dest_dir)
+    setup_and_rsync(src_path, dest_dir)
