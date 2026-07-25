@@ -22,8 +22,8 @@ def check_colab_environment():
 
 
 def setup_and_rsync(
-    gcs_src_path: str = "gs://bebladii-weigths/checkpoints/",
-    gdrive_dest_dir: str = "/content/drive/MyDrive/BEBLaDII_weights/",
+    gcs_src_path: str = "gs://bebladii-weigths-us/planB/phase3/checkpoints/",
+    gdrive_dest_dir: str = "/content/drive/MyDrive/BEBLaDII_weights_phase3_attempt20260722/",
 ):
     """
     Выполняет подготовку директорий и синхронизацию файлов (rsync) из GCS на Google Drive.
