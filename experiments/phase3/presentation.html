@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BEBLaDII Phase 3: Отчет о деградации (AdaLN)</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=JetBrains+Mono:wght@400;700&display=swap');
+        
+        :root {
+            --bg: #0f1115;
+            --surface: #1e2128;
+            --surface-hover: #2a2d35;
+            --primary: #6366f1;
+            --primary-glow: rgba(99, 102, 241, 0.4);
+            --danger: #ef4444;
+            --success: #22c55e;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 40px 20px;
+        }
+
+        header {
+            text-align: center;
+            margin-bottom: 60px;
+            animation: fadeInDown 0.8s ease-out;
+        }
+
+        h1 {
+            font-weight: 800;
+            font-size: 3rem;
+            margin-bottom: 10px;
+            background: linear-gradient(135deg, #fff, #a5b4fc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        h2 {
+            font-weight: 600;
+            font-size: 1.8rem;
+            border-bottom: 2px solid var(--surface);
+            padding-bottom: 10px;
+            margin-top: 50px;
+        }
+
+        .slide {
+            background: var(--surface);
+            border-radius: 16px;
+            padding: 40px;
+            margin-bottom: 40px;
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+            border: 1px solid rgba(255,255,255,0.05);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+            animation: fadeInUp 0.8s ease-out forwards;
+            opacity: 0;
+        }
+
+        .slide:nth-child(2) { animation-delay: 0.2s; }
+        .slide:nth-child(3) { animation-delay: 0.4s; }
+        .slide:nth-child(4) { animation-delay: 0.6s; }
+        .slide:nth-child(5) { animation-delay: 0.8s; }
+
+        .slide:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 40px rgba(99, 102, 241, 0.15);
+        }
+
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .metric-card {
+            background: rgba(0,0,0,0.3);
+            border-radius: 12px;
+            padding: 20px;
+            border-left: 4px solid var(--primary);
+        }
+
+        .metric-card.danger { border-left-color: var(--danger); }
+        
+        .metric-title {
+            font-size: 0.9rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .metric-value {
+            font-size: 2rem;
+            font-weight: 800;
+            margin: 10px 0;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        code {
+            font-family: 'JetBrains Mono', monospace;
+            background: rgba(0,0,0,0.4);
+            padding: 2px 6px;
+            border-radius: 4px;
+            color: #a5b4fc;
+        }
+
+        pre {
+            background: rgba(0,0,0,0.4);
+            padding: 20px;
+            border-radius: 12px;
+            overflow-x: auto;
+            font-family: 'JetBrains Mono', monospace;
+            border: 1px solid rgba(255,255,255,0.05);
+        }
+
+        .architecture {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 20px;
+            margin: 30px 0;
+            flex-wrap: wrap;
+        }
+
+        .block {
+            background: var(--surface-hover);
+            padding: 20px 30px;
+            border-radius: 12px;
+            border: 1px solid var(--primary);
+            font-weight: 600;
+            text-align: center;
+            position: relative;
+        }
+
+        .block.wrong { border-color: var(--danger); box-shadow: 0 0 15px rgba(239, 68, 68, 0.2); }
+        .block.correct { border-color: var(--success); box-shadow: 0 0 15px rgba(34, 197, 94, 0.2); }
+
+        .arrow {
+            color: var(--text-muted);
+            font-size: 1.5rem;
+        }
+
+        .highlight { color: var(--primary); font-weight: bold; }
+        .highlight-danger { color: var(--danger); font-weight: bold; }
+        
+        @keyframes fadeInUp {
+            from { opacity: 0; transform: translateY(30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes fadeInDown {
+            from { opacity: 0; transform: translateY(-30px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <header>
+        <h1>Анализ деградации Phase 3</h1>
+        <p style="color: var(--text-muted); font-size: 1.2rem;">Диагностика сбоя на 14 000 шаге и архитектурный аудит AdaLN</p>
+    </header>
+
+    <div class="slide">
+        <h2>1. Аномалия метрик (скрытая от W&B)</h2>
+        <p>WandB сглаживает графики, из-за чего спайки сложно заметить. Детальный парсинг `metrics_history` показал, что модель деградировала точно на <strong>13 510 шаге</strong>. Однако главной аномалией был не сам спайк Loss, а <strong>экспоненциальный рост нормы последнего слоя</strong>.</p>
+        
+        <div class="metrics-grid">
+            <div class="metric-card">
+                <div class="metric-title">Шаг 2 000 (norm_Llast)</div>
+                <div class="metric-value">396.90</div>
+                <p style="font-size: 0.85rem; margin:0; color: var(--text-muted);">Норма после первого рестарта</p>
+            </div>
+            <div class="metric-card">
+                <div class="metric-title">Шаг 10 000 (norm_Llast)</div>
+                <div class="metric-value">960.76</div>
+                <p style="font-size: 0.85rem; margin:0; color: var(--text-muted);">Непрерывный рост (скрытый баг)</p>
+            </div>
+            <div class="metric-card danger">
+                <div class="metric-title">Шаг 14 000 (Взрыв)</div>
+                <div class="metric-value">1580.15</div>
+                <p style="font-size: 0.85rem; margin:0; color: var(--text-muted);">Gradient Explosion & Loss Spike (0.014)</p>
+            </div>
+        </div>
+    </div>
+
+    <div class="slide">
+        <h2>2. Эмпирические данные: это не просто гипотеза</h2>
+        <p>Вы спросили: <i>«Ты видишь рост scale именно в этом месте? Или это гипотеза?»</i></p>
+        <p>Я написал скрипт, извлекший веса `adaLN` прямо из вашего чекпоинта `17995.pth`. Вот факты:</p>
+        <pre>
+Layer 00 | shift_bias mean: 0.0000 | scale_bias mean: 0.9921
+Layer 39 | shift_bias mean: 0.0000 | scale_bias mean: 0.9921
+
+Overall Avg Scale Bias: 0.9921 (инициализация была 1.0)
+Overall Avg Scale Weight Norm: 0.0000
+        </pre>
+        <p><strong>Вывод:</strong> Сеть <span class="highlight-danger">полностью проигнорировала t_emb</span> (веса t_emb равны 0). Более того, <code>scale</code> ушел в константу 0.992. 
+        Почему при scale < 1 норма <i>выросла</i>? Ответ кроется во взаимодействии Pre-LN и Residual Stream.</p>
+    </div>
+
+    <div class="slide">
+        <h2>3. В чем точная причина сбоя? (LayerNorm Erasure)</h2>
+        <p>Текущая реализация применяет AdaLN как `forward_pre_hook`. Это означает, что умножению на scale подвергается сам <strong>Residual Stream</strong> перед тем, как войти в трансформерный слой (ModernBERT использует Pre-LN).</p>
+        
+        <div class="architecture">
+            <div class="block wrong">Residual<br>Stream (x)</div>
+            <div class="arrow">→</div>
+            <div class="block wrong">AdaLN (Hook)<br><span style="font-size:0.8em">x_scaled = x * scale</span></div>
+            <div class="arrow">→</div>
+            <div class="block wrong">LayerNorm<br><span style="font-size:0.8em">LN(x_scaled) == LN(x) !</span></div>
+            <div class="arrow">→</div>
+            <div class="block">Attention</div>
+        </div>
+
+        <p>Поскольку <code>LayerNorm(x * scale) = LayerNorm(x)</code> (Scale-Invariant property), слои Attention и MLP <strong>вообще не видят вашего кондиционирования t!</strong> <br>
+        Они полностью «глухи» к диффузии. Сеть пытается выполнить задачу шумоподавления без знания уровня шума.</p>
+        
+        <p>Единственное, на что влияет AdaLN сейчас — это сам Residual канал. Умножение на <code>0.992</code> (векторно по каналам) искажает изотропию канала на каждом слое. Пытаясь пробить сигнал сквозь 40 слоев, модель раздувает апдейты Attention/MLP, что ведет к тому, что <code>norm_Llast</code> разгоняется до 1500+ и происходит срыв градиентов.</p>
+    </div>
+
+    <div class="slide">
+        <h2>4. Как это исправить? (Правильный DiT-паттерн)</h2>
+        <p>Чтобы AdaLN работал, он должен модулировать сигнал <strong>после LayerNorm, но до Attention/MLP</strong>, и <i>ни в коем случае не должен умножать сам Residual Stream</i>.</p>
+        
+        <div class="architecture">
+            <div class="block correct">Residual<br>Stream (x)</div>
+            <div class="arrow">→</div>
+            <div class="block correct">LayerNorm<br><span style="font-size:0.8em">x_norm = LN(x)</span></div>
+            <div class="arrow">→</div>
+            <div class="block correct">AdaLN<br><span style="font-size:0.8em">x_mod = x_norm * scale + shift</span></div>
+            <div class="arrow">→</div>
+            <div class="block">Attention</div>
+            <div class="arrow">→</div>
+            <div class="block correct">+ Residual<br><span style="font-size:0.8em">x + Attn(x_mod)</span></div>
+        </div>
+
+        <p><strong>Решение в коде:</strong></p>
+        <pre>
+// Убрать forward_pre_hook для всей модели.
+// Вместо этого нужно пропатчить ModernBertLayer или использовать хуки сложнее:
+
+def patch_modernbert_layer(layer, adaln_module):
+    original_forward = layer.forward
+    def new_forward(hidden_states, *args, **kwargs):
+        residual = hidden_states
+        
+        # 1. Применяем стандартный LayerNorm
+        normed = layer.attn_norm(hidden_states)
+        
+        # 2. Модулируем AdaLN! (t_emb передаем через глобальную переменную или args)
+        shift, scale = adaln_module(current_t_emb)
+        normed = normed * scale + shift
+        
+        # 3. Внимание
+        attn_output = layer.attn(normed)
+        hidden_states = residual + attn_output
+        ...
+        // То же самое для MLP блока
+        </pre>
+        <p>Только так диффузия (параметр t) попадет внутрь логики сети, а Residual Stream останется чистым (identity), что не позволит норме взорваться!</p>
+    </div>
+
+</div>
+
+</body>
+</html>

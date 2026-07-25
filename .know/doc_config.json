@@ -245,6 +245,22 @@
       "covers": ["Architecture & Training Phases"],
       "depends_on": []
     },
+    "decisions/061_phase3_clean_text_diffusion_transition.md": {
+      "description": "ADR: Переход на диффузию чистых текстов без ChatML-тегов (Phase 3), выбор чекпоинта step_9995 как фундамента и сопряжение с ModernLatentDecoder.",
+      "covers": ["Architecture & Training Phases"],
+      "depends_on": [
+        ".know/decisions/060_phase3_canonical_diffusion_redesign.md",
+        "experiments/phase3/train_phase3_notebook.py"
+      ]
+    },
+    "decisions/062_phase3_adaln_residual_stream_bug.md": {
+      "description": "ADR: Фиксация бага интеграции AdaLN (умножение residual stream) и конфликта с Pre-LN, приведших к деградации Phase 3. Внедрение паттерна DiT.",
+      "covers": ["Architecture & Training Phases"],
+      "depends_on": [
+        ".know/decisions/060_phase3_canonical_diffusion_redesign.md",
+        "experiments/phase3/train_phase3_notebook.py"
+      ]
+    },
     "KI_training_infrastructure.md": {
       "description": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler.",
       "covers": ["Experiments", "Data & Ops Scripts"],

@@ -60,10 +60,38 @@ if PROJECT_ROOT not in sys.path:
 try:
     from src.beb_la_dii.model.dus import DUSModel
     from src.beb_la_dii.model.vae import LatentEncoder
-    from src.beb_la_dii.utils.data import get_dataloader
+    from src.beb_la_dii.utils.data import get_dataloader, DistillationDataset
     from src.beb_la_dii.utils.loss import safe_normalize
 except ImportError as e:
     print(f"Warning: Не удалось импортировать модули проекта. Ошибка: {e}")
+
+# === Monkey-patching для ADR 061 (Clean Text Diffusion) ===
+def _clean_apply_mapper(self, item, dtype):
+    if item is None: return ""
+    text = ""
+    if dtype == 'raw':
+        text = item.get('text', '') or ""
+    elif dtype == 'magpie':
+        text = item.get('response', '') or ""
+    elif dtype == 'sharegpt':
+        convs = item.get('conversations') or item.get('messages') or []
+        if isinstance(convs, (list, tuple)):
+            for msg in convs:
+                if not isinstance(msg, dict): continue
+                role_val = msg.get('from', msg.get('role'))
+                role = "user" if role_val in ['human', 'user'] else "assistant"
+                content = msg.get('value', msg.get('content', '')) or ""
+                if role == "assistant":
+                    text += content + "\n"
+    if not text.strip() and isinstance(item, dict):
+        vals = [str(v) for k, v in item.items() if isinstance(v, str) and len(str(v)) > 10]
+        text = "\n".join(vals) if vals else str(item)
+    return text.strip()
+
+if 'DistillationDataset' in globals():
+    DistillationDataset._apply_mapper = _clean_apply_mapper
+    print("[Init] DistillationDataset monkey-patched for Clean Text (ADR 061)")
+# ==========================================================
 
 
 def resolve_model_path(base_path: str) -> str:
@@ -438,15 +466,19 @@ class BEBLaDIIPhase3(nn.Module):
             nn.Linear(t_emb_dim * 4, t_emb_dim),
         )
 
-        # 5. AdaLN per DUS layer (ADR-060)
-        # Один AdaLNModulation на каждый трансформерный блок DUS
+        # 5. AdaLN per DUS layer (ADR-060 & ADR-062)
+        # Два отдельных AdaLNModulation на каждый блок DUS (attn и mlp)
         num_layers = len(self.dus.layers)
-        self.adaLN = nn.ModuleList([
+        self.adaLN_attn = nn.ModuleList([
             AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(num_layers)
         ])
-        # Регистрируем forward pre-hooks
+        self.adaLN_mlp = nn.ModuleList([
+            AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(num_layers)
+        ])
+        # Регистрируем forward hooks на attn_norm и mlp_norm (ADR-062)
         for i, layer in enumerate(self.dus.layers):
-            layer.register_forward_pre_hook(self._make_adaLN_hook(i))
+            layer.attn_norm.register_forward_hook(self._make_adaLN_hook(i, target="attn"))
+            layer.mlp_norm.register_forward_hook(self._make_adaLN_hook(i, target="mlp"))
 
         # 6. Токен-разделитель (ADR 058)
         if sep_token_path and os.path.exists(sep_token_path):
@@ -457,18 +489,21 @@ class BEBLaDIIPhase3(nn.Module):
             self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
             print(f"[WARN] Separator token NOT found at {sep_token_path}, initialized to zeros.", flush=True)
 
-    def _make_adaLN_hook(self, layer_idx: int):
-        """Forward pre-hook: применяет AdaLN к входным hidden_states перед слоем."""
-        def hook(module, args):
+    def _make_adaLN_hook(self, layer_idx: int, target: str):
+        """Forward hook: применяет AdaLN после LayerNorm, до Attention/MLP (ADR-062)."""
+        def hook(module, input, output):
             if not hasattr(self, "_current_t_emb") or self._current_t_emb is None:
-                return args
-            hidden_states = args[0]
-            shift, scale = self.adaLN[layer_idx](self._current_t_emb)
-            shift = shift.to(hidden_states.dtype)
-            scale = scale.to(hidden_states.dtype)
-            # LayerNorm уже применён внутри блока — мы модулируем вход
-            hidden_states = hidden_states * scale + shift
-            return (hidden_states,) + args[1:]
+                return output
+            
+            if target == "attn":
+                shift, scale = self.adaLN_attn[layer_idx](self._current_t_emb)
+            else:
+                shift, scale = self.adaLN_mlp[layer_idx](self._current_t_emb)
+                
+            shift = shift.to(output.dtype)
+            scale = scale.to(output.dtype)
+            # Модулируем уже нормализованный output
+            return output * scale + shift
         return hook
 
     def train(self, mode=True):
@@ -642,21 +677,25 @@ def save_checkpoint_split(
 
     # --- Веса модели ---
     dus_state   = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    adaLN_state = {k: v.cpu() for k, v in actual_model.adaLN.state_dict().items()}
+    adaLN_attn_state = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
+    adaLN_mlp_state = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
     t_proj_state = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}
 
     ema.apply(actual_model)
     dus_ema_state    = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    adaLN_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN.state_dict().items()}
+    adaLN_attn_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
+    adaLN_mlp_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
     t_proj_ema_state = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}
     ema.restore(actual_model)
 
     torch.save({
         "dus":            dus_state,
-        "adaLN":          adaLN_state,
+        "adaLN_attn":     adaLN_attn_state,
+        "adaLN_mlp":      adaLN_mlp_state,
         "t_proj":         t_proj_state,
         "dus_ema":        dus_ema_state,
-        "adaLN_ema":      adaLN_ema_state,
+        "adaLN_attn_ema": adaLN_attn_ema_state,
+        "adaLN_mlp_ema":  adaLN_mlp_ema_state,
         "t_proj_ema":     t_proj_ema_state,
         "step":           step,
         "metrics_history": metrics_history,
@@ -711,9 +750,12 @@ def load_checkpoint_split(
                 print(f"[Resume] DUS missing keys: {missing[:5]}")
             print(f"[Resume] DUS weights loaded.")
 
-        if "adaLN" in ckpt:
-            actual_model.adaLN.load_state_dict(ckpt["adaLN"], strict=True)
-            print(f"[Resume] AdaLN weights loaded.")
+        if "adaLN_attn" in ckpt:
+            actual_model.adaLN_attn.load_state_dict(ckpt["adaLN_attn"], strict=True)
+            print(f"[Resume] AdaLN_attn weights loaded.")
+        if "adaLN_mlp" in ckpt:
+            actual_model.adaLN_mlp.load_state_dict(ckpt["adaLN_mlp"], strict=True)
+            print(f"[Resume] AdaLN_mlp weights loaded.")
 
         if "t_proj" in ckpt:
             actual_model.t_proj.load_state_dict(ckpt["t_proj"], strict=True)
@@ -724,9 +766,12 @@ def load_checkpoint_split(
         if "dus_ema" in ckpt:
             for k, v in ckpt["dus_ema"].items():
                 ema_update[f"dus.{k}"] = v
-        if "adaLN_ema" in ckpt:
-            for k, v in ckpt["adaLN_ema"].items():
-                ema_update[f"adaLN.{k}"] = v
+        if "adaLN_attn_ema" in ckpt:
+            for k, v in ckpt["adaLN_attn_ema"].items():
+                ema_update[f"adaLN_attn.{k}"] = v
+        if "adaLN_mlp_ema" in ckpt:
+            for k, v in ckpt["adaLN_mlp_ema"].items():
+                ema_update[f"adaLN_mlp.{k}"] = v
         if "t_proj_ema" in ckpt:
             for k, v in ckpt["t_proj_ema"].items():
                 ema_update[f"t_proj.{k}"] = v
