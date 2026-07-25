@@ -659,16 +659,7 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
     total_loss = main_loss + w_prior * prior_loss
 
     # --- Diagnostic Norms ---
-    if hidden_states and len(hidden_states) > 1:
-        l0_norm  = hidden_states[0][:, 1:, :].float().norm(dim=-1).mean()
-        l40_norm = hidden_states[-1][:, 1:, :].float().norm(dim=-1).mean()
-        metrics["norm_L0"]    = l0_norm.detach()
-        metrics["norm_Llast"] = l40_norm.detach()
-        total_delta = 0.0
-        for i in range(len(hidden_states) - 1):
-            delta = hidden_states[i+1][:, 1:, :].float() - hidden_states[i][:, 1:, :].float()
-            total_delta += delta.norm(dim=-1).mean()
-        metrics["delta_norm_avg"] = (total_delta / (len(hidden_states) - 1)).detach()
+    # Отключено: мы больше не возвращаем hidden_states для экономии VRAM.
 
     return total_loss, metrics
 
