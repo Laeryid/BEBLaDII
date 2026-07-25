@@ -179,6 +179,10 @@ class Config:
     # Вес геометрического лосса
     w_prior = 0.05
 
+    # Смещённая выборка t (DiffuSeq-v2 / LD4LG): >1.0 → больше сэмплов при высоких t
+    # 1.0 = равномерная (текущее поведение), 2.0 = квадратичное смещение к t_max
+    t_sample_alpha = 2.0
+
     wandb_project = "BEBLaDII-Phase3-Kaggle"
 
 
@@ -489,6 +493,13 @@ class BEBLaDIIPhase3(nn.Module):
             self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
             print(f"[WARN] Separator token NOT found at {sep_token_path}, initialized to zeros.", flush=True)
 
+        # 7. Self-Conditioning projection (подготовка архитектуры — нулевая инициализация)
+        # При self_cond=None эффект нулевой → поведение идентично текущему.
+        # Двухпроходное обучение активируется на следующем этапе (после базовой сходимости).
+        self.self_cond_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
+        nn.init.zeros_(self.self_cond_proj.weight)
+        print("[Init] self_cond_proj initialized (zeros — neutral mode).", flush=True)
+
     def _make_adaLN_hook(self, layer_idx: int, target: str):
         """Forward hook: применяет AdaLN после LayerNorm, до Attention/MLP (ADR-062)."""
         def hook(module, input, output):
@@ -517,9 +528,11 @@ class BEBLaDIIPhase3(nn.Module):
         self,
         input_ids: torch.Tensor,
         attention_mask: torch.Tensor,
-        t: torch.Tensor | None = None,  # [B] float ∈ [t_min, t_max]; None → сэмплируем
+        t: torch.Tensor | None = None,            # [B] float ∈ [t_min, t_max]; None → сэмплируем
         t_min: float = 0.02,
         t_max: float = 1.0,
+        t_sample_alpha: float = 1.0,              # >1.0 → смещённая выборка к высоким t
+        self_cond: torch.Tensor | None = None,    # [B, T, D] предсказание x̂_0; None → нейтральный режим
     ) -> dict:
         with torch.no_grad():
             # --- Получаем чистые латентные векторы ---
@@ -529,7 +542,12 @@ class BEBLaDIIPhase3(nn.Module):
 
             # --- Сэмплируем t если не передан ---
             if t is None:
-                t = torch.rand(B, device=z_clean.device) * (t_max - t_min) + t_min
+                u = torch.rand(B, device=z_clean.device)
+                if t_sample_alpha != 1.0:
+                    # Смещённая выборка: 1 - u^α при α>1 → bias к t_max (высокий шум)
+                    # Обоснование: денойзинг при высоком t сложнее, модель недообучается
+                    u = 1.0 - u ** t_sample_alpha
+                t = u * (t_max - t_min) + t_min
 
             # --- Зашумляем ВСЕ токены (ADR-060) ---
             z_clean_f = z_clean.float()
@@ -541,8 +559,12 @@ class BEBLaDIIPhase3(nn.Module):
         t_emb = self.t_proj(t_sin)            # [B, t_emb_dim]
         self._current_t_emb = t_emb           # сохраняем для hooks
 
-        # --- Конкатенируем sep_prefix (ADR 058) ---
+        # --- Self-Conditioning injection (нейтрально при self_cond=None) ---
         x_in = z_noisy.float()
+        if self_cond is not None:
+            x_in = x_in + self.self_cond_proj(self_cond.float().to(x_in.device))
+
+        # --- Конкатенируем sep_prefix (ADR 058) ---
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)            # [B, T+1, D]
         attention_mask_extended = F.pad(attention_mask, (1, 0), value=1)    # [B, T+1]
@@ -613,6 +635,11 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
     if hi_mask.sum() > 0:
         cos_sim_hi = (cos_sim.mean(dim=1) * hi_mask).sum() / hi_mask.sum()
         metrics["cos_sim_t_high"] = cos_sim_hi.detach()
+    # Метрика среднего диапазона шума (0.3 ≤ t ≤ 0.7)
+    mid_mask = ((t >= 0.3) & (t <= 0.7)).float()
+    if mid_mask.sum() > 0:
+        cos_sim_mid = (cos_sim.mean(dim=1) * mid_mask).sum() / mid_mask.sum()
+        metrics["cos_sim_t_mid"] = cos_sim_mid.detach()
 
     # --- Prior Loss (геометрия сферы) ---
     z_flat    = dus_final.view(-1, D)
@@ -676,29 +703,33 @@ def save_checkpoint_split(
     opt_path   = os.path.join(output_dir, f"phase3_step_{step}_opt.pth")
 
     # --- Веса модели ---
-    dus_state   = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    adaLN_attn_state = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
-    adaLN_mlp_state = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
-    t_proj_state = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}
+    dus_state            = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
+    adaLN_attn_state     = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
+    adaLN_mlp_state      = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
+    t_proj_state         = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}
+    self_cond_proj_state = {k: v.cpu() for k, v in actual_model.self_cond_proj.state_dict().items()}
 
     ema.apply(actual_model)
-    dus_ema_state    = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
-    adaLN_attn_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
-    adaLN_mlp_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
-    t_proj_ema_state = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}
+    dus_ema_state             = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
+    adaLN_attn_ema_state      = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
+    adaLN_mlp_ema_state       = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
+    t_proj_ema_state          = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}
+    self_cond_proj_ema_state  = {k: v.cpu() for k, v in actual_model.self_cond_proj.state_dict().items()}
     ema.restore(actual_model)
 
     torch.save({
-        "dus":            dus_state,
-        "adaLN_attn":     adaLN_attn_state,
-        "adaLN_mlp":      adaLN_mlp_state,
-        "t_proj":         t_proj_state,
-        "dus_ema":        dus_ema_state,
-        "adaLN_attn_ema": adaLN_attn_ema_state,
-        "adaLN_mlp_ema":  adaLN_mlp_ema_state,
-        "t_proj_ema":     t_proj_ema_state,
-        "step":           step,
-        "metrics_history": metrics_history,
+        "dus":                  dus_state,
+        "adaLN_attn":           adaLN_attn_state,
+        "adaLN_mlp":            adaLN_mlp_state,
+        "t_proj":               t_proj_state,
+        "self_cond_proj":       self_cond_proj_state,
+        "dus_ema":              dus_ema_state,
+        "adaLN_attn_ema":       adaLN_attn_ema_state,
+        "adaLN_mlp_ema":        adaLN_mlp_ema_state,
+        "t_proj_ema":           t_proj_ema_state,
+        "self_cond_proj_ema":   self_cond_proj_ema_state,
+        "step":                 step,
+        "metrics_history":      metrics_history,
     }, model_path)
     print(f"[SAVE] Model weights → {model_path}")
     sync_to_gcs_and_delete(model_path, gcs_checkpoint_dir)
@@ -760,6 +791,9 @@ def load_checkpoint_split(
         if "t_proj" in ckpt:
             actual_model.t_proj.load_state_dict(ckpt["t_proj"], strict=True)
             print(f"[Resume] t_proj weights loaded.")
+        if "self_cond_proj" in ckpt:
+            actual_model.self_cond_proj.load_state_dict(ckpt["self_cond_proj"], strict=True)
+            print(f"[Resume] self_cond_proj weights loaded.")
 
         # EMA shadows
         ema_update = {}
@@ -775,6 +809,9 @@ def load_checkpoint_split(
         if "t_proj_ema" in ckpt:
             for k, v in ckpt["t_proj_ema"].items():
                 ema_update[f"t_proj.{k}"] = v
+        if "self_cond_proj_ema" in ckpt:
+            for k, v in ckpt["self_cond_proj_ema"].items():
+                ema_update[f"self_cond_proj.{k}" ] = v
         if ema_update:
             ema.shadow.update(ema_update)
             print(f"[Resume] EMA shadows updated ({len(ema_update)} tensors).")
@@ -977,6 +1014,7 @@ def train():
                 attention_mask=attention_mask,
                 t_min=args.t_min,
                 t_max=args.t_max,
+                t_sample_alpha=args.t_sample_alpha,
             )
             loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior)
 
@@ -1020,10 +1058,11 @@ def train():
                 if args.wandb_project:
                     wandb.log(metrics_dict, step=step)
                 pbar.set_postfix({
-                    "loss":  f"{metrics_dict['loss']:.4f}",
-                    "cos":   f"{metrics_dict.get('cos_sim_all', 0):.4f}",
-                    "t":     f"{metrics_dict.get('t_mean', 0):.3f}",
-                    "grad":  f"{grad_norm:.3f}",
+                    "loss":   f"{metrics_dict['loss']:.4f}",
+                    "cos_lo": f"{metrics_dict.get('cos_sim_t_low', 0):.4f}",
+                    "cos_hi": f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
+                    "t_mean": f"{metrics_dict.get('t_mean', 0):.3f}",
+                    "grad":   f"{grad_norm:.3f}",
                 })
 
             # Validation
@@ -1035,7 +1074,7 @@ def train():
                     for val_batch in val_dataloader:
                         v_ids  = val_batch["input_ids"].to(device)
                         v_mask = val_batch["attention_mask"].to(device)
-                        v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max)
+                        v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
                         v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior)
                         for k, v in v_metrics.items():
                             val_metrics_sum[f"val_{k}"] = (

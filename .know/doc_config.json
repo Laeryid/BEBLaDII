@@ -261,6 +261,13 @@
         "experiments/phase3/train_phase3_notebook.py"
       ]
     },
+    "decisions/063_phase3_advanced_diffusion_techniques.md": {
+      "description": "ADR: Integration of advanced continuous diffusion techniques (Self-Conditioning preparation, Shifted Noise Schedule) to improve model stability and convergence speed.",
+      "covers": ["Architecture & Training Phases"],
+      "depends_on": [
+        "experiments/phase3/kaggle/train_phase3_notebook.py"
+      ]
+    },
     "KI_training_infrastructure.md": {
       "description": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler.",
       "covers": ["Experiments", "Data & Ops Scripts"],
