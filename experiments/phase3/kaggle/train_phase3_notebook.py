@@ -573,11 +573,11 @@ class BEBLaDIIPhase3(nn.Module):
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
             attention_mask=attention_mask_extended,
-            output_hidden_states=True,
+            output_hidden_states=False,  # Отключено для экономии VRAM (OOM фикс)
         )
 
         # --- Финальная нормализация (отрезаем sep) ---
-        pre_norm = dus_outputs.hidden_states[-1][:, 1:, :].float()
+        pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
         dus_final = safe_normalize(dus_final_raw, dim=-1)  # [B, T, D]
 
@@ -591,7 +591,6 @@ class BEBLaDIIPhase3(nn.Module):
             "dus_final":     dus_final,
             "dus_final_raw": dus_final_raw,
             "attention_mask": attention_mask,
-            "hidden_states": dus_outputs.hidden_states,
         }
 
 
@@ -608,7 +607,6 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
     dus_final = outputs["dus_final"].float()
     attn_f    = outputs["attention_mask"].float()
     t         = outputs["t"]
-    hidden_states = outputs.get("hidden_states", [])
 
     metrics = {}
     B, T, D = z_clean.size()
@@ -1027,6 +1025,10 @@ def train():
             ema.step(actual_model)
             scheduler.step()
 
+            # --- Explicit memory cleanup (OOM Fix) ---
+            del fwd_outputs, loss, metrics
+            # -----------------------------------------
+
             # Цикличная warmup логика (как в коммите bdd4ec3)
             current_optim_step = step + 1
             
@@ -1088,6 +1090,13 @@ def train():
                         val_batches += 1
                         if val_batches >= 50:
                             break
+                
+                # --- Очистка памяти после валидации (OOM Fix) ---
+                if 'v_out' in locals():
+                    del v_out, v_loss, v_metrics
+                torch.cuda.empty_cache()
+                # ------------------------------------------------
+
                 if val_batches > 0:
                     val_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
                     layer_div = compute_layer_divergence(actual_model.dus)
