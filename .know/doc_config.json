@@ -268,6 +268,14 @@
         "experiments/phase3/kaggle/train_phase3_notebook.py"
       ]
     },
+    "decisions/064_adaln_zero_init_symmetry_break_and_diversity_loss.md": {
+      "description": "ADR: Нарушение нулевой симметрии AdaLN (Micro-Noise Init) и введение Diversity Loss для предотвращения Rank-1 коллапса в Phase 3.",
+      "covers": ["Architecture & Training Phases", "Model Core"],
+      "depends_on": [
+        "experiments/phase3/kaggle/train_phase3_notebook.py",
+        ".know/decisions/062_phase3_adaln_residual_stream_bug.md"
+      ]
+    },
     "KI_training_infrastructure.md": {
       "description": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler.",
       "covers": ["Experiments", "Data & Ops Scripts"],

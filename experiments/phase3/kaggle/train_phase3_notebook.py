@@ -178,6 +178,8 @@ class Config:
 
     # Вес геометрического лосса
     w_prior = 0.05
+    # Вес лосса разнообразия для AdaLN
+    w_div = 0.1
 
     # Смещённая выборка t (DiffuSeq-v2 / LD4LG): >1.0 → больше сэмплов при высоких t
     # 1.0 = равномерная (текущее поведение), 2.0 = квадратичное смещение к t_max
@@ -374,8 +376,8 @@ class AdaLNModulation(nn.Module):
             nn.SiLU(),
             nn.Linear(t_emb_dim, 2 * hidden_dim, bias=True),
         )
-        # Нейтральная инициализация: scale→1, shift→0
-        nn.init.zeros_(self.modulation[-1].weight)
+        # Нейтральная инициализация: scale→1, shift→0. Используем микрошум для вывода из коллапса (0-й градиент)
+        nn.init.normal_(self.modulation[-1].weight, std=1e-3)
         bias = torch.zeros(2 * hidden_dim)
         bias[hidden_dim:] = 1.0  # scale часть = 1.0
         self.modulation[-1].bias = nn.Parameter(bias)
@@ -588,6 +590,7 @@ class BEBLaDIIPhase3(nn.Module):
             "z_clean":       z_clean_f,
             "z_noisy":       z_noisy,
             "t":             t,
+            "t_emb":         t_emb,
             "dus_final":     dus_final,
             "dus_final_raw": dus_final_raw,
             "attention_mask": attention_mask,
@@ -602,6 +605,20 @@ class BEBLaDIIPhase3(nn.Module):
 # + Prior Loss (геометрия сферы)
 
 # %%
+def compute_adaln_diversity_loss(adaLN_list, t_emb_batch):
+    """
+    Поощряет разнообразие модуляции AdaLN между разными t в батче.
+    """
+    out = adaLN_list[0].modulation(t_emb_batch)  # [B, 2*hidden]
+    m_norm = safe_normalize(out, dim=-1)
+    sim_matrix = m_norm @ m_norm.T
+    B = out.shape[0]
+    mask = ~torch.eye(B, dtype=torch.bool, device=out.device)
+    if mask.sum() > 0:
+        return sim_matrix[mask].mean()
+    return torch.tensor(0.0, device=out.device)
+
+
 def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
     z_clean   = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
@@ -624,20 +641,22 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
     # Метрики по уровням шума (диагностика)
     t_mean = t.mean()
     metrics["t_mean"] = t_mean.detach()
-    # Косинусное сходство на низком (t<0.3) и высоком (t>0.7) шуме
-    lo_mask = (t < 0.3).float()
-    hi_mask = (t > 0.7).float()
-    if lo_mask.sum() > 0:
-        cos_sim_lo = (cos_sim.mean(dim=1) * lo_mask).sum() / lo_mask.sum()
-        metrics["cos_sim_t_low"] = cos_sim_lo.detach()
-    if hi_mask.sum() > 0:
-        cos_sim_hi = (cos_sim.mean(dim=1) * hi_mask).sum() / hi_mask.sum()
-        metrics["cos_sim_t_high"] = cos_sim_hi.detach()
-    # Метрика среднего диапазона шума (0.3 ≤ t ≤ 0.7)
-    mid_mask = ((t >= 0.3) & (t <= 0.7)).float()
-    if mid_mask.sum() > 0:
-        cos_sim_mid = (cos_sim.mean(dim=1) * mid_mask).sum() / mid_mask.sum()
-        metrics["cos_sim_t_mid"] = cos_sim_mid.detach()
+    
+    # Косинусное сходство по диапазонам шума с учетом паддинга
+    lo_mask_2d = (t < 0.3).float().unsqueeze(1)
+    if lo_mask_2d.sum() > 0:
+        lo_tokens = (attn_f * lo_mask_2d).sum().clamp(min=1.0)
+        metrics["cos_sim_t_low"] = ((cos_sim * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
+        
+    hi_mask_2d = (t > 0.7).float().unsqueeze(1)
+    if hi_mask_2d.sum() > 0:
+        hi_tokens = (attn_f * hi_mask_2d).sum().clamp(min=1.0)
+        metrics["cos_sim_t_high"] = ((cos_sim * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
+        
+    mid_mask_2d = ((t >= 0.3) & (t <= 0.7)).float().unsqueeze(1)
+    if mid_mask_2d.sum() > 0:
+        mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
+        metrics["cos_sim_t_mid"] = ((cos_sim * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
 
     # --- Prior Loss (геометрия сферы) ---
     z_flat    = dus_final.view(-1, D)
@@ -1006,6 +1025,11 @@ def train():
                 t_sample_alpha=args.t_sample_alpha,
             )
             loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior)
+            
+            div_loss = compute_adaln_diversity_loss(actual_model.adaLN_attn, fwd_outputs["t_emb"])
+            metrics["div_loss"] = div_loss.detach()
+            
+            loss = loss + div_loss * args.w_div
 
             if loss.dim() > 0:
                 loss = loss.mean()
@@ -1051,7 +1075,7 @@ def train():
                     "loss":   f"{metrics_dict['loss']:.4f}",
                     "cos_lo": f"{metrics_dict.get('cos_sim_t_low', 0):.4f}",
                     "cos_hi": f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
-                    "t_mean": f"{metrics_dict.get('t_mean', 0):.3f}",
+                    "div":    f"{metrics_dict.get('div_loss', 0):.4f}",
                     "grad":   f"{grad_norm:.3f}",
                 })
 
@@ -1066,6 +1090,11 @@ def train():
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
                         v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior)
+                        
+                        v_div_loss = compute_adaln_diversity_loss(actual_model.adaLN_attn, v_out["t_emb"])
+                        v_metrics["div_loss"] = v_div_loss.detach()
+                        v_loss = v_loss + v_div_loss * args.w_div
+
                         for k, v in v_metrics.items():
                             val_metrics_sum[f"val_{k}"] = (
                                 val_metrics_sum.get(f"val_{k}", 0)

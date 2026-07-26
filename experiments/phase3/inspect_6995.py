@@ -35,6 +35,14 @@ class SinusoidalEmbedding(nn.Module):
 def cosine_noise_schedule(t: torch.Tensor) -> torch.Tensor:
     return torch.cos(t * (math.pi / 2))
 
+def spherical_noise(x0: torch.Tensor, t: torch.Tensor, noise_eps=None) -> torch.Tensor:
+    B, T, D = x0.shape
+    if noise_eps is None:
+        noise_eps = safe_normalize(torch.randn_like(x0), dim=-1)
+    mu = cosine_noise_schedule(t).view(B, 1, 1)
+    x_t = mu * x0 + (1.0 - mu) * noise_eps
+    return safe_normalize(x_t, dim=-1)
+
 class AdaLNModulation(nn.Module):
     def __init__(self, t_emb_dim: int, hidden_dim: int):
         super().__init__()
@@ -60,28 +68,24 @@ class BEBLaDIIPhase3Eval(nn.Module):
         )
         
         num_layers = len(self.dus.layers)
-        self.adaLN_attn = nn.ModuleList([
-            AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(num_layers)
-        ])
-        self.adaLN_mlp = nn.ModuleList([
+        self.adaLN = nn.ModuleList([
             AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(num_layers)
         ])
         
+        self._hooks = []
         for i, layer in enumerate(self.dus.layers):
-            layer.attn_norm.register_forward_hook(self._make_adaLN_hook(i, target="attn"))
-            layer.mlp_norm.register_forward_hook(self._make_adaLN_hook(i, target="mlp"))
+            self._hooks.append(layer.register_forward_pre_hook(self._make_adaLN_hook(i)))
             
-    def _make_adaLN_hook(self, layer_idx: int, target: str):
-        def hook(module, input, output):
+    def _make_adaLN_hook(self, layer_idx: int):
+        def hook(module, args):
             if not hasattr(self, "_current_t_emb") or self._current_t_emb is None:
-                return output
-            if target == "attn":
-                shift, scale = self.adaLN_attn[layer_idx](self._current_t_emb)
-            else:
-                shift, scale = self.adaLN_mlp[layer_idx](self._current_t_emb)
-            shift = shift.to(output.dtype)
-            scale = scale.to(output.dtype)
-            return output * scale + shift
+                return args
+            hidden_states = args[0]
+            shift, scale = self.adaLN[layer_idx](self._current_t_emb)
+            shift = shift.to(hidden_states.dtype)
+            scale = scale.to(hidden_states.dtype)
+            hidden_states = hidden_states * scale + shift
+            return (hidden_states,) + args[1:]
         return hook
 
     def forward(self, z_in, attention_mask, t, sep_embed=None):
@@ -103,13 +107,13 @@ class BEBLaDIIPhase3Eval(nn.Module):
         dus_outputs = self.dus(
             inputs_embeds=dus_input,
             attention_mask=attention_mask_ext,
-            output_hidden_states=False,
+            output_hidden_states=True,
         )
         
         if sep_embed is not None:
-            pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
+            pre_norm = dus_outputs.hidden_states[-1][:, 1:, :].float()
         else:
-            pre_norm = dus_outputs.last_hidden_state.float()
+            pre_norm = dus_outputs.hidden_states[-1].float()
             
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
         dus_final = safe_normalize(dus_final_raw, dim=-1)
@@ -125,9 +129,7 @@ def load_checkpoint_and_inspect(ckpt_path):
 def load_models(device, dtype, ckpt_state):
     print("\n[*] Initializing models...")
     embed_model_id = "Qwen/Qwen2.5-1.5B"
-    tokenizer = AutoTokenizer.from_pretrained(embed_model_id)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token_id = 151643
+    tokenizer = get_tokenizer(embed_model_id)
     causal_model = AutoModelForCausalLM.from_pretrained(embed_model_id, torch_dtype=dtype)
     embeddings = causal_model.get_input_embeddings().to(device)
     embeddings.requires_grad_(False)
@@ -162,22 +164,14 @@ def load_models(device, dtype, ckpt_state):
     dus_ema = ckpt_state.get("dus_ema", ckpt_state.get("dus", {}))
     clean_dus = {k.replace("_orig_module.", ""): v for k, v in dus_ema.items()}
     diff_model.dus.load_state_dict(clean_dus, strict=False)
-    print("[*] DUS weights loaded.")
     
-    adaLN_attn_ema = ckpt_state.get("adaLN_attn_ema", ckpt_state.get("adaLN_attn", {}))
-    if adaLN_attn_ema:
-        diff_model.adaLN_attn.load_state_dict(adaLN_attn_ema, strict=True)
-        print("[*] adaLN_attn weights loaded.")
-
-    adaLN_mlp_ema = ckpt_state.get("adaLN_mlp_ema", ckpt_state.get("adaLN_mlp", {}))
-    if adaLN_mlp_ema:
-        diff_model.adaLN_mlp.load_state_dict(adaLN_mlp_ema, strict=True)
-        print("[*] adaLN_mlp weights loaded.")
+    adaLN_ema = ckpt_state.get("adaLN_ema", ckpt_state.get("adaLN", {}))
+    if adaLN_ema:
+        diff_model.adaLN.load_state_dict(adaLN_ema, strict=True)
         
     t_proj_ema = ckpt_state.get("t_proj_ema", ckpt_state.get("t_proj", {}))
     if t_proj_ema:
         diff_model.t_proj.load_state_dict(t_proj_ema, strict=True)
-        print("[*] t_proj weights loaded.")
     
     sep_path = r"C:\Experiments\BEBLaDII\storage\components\sep_token.pt"
     if os.path.exists(sep_path):
@@ -197,30 +191,56 @@ def decode_z(z, decoder, lm_head_weight, tokenizer):
         token_ids = logits.argmax(dim=-1).squeeze(0)
         return tokenizer.decode(token_ids.tolist(), skip_special_tokens=True)
 
-def encode_clean_text(text, tokenizer, embeddings, encoder, device, dtype):
-    inputs = tokenizer(text, return_tensors="pt").to(device)
-    embeds = embeddings(inputs.input_ids).to(dtype)
+def encode_chatml_with_mask(user_text, assistant_text, tokenizer, embeddings, encoder, device, dtype):
+    prefix_u = "<|im_start|>user\n"
+    suffix_u = "<|im_end|>\n<|im_start|>assistant\n<|thought|>\n"
+    
+    p_u_tokens = tokenizer.encode(prefix_u, add_special_tokens=False)
+    u_tokens = tokenizer.encode(user_text, add_special_tokens=False)
+    s_u_tokens = tokenizer.encode(suffix_u, add_special_tokens=False)
+    a_tokens = tokenizer.encode(assistant_text, add_special_tokens=False) if assistant_text else []
+    
+    full_tokens = p_u_tokens + u_tokens + s_u_tokens + a_tokens
+    
+    u_start = len(p_u_tokens)
+    u_end = u_start + len(u_tokens)
+    content_indices = list(range(u_start, u_end))
+    
+    if a_tokens:
+        a_start = u_end + len(s_u_tokens)
+        a_end = a_start + len(a_tokens)
+        content_indices.extend(list(range(a_start, a_end)))
+        
+    input_ids = torch.tensor([full_tokens]).to(device)
+    attn_mask = torch.tensor([[1] * len(full_tokens)]).to(device)
+    
     with torch.no_grad():
-        z_clean, _, _ = encoder(embeds)
+        qwen_embeds = embeddings(input_ids)
+        z_clean, _, _ = encoder(qwen_embeds)
         z_clean = safe_normalize(z_clean.float(), dim=-1)
-    return z_clean, inputs.attention_mask
+        
+    return z_clean, attn_mask, content_indices, full_tokens
 
-def run_step_by_step_diffusion(phrase_title, text, diff_model, embeddings, encoder, decoder, lm_head_weight, tokenizer, sep_embed, device, dtype, steps=20):
+def run_step_by_step_diffusion(phrase_title, user_text, assistant_text, diff_model, embeddings, encoder, decoder, lm_head_weight, tokenizer, sep_embed, device, dtype, steps=20):
     print("\n" + "=" * 120)
     print(f"EXPERIMENT: {phrase_title}")
-    print(f"Clean Text: \"{text}\"")
+    print(f"User Text: \"{user_text}\"")
+    if assistant_text:
+        print(f"Assistant Text: \"{assistant_text}\"")
     print("=" * 120)
     
-    z_clean, attn_mask = encode_clean_text(text, tokenizer, embeddings, encoder, device, dtype)
+    z_clean, attn_mask, content_indices, full_tokens = encode_chatml_with_mask(user_text, assistant_text, tokenizer, embeddings, encoder, device, dtype)
     mask_b = attn_mask.bool()
+    content_idx_tensor = torch.tensor(content_indices, device=device)
     
-    clean_decoded = decode_z(z_clean, decoder, lm_head_weight, tokenizer)
-    print(f"[AE Baseline] Clean Encoder -> Decoder text:\n  \"{clean_decoded.strip()}\"\n")
+    z_clean_content = z_clean[:, content_idx_tensor, :]
+    clean_decoded = decode_z(z_clean_content, decoder, lm_head_weight, tokenizer)
+    print(f"[AE Baseline (Content Only)] Clean Encoder -> Decoder text:\n  \"{clean_decoded.strip()}\"\n")
     
     z_current = safe_normalize(torch.randn_like(z_clean), dim=-1)
     t_schedule = torch.linspace(1.0, 0.0, steps + 1, device=device)
     
-    print(f"{'Step':<5} | {'t_now':<6} | {'Cos(z_t,clean)':<15} | {'Cos(x0_pred,clean)':<18} | {'Decoded Current Trajectory (z_t)':<40}")
+    print(f"{'Step':<5} | {'t_now':<6} | {'Cos(z_t,clean)':<15} | {'Cos(x0_pred,clean)':<18} | {'Decoded Current Trajectory Content (z_t)':<40}")
     print("-" * 120)
     
     for i in range(steps):
@@ -242,8 +262,11 @@ def run_step_by_step_diffusion(phrase_title, text, diff_model, embeddings, encod
         cos_sim_clean = (z_current[mask_b] * z_clean[mask_b]).sum(dim=-1).mean().item()
         cos_sim_pred = (z_pred[mask_b] * z_clean[mask_b]).sum(dim=-1).mean().item()
         
-        dec_zt = decode_z(z_current, decoder, lm_head_weight, tokenizer).strip().replace('\n', ' ')
-        dec_x0 = decode_z(z_pred, decoder, lm_head_weight, tokenizer).strip().replace('\n', ' ')
+        z_t_content = z_current[:, content_idx_tensor, :]
+        z_pred_content = z_pred[:, content_idx_tensor, :]
+        
+        dec_zt = decode_z(z_t_content, decoder, lm_head_weight, tokenizer).strip().replace('\n', ' ')
+        dec_x0 = decode_z(z_pred_content, decoder, lm_head_weight, tokenizer).strip().replace('\n', ' ')
         
         print(f"{i+1:<5} | {t_now.item():<6.2f} | {cos_sim_clean:<15.4f} | {cos_sim_pred:<18.4f} | z_t: \"{dec_zt[:45]}\"")
         if i % 4 == 0 or i == steps - 1:
@@ -258,17 +281,19 @@ def main():
         
     state = load_checkpoint_and_inspect(ckpt_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.bfloat16
+    dtype = torch.float32 
     
     tokenizer, embeddings, encoder, decoder, diff_model, lm_head_weight, sep_embed = load_models(device, dtype, state)
     
     p1_title = "Sanity Check Phrase 1 (English)"
-    p1_text = "The quick brown fox jumps over the lazy dog."
-    run_step_by_step_diffusion(p1_title, p1_text, diff_model, embeddings, encoder, decoder, lm_head_weight, tokenizer, sep_embed, device, dtype, steps=20)
+    p1_u = "The quick brown fox jumps over the lazy dog."
+    p1_a = "Neural networks learn representations from data."
+    run_step_by_step_diffusion(p1_title, p1_u, p1_a, diff_model, embeddings, encoder, decoder, lm_head_weight, tokenizer, sep_embed, device, dtype, steps=20)
 
     p2_title = "Sanity Check Phrase 2 (Russian)"
-    p2_text = "Мама мыла раму, а папа чинил телевизор."
-    run_step_by_step_diffusion(p2_title, p2_text, diff_model, embeddings, encoder, decoder, lm_head_weight, tokenizer, sep_embed, device, dtype, steps=20)
+    p2_u = "Мама мыла раму, а папа чинил телевизор."
+    p2_a = "Искусственный интеллект способствовал развитию технологий."
+    run_step_by_step_diffusion(p2_title, p2_u, p2_a, diff_model, embeddings, encoder, decoder, lm_head_weight, tokenizer, sep_embed, device, dtype, steps=20)
 
 if __name__ == "__main__":
     main()
