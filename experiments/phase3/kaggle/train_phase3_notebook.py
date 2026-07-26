@@ -605,18 +605,48 @@ class BEBLaDIIPhase3(nn.Module):
 # + Prior Loss (геометрия сферы)
 
 # %%
-def compute_adaln_diversity_loss(adaLN_list, t_emb_batch):
+def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch):
     """
-    Поощряет разнообразие модуляции AdaLN между разными t в батче.
+    Поощряет разнообразие модуляции AdaLN (как для Attn, так и для MLP) между разными t в батче,
+    а также возвращает диагностические метрики весов и выходов AdaLN.
     """
-    out = adaLN_list[0].modulation(t_emb_batch)  # [B, 2*hidden]
-    m_norm = safe_normalize(out, dim=-1)
-    sim_matrix = m_norm @ m_norm.T
-    B = out.shape[0]
-    mask = ~torch.eye(B, dtype=torch.bool, device=out.device)
-    if mask.sum() > 0:
-        return sim_matrix[mask].mean()
-    return torch.tensor(0.0, device=out.device)
+    B = t_emb_batch.shape[0]
+    mask = ~torch.eye(B, dtype=torch.bool, device=t_emb_batch.device)
+
+    # 1. Attn AdaLN Diversity & Norms
+    out_attn = adaLN_attn[0].modulation(t_emb_batch)  # [B, 2*hidden]
+    m_norm_attn = safe_normalize(out_attn, dim=-1)
+    sim_attn = m_norm_attn @ m_norm_attn.T
+    div_attn = sim_attn[mask].mean() if mask.sum() > 0 else torch.tensor(0.0, device=t_emb_batch.device)
+
+    shift_attn, scale_attn = out_attn.chunk(2, dim=-1)
+    shift_attn_norm = shift_attn.abs().mean()
+    scale_attn_dev = (scale_attn - 1.0).abs().mean()
+    w_norm_attn = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_attn]).mean()
+
+    # 2. MLP AdaLN Diversity & Norms
+    out_mlp = adaLN_mlp[0].modulation(t_emb_batch)  # [B, 2*hidden]
+    m_norm_mlp = safe_normalize(out_mlp, dim=-1)
+    sim_mlp = m_norm_mlp @ m_norm_mlp.T
+    div_mlp = sim_mlp[mask].mean() if mask.sum() > 0 else torch.tensor(0.0, device=t_emb_batch.device)
+
+    shift_mlp, scale_mlp = out_mlp.chunk(2, dim=-1)
+    shift_mlp_norm = shift_mlp.abs().mean()
+    scale_mlp_dev = (scale_mlp - 1.0).abs().mean()
+    w_norm_mlp = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_mlp]).mean()
+
+    div_loss = 0.5 * (div_attn + div_mlp)
+
+    adaln_metrics = {
+        "adaln_w_norm":          0.5 * (w_norm_attn + w_norm_mlp).detach(),
+        "adaln_attn_w_norm":     w_norm_attn.detach(),
+        "adaln_mlp_w_norm":      w_norm_mlp.detach(),
+        "adaln_attn_shift_norm": shift_attn_norm.detach(),
+        "adaln_mlp_shift_norm":  shift_mlp_norm.detach(),
+        "adaln_attn_scale_dev":  scale_attn_dev.detach(),
+        "adaln_mlp_scale_dev":   scale_mlp_dev.detach(),
+    }
+    return div_loss, adaln_metrics
 
 
 def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
@@ -1026,8 +1056,11 @@ def train():
             )
             loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior)
             
-            div_loss = compute_adaln_diversity_loss(actual_model.adaLN_attn, fwd_outputs["t_emb"])
+            div_loss, adaln_metrics = compute_adaln_diversity_loss(
+                actual_model.adaLN_attn, actual_model.adaLN_mlp, fwd_outputs["t_emb"]
+            )
             metrics["div_loss"] = div_loss.detach()
+            metrics.update(adaln_metrics)
             
             loss = loss + div_loss * args.w_div
 
@@ -1076,6 +1109,7 @@ def train():
                     "cos_lo": f"{metrics_dict.get('cos_sim_t_low', 0):.4f}",
                     "cos_hi": f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
                     "div":    f"{metrics_dict.get('div_loss', 0):.4f}",
+                    "wnorm":  f"{metrics_dict.get('adaln_w_norm', 0):.4f}",
                     "grad":   f"{grad_norm:.3f}",
                 })
 
@@ -1091,8 +1125,11 @@ def train():
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
                         v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior)
                         
-                        v_div_loss = compute_adaln_diversity_loss(actual_model.adaLN_attn, v_out["t_emb"])
+                        v_div_loss, v_adaln_metrics = compute_adaln_diversity_loss(
+                            actual_model.adaLN_attn, actual_model.adaLN_mlp, v_out["t_emb"]
+                        )
                         v_metrics["div_loss"] = v_div_loss.detach()
+                        v_metrics.update(v_adaln_metrics)
                         v_loss = v_loss + v_div_loss * args.w_div
 
                         for k, v in v_metrics.items():
