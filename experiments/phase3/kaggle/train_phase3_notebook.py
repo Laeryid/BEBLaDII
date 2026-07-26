@@ -615,22 +615,24 @@ def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch):
 
     # 1. Attn AdaLN Diversity & Norms
     out_attn = adaLN_attn[0].modulation(t_emb_batch)  # [B, 2*hidden]
-    m_norm_attn = safe_normalize(out_attn, dim=-1)
+    shift_attn, scale_attn = out_attn.chunk(2, dim=-1)
+    delta_attn = torch.cat([shift_attn, scale_attn - 1.0], dim=-1)
+    m_norm_attn = safe_normalize(delta_attn, dim=-1)
     sim_attn = m_norm_attn @ m_norm_attn.T
     div_attn = sim_attn[mask].mean() if mask.sum() > 0 else torch.tensor(0.0, device=t_emb_batch.device)
 
-    shift_attn, scale_attn = out_attn.chunk(2, dim=-1)
     shift_attn_norm = shift_attn.abs().mean()
     scale_attn_dev = (scale_attn - 1.0).abs().mean()
     w_norm_attn = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_attn]).mean()
 
     # 2. MLP AdaLN Diversity & Norms
     out_mlp = adaLN_mlp[0].modulation(t_emb_batch)  # [B, 2*hidden]
-    m_norm_mlp = safe_normalize(out_mlp, dim=-1)
+    shift_mlp, scale_mlp = out_mlp.chunk(2, dim=-1)
+    delta_mlp = torch.cat([shift_mlp, scale_mlp - 1.0], dim=-1)
+    m_norm_mlp = safe_normalize(delta_mlp, dim=-1)
     sim_mlp = m_norm_mlp @ m_norm_mlp.T
     div_mlp = sim_mlp[mask].mean() if mask.sum() > 0 else torch.tensor(0.0, device=t_emb_batch.device)
 
-    shift_mlp, scale_mlp = out_mlp.chunk(2, dim=-1)
     shift_mlp_norm = shift_mlp.abs().mean()
     scale_mlp_dev = (scale_mlp - 1.0).abs().mean()
     w_norm_mlp = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_mlp]).mean()
