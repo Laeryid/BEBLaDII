@@ -617,37 +617,62 @@ class BEBLaDIIPhase3(nn.Module):
 # %%
 def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch):
     """
-    Поощряет разнообразие модуляции AdaLN (как для Attn, так и для MLP) между разными t в батче,
-    а также возвращает диагностические метрики весов и выходов AdaLN.
+    Поощряет:
+    1. Межслойное временное разнообразие модуляции AdaLN (по всем слоям DUS, а не только по 0-му).
+    2. Канальное разнообразие (Channel-wise Variance / Isotropization), предотвращающее вырождение
+       векторов shift и scale в 1-мерный скаляр вдоль скрытого измерения D=1024.
     """
     B = t_emb_batch.shape[0]
     mask = ~torch.eye(B, dtype=torch.bool, device=t_emb_batch.device)
 
-    # 1. Attn AdaLN Diversity & Norms
-    out_attn = adaLN_attn[0].modulation(t_emb_batch)  # [B, 2*hidden]
-    shift_attn, scale_attn = out_attn.chunk(2, dim=-1)
+    # 1. Усредненная модуляция по всем слоям DUS (Attn и MLP)
+    all_outs_attn = torch.stack([m.modulation(t_emb_batch) for m in adaLN_attn], dim=0)  # [L, B, 2*D]
+    all_outs_mlp  = torch.stack([m.modulation(t_emb_batch) for m in adaLN_mlp], dim=0)   # [L, B, 2*D]
+
+    out_attn_mean = all_outs_attn.mean(dim=0)  # [B, 2*D]
+    out_mlp_mean  = all_outs_mlp.mean(dim=0)   # [B, 2*D]
+
+    # --- Batch Temporal Diversity (попарное косинусное сходство между разными t) ---
+    shift_attn, scale_attn = out_attn_mean.chunk(2, dim=-1)
     delta_attn = torch.cat([shift_attn, scale_attn - 1.0], dim=-1)
     m_norm_attn = safe_normalize(delta_attn, dim=-1)
     sim_attn = m_norm_attn @ m_norm_attn.T
     div_attn = sim_attn[mask].mean() if mask.sum() > 0 else torch.tensor(0.0, device=t_emb_batch.device)
 
-    shift_attn_norm = shift_attn.abs().mean()
-    scale_attn_dev = (scale_attn - 1.0).abs().mean()
-    w_norm_attn = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_attn]).mean()
-
-    # 2. MLP AdaLN Diversity & Norms
-    out_mlp = adaLN_mlp[0].modulation(t_emb_batch)  # [B, 2*hidden]
-    shift_mlp, scale_mlp = out_mlp.chunk(2, dim=-1)
+    shift_mlp, scale_mlp = out_mlp_mean.chunk(2, dim=-1)
     delta_mlp = torch.cat([shift_mlp, scale_mlp - 1.0], dim=-1)
     m_norm_mlp = safe_normalize(delta_mlp, dim=-1)
     sim_mlp = m_norm_mlp @ m_norm_mlp.T
     div_mlp = sim_mlp[mask].mean() if mask.sum() > 0 else torch.tensor(0.0, device=t_emb_batch.device)
 
-    shift_mlp_norm = shift_mlp.abs().mean()
-    scale_mlp_dev = (scale_mlp - 1.0).abs().mean()
-    w_norm_mlp = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_mlp]).mean()
+    batch_div_loss = 0.5 * (div_attn + div_mlp)
 
-    div_loss = 0.5 * (div_attn + div_mlp)
+    # --- Channel-wise Variance Regularization (изотропизация каналов D=1024) ---
+    hidden_dim = shift_attn.shape[-1]
+    var_floor = 1.0 / hidden_dim  # минимальный порог дисперсии по каналам
+
+    var_shift_attn = shift_attn.var(dim=-1).mean()
+    var_scale_attn = (scale_attn - 1.0).var(dim=-1).mean()
+    var_shift_mlp  = shift_mlp.var(dim=-1).mean()
+    var_scale_mlp  = (scale_mlp - 1.0).var(dim=-1).mean()
+
+    channel_var_loss = (
+        F.relu(var_floor - var_shift_attn) +
+        F.relu(var_floor - var_scale_attn) +
+        F.relu(var_floor - var_shift_mlp) +
+        F.relu(var_floor - var_scale_mlp)
+    )
+
+    total_div_loss = batch_div_loss + 0.5 * channel_var_loss
+
+    # Диагностические метрики
+    shift_attn_norm = shift_attn.abs().mean()
+    scale_attn_dev  = (scale_attn - 1.0).abs().mean()
+    shift_mlp_norm  = shift_mlp.abs().mean()
+    scale_mlp_dev   = (scale_mlp - 1.0).abs().mean()
+
+    w_norm_attn = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_attn]).mean()
+    w_norm_mlp  = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_mlp]).mean()
 
     adaln_metrics = {
         "adaln_w_norm":          0.5 * (w_norm_attn + w_norm_mlp).detach(),
@@ -657,8 +682,10 @@ def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch):
         "adaln_mlp_shift_norm":  shift_mlp_norm.detach(),
         "adaln_attn_scale_dev":  scale_attn_dev.detach(),
         "adaln_mlp_scale_dev":   scale_mlp_dev.detach(),
+        "adaln_chan_var_attn":   var_shift_attn.detach(),
+        "adaln_chan_var_mlp":    var_shift_mlp.detach(),
     }
-    return div_loss, adaln_metrics
+    return total_div_loss, adaln_metrics
 
 
 def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
