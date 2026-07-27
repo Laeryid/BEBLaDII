@@ -276,6 +276,16 @@
         ".know/decisions/062_phase3_adaln_residual_stream_bug.md"
       ]
     },
+    "decisions/065_unet_skip_connections_and_identity_gate.md": {
+      "description": "ADR: UNet-style skip-connection (проброс x_t) и внешний gate(t) на выходе DUS для структурной гарантии тождественного преобразования при t=0 без модификации ModernBERT.",
+      "covers": ["Architecture & Training Phases", "Model Core"],
+      "depends_on": [
+        "src/beb_la_dii/model/dus.py",
+        ".know/decisions/060_phase3_canonical_diffusion_redesign.md",
+        ".know/decisions/062_phase3_adaln_residual_stream_bug.md",
+        ".know/decisions/064_adaln_zero_init_symmetry_break_and_diversity_loss.md"
+      ]
+    },
     "KI_training_infrastructure.md": {
       "description": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler.",
       "covers": ["Experiments", "Data & Ops Scripts"],

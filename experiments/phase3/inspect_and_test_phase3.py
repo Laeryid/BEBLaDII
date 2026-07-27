@@ -125,9 +125,7 @@ def load_checkpoint_and_inspect(ckpt_path):
 def load_models(device, dtype, ckpt_state):
     print("\n[*] Initializing models...")
     embed_model_id = "Qwen/Qwen2.5-1.5B"
-    tokenizer = AutoTokenizer.from_pretrained(embed_model_id)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token_id = 151643
+    tokenizer = get_tokenizer(embed_model_id)
     causal_model = AutoModelForCausalLM.from_pretrained(embed_model_id, torch_dtype=dtype)
     embeddings = causal_model.get_input_embeddings().to(device)
     embeddings.requires_grad_(False)
@@ -137,7 +135,8 @@ def load_models(device, dtype, ckpt_state):
     dec_path = r"C:\Experiments\BEBLaDII\experiments\phase 2\planB_phase2_checkpoints_decoder_step_9000.pth"
     
     encoder = LatentEncoder(1536, 1024).to(device).to(dtype)
-    decoder = ModernLatentDecoder(latent_dim=1024, qwen_dim=1536, num_layers=3).to(device).to(dtype)
+    dus_path = r"C:\Experiments\BEBLaDII\kaggle_upload_1_2\AWAKENED_WEIGHTS_FINAL.pt"
+    decoder = ModernLatentDecoder(latent_dim=1024, qwen_dim=1536, num_layers=3, dus_weights_path=dus_path).to(device).to(dtype)
     
     if os.path.exists(enc_path):
         st = torch.load(enc_path, map_location="cpu", weights_only=False)
@@ -236,7 +235,8 @@ def run_step_by_step_diffusion(phrase_title, text, diff_model, embeddings, encod
         eps_pred = torch.where(eps_pred_norm > 1e-5, eps_pred / eps_pred_norm, torch.randn_like(eps_pred))
         
         mu_next = cosine_noise_schedule(t_next).view(1,1,1)
-        z_next = mu_next * z_pred + (1.0 - mu_next) * eps_pred
+        sigma_next = torch.sin(t_next * (math.pi / 2)).view(1,1,1)
+        z_next = mu_next * z_pred + sigma_next * eps_pred
         z_current = safe_normalize(z_next, dim=-1)
         
         cos_sim_clean = (z_current[mask_b] * z_clean[mask_b]).sum(dim=-1).mean().item()
@@ -251,14 +251,14 @@ def run_step_by_step_diffusion(phrase_title, text, diff_model, embeddings, encod
             print("-" * 120)
 
 def main():
-    ckpt_path = r"C:\Experiments\BEBLaDII\experiments\phase3\phase3_step_6995.pth"
+    ckpt_path = r"C:\Experiments\BEBLaDII\experiments\phase3\phase3_step_5995.pth"
     if not os.path.exists(ckpt_path):
         print(f"[!] File not found: {ckpt_path}")
         return
         
     state = load_checkpoint_and_inspect(ckpt_path)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dtype = torch.bfloat16
+    dtype = torch.float32
     
     tokenizer, embeddings, encoder, decoder, diff_model, lm_head_weight, sep_embed = load_models(device, dtype, state)
     

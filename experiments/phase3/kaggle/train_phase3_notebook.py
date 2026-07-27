@@ -1,11 +1,12 @@
 # %% [markdown]
 # # BEBLaDII Phase 3 Training — Canonical Spherical Diffusion (Kaggle T4 x2)
-# *Архитектура: ADR 060 (каноническая диффузия на сфере)*
+# *Архитектура: ADR 060 (каноническая диффузия на сфере) + ADR 065 (Skip-Connections & Identity Gate(t))*
 # *Ключевые изменения:*
 # *- Полный диапазон t∈[0,1] с косинусным расписанием κ(t)*
 # *- Зашумление ВСЕХ токенов (не частичное)*
-# *- AdaLN вместо c_embed (нейтральная инициализация)*
-# *- x0-prediction: Loss = 1 - cos(DUS_out, z_clean)*
+# *- AdaLN вместо c_embed (микрошум инициализация, ADR 064)*
+# *- UNet-style Skip-Connection + Identity Gate(t) (ADR 065)*
+# *- x0-prediction: Loss = 1 - cos(DUS_blended, z_clean)*
 # *- Разделённые чекпоинты: модель и оптимайзер по очереди → GCS → удаление*
 
 # %% [markdown]
@@ -581,7 +582,15 @@ class BEBLaDIIPhase3(nn.Module):
         # --- Финальная нормализация (отрезаем sep) ---
         pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
-        dus_final = safe_normalize(dus_final_raw, dim=-1)  # [B, T, D]
+        h_39 = safe_normalize(dus_final_raw, dim=-1)  # [B, T, D] — выход DUS ядра
+
+        # --- Skip-Connection & Identity Gate(t) blending (ADR 065) ---
+        # gate(t): [B, 1, 1] — доля предсказания DUS (линейная функция gate(t) = t)
+        # При t -> 0: gate_t -> 0 -> dus_final_blended -> x_in (x_noisy = x_clean) -> тождество
+        # При t = 1:  gate_t -> 1 -> dus_final_blended -> h_39
+        gate_t = t.view(B, 1, 1).float()
+        dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * x_in
+        dus_final = safe_normalize(dus_final_blended, dim=-1)  # [B, T, D]
 
         # Очищаем сохранённый t_emb после forward
         self._current_t_emb = None
@@ -592,6 +601,7 @@ class BEBLaDIIPhase3(nn.Module):
             "t":             t,
             "t_emb":         t_emb,
             "dus_final":     dus_final,
+            "h_39":          h_39,
             "dus_final_raw": dus_final_raw,
             "attention_mask": attention_mask,
         }
@@ -669,6 +679,11 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
 
     metrics["denoising_loss"] = main_loss.detach()
     metrics["cos_sim_all"]    = (cos_sim * attn_f).sum().detach() / active_tokens
+
+    if "h_39" in outputs:
+        h_39_norm = safe_normalize(outputs["h_39"].float(), dim=-1)
+        cos_sim_h39 = (h_39_norm * target).sum(dim=-1)
+        metrics["cos_sim_h39"] = (cos_sim_h39 * attn_f).sum().detach() / active_tokens
 
     # Метрики по уровням шума (диагностика)
     t_mean = t.mean()

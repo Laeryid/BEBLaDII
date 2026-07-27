@@ -274,7 +274,7 @@ def run_step_by_step_diffusion(phrase_title, user_text, assistant_text, diff_mod
             print("-" * 120)
 
 def main():
-    ckpt_path = r"C:\Experiments\BEBLaDII\experiments\phase3\phase3_step_6995.pth"
+    ckpt_path = r"C:\Experiments\BEBLaDII\experiments\phase3\phase3_step_5995.pth"
     if not os.path.exists(ckpt_path):
         print(f"[!] File not found: {ckpt_path}")
         return
