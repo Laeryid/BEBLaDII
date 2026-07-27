@@ -707,30 +707,44 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
     metrics["denoising_loss"] = main_loss.detach()
     metrics["cos_sim_all"]    = (cos_sim * attn_f).sum().detach() / active_tokens
 
-    if "h_39" in outputs:
-        h_39_norm = safe_normalize(outputs["h_39"].float(), dim=-1)
-        cos_sim_h39 = (h_39_norm * target).sum(dim=-1)
-        metrics["cos_sim_h39"] = (cos_sim_h39 * attn_f).sum().detach() / active_tokens
-
     # Метрики по уровням шума (диагностика)
     t_mean = t.mean()
     metrics["t_mean"] = t_mean.detach()
-    
-    # Косинусное сходство по диапазонам шума с учетом паддинга
-    lo_mask_2d = (t < 0.3).float().unsqueeze(1)
+
+    # Маски по диапазонам t — вычисляем один раз для обоих блоков метрик
+    lo_mask_2d  = (t < 0.3).float().unsqueeze(1)   # [B, 1]
+    mid_mask_2d = ((t >= 0.3) & (t <= 0.7)).float().unsqueeze(1)
+    hi_mask_2d  = (t > 0.7).float().unsqueeze(1)
+
+    # --- cos_sim_t_* : cos(dus_final, z_clean) — выход ПОСЛЕ gate ---
+    # ВНИМАНИЕ: при малом t gate → 0, dus_final ≈ x_t ≈ z_clean структурно.
+    # Эти метрики информативны только для cos_sim_t_high (gate ≈ 1).
     if lo_mask_2d.sum() > 0:
         lo_tokens = (attn_f * lo_mask_2d).sum().clamp(min=1.0)
-        metrics["cos_sim_t_low"] = ((cos_sim * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
-        
-    hi_mask_2d = (t > 0.7).float().unsqueeze(1)
+        metrics["cos_sim_t_low"]  = ((cos_sim * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
     if hi_mask_2d.sum() > 0:
         hi_tokens = (attn_f * hi_mask_2d).sum().clamp(min=1.0)
         metrics["cos_sim_t_high"] = ((cos_sim * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
-        
-    mid_mask_2d = ((t >= 0.3) & (t <= 0.7)).float().unsqueeze(1)
     if mid_mask_2d.sum() > 0:
         mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
-        metrics["cos_sim_t_mid"] = ((cos_sim * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
+        metrics["cos_sim_t_mid"]  = ((cos_sim * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
+
+    # --- cos_h39_t_* : cos(h_39, z_clean) — выход DUS ДО gate (истинный деноизинг) ---
+    # Это ключевые метрики: они отражают реальное качество работы DUS без gate-артефакта.
+    # cos_h39_t_high ≈ cos_sim_t_high (gate ≈ 1), но cos_h39_t_low — честная диагностика.
+    if "h_39" in outputs:
+        h_39_norm   = safe_normalize(outputs["h_39"].float(), dim=-1)
+        cos_h39     = (h_39_norm * target).sum(dim=-1)  # [B, T]
+        metrics["cos_h39_all"] = (cos_h39 * attn_f).sum().detach() / active_tokens
+        if lo_mask_2d.sum() > 0:
+            lo_tokens = (attn_f * lo_mask_2d).sum().clamp(min=1.0)
+            metrics["cos_h39_t_low"]  = ((cos_h39 * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
+        if hi_mask_2d.sum() > 0:
+            hi_tokens = (attn_f * hi_mask_2d).sum().clamp(min=1.0)
+            metrics["cos_h39_t_high"] = ((cos_h39 * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
+        if mid_mask_2d.sum() > 0:
+            mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
+            metrics["cos_h39_t_mid"]  = ((cos_h39 * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
 
     # --- Prior Loss (геометрия сферы) ---
     z_flat    = dus_final.view(-1, D)
@@ -1149,12 +1163,12 @@ def train():
                 if args.wandb_project:
                     wandb.log(metrics_dict, step=step)
                 pbar.set_postfix({
-                    "loss":   f"{metrics_dict['loss']:.4f}",
-                    "cos_lo": f"{metrics_dict.get('cos_sim_t_low', 0):.4f}",
-                    "cos_hi": f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
-                    "div":    f"{metrics_dict.get('div_loss', 0):.4f}",
-                    "wnorm":  f"{metrics_dict.get('adaln_w_norm', 0):.4f}",
-                    "grad":   f"{grad_norm:.3f}",
+                    "loss":      f"{metrics_dict['loss']:.4f}",
+                    "h39_hi":    f"{metrics_dict.get('cos_h39_t_high', 0):.4f}",
+                    "h39_mid":   f"{metrics_dict.get('cos_h39_t_mid', 0):.4f}",
+                    "cos_hi":    f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
+                    "div":       f"{metrics_dict.get('div_loss', 0):.4f}",
+                    "grad":      f"{grad_norm:.3f}",
                 })
 
             # Validation
@@ -1203,9 +1217,10 @@ def train():
                         wandb.log(val_avg, step=step)
                     print(
                         f"\n[VAL] Step {step} | loss: {val_avg.get('val_loss', 0):.4f} "
-                        f"| cos_all: {val_avg.get('val_cos_sim_all', 0):.4f} "
-                        f"| cos_lo: {val_avg.get('val_cos_sim_t_low', 0):.4f} "
-                        f"| cos_hi: {val_avg.get('val_cos_sim_t_high', 0):.4f}"
+                        f"| h39_hi: {val_avg.get('val_cos_h39_t_high', 0):.4f} "
+                        f"| h39_mid: {val_avg.get('val_cos_h39_t_mid', 0):.4f} "
+                        f"| h39_lo: {val_avg.get('val_cos_h39_t_low', 0):.4f} "
+                        f"| cos_hi(gated): {val_avg.get('val_cos_sim_t_high', 0):.4f}"
                     )
                 model.train()
 
