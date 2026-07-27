@@ -181,6 +181,9 @@ class Config:
     w_prior = 0.05
     # Вес лосса разнообразия для AdaLN
     w_div = 0.1
+    # Вес штрафа за collapse h_39 (Variance Matching, ADR-065).
+    # relu(Var(z_clean)_d - Var(h_39)_d).mean() ≈ 0.001 при коллапсе → w=50 даёт ~0.05 вклад
+    w_var_match = 50.0
 
     # Смещённая выборка t (DiffuSeq-v2 / LD4LG): >1.0 → больше сэмплов при высоких t
     # 1.0 = равномерная (текущее поведение), 2.0 = квадратичное смещение к t_max
@@ -688,7 +691,7 @@ def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch):
     return total_div_loss, adaln_metrics
 
 
-def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
+def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float = 50.0):
     z_clean   = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
     attn_f    = outputs["attention_mask"].float()
@@ -763,7 +766,28 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05):
     metrics["var_loss"]   = var_loss.detach()
     metrics["cov_loss"]   = cov_loss.detach()
 
-    total_loss = main_loss + w_prior * prior_loss
+    # --- Variance Matching Loss (ADR-065 anti-collapse) ---
+    # Штраф за коллапс h_39 к константе:
+    # relu(Var(z_clean_d) - Var(h_39_d)).mean() > 0 если h_39 «сплюснут» относительно целей.
+    # Стоимость: O(N_active * D) — намного дешевле InfoNCE (O(N²*D)).
+    # Примечание: градиент обращается в 0 при точном коллапсе h_39 = const (вариация = 0),
+    # но sgd-шум из основного loss вытолкнет h_39 из этой точки, после чего var_match
+    # начнёт активно препятствовать возврату к коллапсу.
+    var_match_loss = torch.tensor(0.0, device=z_clean.device)
+    if "h_39" in outputs and w_var_match > 0:
+        h_39_vm = safe_normalize(outputs["h_39"].float(), dim=-1)  # [B, T, D]
+        mask_1d = attn_f.view(-1).bool()                            # [B*T]
+        h39_flat_vm = h_39_vm.view(-1, D)[mask_1d]                  # [N_active, D]
+        z_flat_vm   = target.view(-1, D)[mask_1d]                   # [N_active, D]
+        if h39_flat_vm.shape[0] > 1:
+            h39_var = h39_flat_vm.var(dim=0)            # [D] — дисперсия выхода DUS по батчу
+            z_var   = z_flat_vm.var(dim=0).detach()     # [D] — дисперсия целей (без градиента)
+            var_match_loss = F.relu(z_var - h39_var).mean()  # scalar ≈ 0.001 при коллапсе
+        metrics["var_match_loss"] = var_match_loss.detach()
+        metrics["h39_var_mean"]   = h39_flat_vm.var(dim=0).mean().detach() if h39_flat_vm.shape[0] > 1 else torch.tensor(0.0)
+        metrics["z_var_mean"]     = z_flat_vm.var(dim=0).mean().detach()   if h39_flat_vm.shape[0] > 1 else torch.tensor(0.0)
+
+    total_loss = main_loss + w_prior * prior_loss + w_var_match * var_match_loss
 
     # --- Diagnostic Norms ---
     # Отключено: мы больше не возвращаем hidden_states для экономии VRAM.
@@ -1112,7 +1136,7 @@ def train():
                 t_max=args.t_max,
                 t_sample_alpha=args.t_sample_alpha,
             )
-            loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior)
+            loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_var_match=args.w_var_match)
             
             div_loss, adaln_metrics = compute_adaln_diversity_loss(
                 actual_model.adaLN_attn, actual_model.adaLN_mlp, fwd_outputs["t_emb"]
@@ -1181,7 +1205,7 @@ def train():
                         v_ids  = val_batch["input_ids"].to(device)
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
-                        v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior)
+                        v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_var_match=args.w_var_match)
                         
                         v_div_loss, v_adaln_metrics = compute_adaln_diversity_loss(
                             actual_model.adaLN_attn, actual_model.adaLN_mlp, v_out["t_emb"]
