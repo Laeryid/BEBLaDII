@@ -112,7 +112,12 @@ class BEBLaDIIPhase3Eval(nn.Module):
             pre_norm = dus_outputs.last_hidden_state.float()
             
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
-        dus_final = safe_normalize(dus_final_raw, dim=-1)
+        h_39 = safe_normalize(dus_final_raw, dim=-1)
+        
+        # --- Skip-Connection & Identity Gate(t) blending (ADR 065) ---
+        gate_t = t.view(-1, 1, 1).expand(B, 1, 1).float()
+        dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * x_in
+        dus_final = safe_normalize(dus_final_blended, dim=-1)
         
         self._current_t_emb = None
         return dus_final

@@ -182,8 +182,11 @@ class Config:
     # Вес лосса разнообразия для AdaLN
     w_div = 0.1
     # Вес штрафа за collapse h_39 (Variance Matching, ADR-065).
-    # relu(Var(z_clean)_d - Var(h_39)_d).mean() ≈ 0.001 при коллапсе → w=50 даёт ~0.05 вклад
-    w_var_match = 50.0
+    w_var_match = 150.0
+    # Вес штрафа за внутритекстовый коллапс (Token-to-Token RKD)
+    w_seq_rkd = 10.0
+    # Вес L2 регуляризации AdaLN (предотвращение взрыва норм активаций)
+    w_adaln_l2 = 1.0
 
     # Смещённая выборка t (DiffuSeq-v2 / LD4LG): >1.0 → больше сэмплов при высоких t
     # 1.0 = равномерная (текущее поведение), 2.0 = квадратичное смещение к t_max
@@ -618,7 +621,7 @@ class BEBLaDIIPhase3(nn.Module):
 # + Prior Loss (геометрия сферы)
 
 # %%
-def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch):
+def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch, w_adaln_l2: float = 1.0):
     """
     Поощряет:
     1. Межслойное временное разнообразие модуляции AdaLN (по всем слоям DUS, а не только по 0-му).
@@ -668,6 +671,17 @@ def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch):
 
     total_div_loss = batch_div_loss + 0.5 * channel_var_loss
 
+    # --- L2 Regularization on AdaLN (предотвращение взрыва норм активаций) ---
+    shift_all_attn, scale_all_attn = all_outs_attn.chunk(2, dim=-1)
+    shift_all_mlp, scale_all_mlp   = all_outs_mlp.chunk(2, dim=-1)
+    adaln_l2_loss = (
+        (scale_all_attn - 1.0).pow(2).mean() +
+        shift_all_attn.pow(2).mean() +
+        (scale_all_mlp - 1.0).pow(2).mean() +
+        shift_all_mlp.pow(2).mean()
+    )
+    total_div_loss = total_div_loss + w_adaln_l2 * adaln_l2_loss
+
     # Диагностические метрики
     shift_attn_norm = shift_attn.abs().mean()
     scale_attn_dev  = (scale_attn - 1.0).abs().mean()
@@ -687,11 +701,12 @@ def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch):
         "adaln_mlp_scale_dev":   scale_mlp_dev.detach(),
         "adaln_chan_var_attn":   var_shift_attn.detach(),
         "adaln_chan_var_mlp":    var_shift_mlp.detach(),
+        "adaln_l2_loss":         adaln_l2_loss.detach(),
     }
     return total_div_loss, adaln_metrics
 
 
-def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float = 50.0):
+def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float = 150.0, w_seq_rkd: float = 10.0):
     z_clean   = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
     attn_f    = outputs["attention_mask"].float()
@@ -787,10 +802,18 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float
         metrics["h39_var_mean"]   = h39_flat_vm.var(dim=0).mean().detach() if h39_flat_vm.shape[0] > 1 else torch.tensor(0.0)
         metrics["z_var_mean"]     = z_flat_vm.var(dim=0).mean().detach()   if h39_flat_vm.shape[0] > 1 else torch.tensor(0.0)
 
-    total_loss = main_loss + w_prior * prior_loss + w_var_match * var_match_loss
+    # --- Token-to-Token RKD Loss (анти-коллапс внутри последовательности) ---
+    seq_rkd_loss = torch.tensor(0.0, device=z_clean.device)
+    if "h_39" in outputs and w_seq_rkd > 0:
+        h_39_norm  = safe_normalize(outputs["h_39"].float(), dim=-1)
+        sim_pred   = h_39_norm @ h_39_norm.transpose(1, 2)
+        sim_target = target @ target.transpose(1, 2)
+        mask_2d    = (attn_f.unsqueeze(2) * attn_f.unsqueeze(1))
+        active_pairs = mask_2d.sum().clamp(min=1.0)
+        seq_rkd_loss = ((sim_pred - sim_target).pow(2) * mask_2d).sum() / active_pairs
+        metrics["seq_rkd_loss"] = seq_rkd_loss.detach()
 
-    # --- Diagnostic Norms ---
-    # Отключено: мы больше не возвращаем hidden_states для экономии VRAM.
+    total_loss = main_loss + w_prior * prior_loss + w_var_match * var_match_loss + w_seq_rkd * seq_rkd_loss
 
     return total_loss, metrics
 
@@ -1136,10 +1159,10 @@ def train():
                 t_max=args.t_max,
                 t_sample_alpha=args.t_sample_alpha,
             )
-            loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_var_match=args.w_var_match)
+            loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd)
             
             div_loss, adaln_metrics = compute_adaln_diversity_loss(
-                actual_model.adaLN_attn, actual_model.adaLN_mlp, fwd_outputs["t_emb"]
+                actual_model.adaLN_attn, actual_model.adaLN_mlp, fwd_outputs["t_emb"], w_adaln_l2=args.w_adaln_l2
             )
             metrics["div_loss"] = div_loss.detach()
             metrics.update(adaln_metrics)
@@ -1205,10 +1228,10 @@ def train():
                         v_ids  = val_batch["input_ids"].to(device)
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
-                        v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_var_match=args.w_var_match)
+                        v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd)
                         
                         v_div_loss, v_adaln_metrics = compute_adaln_diversity_loss(
-                            actual_model.adaLN_attn, actual_model.adaLN_mlp, v_out["t_emb"]
+                            actual_model.adaLN_attn, actual_model.adaLN_mlp, v_out["t_emb"], w_adaln_l2=args.w_adaln_l2
                         )
                         v_metrics["div_loss"] = v_div_loss.detach()
                         v_metrics.update(v_adaln_metrics)
