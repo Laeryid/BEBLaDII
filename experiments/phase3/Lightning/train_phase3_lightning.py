@@ -715,18 +715,17 @@ def train():
 
     optimizer = torch.optim.AdamW(param_groups, lr=0.0, weight_decay=1e-2)
 
-    warmup_steps = int(args.max_steps * args.warmup_steps_ratio)
+    # Цикличное расписание LR: CosineAnnealingWarmRestarts с ручной warmup логикой (как в ноутбуке)
     cosine_T0 = 2000
-    restart_warmup_steps = 200
+    cosine_T_mult = 1
+    cosine_eta_min = args.dus_learning_rate * 0.01
 
-    def lr_lambda(step):
-        if step < warmup_steps:
-            return max(args.min_lr_ratio, float(step) / float(max(1, warmup_steps)))
-        progress = float(step - warmup_steps) / float(max(1, args.max_steps - warmup_steps))
-        cosine_decay = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return max(args.min_lr_ratio, cosine_decay)
-
-    scheduler = LambdaLR(optimizer, lr_lambda=[lr_lambda, lr_lambda])
+    scheduler = CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=cosine_T0,
+        T_mult=cosine_T_mult,
+        eta_min=cosine_eta_min
+    )
     ema = EMA(actual_model, decay=0.998)
 
     if num_gpus > 1:
@@ -748,6 +747,9 @@ def train():
         dataloader, val_dataloader = [], []
 
     total_steps = (min(args.max_steps, len(dataloader) * args.epochs) if len(dataloader) > 0 else args.max_steps)
+
+    warmup_steps = min(1000, int(total_steps * 0.1))
+    restart_warmup_steps = 200
 
     # Resume from checkpoint
     start_step = 0
