@@ -112,6 +112,9 @@ class Config:
     w_seq_rkd   = 10.0   # Token-to-Token RKD Loss
     w_adaln_l2  = 1.0    # AdaLN Output L2 Penalty
 
+    # Gradient Checkpointing (set False if using PyTorch forward hooks with custom module)
+    use_gradient_checkpointing = False
+
     # Biased t sampling (DiffuSeq-v2 / LD4LG): >1.0 -> bias towards t_max
     t_sample_alpha = 2.0
 
@@ -327,10 +330,15 @@ class BEBLaDIIPhase3(nn.Module):
             raise FileNotFoundError(f"CRITICAL: dus_weights not found at '{dus_weights}'.")
 
         self.dus = dus_wrapper.model
-        if hasattr(self.dus, "gradient_checkpointing_enable"):
+        if getattr(args, "use_gradient_checkpointing", False) and hasattr(self.dus, "gradient_checkpointing_enable"):
             self.dus.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}
             )
+            print("[Init] Gradient Checkpointing enabled.", flush=True)
+        else:
+            if hasattr(self.dus, "gradient_checkpointing_disable"):
+                self.dus.gradient_checkpointing_disable()
+            print("[Init] Gradient Checkpointing disabled (prevents AdaLN hook conflict).", flush=True)
         if hasattr(self.dus, "_maybe_set_compile"):
             self.dus._maybe_set_compile = lambda *a, **kw: None
         type(self.dus).device = property(lambda self: torch.device("cuda"))

@@ -192,6 +192,9 @@ class Config:
     # 1.0 = равномерная (текущее поведение), 2.0 = квадратичное смещение к t_max
     t_sample_alpha = 2.0
 
+    # Gradient Checkpointing (set False if using PyTorch forward hooks with custom module)
+    use_gradient_checkpointing = False
+
     wandb_project = "BEBLaDII-Phase3-Kaggle"
 
 
@@ -461,10 +464,15 @@ class BEBLaDIIPhase3(nn.Module):
             raise FileNotFoundError(f"CRITICAL: dus_weights not found at '{dus_weights}'.")
 
         self.dus = dus_wrapper.model
-        if hasattr(self.dus, "gradient_checkpointing_enable"):
+        if getattr(args, "use_gradient_checkpointing", False) and hasattr(self.dus, "gradient_checkpointing_enable"):
             self.dus.gradient_checkpointing_enable(
                 gradient_checkpointing_kwargs={"use_reentrant": False}
             )
+            print("[Init] Gradient Checkpointing enabled.", flush=True)
+        else:
+            if hasattr(self.dus, "gradient_checkpointing_disable"):
+                self.dus.gradient_checkpointing_disable()
+            print("[Init] Gradient Checkpointing disabled (prevents AdaLN hook conflict).", flush=True)
         if hasattr(self.dus, "_maybe_set_compile"):
             self.dus._maybe_set_compile = lambda *a, **kw: None
         type(self.dus).device = property(lambda self: torch.device("cuda"))
