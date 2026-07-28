@@ -859,13 +859,9 @@ def train():
                     "h39_low": f"{metrics_dict.get('cos_h39_t_low', 0):.3f}",
                 })
 
-            if step > start_step and step % args.save_steps == 0:
+            if step > start_step and step % args.val_steps == 0:
                 actual_model_ref = model.module if isinstance(model, nn.DataParallel) else model
                 layer_div = compute_layer_divergence(actual_model_ref.dus)
-                if layer_div is not None:
-                    print(f"\n[DIAG] Step {step} | layer_divergence: {layer_div:.6f}")
-                    if args.wandb_project:
-                        wandb.log({"diag/layer_divergence": layer_div}, step=step)
 
                 model.eval()
                 val_metrics_sum = {}
@@ -878,7 +874,7 @@ def train():
                         v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd)
                         
                         v_div_loss, v_adaln_metrics = compute_adaln_diversity_loss(
-                            actual_model.adaLN_attn, actual_model.adaLN_mlp, v_out["t_emb"], w_adaln_l2=args.w_adaln_l2
+                            actual_model_ref.adaLN_attn, actual_model_ref.adaLN_mlp, v_out["t_emb"], w_adaln_l2=args.w_adaln_l2
                         )
                         v_metrics["div_loss"] = v_div_loss.detach()
                         v_metrics.update(v_adaln_metrics)
@@ -896,12 +892,21 @@ def train():
                         val_batches += 1
                         if val_batches >= 20: break
 
+                if 'v_out' in locals():
+                    del v_out, v_loss, v_metrics
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
                 if val_batches > 0:
                     val_metrics_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
-                    if args.wandb_project: wandb.log(val_metrics_avg, step=step)
+                    if layer_div is not None:
+                        val_metrics_avg["val_layer_divergence"] = layer_div
+                    if args.wandb_project: 
+                        wandb.log(val_metrics_avg, step=step)
                     print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_h39_all: {val_metrics_avg.get('val_cos_h39_all', 0):.4f}")
                 model.train()
 
+            if step > start_step and step % args.save_steps == 0:
                 ckpt_path = os.path.join(args.output_dir, f"phase3_step_{step}.pth")
                 actual_model = model.module if isinstance(model, nn.DataParallel) else model
 
