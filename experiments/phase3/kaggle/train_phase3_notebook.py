@@ -192,8 +192,8 @@ class Config:
     # 1.0 = равномерная (текущее поведение), 2.0 = квадратичное смещение к t_max
     t_sample_alpha = 2.0
 
-    # Gradient Checkpointing (set False if using PyTorch forward hooks with custom module)
-    use_gradient_checkpointing = False
+    # Gradient Checkpointing (enabled - hook state preserved during backward)
+    use_gradient_checkpointing = True
 
     wandb_project = "BEBLaDII-Phase3-Kaggle"
 
@@ -605,9 +605,6 @@ class BEBLaDIIPhase3(nn.Module):
         gate_t = t.view(B, 1, 1).float()
         dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * x_in
         dus_final = safe_normalize(dus_final_blended, dim=-1)  # [B, T, D]
-
-        # Очищаем сохранённый t_emb после forward
-        self._current_t_emb = None
 
         return {
             "z_clean":       z_clean_f,

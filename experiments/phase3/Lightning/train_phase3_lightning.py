@@ -112,8 +112,8 @@ class Config:
     w_seq_rkd   = 10.0   # Token-to-Token RKD Loss
     w_adaln_l2  = 1.0    # AdaLN Output L2 Penalty
 
-    # Gradient Checkpointing (set False if using PyTorch forward hooks with custom module)
-    use_gradient_checkpointing = False
+    # Gradient Checkpointing (enabled - hook state preserved during backward)
+    use_gradient_checkpointing = True
 
     # Biased t sampling (DiffuSeq-v2 / LD4LG): >1.0 -> bias towards t_max
     t_sample_alpha = 2.0
@@ -450,8 +450,6 @@ class BEBLaDIIPhase3(nn.Module):
         gate_t = t.view(-1, 1, 1).expand(B, 1, 1).float()
         dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * x_in
         dus_final = safe_normalize(dus_final_blended, dim=-1)
-
-        self._current_t_emb = None
 
         return {
             "z_clean":       z_clean_f,
