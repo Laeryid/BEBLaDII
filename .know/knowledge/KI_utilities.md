@@ -33,6 +33,7 @@
 
 
 
+
 ## Related KIs
 - [[KI_model_core.md]] (via `src/beb_la_dii/model/component_registry.py`)
 

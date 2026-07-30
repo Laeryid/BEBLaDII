@@ -100,3 +100,6 @@ graph TD
 - [[decisions/059_phase3_residual_stream_norm_explosion.md]] — Устранение взрыва нормы остаточного потока в float32.
 - [[decisions/060_phase3_canonical_diffusion_redesign.md]] — Переход к канонической диффузии и AdaLN.
 - [[decisions/061_phase3_clean_text_diffusion_transition.md]] — Переход на чистые тексты и чекпоинт step_9995.
+
+## Related KIs
+

@@ -54,7 +54,9 @@ component = MyComponent.from_scratch(
 
 
 
+
 ## Related KIs
 - [[decisions/019_decoupling_intermediate_layers.md]] (via `src/beb_la_dii/model/distiller.py`)
 - [[decisions/034_angular_loss_for_output_projector.md]] (via `src/beb_la_dii/model/projectors.py`)
+- [[decisions/065_unet_skip_connections_and_identity_gate.md]] (via `src/beb_la_dii/model/dus.py`)
 
