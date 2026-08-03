@@ -1,4 +1,4 @@
-# %% [markdown]
+agy# %% [markdown]
 # # BEBLaDII Phase 3 Training — Canonical Spherical Diffusion (Kaggle T4 x2)
 # *Архитектура: ADR 060 (каноническая диффузия на сфере) + ADR 065 (Skip-Connections & Identity Gate(t))*
 # *Ключевые изменения:*
@@ -150,7 +150,7 @@ class Config:
     local_sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
 
     # GCS (для resume и сохранения чекпоинтов)
-    resume_from_checkpoint = False
+    resume_from_checkpoint = True
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase3/checkpoints/"
 
     # Директория вывода
@@ -167,7 +167,7 @@ class Config:
     log_steps            = 10
     val_steps            = 200
     save_steps           = 1000
-    
+
     # Параметры расписания LR: Linear Warmup + Cosine Decay
     warmup_steps_ratio = 0.05    # 5% от max_steps для warmup
     min_lr_ratio       = 0.01    # Минимальный LR относительно base_lr в конце
@@ -186,7 +186,7 @@ class Config:
     # Вес штрафа за внутритекстовый коллапс (Token-to-Token RKD)
     w_seq_rkd = 10.0
     # Вес L2 регуляризации AdaLN (предотвращение взрыва норм активаций)
-    w_adaln_l2 = 1.0
+    w_adaln_l2 = 0.2
 
     # Смещённая выборка t (DiffuSeq-v2 / LD4LG): >1.0 → больше сэмплов при высоких t
     # 1.0 = равномерная (текущее поведение), 2.0 = квадратичное смещение к t_max
@@ -522,12 +522,12 @@ class BEBLaDIIPhase3(nn.Module):
         def hook(module, input, output):
             if not hasattr(self, "_current_t_emb") or self._current_t_emb is None:
                 return output
-            
+
             if target == "attn":
                 shift, scale = self.adaLN_attn[layer_idx](self._current_t_emb)
             else:
                 shift, scale = self.adaLN_mlp[layer_idx](self._current_t_emb)
-                
+
             shift = shift.to(output.dtype)
             scale = scale.to(output.dtype)
             # Модулируем уже нормализованный output
@@ -1061,9 +1061,9 @@ def train():
     # Разделяем параметры на группы: тело BERT (DUS) и новые слои (AdaLN, t_proj)
     dus_params = []
     new_layers_params = []
-    
+
     actual_model = model.module if isinstance(model, nn.DataParallel) else model
-    
+
     # Параметры DUS (тело BERT) — низкий LR
     for name, param in actual_model.named_parameters():
         if param.requires_grad:
@@ -1071,18 +1071,18 @@ def train():
                 dus_params.append(param)
             else:
                 new_layers_params.append(param)
-    
+
     print(f"[Init] DUS params: {sum(p.numel() for p in dus_params):,}", flush=True)
     print(f"[Init] New layers params: {sum(p.numel() for p in new_layers_params):,}", flush=True)
-    
+
     # Создаем группы параметров с разными base LR
     param_groups = [
         {'params': dus_params, 'lr': args.dus_learning_rate},
         {'params': new_layers_params, 'lr': args.new_layers_lr},
     ]
-    
+
     optimizer = torch.optim.AdamW(param_groups, lr=0.0, weight_decay=1e-2)
-    
+
     # --- DataLoaders ---
     try:
         dataloader = get_dataloader(
@@ -1112,14 +1112,14 @@ def train():
     cosine_T0 = 2000  # Длина первого цикла
     cosine_T_mult = 1  # Множитель для следующих циклов (1 = одинаковая длина)
     cosine_eta_min = args.dus_learning_rate * 0.01  # Минимальный LR (1% от base_lr для DUS)
-    
+
     scheduler = CosineAnnealingWarmRestarts(
-        optimizer, 
-        T_0=cosine_T0, 
-        T_mult=cosine_T_mult, 
+        optimizer,
+        T_0=cosine_T0,
+        T_mult=cosine_T_mult,
         eta_min=cosine_eta_min
     )
-    
+
     # Параметры warmup
     warmup_steps = min(1000, int(total_steps * 0.1))  # 10% от total_steps или 1000
     restart_warmup_steps = 200  # Warmup внутри каждого цикла
@@ -1165,13 +1165,13 @@ def train():
                 t_sample_alpha=args.t_sample_alpha,
             )
             loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd)
-            
+
             div_loss, adaln_metrics = compute_adaln_diversity_loss(
                 actual_model.adaLN_attn, actual_model.adaLN_mlp, fwd_outputs["t_emb"], w_adaln_l2=args.w_adaln_l2
             )
             metrics["div_loss"] = div_loss.detach()
             metrics.update(adaln_metrics)
-            
+
             loss = loss + div_loss * args.w_div
 
             if loss.dim() > 0:
@@ -1186,7 +1186,7 @@ def train():
 
             # Цикличная warmup логика (как в коммите bdd4ec3)
             current_optim_step = step + 1
-            
+
             if current_optim_step <= warmup_steps:
                 # Основной warmup в начале обучения
                 lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
@@ -1234,7 +1234,7 @@ def train():
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
                         v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd)
-                        
+
                         v_div_loss, v_adaln_metrics = compute_adaln_diversity_loss(
                             actual_model.adaLN_attn, actual_model.adaLN_mlp, v_out["t_emb"], w_adaln_l2=args.w_adaln_l2
                         )
@@ -1254,7 +1254,7 @@ def train():
                         val_batches += 1
                         if val_batches >= 50:
                             break
-                
+
                 # --- Очистка памяти после валидации (OOM Fix) ---
                 if 'v_out' in locals():
                     del v_out, v_loss, v_metrics

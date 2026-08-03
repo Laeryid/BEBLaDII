@@ -97,7 +97,7 @@ class Config:
     log_steps            = 10
     val_steps            = 200
     save_steps           = 1000
-    
+
     warmup_steps_ratio = 0.05    # 5% of max_steps for warmup
     min_lr_ratio       = 0.01    # Min LR ratio at the end
 
@@ -111,7 +111,7 @@ class Config:
     w_div       = 0.1
     w_var_match = 150.0  # Variance matching (ADR 065)
     w_seq_rkd   = 10.0   # Token-to-Token RKD Loss
-    w_adaln_l2  = 1.0    # AdaLN Output L2 Penalty
+    w_adaln_l2  = 0.2    # AdaLN Output L2 Penalty
 
     # Gradient Checkpointing (enabled - hook state preserved during backward)
     use_gradient_checkpointing = True
@@ -873,7 +873,7 @@ def train():
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
                         v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd)
-                        
+
                         v_div_loss, v_adaln_metrics = compute_adaln_diversity_loss(
                             actual_model_ref.adaLN_attn, actual_model_ref.adaLN_mlp, v_out["t_emb"], w_adaln_l2=args.w_adaln_l2
                         )
@@ -902,7 +902,7 @@ def train():
                     val_metrics_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
                     if layer_div is not None:
                         val_metrics_avg["val_layer_divergence"] = layer_div
-                    if args.wandb_project: 
+                    if args.wandb_project:
                         wandb.log(val_metrics_avg, step=step)
                     print(f"\n[VAL] Step {step} | val_loss: {val_metrics_avg.get('val_loss', 0):.4f} | val_cos_h39_all: {val_metrics_avg.get('val_cos_h39_all', 0):.4f}")
                 model.train()
