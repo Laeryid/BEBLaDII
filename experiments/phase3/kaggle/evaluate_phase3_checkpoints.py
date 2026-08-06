@@ -52,7 +52,8 @@ def resolve_model_path(base_path: str) -> str:
             for config_file in kaggle_input.rglob("config.json"):
                 if keyword in str(config_file).lower():
                     return str(config_file.parent)
-    return base_path
+                    
+    raise FileNotFoundError(f"КРИТИЧЕСКАЯ ОШИБКА: Директория с 'config.json' для модели '{keyword}' не найдена по пути {base_path}. Убедись, что ты прикрепил (Add Data) нужные датасеты (Qwen/ModernBERT) к своему Kaggle ноутбуку!")
 
 # --- Architecture Components (Standalone for Kaggle) ---
 class SinusoidalEmbedding(nn.Module):
