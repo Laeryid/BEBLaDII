@@ -382,8 +382,8 @@ def main():
         
         # Save to a temporary file
         sa_path = "/tmp/gcp_sa.json"
-        with open(sa_path, "w") as f:
-            f.write(gcp_sa_json)
+        with open(sa_path, "w") as f_sa:
+            f_sa.write(gcp_sa_json)
             
         # Set environment variable so gsutil and gcloud can use it
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa_path
