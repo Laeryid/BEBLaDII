@@ -374,23 +374,20 @@ def main():
     diff_model = BEBLaDIIPhase3(embedding_model_path=base_qwen, modernbert_path=base_modernbert)
     diff_model.to(device)
     
-    # 3. Find checkpoints
-    input_dir = "/kaggle/input"
+    # 3. Find checkpoints in GCS
+    gcs_dir = "gs://bebladii-weigths-us/planB/phase3/checkpoints/"
     checkpoints = []
-    if os.path.exists(input_dir):
-        for root, dirs, files in os.walk(input_dir):
-            for file in files:
-                if file.startswith("phase3_step_") and file.endswith(".pth") and "_opt" not in file:
-                    checkpoints.append(os.path.join(root, file))
+    try:
+        result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True, check=True)
+        files = result.stdout.splitlines()
+        for file in files:
+            if "phase3_step_" in file and file.endswith(".pth") and "_opt" not in file:
+                checkpoints.append(file)
+    except Exception as e:
+        output_msg(f"Error listing GCS checkpoints: {e}", f)
                     
-    # Optional local fallback
-    if not checkpoints and os.path.exists("local_checkpoints"):
-        for file in os.listdir("local_checkpoints"):
-            if file.startswith("phase3_step_") and file.endswith(".pth") and "_opt" not in file:
-                checkpoints.append(os.path.join("local_checkpoints", file))
-                
     if not checkpoints:
-        output_msg("No checkpoints found. Terminating.", f)
+        output_msg("No checkpoints found in GCS. Terminating.", f)
         f.close()
         return
         
@@ -399,11 +396,23 @@ def main():
         return int(m.group(1)) if m else -1
         
     checkpoints.sort(key=extract_step)
-    output_msg(f"Found {len(checkpoints)} checkpoints.", f)
+    
+    # Take the latest checkpoint
+    latest_ckpt = checkpoints[-1]
+    local_ckpt = os.path.basename(latest_ckpt)
+    
+    output_msg(f"Found {len(checkpoints)} checkpoints in GCS.", f)
+    output_msg(f"Downloading the latest checkpoint: {latest_ckpt} ...", f)
+    
+    try:
+        subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
+    except Exception as e:
+        output_msg(f"Error downloading checkpoint: {e}", f)
+        f.close()
+        return
     
     # 4. Evaluate
-    for ckpt in checkpoints:
-        load_and_evaluate_checkpoint(ckpt, diff_model, tokenizer, device, f)
+    load_and_evaluate_checkpoint(local_ckpt, diff_model, tokenizer, device, f)
         
     output_msg(f"\nAll done! Results saved to {out_path}", f)
     f.close()
