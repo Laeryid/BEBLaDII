@@ -375,6 +375,27 @@ def main():
     diff_model.to(device)
     
     # 3. Find checkpoints in GCS
+    try:
+        from kaggle_secrets import UserSecretsClient
+        user_secrets = UserSecretsClient()
+        gcp_sa_json = user_secrets.get_secret("GCP_SA_JSON")
+        
+        # Save to a temporary file
+        sa_path = "/tmp/gcp_sa.json"
+        with open(sa_path, "w") as f:
+            f.write(gcp_sa_json)
+            
+        # Set environment variable so gsutil and gcloud can use it
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa_path
+        
+        # Authenticate gcloud (optional but recommended for gsutil)
+        subprocess.run(["gcloud", "auth", "activate-service-account", "--key-file=" + sa_path], check=True, capture_output=True)
+        output_msg("Successfully authenticated to GCP using Kaggle Secrets.", f)
+    except ImportError:
+        pass  # Not in Kaggle
+    except Exception as e:
+        output_msg(f"Failed to authenticate to GCP: {e}. Make sure GCP_SA_JSON secret is attached to the notebook.", f)
+
     gcs_dir = "gs://bebladii-weigths-us/planB/phase3/checkpoints/"
     checkpoints = []
     try:
