@@ -315,7 +315,7 @@ def analyze_topology_and_identity(diff_model, tokenizer, device, file):
         output_msg(f"\n  --- Topology at t={t_val} ---", file)
         for layer_idx, label in [(4, "L4 "), (19, "L19"), (39, "L39")]:
             if layer_idx in snap:
-                active_h = snap[layer_idx][mask_batch.bool()]
+                active_h = snap[layer_idx][:, 1:, :][mask_batch.bool()]
                 iso, r1, cv = compute_topological_metrics(active_h)
                 flag = " *** COLLAPSE ***" if r1 > 0.8 else (" ! rank1 high" if r1 > 0.5 else "")
                 output_msg(f"  {label}: Iso={iso:.4f} R1={r1:.4f} CV={cv:.4f}{flag}", file)
