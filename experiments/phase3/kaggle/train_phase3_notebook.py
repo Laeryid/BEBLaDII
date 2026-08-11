@@ -507,8 +507,7 @@ class BEBLaDIIPhase3(nn.Module):
             self.register_buffer("sep_embed", sep_tensor)
             print(f"[Init] Separator token loaded from {sep_token_path}", flush=True)
         else:
-            self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
-            print(f"[WARN] Separator token NOT found at {sep_token_path}, initialized to zeros.", flush=True)
+            raise FileNotFoundError(f"CRITICAL: sep_token.pt not found at {sep_token_path}. Укажите правильный путь на Kaggle!")
 
         # 7. Self-Conditioning projection (подготовка архитектуры — нулевая инициализация)
         # При self_cond=None эффект нулевой → поведение идентично текущему.
@@ -1157,13 +1156,39 @@ def train():
             attention_mask = batch["attention_mask"].to(device)
 
             optimizer.zero_grad()
-            fwd_outputs = model(
-                input_ids,
-                attention_mask=attention_mask,
-                t_min=args.t_min,
-                t_max=args.t_max,
-                t_sample_alpha=args.t_sample_alpha,
-            )
+            
+            # --- Self-Conditioning (SC) Injection ---
+            # 50% probability to use self-conditioning to prevent mode collapse at high noise
+            if torch.rand(1).item() < 0.5:
+                # 1. No-grad first pass to get estimate
+                with torch.no_grad():
+                    out_sc = model(
+                        input_ids,
+                        attention_mask=attention_mask,
+                        t_min=args.t_min,
+                        t_max=args.t_max,
+                        t_sample_alpha=args.t_sample_alpha,
+                        self_cond=None
+                    )
+                    self_cond_est = out_sc["dus_final"].detach()
+                    t_sampled = out_sc["t"].detach()
+                
+                # 2. Actual pass using the exact same t and the self_cond estimate
+                fwd_outputs = model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    t=t_sampled,
+                    self_cond=self_cond_est
+                )
+            else:
+                fwd_outputs = model(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    t_min=args.t_min,
+                    t_max=args.t_max,
+                    t_sample_alpha=args.t_sample_alpha,
+                    self_cond=None
+                )
             loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd)
 
             div_loss, adaln_metrics = compute_adaln_diversity_loss(

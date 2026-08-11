@@ -11,10 +11,10 @@ project_root = r"C:\Experiments\BEBLaDII"
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from experiments.phase3.inspect_and_test_phase3 import load_checkpoint_and_inspect, load_models, encode_clean_text
+from experiments.phase3.inspect_and_test_phase3 import load_checkpoint_and_inspect, load_models
 from src.beb_la_dii.utils.loss import safe_normalize
 
-def analyze_gradients(ckpt_path, diff_model, tokenizer, embeddings, encoder, decoder, device, dtype):
+def analyze_gradients(ckpt_path, diff_model, tokenizer, device):
     print(f"\n{'='*80}\nJacobian Lens (Gradient Flow): {os.path.basename(ckpt_path)}\n{'='*80}")
     state = load_checkpoint_and_inspect(ckpt_path)
     
@@ -22,17 +22,27 @@ def analyze_gradients(ckpt_path, diff_model, tokenizer, embeddings, encoder, dec
     clean_dus = {k.replace("_orig_module.", ""): v for k, v in dus_ema.items()}
     diff_model.dus.load_state_dict(clean_dus, strict=False)
     
-    for name in ["adaLN_attn", "adaLN_mlp", "t_proj"]:
+    for name in ["adaLN_attn", "adaLN_mlp", "t_proj", "sep_embed"]:
         ema = state.get(f"{name}_ema", state.get(name, {}))
         if ema:
-            getattr(diff_model, name).load_state_dict(ema, strict=True)
+            if name == "sep_embed":
+                diff_model.sep_embed.copy_(ema)
+            else:
+                getattr(diff_model, name).load_state_dict(ema, strict=True)
             
     diff_model.train() # Need train mode for gradients
     for p in diff_model.parameters():
         p.requires_grad = True
 
     text = "The quick brown fox jumps over the lazy dog."
-    z_clean, attn_mask = encode_clean_text(text, tokenizer, embeddings, encoder, device, dtype)
+    tok = tokenizer(text, return_tensors="pt", add_special_tokens=False)
+    input_ids = tok.input_ids.to(device)
+    attn_mask = tok.attention_mask.to(device)
+    
+    with torch.no_grad():
+        qwen_embeds = diff_model.qwen_embeddings(input_ids)
+        z_clean, _, _ = diff_model.encoder(qwen_embeds)
+        z_clean = F.normalize(z_clean.float(), dim=-1).detach()
     z_clean.requires_grad_(False)
     
     B, T, D = z_clean.shape
@@ -42,7 +52,7 @@ def analyze_gradients(ckpt_path, diff_model, tokenizer, embeddings, encoder, dec
         print(f"\n--- Gradient Flow at t={t_val} ---")
         diff_model.zero_grad()
         
-        # Add noise
+        # Add noise manually so we can track its gradients
         mu = torch.cos(torch.tensor(t_val) * (torch.pi / 2)).item()
         sigma = torch.sin(torch.tensor(t_val) * (torch.pi / 2)).item()
         epsilon = torch.randn_like(z_clean)
@@ -65,11 +75,16 @@ def analyze_gradients(ckpt_path, diff_model, tokenizer, embeddings, encoder, dec
             h = layer.register_forward_hook(get_hook(i))
             hooks.append(h)
             
-        # Forward pass
-        dus_final = diff_model(z_t, attn_mask, t_tensor)
+        # Forward pass using z_noisy_override
+        out = diff_model(input_ids, attn_mask, t_tensor, z_noisy_override=z_t)
+        dus_final = out["dus_final"]
         
-        # Calculate simple MSE loss with clean target
-        loss = F.mse_loss(dus_final[attn_mask.bool()], z_clean[attn_mask.bool()])
+        # Calculate Cosine Loss (ADR-060)
+        target = z_clean[attn_mask.bool()]
+        pred = dus_final[attn_mask.bool()]
+        cos_sim = (pred * target).sum(dim=-1)
+        loss = (1.0 - cos_sim).mean()
+        
         loss.backward()
         
         # Remove hooks
@@ -81,7 +96,7 @@ def analyze_gradients(ckpt_path, diff_model, tokenizer, embeddings, encoder, dec
         print("-" * 40)
         
         # z_t gradient (Input)
-        zt_grad_norm = z_t.grad.norm().item()
+        zt_grad_norm = z_t.grad.norm().item() if z_t.grad is not None else 0.0
         zt_norm = z_t.norm().item()
         print(f"{'Input':<6} | {zt_grad_norm:<12.6f} | {zt_norm:<15.6f}")
         
@@ -105,10 +120,13 @@ def main():
     
     print("Loading models...")
     dummy_state = {}
-    tokenizer, embeddings, encoder, decoder, diff_model, lm_head_weight, sep_embed = load_models(device, dtype, dummy_state)
+    tokenizer, diff_model, decoder, lm_head_weight = load_models(device, dtype, dummy_state)
     
-    ckpt_path = r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_6995.pth"
-    analyze_gradients(ckpt_path, diff_model, tokenizer, embeddings, encoder, decoder, device, dtype)
+    ckpt_path = r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_18995.pth"
+    if os.path.exists(ckpt_path):
+        analyze_gradients(ckpt_path, diff_model, tokenizer, device)
+    else:
+        print(f"[!] CKPT not found: {ckpt_path}")
 
 if __name__ == "__main__":
     main()
