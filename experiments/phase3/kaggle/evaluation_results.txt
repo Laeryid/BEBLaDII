@@ -1,0 +1,64 @@
+Device: cpu
+Qwen path: /kaggle/input/datasets/ragnar123/qwen2-5-1-5b
+ModernBERT path: /kaggle/input/models/answer-ai/modernbert/pytorch/large/2
+Successfully authenticated to GCP using Kaggle Secrets.
+Found 16 checkpoints in GCS.
+Downloading the latest checkpoint: gs://bebladii-weigths-us/planB/phase3/checkpoints/phase3_step_13995.pth ...
+
+================================================================================
+Evaluating Checkpoint: phase3_step_13995.pth
+================================================================================
+
+======================================================================
+БЛОК 1: Нормы весов (DUS + AdaLN)
+======================================================================
+   Layer |  AvgWeightNorm
+       0 |        79.1267
+      10 |        86.2996
+      20 |        83.7121
+      30 |        87.5273
+      39 |        97.2422
+  adaLN_attn: mean_w_norm=1.5505, min=1.5494, max=1.5518
+  adaLN_mlp: mean_w_norm=1.5163, min=1.5147, max=1.5183
+
+======================================================================
+БЛОК 2: AdaLN Sensitivity (delta t=0.01 vs 0.99)
+======================================================================
+  Первые 5 слоев: delta(t=0.01, t=0.99)
+    L | attn|Δshift| | attn|Δscale| | mlp|Δshift| | mlp|Δscale|
+  ----+--------------+--------------+-------------+------------
+    0 |     0.039322 |     0.046907 |    0.035618 |    0.048238
+    1 |     0.039324 |     0.046899 |    0.035624 |    0.048223
+    2 |     0.039327 |     0.046905 |    0.035603 |    0.048246
+    3 |     0.039330 |     0.046890 |    0.035619 |    0.048240
+    4 |     0.039308 |     0.046881 |    0.035615 |    0.048225
+
+======================================================================
+БЛОК 3 & 4: Topology & Identity Preservation
+======================================================================
+  [Baseline z_clean] Iso=0.8317 Rank1=0.1285 CV=0.0000
+
+  Text (Identity) | t=  0.1 | t=  0.5 | t=  0.9
+  -----------+---------+---------+--------
+
+  --- Topology at t=0.1 ---
+  L4 : Iso=0.7590 R1=0.2344 CV=0.0415
+  L19: Iso=0.6230 R1=0.3149 CV=0.0481
+  L39: Iso=0.9211 R1=0.0656 CV=0.0493
+
+  --- Topology at t=0.5 ---
+  L4 : Iso=0.6993 R1=0.3501 CV=0.0591
+  L19: Iso=0.6387 R1=0.2622 CV=0.0391
+  L39: Iso=0.9087 R1=0.0881 CV=0.0946
+
+  --- Topology at t=0.9 ---
+  L4 : Iso=0.6798 R1=0.3938 CV=0.1061
+  L19: Iso=0.5838 R1=0.3939 CV=0.0568
+  L39: Iso=0.9147 R1=0.0807 CV=0.0811
+
+  Identity Cos(Pred, Clean):
+  English    |  0.9939 |  0.6666 |  0.0262
+  Russian    |  0.9939 |  0.6651 |  0.0352
+  Science    |  0.9938 |  0.6518 |  0.0354
+
+All done! Results saved to evaluation_results.txt
