@@ -1,4 +1,4 @@
-agy# %% [markdown]
+# %% [markdown]
 # # BEBLaDII Phase 3 Training — Canonical Spherical Diffusion (Kaggle T4 x2)
 # *Архитектура: ADR 060 (каноническая диффузия на сфере) + ADR 065 (Skip-Connections & Identity Gate(t))*
 # *Ключевые изменения:*
@@ -549,6 +549,7 @@ class BEBLaDIIPhase3(nn.Module):
         t_max: float = 1.0,
         t_sample_alpha: float = 1.0,              # >1.0 → смещённая выборка к высоким t
         self_cond: torch.Tensor | None = None,    # [B, T, D] предсказание x̂_0; None → нейтральный режим
+        z_noisy_input: torch.Tensor | None = None,
     ) -> dict:
         with torch.no_grad():
             # --- Получаем чистые латентные векторы ---
@@ -568,7 +569,10 @@ class BEBLaDIIPhase3(nn.Module):
             # --- Зашумляем ВСЕ токены (ADR-060) ---
             z_clean_f = z_clean.float()
             z_clean_f = safe_normalize(z_clean_f, dim=-1)  # страховка
-            z_noisy = spherical_noise(z_clean_f, t)  # [B, T, D], float32
+            if z_noisy_input is not None:
+                z_noisy = z_noisy_input
+            else:
+                z_noisy = spherical_noise(z_clean_f, t)  # [B, T, D], float32
 
         # --- Time Embedding (обучаемые параметры) ---
         t_sin = self.t_sin_embed(t)           # [B, t_emb_dim]
@@ -602,7 +606,7 @@ class BEBLaDIIPhase3(nn.Module):
         # При t -> 0: gate_t -> 0 -> dus_final_blended -> x_in (x_noisy = x_clean) -> тождество
         # При t = 1:  gate_t -> 1 -> dus_final_blended -> h_39
         gate_t = t.view(B, 1, 1).float()
-        dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * x_in
+        dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * z_noisy.float()
         dus_final = safe_normalize(dus_final_blended, dim=-1)  # [B, T, D]
 
         return {
@@ -940,7 +944,9 @@ def load_checkpoint_split(
             print(f"[Resume] t_proj weights loaded.")
         if "self_cond_proj" in ckpt:
             actual_model.self_cond_proj.load_state_dict(ckpt["self_cond_proj"], strict=True)
-            print(f"[Resume] self_cond_proj weights loaded.")
+            # Принудительно сбрасываем веса self_cond_proj в нули (очистка от мусорных градиентов)
+            nn.init.zeros_(actual_model.self_cond_proj.weight)
+            print(f"[Resume] self_cond_proj weights loaded and RESET to zeros (garbage cleanup).")
 
         # EMA shadows
         ema_update = {}
@@ -1172,13 +1178,15 @@ def train():
                     )
                     self_cond_est = out_sc["dus_final"].detach()
                     t_sampled = out_sc["t"].detach()
+                    z_noisy_sampled = out_sc["z_noisy"].detach()
                 
-                # 2. Actual pass using the exact same t and the self_cond estimate
+                # 2. Actual pass using the exact same t, exact same noise, and the self_cond estimate
                 fwd_outputs = model(
                     input_ids,
                     attention_mask=attention_mask,
                     t=t_sampled,
-                    self_cond=self_cond_est
+                    self_cond=self_cond_est,
+                    z_noisy_input=z_noisy_sampled
                 )
             else:
                 fwd_outputs = model(
