@@ -148,7 +148,7 @@ class Config:
     # Пути к весам
     local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
     local_dus_weights     = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
-    local_decoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/PHASE2_DECODER_FINAL.pt"
+    local_decoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase2_phase2_decoder_step_8000.pth"
     local_sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
 
     # GCS (для resume и сохранения чекпоинтов)
@@ -433,7 +433,7 @@ class BEBLaDIIPhase3(nn.Module):
         # 2. LatentEncoder (заморожен)
         self.encoder = LatentEncoder()
         if encoder_weights and os.path.exists(encoder_weights):
-            state = torch.load(encoder_weights, map_location="cpu")
+            state = torch.load(encoder_weights, map_location="cpu", weights_only=False)
             if "encoder" in state:
                 state = state["encoder"]
             self.encoder.load_state_dict(state, strict=False)
@@ -449,7 +449,7 @@ class BEBLaDIIPhase3(nn.Module):
             latent_dim=1024, qwen_dim=1536, num_layers=3, dus_weights_path=None
         )
         if decoder_weights and os.path.exists(decoder_weights):
-            state = torch.load(decoder_weights, map_location="cpu")
+            state = torch.load(decoder_weights, map_location="cpu", weights_only=False)
             if "decoder_state_dict" in state:
                 state = state["decoder_state_dict"]
             elif "model" in state:
@@ -467,7 +467,7 @@ class BEBLaDIIPhase3(nn.Module):
             config={"base_model_id": modernbert_path}, weights_path=None, local_files_only=True
         )
         if dus_weights and os.path.exists(dus_weights):
-            state = torch.load(dus_weights, map_location="cpu")
+            state = torch.load(dus_weights, map_location="cpu", weights_only=False)
             if "latentBERT_state_dict" in state:
                 state = state["latentBERT_state_dict"]
             elif "model_state_dict" in state:
@@ -524,7 +524,7 @@ class BEBLaDIIPhase3(nn.Module):
 
         # 6. Токен-разделитель (ADR 058)
         if sep_token_path and os.path.exists(sep_token_path):
-            sep_tensor = torch.load(sep_token_path, map_location="cpu").float()
+            sep_tensor = torch.load(sep_token_path, map_location="cpu", weights_only=False).float()
             self.register_buffer("sep_embed", sep_tensor)
             print(f"[Init] Separator token loaded from {sep_token_path}", flush=True)
         else:
@@ -852,14 +852,14 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float
         probs = torch.nn.functional.softmax(logits, dim=-1)
         log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
         entropy = -(probs * log_probs).sum(dim=-1) # [B, T]
-        
+
         # ?????????? ??? ?? t (???????????)
         t_weight = t.unsqueeze(1).pow(2)
         entropy_loss = (entropy * t_weight * attn_f).sum() / active_tokens
-        
+
         metrics["entropy_loss"] = entropy_loss.detach()
         metrics["entropy_raw_mean"] = (entropy * attn_f).sum().detach() / active_tokens
-        
+
         total_loss = total_loss + w_entropy * entropy_loss
 
     return total_loss, metrics
@@ -962,7 +962,7 @@ def load_checkpoint_split(
 
     try:
         subprocess.run(["gsutil", "-q", "cp", latest_model_gs, local_model], check=True)
-        ckpt = torch.load(local_model, map_location="cpu")
+        ckpt = torch.load(local_model, map_location="cpu", weights_only=False)
 
         if "dus" in ckpt:
             clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
@@ -1024,7 +1024,7 @@ def load_checkpoint_split(
     local_opt = os.path.join(output_dir, "resume_opt.pth")
     try:
         subprocess.run(["gsutil", "-q", "cp", opt_gcs, local_opt], check=True, timeout=120)
-        opt_ckpt = torch.load(local_opt, map_location="cpu")
+        opt_ckpt = torch.load(local_opt, map_location="cpu", weights_only=False)
         optimizer.load_state_dict(opt_ckpt["optimizer"])
         print(f"[Resume] Optimizer state loaded.")
         try:
@@ -1200,7 +1200,7 @@ def train():
             attention_mask = batch["attention_mask"].to(device)
 
             optimizer.zero_grad()
-            
+
             # --- Self-Conditioning (SC) Injection ---
             # 50% probability to use self-conditioning to prevent mode collapse at high noise
             if torch.rand(1).item() < 0.5:
@@ -1217,7 +1217,7 @@ def train():
                     self_cond_est = out_sc["dus_final"].detach()
                     t_sampled = out_sc["t"].detach()
                     z_noisy_sampled = out_sc["z_noisy"].detach()
-                
+
                 # 2. Actual pass using the exact same t, exact same noise, and the self_cond estimate
                 fwd_outputs = model(
                     input_ids,
