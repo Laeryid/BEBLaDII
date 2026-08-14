@@ -183,6 +183,8 @@ class Config:
     w_prior = 0.05
     # Вес лосса разнообразия для AdaLN
     w_div = 0.1
+    # Вес Decoder Entropy Loss (ADR 069)
+    w_entropy = 2.0
     # Вес штрафа за collapse h_39 (Variance Matching, ADR-065).
     w_var_match = 150.0
     # Вес штрафа за внутритекстовый коллапс (Token-to-Token RKD)
