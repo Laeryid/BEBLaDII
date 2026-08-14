@@ -117,7 +117,7 @@ class BEBLaDIIPhase3(nn.Module):
             return output * scale + shift
         return hook
 
-    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, t: torch.Tensor, z_noisy_override: torch.Tensor = None):
+    def forward(self, input_ids: torch.Tensor, attention_mask: torch.Tensor, t: torch.Tensor, z_noisy_override: torch.Tensor = None, self_cond: torch.Tensor = None):
         with torch.no_grad():
             if z_noisy_override is not None:
                 z_noisy = z_noisy_override
@@ -135,6 +135,9 @@ class BEBLaDIIPhase3(nn.Module):
         self._current_t_emb = t_emb
 
         x_in = z_noisy.float()
+        
+        if self_cond is not None and getattr(self, 'self_cond_proj', None) is not None:
+            x_in = x_in + self.self_cond_proj(self_cond.float().to(x_in.device))
         
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)

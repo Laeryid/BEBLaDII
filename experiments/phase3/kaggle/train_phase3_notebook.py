@@ -944,9 +944,7 @@ def load_checkpoint_split(
             print(f"[Resume] t_proj weights loaded.")
         if "self_cond_proj" in ckpt:
             actual_model.self_cond_proj.load_state_dict(ckpt["self_cond_proj"], strict=True)
-            # Принудительно сбрасываем веса self_cond_proj в нули (очистка от мусорных градиентов)
-            nn.init.zeros_(actual_model.self_cond_proj.weight)
-            print(f"[Resume] self_cond_proj weights loaded and RESET to zeros (garbage cleanup).")
+            print(f"[Resume] self_cond_proj weights loaded.")
 
         # EMA shadows
         ema_update = {}
