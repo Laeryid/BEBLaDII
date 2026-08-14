@@ -157,6 +157,61 @@ def evaluate_ckpt(ckpt_path, device, dtype):
 
     analyze_topology(diff_model, tokenizer, device, txt_idx=os.path.basename(ckpt_path))
     analyze_identity(diff_model, tokenizer, device)
+    analyze_decoder_entropy(diff_model, decoder, tokenizer, device)
+
+def analyze_decoder_entropy(diff_model, decoder, tokenizer, device):
+    print("\n" + "="*70)
+    print("Decoder Literacy (Confidence & Entropy) [w/ Self-Cond]")
+    print("="*70)
+
+    texts = [
+        ("English", "The quick brown fox jumps over the lazy dog."),
+        ("Russian", "Мама мыла раму, а папа чинил телевизор."),
+    ]
+
+    diff_model.eval()
+    decoder.eval()
+    t_list = [0.1, 0.5, 0.9, 1.0]
+    
+    print(f"  {'Text':<10} | {'Metric':<10} | " + " | ".join(f"t={t:>4.1f}" for t in t_list))
+    print(f"  {'-'*10}-+-{'-'*10}-+-" + "-+-".join(["-"*6]*len(t_list)))
+
+    for label, txt in texts:
+        tok = tokenizer(txt, return_tensors="pt", add_special_tokens=False)
+        input_ids = tok.input_ids.to(device)
+        attn_mask = tok.attention_mask.to(device)
+        mask_b = attn_mask.bool()
+        
+        with torch.no_grad():
+            qwen_embeds = diff_model.qwen_embeddings(input_ids)
+            z_clean, _, _ = diff_model.encoder(qwen_embeds)
+            z_clean_f = F.normalize(z_clean.float(), dim=-1)
+            logits_clean = decoder(z_clean_f)
+            probs_clean = F.softmax(logits_clean, dim=-1)
+            conf_clean = probs_clean.max(dim=-1).values[mask_b].mean().item()
+            ent_clean = -(probs_clean * torch.log(probs_clean + 1e-9)).sum(dim=-1)[mask_b].mean().item()
+
+        row_conf, row_ent = [], []
+        for t_val in t_list:
+            with torch.no_grad():
+                if getattr(diff_model, 'self_cond_proj', None) is not None and t_val >= 0.5:
+                    out_sc = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device), self_cond=None)
+                    sc_est = out_sc["dus_final"].detach()
+                    out = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device), self_cond=sc_est)
+                else:
+                    out = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device))
+                pred = out["dus_final"]
+                
+                logits = decoder(pred.float())
+                probs = F.softmax(logits, dim=-1)
+                conf = probs.max(dim=-1).values[mask_b].mean().item()
+                entropy = -(probs * torch.log(probs + 1e-9)).sum(dim=-1)[mask_b].mean().item()
+                
+            row_conf.append(conf)
+            row_ent.append(entropy)
+            
+        print(f"  {label:<10} | {'Confidence':<10} | " + " | ".join(f"{v:>6.3f}" for v in row_conf) + f"  (Clean: {conf_clean:.3f})")
+        print(f"  {'':<10} | {'Entropy':<10} | " + " | ".join(f"{v:>6.3f}" for v in row_ent) + f"  (Clean: {ent_clean:.3f})")
 
 
 def main():

@@ -61,6 +61,7 @@ if PROJECT_ROOT not in sys.path:
 try:
     from src.beb_la_dii.model.dus import DUSModel
     from src.beb_la_dii.model.vae import LatentEncoder
+    from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
     from src.beb_la_dii.utils.data import get_dataloader, DistillationDataset
     from src.beb_la_dii.utils.loss import safe_normalize
 except ImportError as e:
@@ -147,6 +148,7 @@ class Config:
     # Пути к весам
     local_encoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-planb-phase3-data/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
     local_dus_weights     = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/AWAKENED_WEIGHTS_FINAL.pt"
+    local_decoder_weights = "/kaggle/input/datasets/bogdanbuliakov/bebladii-phase1-awakaned-weights/PHASE2_DECODER_FINAL.pt"
     local_sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
 
     # GCS (для resume и сохранения чекпоинтов)
@@ -413,6 +415,7 @@ class BEBLaDIIPhase3(nn.Module):
         modernbert_path: str,
         dus_weights: str | None,
         encoder_weights: str | None,
+        decoder_weights: str | None,
         sep_token_path: str | None,
         t_emb_dim: int = 256,
     ):
@@ -440,6 +443,24 @@ class BEBLaDIIPhase3(nn.Module):
         for p in self.encoder.parameters():
             p.requires_grad = False
         self.encoder.to(torch.bfloat16)
+
+        # 2.5 ModernLatentDecoder
+        self.decoder = ModernLatentDecoder(
+            latent_dim=1024, qwen_dim=1536, num_layers=3, dus_weights_path=None
+        )
+        if decoder_weights and os.path.exists(decoder_weights):
+            state = torch.load(decoder_weights, map_location="cpu")
+            if "decoder_state_dict" in state:
+                state = state["decoder_state_dict"]
+            elif "model" in state:
+                state = state["model"]
+            self.decoder.load_state_dict(state, strict=False)
+            print(f"[Init] Decoder weights loaded from {decoder_weights}", flush=True)
+        else:
+            print(f"[Init] WARN: decoder_weights not found. Training without entropy loss.", flush=True)
+        for p in self.decoder.parameters():
+            p.requires_grad = False
+        self.decoder.to(torch.bfloat16)
 
         # 3. DUS Backbone (обучаемый, float32 — ADR 057)
         dus_wrapper = DUSModel.from_scratch(
@@ -714,7 +735,7 @@ def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch, w_adaln_l2:
     return total_div_loss, adaln_metrics
 
 
-def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float = 150.0, w_seq_rkd: float = 10.0):
+def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float = 150.0, w_seq_rkd: float = 10.0, decoder=None, w_entropy: float = 0.0):
     z_clean   = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
     attn_f    = outputs["attention_mask"].float()
@@ -822,6 +843,24 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float
         metrics["seq_rkd_loss"] = seq_rkd_loss.detach()
 
     total_loss = main_loss + w_prior * prior_loss + w_var_match * var_match_loss + w_seq_rkd * seq_rkd_loss
+
+    # --- Decoder Entropy Loss (????? ?? ?????????????) ---
+    entropy_loss = torch.tensor(0.0, device=z_clean.device)
+    if decoder is not None and w_entropy > 0.0:
+        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+            logits = decoder(dus_final)
+        probs = torch.nn.functional.softmax(logits, dim=-1)
+        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
+        entropy = -(probs * log_probs).sum(dim=-1) # [B, T]
+        
+        # ?????????? ??? ?? t (???????????)
+        t_weight = t.unsqueeze(1).pow(2)
+        entropy_loss = (entropy * t_weight * attn_f).sum() / active_tokens
+        
+        metrics["entropy_loss"] = entropy_loss.detach()
+        metrics["entropy_raw_mean"] = (entropy * attn_f).sum().detach() / active_tokens
+        
+        total_loss = total_loss + w_entropy * entropy_loss
 
     return total_loss, metrics
 
@@ -1049,6 +1088,7 @@ def train():
         modernbert_path=args.modernbert_path,
         dus_weights=args.local_dus_weights,
         encoder_weights=args.local_encoder_weights,
+        decoder_weights=args.local_decoder_weights,
         sep_token_path=args.local_sep_token,
         t_emb_dim=args.t_emb_dim,
     ).to(device)
@@ -1195,7 +1235,7 @@ def train():
                     t_sample_alpha=args.t_sample_alpha,
                     self_cond=None
                 )
-            loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd)
+            loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd, decoder=actual_model.decoder, w_entropy=args.w_entropy)
 
             div_loss, adaln_metrics = compute_adaln_diversity_loss(
                 actual_model.adaLN_attn, actual_model.adaLN_mlp, fwd_outputs["t_emb"], w_adaln_l2=args.w_adaln_l2
@@ -1264,7 +1304,7 @@ def train():
                         v_ids  = val_batch["input_ids"].to(device)
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
-                        v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd)
+                        v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd, decoder=actual_model.decoder, w_entropy=args.w_entropy)
 
                         v_div_loss, v_adaln_metrics = compute_adaln_diversity_loss(
                             actual_model.adaLN_attn, actual_model.adaLN_mlp, v_out["t_emb"], w_adaln_l2=args.w_adaln_l2
