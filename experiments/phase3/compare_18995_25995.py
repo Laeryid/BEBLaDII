@@ -11,7 +11,8 @@ from src.beb_la_dii.utils.loss import safe_normalize
 
 CKPTS = [
     r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_18995.pth",
-    r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_25995.pth"
+    r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_25995.pth",
+    r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_32995.pth"
 ]
 
 def compute_topo(h):
@@ -123,7 +124,7 @@ def analyze_identity(diff_model, tokenizer, device):
         input_ids = tok.input_ids.to(device)
         attn_mask = tok.attention_mask.to(device)
         mask_b = attn_mask.bool()
-        
+
         with torch.no_grad():
             qwen_embeds = diff_model.qwen_embeddings(input_ids)
             z_clean, _, _ = diff_model.encoder(qwen_embeds)
@@ -148,7 +149,7 @@ def evaluate_ckpt(ckpt_path, device, dtype):
     if not os.path.exists(ckpt_path):
         print(f"[!] CKPT not found: {ckpt_path}")
         return
-        
+
     state = load_checkpoint_and_inspect(ckpt_path)
     print(f"  Шаг: {state.get('step', '?')}")
 
@@ -172,7 +173,7 @@ def analyze_decoder_entropy(diff_model, decoder, tokenizer, device):
     diff_model.eval()
     decoder.eval()
     t_list = [0.1, 0.5, 0.9, 1.0]
-    
+
     print(f"  {'Text':<10} | {'Metric':<10} | " + " | ".join(f"t={t:>4.1f}" for t in t_list))
     print(f"  {'-'*10}-+-{'-'*10}-+-" + "-+-".join(["-"*6]*len(t_list)))
 
@@ -181,7 +182,7 @@ def analyze_decoder_entropy(diff_model, decoder, tokenizer, device):
         input_ids = tok.input_ids.to(device)
         attn_mask = tok.attention_mask.to(device)
         mask_b = attn_mask.bool()
-        
+
         with torch.no_grad():
             qwen_embeds = diff_model.qwen_embeddings(input_ids)
             z_clean, _, _ = diff_model.encoder(qwen_embeds)
@@ -201,15 +202,15 @@ def analyze_decoder_entropy(diff_model, decoder, tokenizer, device):
                 else:
                     out = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device))
                 pred = out["dus_final"]
-                
+
                 logits = decoder(pred.float())
                 probs = F.softmax(logits, dim=-1)
                 conf = probs.max(dim=-1).values[mask_b].mean().item()
                 entropy = -(probs * torch.log(probs + 1e-9)).sum(dim=-1)[mask_b].mean().item()
-                
+
             row_conf.append(conf)
             row_ent.append(entropy)
-            
+
         print(f"  {label:<10} | {'Confidence':<10} | " + " | ".join(f"{v:>6.3f}" for v in row_conf) + f"  (Clean: {conf_clean:.3f})")
         print(f"  {'':<10} | {'Entropy':<10} | " + " | ".join(f"{v:>6.3f}" for v in row_ent) + f"  (Clean: {ent_clean:.3f})")
 
@@ -218,7 +219,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dtype = torch.float32
     print(f"Device: {device}")
-    
+
     for ckpt in CKPTS:
         print("\n\n" + "#"*70)
         print(f"EVALUATING: {ckpt}")

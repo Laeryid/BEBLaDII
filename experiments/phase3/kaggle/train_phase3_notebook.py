@@ -629,6 +629,8 @@ class BEBLaDIIPhase3(nn.Module):
         # При t -> 0: gate_t -> 0 -> dus_final_blended -> x_in (x_noisy = x_clean) -> тождество
         # При t = 1:  gate_t -> 1 -> dus_final_blended -> h_39
         gate_t = t.view(B, 1, 1).float()
+        gate_floor = 0.1
+        gate_t = gate_floor + (1.0 - gate_floor) * gate_t
         dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * z_noisy.float()
         dus_final = safe_normalize(dus_final_blended, dim=-1)  # [B, T, D]
 
