@@ -11,8 +11,7 @@ from src.beb_la_dii.utils.loss import safe_normalize
 
 CKPTS = [
     r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_18995.pth",
-    r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_25995.pth",
-    r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_32995.pth"
+    r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_24995.pth",
 ]
 
 def compute_topo(h):

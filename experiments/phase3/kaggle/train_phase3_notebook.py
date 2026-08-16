@@ -184,7 +184,7 @@ class Config:
     # Вес лосса разнообразия для AdaLN
     w_div = 0.1
     # Вес Decoder Entropy Loss (ADR 069)
-    w_entropy = 2.0
+    w_entropy = 1.0
     # Вес штрафа за collapse h_39 (Variance Matching, ADR-065).
     w_var_match = 150.0
     # Вес штрафа за внутритекстовый коллапс (Token-to-Token RKD)
@@ -783,6 +783,7 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float
     # --- cos_h39_t_* : cos(h_39, z_clean) — выход DUS ДО gate (истинный деноизинг) ---
     # Это ключевые метрики: они отражают реальное качество работы DUS без gate-артефакта.
     # cos_h39_t_high ≈ cos_sim_t_high (gate ≈ 1), но cos_h39_t_low — честная диагностика.
+    h39_low_loss = torch.tensor(0.0, device=z_clean.device)
     if "h_39" in outputs:
         h_39_norm   = safe_normalize(outputs["h_39"].float(), dim=-1)
         cos_h39     = (h_39_norm * target).sum(dim=-1)  # [B, T]
@@ -796,6 +797,12 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float
         if mid_mask_2d.sum() > 0:
             mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
             metrics["cos_h39_t_mid"]  = ((cos_h39 * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
+
+        # --- h39 Identity Loss (симметрия к Entropy Loss, ADR 070) ---
+        w_h39_low = 1.0
+        t_weight_low = (1.0 - t).unsqueeze(1).pow(2)
+        h39_low_loss = ((1.0 - cos_h39) * t_weight_low * attn_f).sum() / active_tokens
+        metrics["h39_low_loss"] = h39_low_loss.detach()
 
     # --- Prior Loss (геометрия сферы) ---
     z_flat    = dus_final.view(-1, D)
@@ -846,7 +853,7 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float
         seq_rkd_loss = ((sim_pred - sim_target).pow(2) * mask_2d).sum() / active_pairs
         metrics["seq_rkd_loss"] = seq_rkd_loss.detach()
 
-    total_loss = main_loss + w_prior * prior_loss + w_var_match * var_match_loss + w_seq_rkd * seq_rkd_loss
+    total_loss = main_loss + w_prior * prior_loss + w_var_match * var_match_loss + w_seq_rkd * seq_rkd_loss + h39_low_loss
 
     # --- Decoder Entropy Loss (????? ?? ?????????????) ---
     entropy_loss = torch.tensor(0.0, device=z_clean.device)
