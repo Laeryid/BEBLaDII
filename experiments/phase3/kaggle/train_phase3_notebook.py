@@ -365,10 +365,9 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     eps = safe_normalize(torch.randn_like(x0), dim=-1)  # [B, T, D]
     # Параметр смешения μ(t): близко к 1 = чисто, близко к 0 = шум
     mu = cosine_noise_schedule(t).view(B, 1, 1)  # [B, 1, 1]
-    # Slerp: x_t = normalize(μ · x_0 + (1-μ) · ε)
-    # (точный slerp требует arccos, но при нормализации результата
-    #  это эквивалентно для целей обучения Score Field)
-    x_t = mu * x0 + (1.0 - mu) * eps
+    sigma = torch.sin(t * (math.pi / 2)).view(B, 1, 1) # [B, 1, 1]
+    # Slerp: x_t = normalize(μ · x_0 + σ · ε)
+    x_t = mu * x0 + sigma * eps
     return safe_normalize(x_t, dim=-1)
 
 
@@ -749,7 +748,15 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     target  = safe_normalize(z_clean, dim=-1)
     cos_sim = (dus_final * target).sum(dim=-1)           # [B, T]
     loss_el = 1.0 - cos_sim
-    main_loss = (loss_el * attn_f).sum() / active_tokens
+
+    # Min-SNR Weighting
+    mu_val = torch.cos(t * (math.pi / 2))
+    sigma_val = torch.sin(t * (math.pi / 2))
+    snr = (mu_val / sigma_val) ** 2
+    w_snr = snr / (snr + 1.0)
+    w_snr = w_snr.view(B, 1) # [B, 1]
+
+    main_loss = (loss_el * w_snr * attn_f).sum() / active_tokens
 
     metrics["denoising_loss"] = main_loss.detach()
     metrics["cos_sim_all"]    = (cos_sim * attn_f).sum().detach() / active_tokens

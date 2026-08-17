@@ -38,7 +38,8 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     B, T, D = x0.shape
     eps = safe_normalize(torch.randn_like(x0), dim=-1)
     mu = cosine_noise_schedule(t).view(B, 1, 1)
-    x_t = mu * x0 + (1.0 - mu) * eps
+    sigma = torch.sin(t * (math.pi / 2)).view(B, 1, 1)
+    x_t = mu * x0 + sigma * eps
     return safe_normalize(x_t, dim=-1)
 
 class AdaLNModulation(nn.Module):
@@ -250,7 +251,7 @@ def slerp_sampler(diff_model, input_ids, attn_mask, steps=50, device="cpu"):
         
         # Безопасное извлечение шума
         if t_cur > 0.0:
-            eps_pred = x_t - math.cos(theta_cur) * pred_x0
+            eps_pred = x_t - (x_t * pred_x0).sum(dim=-1, keepdim=True) * pred_x0
             eps_pred = safe_normalize(eps_pred, dim=-1)
         else:
             eps_pred = torch.zeros_like(x_t)

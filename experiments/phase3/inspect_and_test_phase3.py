@@ -39,7 +39,8 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     B, T, D = x0.shape
     eps = safe_normalize(torch.randn_like(x0), dim=-1)
     mu = cosine_noise_schedule(t).view(B, 1, 1)
-    x_t = mu * x0 + (1.0 - mu) * eps
+    sigma = torch.sin(t * (math.pi / 2)).view(B, 1, 1)
+    x_t = mu * x0 + sigma * eps
     return safe_normalize(x_t, dim=-1)
 
 class AdaLNModulation(nn.Module):
@@ -259,7 +260,7 @@ def run_step_by_step_diffusion(phrase_title, text, diff_model, decoder, lm_head_
             z_pred = out["dus_final"]
             
         mu_t = cosine_noise_schedule(t_now).view(1,1,1)
-        eps_pred = z_current - mu_t * z_pred
+        eps_pred = z_current - (z_current * z_pred).sum(dim=-1, keepdim=True) * z_pred
         eps_pred_norm = eps_pred.norm(dim=-1, keepdim=True)
         eps_pred = torch.where(eps_pred_norm > 1e-5, eps_pred / eps_pred_norm, torch.randn_like(eps_pred))
         
