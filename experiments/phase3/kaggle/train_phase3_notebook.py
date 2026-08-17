@@ -152,7 +152,7 @@ class Config:
     local_sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
 
     # GCS (для resume и сохранения чекпоинтов)
-    resume_from_checkpoint = True
+    resume_from_checkpoint = False
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase3/checkpoints/"
 
     # Директория вывода
@@ -624,15 +624,11 @@ class BEBLaDIIPhase3(nn.Module):
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
         h_39 = safe_normalize(dus_final_raw, dim=-1)  # [B, T, D] — выход DUS ядра
 
-        # --- Skip-Connection & Identity Gate(t) blending (ADR 065) ---
-        # gate(t): [B, 1, 1] — доля предсказания DUS (линейная функция gate(t) = t)
-        # При t -> 0: gate_t -> 0 -> dus_final_blended -> x_in (x_noisy = x_clean) -> тождество
-        # При t = 1:  gate_t -> 1 -> dus_final_blended -> h_39
-        gate_t = t.view(B, 1, 1).float()
-        gate_floor = 0.1
-        gate_t = gate_floor + (1.0 - gate_floor) * gate_t
-        dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * z_noisy.float()
-        dus_final = safe_normalize(dus_final_blended, dim=-1)  # [B, T, D]
+        # --- ИНФЕРЕНС В ОТЛИЧИЕ ОТ ОБУЧЕНИЯ (ADR 072) ---
+        # В обучении мы ТРЕБУЕМ, чтобы сеть предсказывала чистый x_0 напрямую.
+        # Никаких skip-connection (блендинга с x_noisy) в forward быть не должно!
+        # Блендинг происходит только в цикле сэмплирования на инференсе.
+        dus_final = h_39
 
         return {
             "z_clean":       z_clean_f,
@@ -739,7 +735,7 @@ def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch, w_adaln_l2:
     return total_div_loss, adaln_metrics
 
 
-def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float = 150.0, w_seq_rkd: float = 10.0, decoder=None, w_entropy: float = 0.0):
+def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 10.0):
     z_clean   = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
     attn_f    = outputs["attention_mask"].float()
@@ -798,11 +794,7 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float
             mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
             metrics["cos_h39_t_mid"]  = ((cos_h39 * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
 
-        # --- h39 Identity Loss (симметрия к Entropy Loss, ADR 070) ---
-        w_h39_low = 1.0
-        t_weight_low = (1.0 - t).unsqueeze(1).pow(2)
-        h39_low_loss = ((1.0 - cos_h39) * t_weight_low * attn_f).sum() / active_tokens
-        metrics["h39_low_loss"] = h39_low_loss.detach()
+        # h39 Identity Loss удален (ADR 072)
 
     # --- Prior Loss (геометрия сферы) ---
     z_flat    = dus_final.view(-1, D)
@@ -821,26 +813,8 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float
     metrics["var_loss"]   = var_loss.detach()
     metrics["cov_loss"]   = cov_loss.detach()
 
-    # --- Variance Matching Loss (ADR-065 anti-collapse) ---
-    # Штраф за коллапс h_39 к константе:
-    # relu(Var(z_clean_d) - Var(h_39_d)).mean() > 0 если h_39 «сплюснут» относительно целей.
-    # Стоимость: O(N_active * D) — намного дешевле InfoNCE (O(N²*D)).
-    # Примечание: градиент обращается в 0 при точном коллапсе h_39 = const (вариация = 0),
-    # но sgd-шум из основного loss вытолкнет h_39 из этой точки, после чего var_match
-    # начнёт активно препятствовать возврату к коллапсу.
+    # Variance Matching Loss удален (ADR 072)
     var_match_loss = torch.tensor(0.0, device=z_clean.device)
-    if "h_39" in outputs and w_var_match > 0:
-        h_39_vm = safe_normalize(outputs["h_39"].float(), dim=-1)  # [B, T, D]
-        mask_1d = attn_f.view(-1).bool()                            # [B*T]
-        h39_flat_vm = h_39_vm.view(-1, D)[mask_1d]                  # [N_active, D]
-        z_flat_vm   = target.view(-1, D)[mask_1d]                   # [N_active, D]
-        if h39_flat_vm.shape[0] > 1:
-            h39_var = h39_flat_vm.var(dim=0)            # [D] — дисперсия выхода DUS по батчу
-            z_var   = z_flat_vm.var(dim=0).detach()     # [D] — дисперсия целей (без градиента)
-            var_match_loss = F.relu(z_var - h39_var).mean()  # scalar ≈ 0.001 при коллапсе
-        metrics["var_match_loss"] = var_match_loss.detach()
-        metrics["h39_var_mean"]   = h39_flat_vm.var(dim=0).mean().detach() if h39_flat_vm.shape[0] > 1 else torch.tensor(0.0)
-        metrics["z_var_mean"]     = z_flat_vm.var(dim=0).mean().detach()   if h39_flat_vm.shape[0] > 1 else torch.tensor(0.0)
 
     # --- Token-to-Token RKD Loss (анти-коллапс внутри последовательности) ---
     seq_rkd_loss = torch.tensor(0.0, device=z_clean.device)
@@ -853,25 +827,9 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_var_match: float
         seq_rkd_loss = ((sim_pred - sim_target).pow(2) * mask_2d).sum() / active_pairs
         metrics["seq_rkd_loss"] = seq_rkd_loss.detach()
 
-    total_loss = main_loss + w_prior * prior_loss + w_var_match * var_match_loss + w_seq_rkd * seq_rkd_loss + h39_low_loss
+    total_loss = main_loss + w_prior * prior_loss + w_seq_rkd * seq_rkd_loss
 
-    # --- Decoder Entropy Loss (????? ?? ?????????????) ---
-    entropy_loss = torch.tensor(0.0, device=z_clean.device)
-    if decoder is not None and w_entropy > 0.0:
-        with torch.amp.autocast('cuda', dtype=torch.bfloat16):
-            logits = decoder(dus_final)
-        probs = torch.nn.functional.softmax(logits, dim=-1)
-        log_probs = torch.nn.functional.log_softmax(logits, dim=-1)
-        entropy = -(probs * log_probs).sum(dim=-1) # [B, T]
-
-        # ?????????? ??? ?? t (???????????)
-        t_weight = t.unsqueeze(1).pow(2)
-        entropy_loss = (entropy * t_weight * attn_f).sum() / active_tokens
-
-        metrics["entropy_loss"] = entropy_loss.detach()
-        metrics["entropy_raw_mean"] = (entropy * attn_f).sum().detach() / active_tokens
-
-        total_loss = total_loss + w_entropy * entropy_loss
+    # Decoder Entropy Loss удален (ADR 072)
 
     return total_loss, metrics
 
@@ -1246,7 +1204,7 @@ def train():
                     t_sample_alpha=args.t_sample_alpha,
                     self_cond=None
                 )
-            loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd, decoder=actual_model.decoder, w_entropy=args.w_entropy)
+            loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
 
             div_loss, adaln_metrics = compute_adaln_diversity_loss(
                 actual_model.adaLN_attn, actual_model.adaLN_mlp, fwd_outputs["t_emb"], w_adaln_l2=args.w_adaln_l2
@@ -1315,7 +1273,7 @@ def train():
                         v_ids  = val_batch["input_ids"].to(device)
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
-                        v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_var_match=args.w_var_match, w_seq_rkd=args.w_seq_rkd, decoder=actual_model.decoder, w_entropy=args.w_entropy)
+                        v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
 
                         v_div_loss, v_adaln_metrics = compute_adaln_diversity_loss(
                             actual_model.adaLN_attn, actual_model.adaLN_mlp, v_out["t_emb"], w_adaln_l2=args.w_adaln_l2

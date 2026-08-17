@@ -38,8 +38,7 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     B, T, D = x0.shape
     eps = safe_normalize(torch.randn_like(x0), dim=-1)
     mu = cosine_noise_schedule(t).view(B, 1, 1)
-    sigma = torch.sin(t * (math.pi / 2)).view(B, 1, 1)
-    x_t = mu * x0 + sigma * eps
+    x_t = mu * x0 + (1.0 - mu) * eps
     return safe_normalize(x_t, dim=-1)
 
 class AdaLNModulation(nn.Module):
@@ -99,7 +98,12 @@ class BEBLaDIIPhase3Eval(nn.Module):
             layer.attn_norm.register_forward_hook(self._make_adaLN_hook(i, target="attn"))
             layer.mlp_norm.register_forward_hook(self._make_adaLN_hook(i, target="mlp"))
 
-        self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
+        sep_token_path = r"C:\Experiments\BEBLaDII\storage\components\sep_token.pt"
+        if os.path.exists(sep_token_path):
+            sep_tensor = torch.load(sep_token_path, map_location="cpu", weights_only=False).float()
+            self.register_buffer("sep_embed", sep_tensor)
+        else:
+            self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
         self.self_cond_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         nn.init.zeros_(self.self_cond_proj.weight)
 
@@ -148,9 +152,8 @@ class BEBLaDIIPhase3Eval(nn.Module):
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
         h_39 = safe_normalize(dus_final_raw, dim=-1)
 
-        gate_t = t.view(B, 1, 1).float()
-        dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * x_in
-        dus_final = safe_normalize(dus_final_blended, dim=-1)
+        # Strict x0-prediction (ADR 072)
+        dus_final = h_39
 
         self._current_t_emb = None
 
@@ -217,6 +220,46 @@ def load_all_eval_models(ckpt_path: str, device: str = "cpu"):
     print("[*] Модели успешно готовы к тестированию!\n")
     return tokenizer, diff_model, decoder, lm_head_weight
 
+
+def slerp_sampler(diff_model, input_ids, attn_mask, steps=50, device="cpu"):
+    """Итеративный инференс Slerp ODE (ADR 072)"""
+    B, T = input_ids.shape
+    D = 1024
+    
+    # Инициализация чистым шумом
+    x_t = safe_normalize(torch.randn(B, T, D, device=device), dim=-1)
+    
+    t_steps = torch.linspace(1.0, 0.0, steps + 1, device=device)
+    
+    for i in range(steps):
+        t_cur = t_steps[i]
+        t_next = t_steps[i+1]
+        
+        # Предсказываем x_0
+        with torch.no_grad():
+            out = diff_model(input_ids, attn_mask, torch.tensor([t_cur.item()], device=device), z_noisy_override=x_t)
+            pred_x0 = out["dus_final"] # это чистый h_39 по новым правилам
+            
+        # Slerp шаг к t_next
+        theta_next = (t_next * (math.pi / 2))
+        
+        # В идеале нужно восстановить eps из pred_x0 и x_t
+        # x_t = cos(theta_cur) * x_0 + sin(theta_cur) * eps
+        # eps = (x_t - cos(theta_cur) * pred_x0) / sin(theta_cur)
+        theta_cur = (t_cur * (math.pi / 2))
+        
+        # Безопасное извлечение шума
+        if t_cur > 0.0:
+            eps_pred = x_t - math.cos(theta_cur) * pred_x0
+            eps_pred = safe_normalize(eps_pred, dim=-1)
+        else:
+            eps_pred = torch.zeros_like(x_t)
+            
+        x_t = math.cos(theta_next) * pred_x0 + math.sin(theta_next) * eps_pred
+        x_t = safe_normalize(x_t, dim=-1)
+        
+    return x_t
+
 def run_denoising_sanity_test(ckpt_path: str, device: str = "cpu"):
     tokenizer, diff_model, decoder, lm_head_weight = load_all_eval_models(ckpt_path, device)
     
@@ -267,12 +310,7 @@ def run_denoising_sanity_test(ckpt_path: str, device: str = "cpu"):
 
             # DUS 1-step prediction (with self-conditioning if t >= 0.5)
             with torch.no_grad():
-                if getattr(diff_model, 'self_cond_proj', None) is not None and t_val >= 0.5:
-                    out_sc = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device), z_noisy_override=x_t, self_cond=None)
-                    sc_est = out_sc["dus_final"].detach()
-                    out = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device), z_noisy_override=x_t, self_cond=sc_est)
-                else:
-                    out = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device), z_noisy_override=x_t)
+                out = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device), z_noisy_override=x_t)
                 pred_x0 = out["dus_final"]
                 h_39 = out["h_39"]
 

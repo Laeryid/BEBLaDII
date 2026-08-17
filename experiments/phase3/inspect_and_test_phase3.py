@@ -39,8 +39,7 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     B, T, D = x0.shape
     eps = safe_normalize(torch.randn_like(x0), dim=-1)
     mu = cosine_noise_schedule(t).view(B, 1, 1)
-    sigma = torch.sin(t * (math.pi / 2)).view(B, 1, 1)
-    x_t = mu * x0 + sigma * eps
+    x_t = mu * x0 + (1.0 - mu) * eps
     return safe_normalize(x_t, dim=-1)
 
 class AdaLNModulation(nn.Module):
@@ -100,7 +99,12 @@ class BEBLaDIIPhase3(nn.Module):
             layer.attn_norm.register_forward_hook(self._make_adaLN_hook(i, target="attn"))
             layer.mlp_norm.register_forward_hook(self._make_adaLN_hook(i, target="mlp"))
 
-        self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
+        sep_token_path = r"C:\Experiments\BEBLaDII\storage\components\sep_token.pt"
+        if os.path.exists(sep_token_path):
+            sep_tensor = torch.load(sep_token_path, map_location="cpu", weights_only=False).float()
+            self.register_buffer("sep_embed", sep_tensor)
+        else:
+            self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
         self.self_cond_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         nn.init.zeros_(self.self_cond_proj.weight)
 
@@ -149,9 +153,8 @@ class BEBLaDIIPhase3(nn.Module):
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
         h_39 = safe_normalize(dus_final_raw, dim=-1)
 
-        gate_t = t.view(B, 1, 1).float()
-        dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * x_in
-        dus_final = safe_normalize(dus_final_blended, dim=-1)
+        # Strict x0-prediction (ADR 072)
+        dus_final = h_39
 
         self._current_t_emb = None
 
