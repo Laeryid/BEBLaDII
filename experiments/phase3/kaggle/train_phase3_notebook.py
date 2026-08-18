@@ -181,16 +181,10 @@ class Config:
 
     # Вес геометрического лосса
     w_prior = 0.05
-    # Вес лосса разнообразия для AdaLN
-    w_div = 0.1
-    # Вес Decoder Entropy Loss (ADR 069)
+    # Удалены костыли: w_div, w_adaln_l2, w_var_match (ADR 073)
     w_entropy = 1.0
-    # Вес штрафа за collapse h_39 (Variance Matching, ADR-065).
-    w_var_match = 150.0
-    # Вес штрафа за внутритекстовый коллапс (Token-to-Token RKD)
-    w_seq_rkd = 10.0
-    # Вес L2 регуляризации AdaLN (предотвращение взрыва норм активаций)
-    w_adaln_l2 = 0.2
+    w_seq_rkd = 0.0  # Token-to-Token RKD отключен
+
 
     # Смещённая выборка t (DiffuSeq-v2 / LD4LG): >1.0 → больше сэмплов при высоких t
     # 1.0 = равномерная (текущее поведение), 2.0 = квадратичное смещение к t_max
@@ -389,8 +383,8 @@ class AdaLNModulation(nn.Module):
             nn.SiLU(),
             nn.Linear(t_emb_dim, 2 * hidden_dim, bias=True),
         )
-        # Нейтральная инициализация: scale→1, shift→0. Используем микрошум для вывода из коллапса (0-й градиент)
-        nn.init.normal_(self.modulation[-1].weight, std=1e-3)
+        # Нейтральная инициализация (Zero Init): scale→1, shift→0. Стандарт для DiT. (ADR 073)
+        nn.init.zeros_(self.modulation[-1].weight)
         bias = torch.zeros(2 * hidden_dim)
         bias[hidden_dim:] = 1.0  # scale часть = 1.0
         self.modulation[-1].bias = nn.Parameter(bias)
@@ -649,91 +643,6 @@ class BEBLaDIIPhase3(nn.Module):
 # + Prior Loss (геометрия сферы)
 
 # %%
-def compute_adaln_diversity_loss(adaLN_attn, adaLN_mlp, t_emb_batch, w_adaln_l2: float = 1.0):
-    """
-    Поощряет:
-    1. Межслойное временное разнообразие модуляции AdaLN (по всем слоям DUS, а не только по 0-му).
-    2. Канальное разнообразие (Channel-wise Variance / Isotropization), предотвращающее вырождение
-       векторов shift и scale в 1-мерный скаляр вдоль скрытого измерения D=1024.
-    """
-    B = t_emb_batch.shape[0]
-    mask = ~torch.eye(B, dtype=torch.bool, device=t_emb_batch.device)
-
-    # 1. Усредненная модуляция по всем слоям DUS (Attn и MLP)
-    all_outs_attn = torch.stack([m.modulation(t_emb_batch) for m in adaLN_attn], dim=0)  # [L, B, 2*D]
-    all_outs_mlp  = torch.stack([m.modulation(t_emb_batch) for m in adaLN_mlp], dim=0)   # [L, B, 2*D]
-
-    out_attn_mean = all_outs_attn.mean(dim=0)  # [B, 2*D]
-    out_mlp_mean  = all_outs_mlp.mean(dim=0)   # [B, 2*D]
-
-    # --- Batch Temporal Diversity (попарное косинусное сходство между разными t) ---
-    shift_attn, scale_attn = out_attn_mean.chunk(2, dim=-1)
-    delta_attn = torch.cat([shift_attn, scale_attn - 1.0], dim=-1)
-    m_norm_attn = safe_normalize(delta_attn, dim=-1)
-    sim_attn = m_norm_attn @ m_norm_attn.T
-    div_attn = sim_attn[mask].mean() if mask.sum() > 0 else torch.tensor(0.0, device=t_emb_batch.device)
-
-    shift_mlp, scale_mlp = out_mlp_mean.chunk(2, dim=-1)
-    delta_mlp = torch.cat([shift_mlp, scale_mlp - 1.0], dim=-1)
-    m_norm_mlp = safe_normalize(delta_mlp, dim=-1)
-    sim_mlp = m_norm_mlp @ m_norm_mlp.T
-    div_mlp = sim_mlp[mask].mean() if mask.sum() > 0 else torch.tensor(0.0, device=t_emb_batch.device)
-
-    batch_div_loss = 0.5 * (div_attn + div_mlp)
-
-    # --- Channel-wise Variance Regularization (изотропизация каналов D=1024) ---
-    hidden_dim = shift_attn.shape[-1]
-    var_floor = 1.0 / hidden_dim  # минимальный порог дисперсии по каналам
-
-    var_shift_attn = shift_attn.var(dim=-1).mean()
-    var_scale_attn = (scale_attn - 1.0).var(dim=-1).mean()
-    var_shift_mlp  = shift_mlp.var(dim=-1).mean()
-    var_scale_mlp  = (scale_mlp - 1.0).var(dim=-1).mean()
-
-    channel_var_loss = (
-        F.relu(var_floor - var_shift_attn) +
-        F.relu(var_floor - var_scale_attn) +
-        F.relu(var_floor - var_shift_mlp) +
-        F.relu(var_floor - var_scale_mlp)
-    )
-
-    total_div_loss = batch_div_loss + 0.5 * channel_var_loss
-
-    # --- L2 Regularization on AdaLN (предотвращение взрыва норм активаций) ---
-    shift_all_attn, scale_all_attn = all_outs_attn.chunk(2, dim=-1)
-    shift_all_mlp, scale_all_mlp   = all_outs_mlp.chunk(2, dim=-1)
-    adaln_l2_loss = (
-        (scale_all_attn - 1.0).pow(2).mean() +
-        shift_all_attn.pow(2).mean() +
-        (scale_all_mlp - 1.0).pow(2).mean() +
-        shift_all_mlp.pow(2).mean()
-    )
-    total_div_loss = total_div_loss + w_adaln_l2 * adaln_l2_loss
-
-    # Диагностические метрики
-    shift_attn_norm = shift_attn.abs().mean()
-    scale_attn_dev  = (scale_attn - 1.0).abs().mean()
-    shift_mlp_norm  = shift_mlp.abs().mean()
-    scale_mlp_dev   = (scale_mlp - 1.0).abs().mean()
-
-    w_norm_attn = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_attn]).mean()
-    w_norm_mlp  = torch.stack([m.modulation[-1].weight.norm() for m in adaLN_mlp]).mean()
-
-    adaln_metrics = {
-        "adaln_w_norm":          0.5 * (w_norm_attn + w_norm_mlp).detach(),
-        "adaln_attn_w_norm":     w_norm_attn.detach(),
-        "adaln_mlp_w_norm":      w_norm_mlp.detach(),
-        "adaln_attn_shift_norm": shift_attn_norm.detach(),
-        "adaln_mlp_shift_norm":  shift_mlp_norm.detach(),
-        "adaln_attn_scale_dev":  scale_attn_dev.detach(),
-        "adaln_mlp_scale_dev":   scale_mlp_dev.detach(),
-        "adaln_chan_var_attn":   var_shift_attn.detach(),
-        "adaln_chan_var_mlp":    var_shift_mlp.detach(),
-        "adaln_l2_loss":         adaln_l2_loss.detach(),
-    }
-    return total_div_loss, adaln_metrics
-
-
 def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 10.0):
     z_clean   = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
@@ -1121,6 +1030,22 @@ def train():
             f"[FATAL] Dataset is empty or not found at: '{args.dataset_path}'. Training cannot start."
         )
 
+    # Защита от мусорных данных (ADR 073) — выводим один сэмпл в логи
+    print("\n" + "="*50)
+    print("[DATASET SAMPLE CHECK]")
+    try:
+        sample_batch = next(iter(dataloader))
+        tokenizer = AutoTokenizer.from_pretrained(args.modernbert_path, local_files_only=True)
+        sample_ids = sample_batch["input_ids"][0]
+        sample_text = tokenizer.decode(sample_ids, skip_special_tokens=False)
+        print("--- TEXT PREVIEW (first 500 chars) ---")
+        print(sample_text[:500])
+        print("--- TOKENS PREVIEW (first 20 ids) ---")
+        print(sample_ids[:20].tolist())
+    except Exception as e:
+        print(f"Failed to print sample: {e}")
+    print("="*50 + "\n")
+
     total_steps = (
         min(args.max_steps, len(dataloader) * args.epochs)
         if len(dataloader) > 0 else args.max_steps
@@ -1213,13 +1138,7 @@ def train():
                 )
             loss, metrics = compute_phase3_loss(fwd_outputs, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
 
-            div_loss, adaln_metrics = compute_adaln_diversity_loss(
-                actual_model.adaLN_attn, actual_model.adaLN_mlp, fwd_outputs["t_emb"], w_adaln_l2=args.w_adaln_l2
-            )
-            metrics["div_loss"] = div_loss.detach()
-            metrics.update(adaln_metrics)
 
-            loss = loss + div_loss * args.w_div
 
             if loss.dim() > 0:
                 loss = loss.mean()
@@ -1266,7 +1185,6 @@ def train():
                     "h39_hi":    f"{metrics_dict.get('cos_h39_t_high', 0):.4f}",
                     "h39_mid":   f"{metrics_dict.get('cos_h39_t_mid', 0):.4f}",
                     "cos_hi":    f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
-                    "div":       f"{metrics_dict.get('div_loss', 0):.4f}",
                     "grad":      f"{grad_norm:.3f}",
                 })
 
@@ -1282,12 +1200,7 @@ def train():
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
                         v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
 
-                        v_div_loss, v_adaln_metrics = compute_adaln_diversity_loss(
-                            actual_model.adaLN_attn, actual_model.adaLN_mlp, v_out["t_emb"], w_adaln_l2=args.w_adaln_l2
-                        )
-                        v_metrics["div_loss"] = v_div_loss.detach()
-                        v_metrics.update(v_adaln_metrics)
-                        v_loss = v_loss + v_div_loss * args.w_div
+
 
                         for k, v in v_metrics.items():
                             val_metrics_sum[f"val_{k}"] = (

@@ -600,6 +600,13 @@
         ".know/decisions/026_gradient_stabilization_rkd_cosine.md",
         ".know/decisions/027_huber_loss_variance_covariance.md"
       ]
+    },
+    "decisions/073_data_preparation_bug_stringified_tokens.md": {
+      "description": "ADR: Переход к сырым текстам после обнаружения бага токенизации словарей (bulletproof fallback).",
+      "covers": ["Data & Ops Scripts", "Architecture & Training Phases"],
+      "depends_on": [
+        "src/beb_la_dii/utils/data.py"
+      ]
     }
   },
   "knowledge_system": {

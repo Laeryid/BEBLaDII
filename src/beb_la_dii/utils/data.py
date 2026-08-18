@@ -7,6 +7,7 @@ import os
 class DistillationDataset(Dataset):
     """
     Universal dataset for distillation based on IndexedParquetDataset.
+    Assumes data is already pre-processed into clean text format (Clean Text Diffusion).
     """
     def __init__(self, tokenizer, data_configs, max_length=512):
         self.tokenizer = tokenizer
@@ -36,54 +37,26 @@ class DistillationDataset(Dataset):
                 ds = ds.sample(n=n)
             
             self.datasets.append(ds)
-            print(f"    Loaded {len(ds)} samples (type: {config['type']})")
+            print(f"    Loaded {len(ds)} samples")
             
             self.index_map.append({
                 'start': current_offset,
                 'end': current_offset + len(ds),
-                'ds': ds,
-                'type': config['type']
+                'ds': ds
             })
             current_offset += len(ds)
             
         self.total_samples = current_offset
         print(f"Initialized combined dataset: {self.total_samples} samples total.")
 
-    def _apply_mapper(self, item, dtype):
+    def _apply_mapper(self, item):
         if item is None: return ""
         
-        text = ""
-        if dtype == 'raw':
-            text = item.get('text', '') or ""
-        elif dtype == 'magpie':
-            inst = item.get('instruction', '') or ""
-            resp = item.get('response', '') or ""
-            text = f"<|im_start|>user\n{inst}<|im_end|>\n<|im_start|>assistant\n<|thought|>\n{resp}<|im_end|>"
-        elif dtype == 'sharegpt':
-            system = item.get('system') or ""
-            # Fallback for different ShareGPT column names
-            convs = item.get('conversations') or item.get('messages') or []
-            
-            if system:
-                text += f"<|im_start|>system\n{system}<|im_end|>\n"
-            
-            if isinstance(convs, (list, tuple)):
-                for i, msg in enumerate(convs):
-                    if not isinstance(msg, dict): continue
-                    # Fallback for different role names
-                    role_val = msg.get('from', msg.get('role'))
-                    role = "user" if role_val in ['human', 'user'] else "assistant"
-                    # Fallback for different content names
-                    content = msg.get('value', msg.get('content', '')) or ""
-                    
-                    text += f"<|im_start|>{role}\n"
-                    if role == "assistant" and i == 1: 
-                        text += f"<|thought|>\n"
-                    text += f"{content}<|im_end|>\n"
+        # Simple extraction of text since we moved to pre-processed clean text
+        text = item.get('text', '') or ""
         
         # --- BULLETPROOF FALLBACK ---
         if not text.strip() and isinstance(item, dict):
-            # If standard mapping failed (or empty), just grab any large string fields
             vals = [str(v) for k, v in item.items() if isinstance(v, str) and len(str(v)) > 10]
             if vals:
                 text = "\n".join(vals)
@@ -99,7 +72,7 @@ class DistillationDataset(Dataset):
         for m in self.index_map:
             if m['start'] <= idx < m['end']:
                 item = m['ds'][idx - m['start']]
-                text = self._apply_mapper(item, m['type'])
+                text = self._apply_mapper(item)
                 break
         else:
             return None
@@ -118,100 +91,61 @@ class DistillationDataset(Dataset):
 
 def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train', val_ratio=0.05, data_dir='data'):
     tokenizer = get_tokenizer()
-    # Нормализуем имя стадии для путей (Awakening / Reasoning)
     stage_capitalized = stage.capitalize() if stage.lower() in ['awakening', 'reasoning'] else stage
     stage_path = os.path.join(data_dir, stage_capitalized)
     
-    # 1. Если есть папка стадии (Kaggle или подготовленный локальный запуск)
-    if os.path.exists(stage_path):
-        print(f"Loading dataset from: {stage_path}")
-        
-        # Проверяем наличие физического разделения на train/val
-        physical_split_path = os.path.join(stage_path, split)
-        if os.path.exists(physical_split_path) and os.path.isdir(physical_split_path):
-            print(f"Found physical split folder: {physical_split_path}")
-            current_scan_path = physical_split_path
-            # Если мы нашли физический сплит, отключаем внутренний val_ratio, 
-            # так как данные уже разделены
-            val_ratio = 0 
-        else:
-            current_scan_path = stage_path
+    dataset = None
+    
+    # helper to check if a specific parquet file exists in a directory
+    def check_split_file(directory, split_name):
+        f = os.path.join(directory, f"{split_name}.parquet")
+        if os.path.exists(f) and os.path.isfile(f):
+            return f
+        return None
 
-        # Нам нужно обернуть это в DistillationDataset для маппинга текстов
-        configs = []
-        print(f"DEBUG DATA: Scanning directory: {current_scan_path}")
-        try:
-            items = sorted(os.listdir(current_scan_path))  # sorted → детерминированный split при перезапуске
-        except Exception as e:
-            print(f"DEBUG DATA: Error listing directory: {e}")
-            items = []
-        
-        for item in items:
-            item_path = os.path.join(current_scan_path, item)
-            
-            # Определяем тип данных по имени
-            dtype = 'raw'
-            name_lower = item.lower()
-            if 'magpie' in name_lower: dtype = 'magpie'
-            elif 'open_thoughts' in name_lower or 'openthoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
-            
-            if item.endswith('.parquet'):
-                configs.append({'path': current_scan_path, 'type': dtype, 'pattern': item})
-            elif os.path.isdir(item_path):
-                # Пропускаем служебные папки, если мы в корне
-                if item in ['train', 'val', '_source_backup', '_source_original']:
-                    continue
-                configs.append({'path': item_path, 'type': dtype})
-        
-        if not configs:
-            print(f"Warning: No valid data found in {current_scan_path}.")
-            if current_scan_path != stage_path:
-                 return get_dataloader(stage=stage, batch_size=batch_size, max_length=max_length, split=split, val_ratio=val_ratio, data_dir=data_dir)
-            
+    # First, look for unified split files (train.parquet / val.parquet)
+    # Check stage_path first, then fallback to data_dir
+    target_dir = stage_path if os.path.exists(stage_path) else data_dir
+    split_file = check_split_file(target_dir, split)
+    
+    if split_file:
+        print(f"Found dedicated split file: {split_file}")
+        configs = [{'path': target_dir, 'pattern': f"{split}.parquet"}]
         dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
-    elif os.path.exists(data_dir) and any(f.endswith('.parquet') for f in os.listdir(data_dir)):
-        # 1.5 Если папки стадии нет, но в data_dir лежат файлы (как на Kaggle после gcloud cp)
-        print(f"Stage folder {stage_capitalized} not found, but parquet files found in {data_dir}. Using them.")
+        val_ratio = 0  # Pre-split, no need to split again
+    
+    # If no split files, fallback to old logic of loading everything and random splitting
+    elif os.path.exists(target_dir):
+        print(f"No specific '{split}.parquet' found. Loading all parquet files from {target_dir}")
         configs = []
-        for item in sorted(os.listdir(data_dir)):  # sorted → детерминированный split при перезапуске
-            item_path = os.path.join(data_dir, item)
-            dtype = 'raw'
-            name_lower = item.lower()
-            if 'magpie' in name_lower: dtype = 'magpie'
-            elif 'open_thoughts' in name_lower or 'openthoughts' in name_lower or 'sharegpt' in name_lower: dtype = 'sharegpt'
-            
+        for item in sorted(os.listdir(target_dir)):
             if item.endswith('.parquet'):
-                configs.append({'path': data_dir, 'type': dtype, 'pattern': item})
+                configs.append({'path': target_dir, 'pattern': item})
                 
-        dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
-    else:
-        # 2. Стандартная локальная логика
+        if configs:
+            dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
+        else:
+            print(f"Warning: No valid data found in {target_dir}.")
+    
+    # Absolute fallback to local predefined sets
+    if dataset is None or len(dataset) == 0:
         print(f"Using default local configs for stage: {stage}")
         if stage == 'awakening':
-            configs = [
-                {'path': 'data/CulturaX', 'type': 'raw', 'count': 90000},
-                {'path': 'data/magpie_reasoning', 'type': 'magpie', 'count': 10000}
-            ]
+            configs = [{'path': 'data/CulturaX', 'count': 100000}]
         else:
-            configs = [
-                {'path': 'data/magpie_reasoning', 'type': 'magpie', 'count': 50000},
-                {'path': 'data/open_thoughts', 'type': 'sharegpt', 'count': 50000}
-            ]
-            
+            configs = [{'path': 'data/magpie_reasoning', 'count': 100000}]
         dataset = DistillationDataset(tokenizer, configs, max_length=max_length)
         
-    # Разделение на train и val
+    # Split logic
     if val_ratio > 0:
         val_size = int(len(dataset) * val_ratio)
         train_size = len(dataset) - val_size
-        # Фиксированный сид для стабильности разделения при перезапусках
         train_ds, val_ds = random_split(
             dataset, [train_size, val_size], 
             generator=torch.Generator().manual_seed(42)
         )
         dataset = train_ds if split == 'train' else val_ds
         
-    # Добавляем поддержку DistributedSampler для XLA
     sampler = None
     shuffle = (split == 'train')
     
@@ -234,11 +168,10 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
                     rank=rank,
                     shuffle=shuffle
                 )
-                shuffle = False # Sampler handles shuffling
+                shuffle = False
         except Exception as e:
             print(f"Warning: Failed to initialize DistributedSampler: {e}")
 
-    # Используем spawn для избежания дедлоков с Parquet/PyArrow
     import multiprocessing as mp
     ctx = mp.get_context('spawn') if hasattr(mp, 'get_context') else None
     
