@@ -4,7 +4,7 @@
 # *Ключевые изменения:*
 # *- Полный диапазон t∈[0,1] с косинусным расписанием κ(t)*
 # *- Зашумление ВСЕХ токенов (не частичное)*
-# *- AdaLN вместо c_embed (микрошум инициализация, ADR 064)*
+# *- AdaLN вместо c_embed (Zero Init, ADR 074)*
 # *- UNet-style Skip-Connection + Identity Gate(t) (ADR 065)*
 # *- x0-prediction: Loss = 1 - cos(DUS_blended, z_clean)*
 # *- Разделённые чекпоинты: модель и оптимайзер по очереди → GCS → удаление*
@@ -750,6 +750,45 @@ def compute_phase3_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     return total_loss, metrics
 
 
+def compute_adaln_diagnostics(actual_model, t_emb: torch.Tensor) -> dict:
+    """
+    Пассивный сбор диагностических метрик AdaLN (torch.no_grad).
+    Контролирует выход из Zero Init (ADR 074) без добавления лоссов и без влияния на градиенты.
+    """
+    with torch.no_grad():
+        w_norm_attn = torch.stack([m.modulation[-1].weight.norm() for m in actual_model.adaLN_attn]).mean()
+        w_norm_mlp  = torch.stack([m.modulation[-1].weight.norm() for m in actual_model.adaLN_mlp]).mean()
+
+        all_outs_attn = torch.stack([m.modulation(t_emb) for m in actual_model.adaLN_attn], dim=0)  # [L, B, 2*D]
+        all_outs_mlp  = torch.stack([m.modulation(t_emb) for m in actual_model.adaLN_mlp], dim=0)   # [L, B, 2*D]
+
+        out_attn_mean = all_outs_attn.mean(dim=0)
+        out_mlp_mean  = all_outs_mlp.mean(dim=0)
+
+        shift_attn, scale_attn = out_attn_mean.chunk(2, dim=-1)
+        shift_mlp, scale_mlp   = out_mlp_mean.chunk(2, dim=-1)
+
+        shift_attn_norm = shift_attn.abs().mean()
+        scale_attn_dev  = (scale_attn - 1.0).abs().mean()
+        shift_mlp_norm  = shift_mlp.abs().mean()
+        scale_mlp_dev   = (scale_mlp - 1.0).abs().mean()
+
+        var_shift_attn = shift_attn.var(dim=-1).mean()
+        var_shift_mlp  = shift_mlp.var(dim=-1).mean()
+
+        return {
+            "adaln_w_norm":          0.5 * (w_norm_attn + w_norm_mlp).detach(),
+            "adaln_attn_w_norm":     w_norm_attn.detach(),
+            "adaln_mlp_w_norm":      w_norm_mlp.detach(),
+            "adaln_attn_shift_norm": shift_attn_norm.detach(),
+            "adaln_mlp_shift_norm":  shift_mlp_norm.detach(),
+            "adaln_attn_scale_dev":  scale_attn_dev.detach(),
+            "adaln_mlp_scale_dev":   scale_mlp_dev.detach(),
+            "adaln_chan_var_attn":   var_shift_attn.detach(),
+            "adaln_chan_var_mlp":    var_shift_mlp.detach(),
+        }
+
+
 # %% [markdown]
 # ## 8. Checkpoint Helpers (разделённое сохранение)
 #
@@ -1035,7 +1074,7 @@ def train():
     print("[DATASET SAMPLE CHECK]")
     try:
         sample_batch = next(iter(dataloader))
-        tokenizer = AutoTokenizer.from_pretrained(args.modernbert_path, local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path, local_files_only=True)
         sample_ids = sample_batch["input_ids"][0]
         sample_text = tokenizer.decode(sample_ids, skip_special_tokens=False)
         print("--- TEXT PREVIEW (first 500 chars) ---")
@@ -1168,6 +1207,8 @@ def train():
 
             # Логирование
             if step % args.log_steps == 0:
+                adaln_diag = compute_adaln_diagnostics(actual_model, fwd_outputs["t_emb"])
+                metrics.update(adaln_diag)
                 metrics_dict = {
                     k: (v.mean().item() if isinstance(v, torch.Tensor) else v)
                     for k, v in metrics.items()
@@ -1185,6 +1226,7 @@ def train():
                     "h39_hi":    f"{metrics_dict.get('cos_h39_t_high', 0):.4f}",
                     "h39_mid":   f"{metrics_dict.get('cos_h39_t_mid', 0):.4f}",
                     "cos_hi":    f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
+                    "adaln_w":   f"{metrics_dict.get('adaln_w_norm', 0):.4f}",
                     "grad":      f"{grad_norm:.3f}",
                 })
 
@@ -1199,6 +1241,8 @@ def train():
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
                         v_loss, v_metrics = compute_phase3_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
+                        v_adaln_diag = compute_adaln_diagnostics(actual_model, v_out["t_emb"])
+                        v_metrics.update(v_adaln_diag)
 
 
 
