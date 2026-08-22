@@ -1043,12 +1043,16 @@ def train():
 
     # Параметры DUS (тело BERT) — низкий LR
     for name, param in actual_model.named_parameters():
-        if param.requires_grad:
-            # Даже если AdaLN лежит внутри dus из-за Wrapper'а, он должен получать высокий LR
-            if name.startswith('dus.') and 'adaln' not in name:
-                dus_params.append(param)
-            else:
-                new_layers_params.append(param)
+        if param.requires_grad and name.startswith('dus.') and 'adaln' not in name:
+            dus_params.append(param)
+
+    # Собираем параметры новых слоев СТРОГО в порядке старого кода (до ADR 075),
+    # иначе PyTorch AdamW не сможет загрузить momentum из чекпоинта (размеры групп совпадут, а формы тензоров внутри - нет).
+    new_layers_params.extend([p for p in actual_model.t_proj.parameters() if p.requires_grad])
+    new_layers_params.extend([p for p in actual_model.adaLN_attn.parameters() if p.requires_grad])
+    new_layers_params.extend([p for p in actual_model.adaLN_mlp.parameters() if p.requires_grad])
+    if hasattr(actual_model, "self_cond_proj"):
+        new_layers_params.extend([p for p in actual_model.self_cond_proj.parameters() if p.requires_grad])
 
     print(f"[Init] DUS params: {sum(p.numel() for p in dus_params):,}", flush=True)
     print(f"[Init] New layers params: {sum(p.numel() for p in new_layers_params):,}", flush=True)
