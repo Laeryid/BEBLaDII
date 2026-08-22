@@ -152,7 +152,7 @@ class Config:
     local_sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
 
     # GCS (для resume и сохранения чекпоинтов)
-    resume_from_checkpoint = False
+    resume_from_checkpoint = True
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase3/checkpoints/"
 
     # Директория вывода
@@ -403,6 +403,27 @@ class AdaLNModulation(nn.Module):
 # Добавлено: SinusoidalEmbedding + MLP (t_proj) + AdaLNModulation per layer.
 
 # %%
+class AdaLNWrappedLayerNorm(nn.Module):
+    """
+    Обертка для LayerNorm, заменяющая register_forward_hook,
+    чтобы избежать багов с DataParallel и замыканиями (ADR 072/075).
+    """
+    def __init__(self, original_norm, adaln_module):
+        super().__init__()
+        self.original_norm = original_norm
+        self.adaln = adaln_module
+        self._current_t_emb = None
+
+    def forward(self, x):
+        out = self.original_norm(x)
+        if self._current_t_emb is None:
+            return out
+        shift, scale = self.adaln(self._current_t_emb)
+        shift = shift.to(out.dtype)
+        scale = scale.to(out.dtype)
+        return out * scale + shift
+
+
 class BEBLaDIIPhase3(nn.Module):
     def __init__(
         self,
@@ -512,10 +533,10 @@ class BEBLaDIIPhase3(nn.Module):
         self.adaLN_mlp = nn.ModuleList([
             AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(num_layers)
         ])
-        # Регистрируем forward hooks на attn_norm и mlp_norm (ADR-062)
+        # Заворачиваем LayerNorm в обертку с поддержкой AdaLN и DataParallel (без хуков)
         for i, layer in enumerate(self.dus.layers):
-            layer.attn_norm.register_forward_hook(self._make_adaLN_hook(i, target="attn"))
-            layer.mlp_norm.register_forward_hook(self._make_adaLN_hook(i, target="mlp"))
+            layer.attn_norm = AdaLNWrappedLayerNorm(layer.attn_norm, self.adaLN_attn[i])
+            layer.mlp_norm = AdaLNWrappedLayerNorm(layer.mlp_norm, self.adaLN_mlp[i])
 
         # 6. Токен-разделитель (ADR 058)
         if sep_token_path and os.path.exists(sep_token_path):
@@ -531,23 +552,6 @@ class BEBLaDIIPhase3(nn.Module):
         self.self_cond_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
         nn.init.zeros_(self.self_cond_proj.weight)
         print("[Init] self_cond_proj initialized (zeros — neutral mode).", flush=True)
-
-    def _make_adaLN_hook(self, layer_idx: int, target: str):
-        """Forward hook: применяет AdaLN после LayerNorm, до Attention/MLP (ADR-062)."""
-        def hook(module, input, output):
-            if not hasattr(self, "_current_t_emb") or self._current_t_emb is None:
-                return output
-
-            if target == "attn":
-                shift, scale = self.adaLN_attn[layer_idx](self._current_t_emb)
-            else:
-                shift, scale = self.adaLN_mlp[layer_idx](self._current_t_emb)
-
-            shift = shift.to(output.dtype)
-            scale = scale.to(output.dtype)
-            # Модулируем уже нормализованный output
-            return output * scale + shift
-        return hook
 
     def train(self, mode=True):
         super().train(mode)
@@ -593,7 +597,6 @@ class BEBLaDIIPhase3(nn.Module):
         # --- Time Embedding (обучаемые параметры) ---
         t_sin = self.t_sin_embed(t)           # [B, t_emb_dim]
         t_emb = self.t_proj(t_sin)            # [B, t_emb_dim]
-        self._current_t_emb = t_emb           # сохраняем для hooks
 
         # --- Self-Conditioning injection (нейтрально при self_cond=None) ---
         x_in = z_noisy.float()
@@ -605,12 +608,26 @@ class BEBLaDIIPhase3(nn.Module):
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)            # [B, T+1, D]
         attention_mask_extended = F.pad(attention_mask, (1, 0), value=1)    # [B, T+1]
 
+        # --- Прокидываем t_emb в обертки AdaLN ---
+        for layer in self.dus.layers:
+            if hasattr(layer, "attn_norm") and isinstance(layer.attn_norm, AdaLNWrappedLayerNorm):
+                layer.attn_norm._current_t_emb = t_emb
+            if hasattr(layer, "mlp_norm") and isinstance(layer.mlp_norm, AdaLNWrappedLayerNorm):
+                layer.mlp_norm._current_t_emb = t_emb
+
         # --- DUS forward (float32, ADR 059) ---
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
             attention_mask=attention_mask_extended,
             output_hidden_states=False,  # Отключено для экономии VRAM (OOM фикс)
         )
+
+        # --- Очищаем состояние, чтобы избежать утечек памяти ---
+        for layer in self.dus.layers:
+            if hasattr(layer, "attn_norm") and isinstance(layer.attn_norm, AdaLNWrappedLayerNorm):
+                layer.attn_norm._current_t_emb = None
+            if hasattr(layer, "mlp_norm") and isinstance(layer.mlp_norm, AdaLNWrappedLayerNorm):
+                layer.mlp_norm._current_t_emb = None
 
         # --- Финальная нормализация (отрезаем sep) ---
         pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
