@@ -622,13 +622,6 @@ class BEBLaDIIPhase3(nn.Module):
             output_hidden_states=False,  # Отключено для экономии VRAM (OOM фикс)
         )
 
-        # --- Очищаем состояние, чтобы избежать утечек памяти ---
-        for layer in self.dus.layers:
-            if hasattr(layer, "attn_norm") and isinstance(layer.attn_norm, AdaLNWrappedLayerNorm):
-                layer.attn_norm._current_t_emb = None
-            if hasattr(layer, "mlp_norm") and isinstance(layer.mlp_norm, AdaLNWrappedLayerNorm):
-                layer.mlp_norm._current_t_emb = None
-
         # --- Финальная нормализация (отрезаем sep) ---
         pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
@@ -1051,7 +1044,8 @@ def train():
     # Параметры DUS (тело BERT) — низкий LR
     for name, param in actual_model.named_parameters():
         if param.requires_grad:
-            if name.startswith('dus.'):
+            # Даже если AdaLN лежит внутри dus из-за Wrapper'а, он должен получать высокий LR
+            if name.startswith('dus.') and 'adaln' not in name:
                 dus_params.append(param)
             else:
                 new_layers_params.append(param)
