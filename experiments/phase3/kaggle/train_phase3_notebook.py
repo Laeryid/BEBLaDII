@@ -546,12 +546,12 @@ class BEBLaDIIPhase3(nn.Module):
         else:
             raise FileNotFoundError(f"CRITICAL: sep_token.pt not found at {sep_token_path}. Укажите правильный путь на Kaggle!")
 
-        # 7. Self-Conditioning projection (подготовка архитектуры — нулевая инициализация)
-        # При self_cond=None эффект нулевой → поведение идентично текущему.
-        # Двухпроходное обучение активируется на следующем этапе (после базовой сходимости).
+        # 7. Self-Conditioning projection (ACTIVE — xavier init)
+        # SC даёт модели "второй взгляд": первый проход предсказывает x̂_0,
+        # второй проход использует его как подсказку через эту проекцию.
         self.self_cond_proj = nn.Linear(hidden_dim, hidden_dim, bias=False)
-        nn.init.zeros_(self.self_cond_proj.weight)
-        print("[Init] self_cond_proj initialized (zeros — neutral mode).", flush=True)
+        nn.init.xavier_uniform_(self.self_cond_proj.weight)
+        print("[Init] self_cond_proj initialized (xavier_uniform_ — SC ACTIVE).", flush=True)
 
     def train(self, mode=True):
         super().train(mode)
@@ -1137,6 +1137,19 @@ def train():
             # Восстанавливаем состояние шедулера (fast-forward) только если он не был загружен
             for _ in range(start_step):
                 scheduler.step()
+
+        # --- Activate Self-Conditioning if weights are still zeros (from old checkpoint) ---
+        if start_step > 0:
+            sc_weight = actual_model.self_cond_proj.weight.data
+            if sc_weight.abs().max().item() < 1e-8:
+                nn.init.xavier_uniform_(actual_model.self_cond_proj.weight)
+                # Обновляем EMA shadow для self_cond_proj
+                for name, param in actual_model.named_parameters():
+                    if 'self_cond_proj' in name and name in ema.shadow:
+                        ema.shadow[name] = param.data.clone().detach().float().cpu()
+                print("[SC] self_cond_proj was zero → RE-INITIALIZED with xavier_uniform_ (SC ACTIVATED).")
+            else:
+                print(f"[SC] self_cond_proj already active (max_w={sc_weight.abs().max().item():.6f}).")
 
     # --- Training Loop ---
     model.train()

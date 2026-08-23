@@ -370,7 +370,7 @@ def run_denoising_sanity_test(ckpt_path: str, device: str = "cpu"):
 
 if __name__ == "__main__":
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    default_ckpt = r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_4995.pth"
+    default_ckpt = r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_11995.pth"
     if len(sys.argv) > 1:
         ckpt = sys.argv[1]
     else:

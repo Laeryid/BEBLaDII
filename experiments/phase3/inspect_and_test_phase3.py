@@ -355,7 +355,7 @@ def run_step_by_step_diffusion(phrase_title, text, diff_model, decoder, lm_head_
 
 
 def main():
-    default_ckpt = r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_4995.pth"
+    default_ckpt = r"C:\Experiments\BEBLaDII\experiments\phase3\local_checkpoints\phase3_step_11995.pth"
     if len(sys.argv) > 1:
         ckpt_path = sys.argv[1]
     else:
