@@ -786,10 +786,13 @@ def compute_adaln_diagnostics(actual_model, t_emb: torch.Tensor) -> dict:
         var_shift_attn = shift_attn.var(dim=-1).mean()
         var_shift_mlp  = shift_mlp.var(dim=-1).mean()
 
+        sc_w_norm = actual_model.self_cond_proj.weight.norm() if hasattr(actual_model, "self_cond_proj") else torch.tensor(0.0)
+
         return {
             "adaln_w_norm":          0.5 * (w_norm_attn + w_norm_mlp).detach(),
             "adaln_attn_w_norm":     w_norm_attn.detach(),
             "adaln_mlp_w_norm":      w_norm_mlp.detach(),
+            "sc_w_norm":             sc_w_norm.detach(),
             "adaln_attn_shift_norm": shift_attn_norm.detach(),
             "adaln_mlp_shift_norm":  shift_mlp_norm.detach(),
             "adaln_attn_scale_dev":  scale_attn_dev.detach(),
@@ -1255,6 +1258,7 @@ def train():
                     "h39_mid":   f"{metrics_dict.get('cos_h39_t_mid', 0):.4f}",
                     "cos_hi":    f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
                     "adaln_w":   f"{metrics_dict.get('adaln_w_norm', 0):.4f}",
+                    "sc_w":      f"{metrics_dict.get('sc_w_norm', 0):.4f}",
                     "grad":      f"{grad_norm:.3f}",
                 })
 
