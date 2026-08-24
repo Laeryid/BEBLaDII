@@ -279,7 +279,9 @@ def slerp_sampler(diff_model, input_ids, attn_mask, steps=25, device="cpu"):
         t_next = t_steps[i + 1]
 
         with torch.no_grad():
-            out = diff_model(input_ids, attn_mask, torch.tensor([t_cur.item()], device=device), z_noisy_override=x_t)
+            out_sc = diff_model(input_ids, attn_mask, torch.tensor([t_cur.item()], device=device), z_noisy_override=x_t)
+            sc_est = out_sc["dus_final"]
+            out = diff_model(input_ids, attn_mask, torch.tensor([t_cur.item()], device=device), z_noisy_override=x_t, self_cond=sc_est)
             pred_x0 = out["dus_final"]
 
         theta_next = t_next * (math.pi / 2)
@@ -343,7 +345,9 @@ def run_denoising_sanity_test(ckpt_path: str, device: str = "cpu"):
             raw_noisy_decoded = decode_z(x_t, decoder, lm_head_weight, tokenizer)
 
             with torch.no_grad():
-                out = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device), z_noisy_override=x_t)
+                out_sc = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device), z_noisy_override=x_t)
+                sc_est = out_sc["dus_final"]
+                out = diff_model(input_ids, attn_mask, torch.tensor([t_val], device=device), z_noisy_override=x_t, self_cond=sc_est)
                 pred_x0 = out["dus_final"]
                 h_39 = out["h_39"]
 

@@ -327,20 +327,32 @@ def run_step_by_step_diffusion(phrase_title, text, diff_model, decoder, lm_head_
         t_next = t_schedule[i + 1:i + 2]
 
         with torch.no_grad():
-            out = diff_model(input_ids, attn_mask, t_now, z_noisy_override=z_current)
-            z_pred = out["dus_final"]
+            out_sc = diff_model(input_ids, attn_mask, t_now, z_noisy_override=z_current)
+            sc_est = out_sc["dus_final"]
+            out = diff_model(input_ids, attn_mask, t_now, z_noisy_override=z_current, self_cond=sc_est)
+            z_pred_raw = out["dus_final"]
 
-        # Ортогональное извлечение шума через процесс Грама-Шмидта (ADR 072)
+        # Identity Gate (ADR 065) + ADR 072
+        # На низких уровнях шума нейросеть (DUS) достигает потолка точности и начинает
+        # вносить артефакты в почти идеальный x_t. Поэтому мы плавно переносим доверие 
+        # от предсказания сети (z_pred_raw) обратно к текущему вектору (z_current).
+        gate_t = math.sin(t_now.item() * math.pi / 2)
+        z_pred = safe_normalize(gate_t * z_pred_raw + (1.0 - gate_t) * z_current, dim=-1)
+
+        # Аналитический Spherical DDIM (Блендинг на инференсе, ADR 072)
+        # Заменяет нестабильный Грам-Шмидт, предотвращая уход траектории назад на малых t.
         if t_now.item() > 0.0:
-            eps_pred = z_current - (z_current * z_pred).sum(dim=-1, keepdim=True) * z_pred
-            eps_pred = safe_normalize(eps_pred, dim=-1)
+            theta_now = t_now.item() * (math.pi / 2)
+            theta_next = t_next.item() * (math.pi / 2)
+            
+            # Веса для интерполяции между предсказанием x0 и текущим зашумленным вектором
+            w_pred = math.sin(theta_now - theta_next) / math.sin(theta_now)
+            w_cur  = math.sin(theta_next) / math.sin(theta_now)
+            
+            z_next = w_pred * z_pred + w_cur * z_current
+            z_current = safe_normalize(z_next, dim=-1)
         else:
-            eps_pred = torch.zeros_like(z_current)
-
-        # Slerp шаг к t_next
-        theta_next = t_next * (math.pi / 2)
-        z_next = math.cos(theta_next) * z_pred + math.sin(theta_next) * eps_pred
-        z_current = safe_normalize(z_next, dim=-1)
+            z_current = safe_normalize(z_pred, dim=-1)
 
         cos_sim_clean = (z_current[mask_b] * z_clean[mask_b]).sum(dim=-1).mean().item()
         cos_sim_pred = (z_pred[mask_b] * z_clean[mask_b]).sum(dim=-1).mean().item()
