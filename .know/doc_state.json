@@ -1,0 +1,558 @@
+{
+    "src\\beb_la_dii\\__init__.py": {
+        "hash": "d19f868ebb887cc9d75e7cde1cbf485f9464a43fc1b263768a521bea00ff322e",
+        "mtime": 1775587793.9792528
+    },
+    "src\\beb_la_dii\\data\\mask_variants.py": {
+        "hash": "0e27d216dbb2ee237a6935fb20f3df534825c608fa718dd7507aa20ac6362f43",
+        "mtime": 1778612882.3331957
+    },
+    "src\\beb_la_dii\\model\\assembler.py": {
+        "hash": "f48fa709a5293d58f496ba15ab5e31937d36c1c8278560c8b580fc9c28997ba3",
+        "mtime": 1779571097.9931567
+    },
+    "src\\beb_la_dii\\model\\base.py": {
+        "hash": "573bc3e44f9db8d90d2b5bf448188463516c6c18d2cd065bacddb89c04e0e81d",
+        "mtime": 1776508630.667941
+    },
+    "src\\beb_la_dii\\model\\component_registry.py": {
+        "hash": "08371a59a59937564e8e0bfd13ad1c8e03c4c8315a6a1914db35f3759ee55b33",
+        "mtime": 1776097878.7105637
+    },
+    "src\\beb_la_dii\\model\\distiller.py": {
+        "hash": "986b1e8d1913e74a12497695226b3ed6e1a95c6dbef78f701f0fda36d832a9a0",
+        "mtime": 1779571652.843149
+    },
+    "src\\beb_la_dii\\model\\dus.py": {
+        "hash": "d3987ddae07508a9a3edaa7b174c29b5f96fcc3b25df094a080b7a4852ddde8f",
+        "mtime": 1784385017.4344845
+    },
+    "src\\beb_la_dii\\model\\modern_decoder.py": {
+        "hash": "175ac1964858600329810c334ffdeb9d111a17d60266ce2842d48bacef77b8d7",
+        "mtime": 1784218239.725797
+    },
+    "src\\beb_la_dii\\model\\projectors.py": {
+        "hash": "1ec2232e6310c238c9f9ce00df366b5d9051f05100b77310520b53c64719a96b",
+        "mtime": 1781556345.9893935
+    },
+    "src\\beb_la_dii\\model\\vae.py": {
+        "hash": "d94282042f5c2709882f26b605b0b42668d7e05c6e56d03e22ca7288d8692c7e",
+        "mtime": 1781888639.0582528
+    },
+    "src\\beb_la_dii\\model\\__init__.py": {
+        "hash": "f3baf663f1af5149aaf3b9ef8867280db9b0bcaf239375fc759f5e80d5aa3209",
+        "mtime": 1775587796.3018782
+    },
+    "src\\beb_la_dii\\rag\\__init__.py": {
+        "hash": "3d1185cf8cfdd8ba43839677e985fb37c56bda365bcb346417458af1e030478c",
+        "mtime": 1775587798.347016
+    },
+    "src\\beb_la_dii\\utils\\data.py": {
+        "hash": "18c5f5f975d8c0a1ad0b377d9f2d847c0a1a27b7464b3700e9ceb5cd2dad9d9e",
+        "mtime": 1787086176.3818548
+    },
+    "src\\beb_la_dii\\utils\\experiment_manager.py": {
+        "hash": "017a082828ddbfd93714cd779f991d32ea84822dd5bf23932b6c04ad76d8f6a4",
+        "mtime": 1775599422.3942611
+    },
+    "src\\beb_la_dii\\utils\\experiment_tracker.py": {
+        "hash": "aea9d9aa3303ca4650b3d42029e5cfd1c1e9c130b99ec207840dbac2cc1a54ec",
+        "mtime": 1775853520.1690574
+    },
+    "src\\beb_la_dii\\utils\\loss.py": {
+        "hash": "e0e782b0a1402b6bc52c4b0b62f3bfac0d696d5f9f68f15689ae374ccd0f2647",
+        "mtime": 1780679166.4019878
+    },
+    "src\\beb_la_dii\\utils\\loss.py.bak": {
+        "hash": "571e57d30cb7fb23795ce9e89a5c7d66ccad4a8d3e1389900ac88963842ec079",
+        "mtime": 1779858567.141307
+    },
+    "src\\beb_la_dii\\utils\\tokenizer.py": {
+        "hash": "e24de6487346aeeb6aecdafa34b35f245e9cecb188b178875d2836c4f72eeb7f",
+        "mtime": 1775597601.3327596
+    },
+    "src\\beb_la_dii\\utils\\__init__.py": {
+        "hash": "dc17a6c16fec13801c0adf5d9a1082ba50f64844a0c5d45394518037fdb6abaf",
+        "mtime": 1775587800.3592708
+    },
+    "src\\beb_la_dii.egg-info\\dependency_links.txt": {
+        "hash": "01ba4719c80b6fe911b091a7c05124b64eeece964e09c058ef8f9805daca546b",
+        "mtime": 1775596307.9632258
+    },
+    "src\\beb_la_dii.egg-info\\PKG-INFO": {
+        "hash": "b3ac1670908326d7365db1ed10b7f6304bb38583ba0d34833ee43d616ed3e1a2",
+        "mtime": 1775596307.9618323
+    },
+    "src\\beb_la_dii.egg-info\\requires.txt": {
+        "hash": "b22e23d7ac50bda32b58e97a3aab4b3924b47bf460c6c56824cc1f26dc2e271e",
+        "mtime": 1775596307.964228
+    },
+    "src\\beb_la_dii.egg-info\\SOURCES.txt": {
+        "hash": "aec824c623bd633ed778ee96075d107135a93c35113506d63451d100af88b1f1",
+        "mtime": 1775596307.9728184
+    },
+    "src\\beb_la_dii.egg-info\\top_level.txt": {
+        "hash": "68344d532f2c1fb3465cc4214833ffbb93652a1f0800b48b102ac858eba63951",
+        "mtime": 1775596307.964228
+    },
+    "tests\\.gitkeep": {
+        "hash": "24c1b219502b07d4d526da178ea77a00c392c5368715fb5e9174835a318aa388",
+        "mtime": 1775587809.3375132
+    },
+    "tests\\test_constructor_logic.py": {
+        "hash": "a8528e6c472b3fa7b358b4557ba9a1a6afc98458e51c066feb304b91c023ff73",
+        "mtime": 1775600012.8228495
+    },
+    "tests\\test_dus_stability.py": {
+        "hash": "7bfa245daf8d2dec336b86b57ed5bacc53c33a02e0a0f196542db6e1c9cb592e",
+        "mtime": 1775600137.3753052
+    },
+    "tests\\test_inference.py": {
+        "hash": "f984685a96be6003ee0724c5d54c884d08025f47c28f57712362930485905783",
+        "mtime": 1775851510.468336
+    },
+    "tests\\test_infrastructure.py": {
+        "hash": "f33f904705962848cc9cec83013f289ed84394170bcc84b01323a56e2b03471b",
+        "mtime": 1775599871.512863
+    },
+    "tests\\test_loading.ipynb": {
+        "hash": "20bbbeb45ef2093c325a89b32e73f63932972a34c6147e93afe4340fd319bac7",
+        "mtime": 1775851856.6047876
+    },
+    "tests\\test_loss.py": {
+        "hash": "96257a7a0069d0f98103276c2b560d84f94291d1a3f252fd65753984c23bb0a2",
+        "mtime": 1779308024.4209516
+    },
+    "tests\\test_vae_components.py": {
+        "hash": "fa5ced658a4bb7b8af1a19d5a84309c2d91717287faae9406d5764ce8d7d27be",
+        "mtime": 1776508864.5656142
+    },
+    "tests\\.ipynb_checkpoints\\test_loading-checkpoint.ipynb": {
+        "hash": "20bbbeb45ef2093c325a89b32e73f63932972a34c6147e93afe4340fd319bac7",
+        "mtime": 1775851856.6047876
+    },
+    "pyproject.toml": {
+        "hash": "304c1fd54456699de339f7c8e3503bf8c588717d5db78b27aa0bf56dac51efef",
+        "mtime": 1776536520.7468991
+    },
+    ".know\\knowledge\\KI_architectural_decisions.md": {
+        "hash": "dbc8350eedf516314ccd807fda491113db49e40438b6bf5dfb0c6a49ad9f69ec",
+        "mtime": 1786990655.9482803
+    },
+    ".know\\knowledge\\KI_architecture.md": {
+        "hash": "001e0be2df2924a6ff2b7c2fed1417fc93948d87edaf0b7b4ae1d645bed3f3e3",
+        "mtime": 1785406215.8371468
+    },
+    ".know\\knowledge\\KI_datasets.md": {
+        "hash": "0b3caba5f70a4ed7a34f02aed2a8b34153e3a84e22630882ca7fab01a65b3eb6",
+        "mtime": 1785406216.074494
+    },
+    ".know\\knowledge\\KI_data_preparation.md": {
+        "hash": "ed54bd8fde35aa28ee6eb7fdf16ea6b65eb4d84637fb2308b3175145f656e0f9",
+        "mtime": 1785406216.1359138
+    },
+    ".know\\knowledge\\KI_experiments.md": {
+        "hash": "fc32cf7fcc427bf3284264b067a7f4fe9f173d44c4bce802e7c4a12c7b1ba1ee",
+        "mtime": 1785406215.9084618
+    },
+    ".know\\knowledge\\KI_kaggle.md": {
+        "hash": "64c53f7f7e29a236b7d38a2c98ee7731316e2a54b8dfca32ba48860364d3f00a",
+        "mtime": 1785406216.0850952
+    },
+    ".know\\knowledge\\KI_kaggle_ops.md": {
+        "hash": "c429add1ad541c6ab65acd3b388e396ce72c938a641e948ccd278aa9d9288b35",
+        "mtime": 1785406216.1524081
+    },
+    ".know\\knowledge\\KI_knowledge_infrastructure.md": {
+        "hash": "a3d6c66fc613f048f0f4126793c6db2000afe194d923b91f33e885ce476ddb2a",
+        "mtime": 1785406215.9975655
+    },
+    ".know\\knowledge\\KI_knowledge_management.md": {
+        "hash": "5f7c432ca68c3633b2d9814138c2573e81529375f3d4bfbf32bb12df9da35027",
+        "mtime": 1785406215.999335
+    },
+    ".know\\knowledge\\KI_knowledge_testing.md": {
+        "hash": "3b5147d89ca0b3e78bed7b0e53a38dc4c341339b004fb82e615cdd113d34ce7a",
+        "mtime": 1785406216.0474498
+    },
+    ".know\\knowledge\\KI_knowledge_workflows.md": {
+        "hash": "92b24c37869669218b40ee1290bb11fe386d3c8f6b50f2271b643cf0219956c1",
+        "mtime": 1785406216.05502
+    },
+    ".know\\knowledge\\KI_metrics_reference.md": {
+        "hash": "4eafafc903d4975d1cfc2d1c10a96672353aa98ddd358df948e18748febd7432",
+        "mtime": 1785406217.622855
+    },
+    ".know\\knowledge\\KI_model_core.md": {
+        "hash": "e774081e09b29e40d218dff14ca0e34df2b86500d6c3fa329f6e8ac74dc01a22",
+        "mtime": 1785406215.8339832
+    },
+    ".know\\knowledge\\KI_model_inspection.md": {
+        "hash": "dc51e1a24e9b17f79cbc597e90d704eef8c30ea732d91332c5a40dec93f7ff6d",
+        "mtime": 1785406216.181151
+    },
+    ".know\\knowledge\\KI_model_storage.md": {
+        "hash": "40ef0937cdaeaef59b4a5dd33ef4f36a3739ede20841e0e585f3c804c86bc52f",
+        "mtime": 1785406216.0871077
+    },
+    ".know\\knowledge\\KI_operations.md": {
+        "hash": "b5df2e66839dc83b66c2cfa1dd5bdd38e40b4d1e3c6bd9ec8a601510067cd298",
+        "mtime": 1785406216.1986997
+    },
+    ".know\\knowledge\\KI_phase4_training.md": {
+        "hash": "cab63d70bbb0a744303de2af3b35803473d13a003d1f997180fc7209f209488c",
+        "mtime": 1785406216.6019702
+    },
+    ".know\\knowledge\\KI_rag_engine.md": {
+        "hash": "3d03af5f5f848bc79c97b65268429a0edbcf816651463bfd5d2575b6950dcfa8",
+        "mtime": 1785406215.8395438
+    },
+    ".know\\knowledge\\KI_tests.md": {
+        "hash": "0f06cee121f077ccc820ba31ea75444e585edfc58343524e7b732a1adb730711",
+        "mtime": 1785406215.9066088
+    },
+    ".know\\knowledge\\KI_tpu_infrastructure.md": {
+        "hash": "4f78574c4e2daf1b893562c9b58c3e1515f009528109dc2834758eb108a2fb2d",
+        "mtime": 1785406216.0064673
+    },
+    ".know\\knowledge\\KI_training_infrastructure.md": {
+        "hash": "87cad6af41d4f701202fdbc6acec0285c398d68df1e0ba213afac97446c3dc46",
+        "mtime": 1785406216.5974991
+    },
+    ".know\\knowledge\\KI_training_optimization.md": {
+        "hash": "ef73e3f1e4ba1d0cb35182ee4ed193fe727df7bdf2102b1da83819a4385f66f9",
+        "mtime": 1785406216.0054672
+    },
+    ".know\\knowledge\\KI_utilities.md": {
+        "hash": "cbb8847d0efddea02e897b97a1cd2982592dd57e3628472c5be278731fff6a74",
+        "mtime": 1785406215.8853543
+    },
+    ".know\\doc_config.json": {
+        "hash": "c737b41ccc4af10baf360306a8903d0904c9cdd835b0541b385b8d6a958ff10e",
+        "mtime": 1787084562.8738778
+    },
+    "ideas\\Architecture.md": {
+        "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
+        "mtime": 1779570196.8254402
+    },
+    "ideas\\Training phases.md": {
+        "hash": "76de8e4e4b6a5fa63a5057d0f15975b77c2d83afcb6adf4f7f4bfd5504dc7fd2",
+        "mtime": 1778440746.5562792
+    },
+    "ideas\\BEBLaDII idea.md": {
+        "hash": "483511cc4c31dc2427afcc9b220a90594c09c64621f6d0bc430e8801dbddd55f",
+        "mtime": 1775582473.489202
+    },
+    "scripts\\download_datasets.py": {
+        "hash": "77eeac797c94bbb818bfbcd09b636fc594b7554444cd03ca12a9a232ff2646ed",
+        "mtime": 1775679533.8094792
+    },
+    ".know\\scripts\\knowledge_mcp.py": {
+        "hash": "01c3f3ee623896c12188ba1149d8946ddce01e32bcaff1276dbea22c35321aa5",
+        "mtime": 1777409495.7502277
+    },
+    ".know\\scripts\\knowledge_engine.py": {
+        "hash": "abed8e7676967d84ebeb5e4829134ea0cadaf4e8f91f9d7f8abb2483fd3ecaeb",
+        "mtime": 1776893621.2801137
+    },
+    ".know\\scripts\\audit_coverage.py": {
+        "hash": "6deb30015fe6e9d6fb70f82dcf3480d9a8fa5f6ed63a62561d56fbe564757168",
+        "mtime": 1777047831.1713042
+    },
+    ".know\\scripts\\ki_dependency_analyzer.py": {
+        "hash": "d41956525c62e39891cdef90fd0a60c5ed7c5b7a65a3593cb99e88d9bf45bdf9",
+        "mtime": 1777143115.096689
+    },
+    ".know\\scripts\\ki_utils.py": {
+        "hash": "86aff216078375500ad7f3548d1042400d72d637636de40134eef442d7d6dcda",
+        "mtime": 1777407812.288941
+    },
+    ".know\\scripts\\generate_dir_index.py": {
+        "hash": "fe43646e5bcfed52a172a85122cc5ef8d4948e82ecf72aa59b883fb73d54ba88",
+        "mtime": 1776709650.3669827
+    },
+    ".know\\scripts\\sync_agents_md.py": {
+        "hash": "0c20e262031438fc9d44ddbc36005bbdf1c59c004ba8b3a0a3681e792abea689",
+        "mtime": 1776892927.9436555
+    },
+    ".know\\decisions\\001_kaggle_phase1_retrospective.md": {
+        "hash": "257cc97cef07695fa60f0b050b2f0dd79c957d2b01ef62b3912d2851e423a44a",
+        "mtime": 1776110224.575124
+    },
+    ".know\\decisions\\033_spherical_latent_space_and_slerp.md": {
+        "hash": "82dae06d54b7536be629aa7f3e3db863f99cd60e5867a6fe3a55b17930891325",
+        "mtime": 1781386077.751084
+    },
+    ".know\\decisions\\002_phase1_training_optimization.md": {
+        "hash": "cb77e5d02c6767158540d58e236f7a0da4c68f20554b96b433034b0829cba63b",
+        "mtime": 1776617202.6531775
+    },
+    ".know\\decisions\\009_phase1_lr_aggressive_strategy.md": {
+        "hash": "f4d52ec820b4a0fa1801024c1ec311f273d8a54888bea434ca753583e944bcd5",
+        "mtime": 1778101761.029149
+    },
+    ".know\\decisions\\011_projector_scale_optimization.md": {
+        "hash": "6ef17644346a358855b5e2111cd770f124ccb39ce4688d5e7309d1a728de5897",
+        "mtime": 1778329726.5729337
+    },
+    ".know\\decisions\\012_latent_space_isotropization.md": {
+        "hash": "2247eab594bf58b98e34053555bc61136a5314b59b17c391195e110d40f10f8b",
+        "mtime": 1778447113.5583649
+    },
+    ".know\\decisions\\003_fsdp_tpu_transition.md": {
+        "hash": "8941604ed40962e077a17cf160bf76d3ba248218da31c8b22a14ed63eae1f39a",
+        "mtime": 1777869941.7449079
+    },
+    ".know\\decisions\\004_spmd_fsdp_tpu_constraints.md": {
+        "hash": "f8c3d443540e8880b1ba9ad28f0934019937b5b663525361f9b186f69d8c5d5b",
+        "mtime": 1777925687.0970175
+    },
+    ".know\\decisions\\005_modernbert_xla_gradient_checkpointing.md": {
+        "hash": "5963d2627b2c5463a595a412e9b24322284a9a2bfc9ab28c0a61c93f6b385e37",
+        "mtime": 1777931668.5108836
+    },
+    ".know\\decisions\\006_fsdp_checkpoint_loading_fix.md": {
+        "hash": "7a27d3bbd37d70ddd89259fa24211afaacbd7d041f7a1ef16faec82ed9b7d404",
+        "mtime": 1777933201.5234542
+    },
+    ".know\\decisions\\007_tpu_v6e_launch_stabilization.md": {
+        "hash": "cbf8b8c06e8a1c1b91e7f86bf44cf8e0014ba618367f0ac1219043e5a0c0f874",
+        "mtime": 1778017225.916542
+    },
+    ".know\\decisions\\008_single_process_spmd_victory.md": {
+        "hash": "760f49fc4baaa36c731e1c59d8393436f344f8691fa170676c37a151328cf48c",
+        "mtime": 1778044418.4698064
+    },
+    ".know\\decisions\\010_spmd_fsdp_reasoning_restart.md": {
+        "hash": "7dc0442cb7685de2faa7d54354fd0efe3242f0c03d8d87ff53b05f4c25806dc3",
+        "mtime": 1778180180.1934986
+    },
+    ".know\\tests\\conftest.py": {
+        "hash": "b6faa12748cff212bf453d49454dad97c08ac84a4be13efe8abe3dc4b21cad32",
+        "mtime": 1776710895.2355573
+    },
+    ".know\\tests\\test_audit_coverage.py": {
+        "hash": "dfeed025c466bad88e9d3deddcc576be36460c318cd93e4cfee126e0725cc44e",
+        "mtime": 1776709717.7274463
+    },
+    ".know\\tests\\test_generate_dir_index.py": {
+        "hash": "d9f4eb6356849da28317b9971505ef8797ce8cb2737f2c1dfa5c0cfc7bb7bc52",
+        "mtime": 1776709730.0859509
+    },
+    ".know\\tests\\test_init_ki_system.py": {
+        "hash": "f75a2ff3bf10a17a525675d7fcfae5ba1cb93fb0544df89929d18392ad8ae47e",
+        "mtime": 1777408477.0129893
+    },
+    ".know\\tests\\test_ki_utils.py": {
+        "hash": "537849cf3ee2a1c15303733068b5918f87b793794ab9f3fa4663977d4f63cc44",
+        "mtime": 1776710997.3071342
+    },
+    ".know\\tests\\test_knowledge_engine.py": {
+        "hash": "292c3090561a632a3186e70df973cde58a9b239b7a10a28d1b0cd9e4288f9d86",
+        "mtime": 1776709834.1037657
+    },
+    ".know\\tests\\test_knowledge_engine_extra.py": {
+        "hash": "7dedb62be158f6ae58e04225e3d7bfa5fe074eb3f4785f19137ad923c3765b5b",
+        "mtime": 1776456136.2376366
+    },
+    ".know\\tests\\test_mcp_security.py": {
+        "hash": "512bef4f4478852f495986bbad5c9fa1a3b243dd557b82dbe4b9d8fbb812e9bf",
+        "mtime": 1776709757.3778346
+    },
+    ".know\\tests\\test_sync_and_add_ki.py": {
+        "hash": "c7371fec3c7227a725640e8c056d98c18ca0461f037105e918d372bbb843cfe7",
+        "mtime": 1776709825.332481
+    },
+    ".know\\workflows\\create-adr.md": {
+        "hash": "9e73db4a3c8ef91e98e77cb8342d65732d6b13b5f15e1f0f3353e83c1806e923",
+        "mtime": 1776713107.2614276
+    },
+    ".know\\workflows\\expand-knowledge.md": {
+        "hash": "39a61e5831e74bb27c29a038f03537ab1cfdc09e35e7f1123089d1a12de7c335",
+        "mtime": 1776967737.16768
+    },
+    ".know\\workflows\\sync-knowledge.md": {
+        "hash": "14065732e5de2072b16d41d27afa5bdabb3dc4b5bb6d1b2b37f6a7075d5d9117",
+        "mtime": 1777143060.51597
+    },
+    ".know\\workflows\\update-knowledge.md": {
+        "hash": "b3cdc56ae6a9c79f62a609eea6f1123e42a79fd59f44f75d477cbacb60d98a41",
+        "mtime": 1777048525.3706932
+    },
+    "scripts\\prepare_phase1_data_v2.py": {
+        "hash": "7df4b7af31c80e7a4e6c3b5f7d1c1ec2b7414b7149749d1541f29b3f2b6b817b",
+        "mtime": 1776515372.9680023
+    },
+    "scripts\\prepare_kaggle_data.py": {
+        "hash": "85103b296ffc6a8cc23c9237bd3aa8a944a9e20c8c7ccd8a3b70c72bdfdf3e49",
+        "mtime": 1776100710.377282
+    },
+    "scripts\\downsample_magpie.py": {
+        "hash": "5e2d8ab1e81ec35c7f2fb277f7c70f6c669c050e029b0fdb432e29d32128a7b7",
+        "mtime": 1776515339.7468555
+    },
+    "scripts\\sync_to_kaggle.ps1": {
+        "hash": "de08b36e792dfd44c668e862e4492b8bdc672a517c81ad9beab04d0df96f7414",
+        "mtime": 1775898641.8042412
+    },
+    "scripts\\kaggle_emergency_save.py": {
+        "hash": "eed6d304439e8b6cf9c88006b78e52f66db7208ea2592417bd58f5c37e4a1f2b",
+        "mtime": 1776191394.7756915
+    },
+    "scripts\\build_prebuilt_latentbert.py": {
+        "hash": "a013bf95ae5f68bfdc50b9a33d3e8b656ef1380544fec552a2f2acbb1ea227e0",
+        "mtime": 1775911809.8514287
+    },
+    "scripts\\download_teacher.py": {
+        "hash": "829cfed45df1128189b5f15b91d1727fa30ea8d9120869b8440bcbd83d8f4d67",
+        "mtime": 1775934119.721523
+    },
+    "scripts\\debug_nan_kaggle.py": {
+        "hash": "fb93dc37dab3fb3e9ccc7ed6abd800417422f26c39def200f51b012cefcd25f7",
+        "mtime": 1776106985.793565
+    },
+    "scripts\\check_tpu_nprocs.py": {
+        "hash": "482d136bb8905e9b980468401af303feb1dcf86829e9b8f3693e9f461eb9e232",
+        "mtime": 1777816807.8392358
+    },
+    "scripts\\deep_inspect_weights.py": {
+        "hash": "592264b64586f1ce31add92cc81ea8e44486667fca8287a457adc581b0836537",
+        "mtime": 1776544413.703763
+    },
+    "scripts\\check_model_keys.py": {
+        "hash": "6d4f8af5c3337a7b696bab709e76caddbfed2a24b6ec5528eccc47315c4fe0a4",
+        "mtime": 1776544477.1675756
+    },
+    "scripts\\find_weights.py": {
+        "hash": "870d20522f7fa6ddfa0ca241fe8af794933ae726b16d968251e904a3e488c0e2",
+        "mtime": 1777813440.1887252
+    },
+    "scripts\\verify_loading.py": {
+        "hash": "82b6e4447443e799c2ba6e198e14839f1ff7896bc9dabdace750ba7ba2016c82",
+        "mtime": 1778006929.3401425
+    },
+    "scripts\\test_missing_keys.py": {
+        "hash": "fadef41ac08df61bf83c8e926a0c21709e284a56309e593526b498ea0f541bf8",
+        "mtime": 1778006317.964955
+    },
+    "scripts\\smoke_test_forward.py": {
+        "hash": "32bdd5871acc17f522138e90498b97f57204360d3466281ab319e7d38098dd76",
+        "mtime": 1776100322.1354463
+    },
+    "scripts\\verify_new_tpu.py": {
+        "hash": "4674436453df9d7fbacfd163e0fa54c33e2c41c163a226aaceeb4546c31276f1",
+        "mtime": 1777820098.7145016
+    },
+    "scripts\\inspect_system.py": {
+        "hash": "0c0cdaa4865b6eecfe7bfc194ab46e291cf6bea366df5bbab45dbd119a2cf1c7",
+        "mtime": 1777817410.029039
+    },
+    "evaluate_lengths.py": {
+        "hash": "529d7a5166a5cd4b1ba70573c7d8aaf3d441ea96064f64c782227d0fce3e9673",
+        "mtime": 1776182458.5365858
+    },
+    ".know\\decisions\\060_phase3_canonical_diffusion_redesign.md": {
+        "hash": "ffdfa80ad779763bafafd0a2596dec9634af5f22fc36a1beae043e1332ed6c5c",
+        "mtime": 1784451024.494888
+    },
+    "experiments\\phase3\\kaggle\\train_phase3_notebook.py": {
+        "hash": "9b7edd5e54ee8b6eac5338f4dd3c693b5f7f0db1153504aafb5ecd6a86c969a4",
+        "mtime": 1787482021.212648
+    },
+    ".know\\decisions\\062_phase3_adaln_residual_stream_bug.md": {
+        "hash": "1f2383086b79dd7b31780e08b3c279eb51ef1356ac41a825494c5f853f7e57ad",
+        "mtime": 1784745603.3103395
+    },
+    ".know\\decisions\\064_adaln_zero_init_symmetry_break_and_diversity_loss.md": {
+        "hash": "2dcb8b158f907c9b500bbd95cf75bd92a025164383bf9e41c71300c0aac1172c",
+        "mtime": 1785074521.7083085
+    },
+    ".know\\decisions\\065_unet_skip_connections_and_identity_gate.md": {
+        "hash": "7fdfcf1877c1df6061025636a24a97bd9111af71943e4ef638732f8b9bef7b41",
+        "mtime": 1785178039.3789635
+    },
+    "experiments\\phase3\\Lightning\\train_phase3_lightning.py": {
+        "hash": "fe710c8b7308a976fdf90b9fd89d13a2a3cc46790f68f7bcc1c7623458db10bc",
+        "mtime": 1785351119.3047445
+    },
+    ".know\\decisions\\066_variance_matching_loss_anti_collapse.md": {
+        "hash": "23402e98dc648e3e479868582d30a9546238cbd7643b9dbf3d76cb072fc9ec5f",
+        "mtime": 1785187571.1427586
+    },
+    "ideas\\Phase 4 разделение.md": {
+        "hash": "4303657ec763b6a112109fc6dbf942db99836da3985c95d1288ec84f2012e6a4",
+        "mtime": 1778354519.9118092
+    },
+    ".know\\decisions\\027_huber_loss_variance_covariance.md": {
+        "hash": "47fdff822e42ea4cfbc216795a08c70b3b8282b09334cb89b48d3d64e6532f81",
+        "mtime": 1779917873.942446
+    },
+    ".know\\decisions\\022_intermediate_layers_hybrid_regularization.md": {
+        "hash": "5b7363d1ce854b8c970ebef08232928ea58324e2b6ab156a6df9c8cd3ba97550",
+        "mtime": 1779643767.812093
+    },
+    ".know\\decisions\\029_variance_floor_and_scale_invariant_covariance.md": {
+        "hash": "94a90914dda5c448639398f2da000f3afc57d231230bec2d82a5026774ecbe07",
+        "mtime": 1780509686.1352856
+    },
+    "experiments\\phase 1\\train_phase1_vae_fsdp.py": {
+        "hash": "fb5298b67f5e98d8007c7896a3a564139a11c37be29ab952da39f40eff88ee2f",
+        "mtime": 1781951327.077084
+    },
+    "experiments\\phase3\\train_phase3_logic.py": {
+        "hash": "da8749f3290efcc7fc460831d03a7d80f78e081af764140006eb3fc219b08f89",
+        "mtime": 1782751036.3922076
+    },
+    "experiments\\phase3\\compute_whitening.py": {
+        "hash": "3f6d9e0613ee743333cc021521385d742d5d69bdb8e57c525b582635af86f492",
+        "mtime": 1782500134.202067
+    },
+    "experiments\\phase3\\eval_phase3_logic_local.py": {
+        "hash": "dc2753e05c52e70f2c379d5eb86ce0fdace89b163d3b82f3bac7df789600609e",
+        "mtime": 1784382095.78027
+    },
+    "experiments\\phase 2\\train_phase2_decoder.py": {
+        "hash": "b46330dd82c2c444f65df3fe383ee107e42c07bca99d5ec5e371cb53d468aa28",
+        "mtime": 1782076893.2600079
+    },
+    ".know\\decisions\\055_pretrained_modernbert_large_decoder_transition.md": {
+        "hash": "55560f8affb5b7382b123a028734c6cee3170f9b16e0d78221a99b2daee829d1",
+        "mtime": 1783793685.9075046
+    },
+    "experiments\\phase3\\Lightning\\test_thoughts.py": {
+        "hash": "a39c715120a1bcd09c7eb8d22f3058cd135713967e6844bbfd75c63811b91896",
+        "mtime": 1784148206.29217
+    },
+    "storage\\components\\sep_token.pt": {
+        "hash": "9812f56ba3dc9fd87bc965d28d89ed3bebdee4d6e9c2a7169320e93095aa253d",
+        "mtime": 1784148250.7083957
+    },
+    ".know\\decisions\\014_metrics_fix_and_delta_recovery.md": {
+        "hash": "124d095ec00c2b7e943c204a567432fce06759f24a07375aee2b282da3396a50",
+        "mtime": 1778859409.967322
+    },
+    ".know\\decisions\\015_centered_cosine_similarity.md": {
+        "hash": "ef27eed5f632c6d661213280c6c77f8bafadc7b73a245831728ee2e109be9524",
+        "mtime": 1779009190.5743592
+    },
+    ".know\\decisions\\017_new_loss_terms_and_metrics.md": {
+        "hash": "27c35198f63261bafe06bb4e7e60c014e1ac026d71c284cfa57f819ed704af1e",
+        "mtime": 1779308160.5046813
+    },
+    ".know\\decisions\\023_layer40_raw_topology_and_variance.md": {
+        "hash": "77b7b42a4314393d7df88a91e8f0b2648e4839fe1077c7938a6866e165db784e",
+        "mtime": 1779732230.3495584
+    },
+    ".know\\decisions\\024_spherical_manifold_distillation.md": {
+        "hash": "6ef9cca24edfb400e529ef38e8fbc6c92dbbe69b0674e471ef294ffcf37edba0",
+        "mtime": 1779828339.8302164
+    },
+    ".know\\decisions\\025_centered_rkd.md": {
+        "hash": "3371c353b15c7c3a581aca38f9ecef43a908ef7d07074f6603804687d2c2b6b4",
+        "mtime": 1779858641.3770742
+    },
+    ".know\\decisions\\026_gradient_stabilization_rkd_cosine.md": {
+        "hash": "ec7f3dec2543d62d26183f014ff50e8666148b2844635e460fc6caf2301f37c9",
+        "mtime": 1779900329.8353047
+    }
+}

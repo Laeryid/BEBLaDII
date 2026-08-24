@@ -93,15 +93,18 @@ graph TD
 - **Goal**: Обучение компактного декодера, способного без авторегрессии улучшить грамматику ответа.
 
 **Phase 3: Base diffusion latentBackbone training, without CA-prompt**
-- **Goal**: Train the core diffusion backbone to diffuse some random phrases, focusing on internal consistency without user prompt conditioning (CA-prompt disabled).
+- **Goal**: Train the core diffusion backbone on random phrases with a uniform noise level `t` applied identically to all tokens in a sequence. Establishes the foundational denoising capability and a stable latent geometry before introducing per-token conditioning.
 
-**Phase 4: Prompt Conditioning (CA_Prompt)**
+**Phase 4: Per-Token Denoising (ConfidenceHead training)**
+- **Goal**: Train the backbone to denoise under a per-token noise schedule, where each token `i` receives an independent noise level `t_i ~ Uniform(t_min, t_max)`. This teaches the model to exploit clean neighbor tokens as context anchors when recovering heavily noised tokens — the core mechanism behind uncertainty localization. Concurrently trains the `ConfidenceHead` to predict per-token crystallization quality (`cos_sim(output_i, z_clean_i)`) without access to `z_clean`, producing the precise uncertainty map that the Orchestrator uses to decide whether to proceed, retrieve from CLM, or apply another diffusion step.
+
+**Phase 5: Prompt Conditioning (CA_Prompt)**
 - **Goal**: Train `CA_Prompt` layers to inject the rigid quality criteria (the user prompt) directly into the diffusion process.
 
-**Phase 5: Memory Integration (CA_Memory)**
+**Phase 6: Memory Integration (CA_Memory)**
 - **Goal**: Train `CA_Memory` layers to inject factual knowledge from CLM, and train the `Relevance Gate` to validate retrieved chunks.
 
-**Phase 6: Tool Use & Context (CA_Context)**
+**Phase 7: Tool Use & Context (CA_Context)**
 - **Goal**: Train the system to utilize the strictly structured operational `Context Register` via `CA_Context` layers.
 
 ## Reports
