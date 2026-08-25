@@ -19,6 +19,10 @@
 ## Purpose
 BEBLaDII is an advanced AI model designed to use **Complementary Latent Memory (CLM) directly as its own external memory**. Unlike standard auto-regressive models that predict the next discrete token, BEBLaDII separates logical reasoning from linguistic generation. It continuously "thinks", doubts its own representations, and iteratively crystallizes meaning inside a continuous latent space. When the model detects high uncertainty in its thoughts, it directly queries external CLM memory to stabilize its latent representations before finally translating them into human-readable text via a full text decoder.
 
+## 💾 Model Weights
+Foundation checkpoints for Phases 1-3 are available on Hugging Face:
+[![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Foundation%20Weights-blue)](https://huggingface.co/bulyakovbr/bebladii-foundation-weights)
+
 ## Architecture
 BEBLaDII is a discrete diffusion model with soft latent anchoring. The architecture is modular and processes data through its key stages. 
 
