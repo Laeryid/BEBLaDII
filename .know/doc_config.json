@@ -9,7 +9,8 @@
       ["tests", "Tests", 4],
       ["experiments", "Experiments", 4],
       [".know", "Knowledge Infrastructure", 8],
-      ["scripts", "Data & Ops Scripts", 3]
+      ["scripts", "Data & Ops Scripts", 3],
+      ["hugging face", "Hugging Face Ecosystem", 4]
     ],
     "thresholds": {
       "density": 50.0,
@@ -606,6 +607,18 @@
       "covers": ["Data & Ops Scripts", "Architecture & Training Phases"],
       "depends_on": [
         "src/beb_la_dii/utils/data.py"
+      ]
+    },
+    "KI_pace_optimizer.md": {
+      "description": "PACE optimizer for iterate-averaged models: mechanism, benefits for diffusion, and usage.",
+      "covers": ["Architecture & Training Phases"],
+      "depends_on": []
+    },
+    "KI_huggingface_ecosystem.md": {
+      "description": "Description of Hugging Face scripts, weights upload rules, and file mappings.",
+      "covers": ["Hugging Face Ecosystem"],
+      "depends_on": [
+        "hugging face/upload_weights.py"
       ]
     }
   },

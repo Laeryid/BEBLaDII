@@ -4,15 +4,15 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~867 (excluding excluded directories)
-**Updated:** 2026-08-24
+**Total files in project:** ~860 (excluding excluded directories)
+**Updated:** 2026-08-25
 
 ```
 BEBLaDII/
 |-- .agent/  *(empty)*
-|-- .know/  *136 files*
+|-- .know/  *138 files*
 |   |-- decisions/  *74 files*
-|   |-- knowledge/  *23 files*
+|   |-- knowledge/  *25 files*
 |   |-- scratch/  *1 files*
 |   |-- scripts/  *12 files*
 |   |-- tests/  *14 files*
@@ -29,7 +29,7 @@ BEBLaDII/
 |   `-- open_thoughts/  *37 files*
 |       |-- data/  *6 files*
 |       `-- metadata/  *12 files*
-|-- experiments/  *283 files*
+|-- experiments/  *292 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -41,12 +41,14 @@ BEBLaDII/
 |   |   |-- kaggle/  *9 files*
 |   |   |-- local/  *14 files*
 |   |   `-- screenshots/  *6 files*
-|   |-- phase 4/  *1 files*
-|   `-- phase3/  *190 files*
-|       |-- Lightning/  *3 files*
-|       |-- kaggle/  *18 files*
-|       |-- local_checkpoints/  *1 files*
-|       `-- screenshots/  *139 files*
+|   |-- phase 3/  *197 files*
+|   |   |-- Lightning/  *3 files*
+|   |   |-- bad scripts/  *24 files*
+|   |   |-- kaggle/  *18 files*
+|   |   |-- local_checkpoints/  *1 files*
+|   |   `-- screenshots/  *139 files*
+|   `-- phase 4/  *3 files*
+|-- hugging face/  *2 files*
 |-- ideas/  *39 files*
 |-- kaggle_upload_1_2/  *2 files*
 |-- kaggle_upload_1_3/  *12 files*
@@ -76,7 +78,6 @@ BEBLaDII/
 |   |   `-- phase3/  *8 files*
 |   `-- prebuilt/  *2 files*
 |       `-- latentBERT/  *2 files*
-|-- test_data_fix/  *1 files*
 |-- tests/  *9 files*
 `-- tmp/  *9 files*
     `-- test_tracker/  *3 files*

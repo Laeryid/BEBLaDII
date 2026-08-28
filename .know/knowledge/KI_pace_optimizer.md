@@ -1,0 +1,21 @@
+# PACE: The Iterate-Averaged Optimizer (Pullback Averaging Control for Efficient Optimization)
+
+## Общая информация
+*   **Статья:** "PACE: A Pullback Averaging Control for Efficient Optimization"
+*   **arXiv ID:** 2606.25086 (или поиск по названию "Pullback Averaging Control for Efficient Optimization")
+*   **Репозиторий:** [Github](https://github.com/microsoft/pace) (поиск по "PACE optimizer pytorch")
+*   **Назначение:** Легковесная обертка над AdamW для тренировочных пайплайнов, которые используют усреднение весов (Iterate Averaging / EMA).
+
+## Ключевая механика
+PACE формулирует проектирование оптимизатора как задачу оптимального управления. В дополнение к стандартному шагу AdamW, он применяет покоординатный "pullback" (оттягивание).
+Вместо того, чтобы позволять "живым" весам неограниченно блуждать по ландшафту, PACE стягивает текущие веса модели обратно к их экспоненциальному скользящему среднему (EMA). Это удерживает модель от попадания в плохие/нестабильные регионы и значительно ускоряет сходимость самой EMA-модели.
+
+## Применимость в BEBLaDII
+PACE идеально подходит для диффузионных процессов (Phase 3) при обучении с постоянным (высоким) Learning Rate, где градиенты сильно зашумлены:
+*   Обычный EMA при высоком LR долго догоняет разлетающиеся "живые" веса.
+*   PACE удерживает веса вокруг оптимума, позволяя EMA сойтись к "плоскому" и ровному минимуму.
+*   **Важно:** Валидация при использовании PACE должна всегда проводиться на EMA-весах, а не на "живых".
+
+## Для списка литературы
+*   **Title:** Pullback Averaging Control for Efficient Optimization
+*   **Context:** Language Modeling, Iterate Averaging, EMA Optimization.

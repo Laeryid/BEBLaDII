@@ -140,8 +140,8 @@
         "mtime": 1786990655.9482803
     },
     ".know\\knowledge\\KI_architecture.md": {
-        "hash": "001e0be2df2924a6ff2b7c2fed1417fc93948d87edaf0b7b4ae1d645bed3f3e3",
-        "mtime": 1785406215.8371468
+        "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "mtime": 1787593423.4843407
     },
     ".know\\knowledge\\KI_datasets.md": {
         "hash": "0b3caba5f70a4ed7a34f02aed2a8b34153e3a84e22630882ca7fab01a65b3eb6",
@@ -154,6 +154,10 @@
     ".know\\knowledge\\KI_experiments.md": {
         "hash": "fc32cf7fcc427bf3284264b067a7f4fe9f173d44c4bce802e7c4a12c7b1ba1ee",
         "mtime": 1785406215.9084618
+    },
+    ".know\\knowledge\\KI_huggingface_ecosystem.md": {
+        "hash": "7704fe020a9a2e490fd83149f7edb40e4c46f8d0bf4524b8e1e912caa500905c",
+        "mtime": 1787686825.568286
     },
     ".know\\knowledge\\KI_kaggle.md": {
         "hash": "64c53f7f7e29a236b7d38a2c98ee7731316e2a54b8dfca32ba48860364d3f00a",
@@ -199,6 +203,10 @@
         "hash": "b5df2e66839dc83b66c2cfa1dd5bdd38e40b4d1e3c6bd9ec8a601510067cd298",
         "mtime": 1785406216.1986997
     },
+    ".know\\knowledge\\KI_pace_optimizer.md": {
+        "hash": "ad01765b5cf2a0de1abd91c741ddfd18172c3bd290e4713892e2ba9da5537973",
+        "mtime": 1787686369.6363087
+    },
     ".know\\knowledge\\KI_phase4_training.md": {
         "hash": "cab63d70bbb0a744303de2af3b35803473d13a003d1f997180fc7209f209488c",
         "mtime": 1785406216.6019702
@@ -228,8 +236,8 @@
         "mtime": 1785406215.8853543
     },
     ".know\\doc_config.json": {
-        "hash": "c737b41ccc4af10baf360306a8903d0904c9cdd835b0541b385b8d6a958ff10e",
-        "mtime": 1787084562.8738778
+        "hash": "9d964dab4df74f8cf8c6baf215ee7e722715331c6e6ebb51c6861c166a5c5a37",
+        "mtime": 1787686872.4623818
     },
     "ideas\\Architecture.md": {
         "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
@@ -447,17 +455,9 @@
         "hash": "0c0cdaa4865b6eecfe7bfc194ab46e291cf6bea366df5bbab45dbd119a2cf1c7",
         "mtime": 1777817410.029039
     },
-    "evaluate_lengths.py": {
-        "hash": "529d7a5166a5cd4b1ba70573c7d8aaf3d441ea96064f64c782227d0fce3e9673",
-        "mtime": 1776182458.5365858
-    },
     ".know\\decisions\\060_phase3_canonical_diffusion_redesign.md": {
         "hash": "ffdfa80ad779763bafafd0a2596dec9634af5f22fc36a1beae043e1332ed6c5c",
         "mtime": 1784451024.494888
-    },
-    "experiments\\phase3\\kaggle\\train_phase3_notebook.py": {
-        "hash": "9b7edd5e54ee8b6eac5338f4dd3c693b5f7f0db1153504aafb5ecd6a86c969a4",
-        "mtime": 1787482021.212648
     },
     ".know\\decisions\\062_phase3_adaln_residual_stream_bug.md": {
         "hash": "1f2383086b79dd7b31780e08b3c279eb51ef1356ac41a825494c5f853f7e57ad",
@@ -470,10 +470,6 @@
     ".know\\decisions\\065_unet_skip_connections_and_identity_gate.md": {
         "hash": "7fdfcf1877c1df6061025636a24a97bd9111af71943e4ef638732f8b9bef7b41",
         "mtime": 1785178039.3789635
-    },
-    "experiments\\phase3\\Lightning\\train_phase3_lightning.py": {
-        "hash": "fe710c8b7308a976fdf90b9fd89d13a2a3cc46790f68f7bcc1c7623458db10bc",
-        "mtime": 1785351119.3047445
     },
     ".know\\decisions\\066_variance_matching_loss_anti_collapse.md": {
         "hash": "23402e98dc648e3e479868582d30a9546238cbd7643b9dbf3d76cb072fc9ec5f",
@@ -499,18 +495,6 @@
         "hash": "fb5298b67f5e98d8007c7896a3a564139a11c37be29ab952da39f40eff88ee2f",
         "mtime": 1781951327.077084
     },
-    "experiments\\phase3\\train_phase3_logic.py": {
-        "hash": "da8749f3290efcc7fc460831d03a7d80f78e081af764140006eb3fc219b08f89",
-        "mtime": 1782751036.3922076
-    },
-    "experiments\\phase3\\compute_whitening.py": {
-        "hash": "3f6d9e0613ee743333cc021521385d742d5d69bdb8e57c525b582635af86f492",
-        "mtime": 1782500134.202067
-    },
-    "experiments\\phase3\\eval_phase3_logic_local.py": {
-        "hash": "dc2753e05c52e70f2c379d5eb86ce0fdace89b163d3b82f3bac7df789600609e",
-        "mtime": 1784382095.78027
-    },
     "experiments\\phase 2\\train_phase2_decoder.py": {
         "hash": "b46330dd82c2c444f65df3fe383ee107e42c07bca99d5ec5e371cb53d468aa28",
         "mtime": 1782076893.2600079
@@ -518,10 +502,6 @@
     ".know\\decisions\\055_pretrained_modernbert_large_decoder_transition.md": {
         "hash": "55560f8affb5b7382b123a028734c6cee3170f9b16e0d78221a99b2daee829d1",
         "mtime": 1783793685.9075046
-    },
-    "experiments\\phase3\\Lightning\\test_thoughts.py": {
-        "hash": "a39c715120a1bcd09c7eb8d22f3058cd135713967e6844bbfd75c63811b91896",
-        "mtime": 1784148206.29217
     },
     "storage\\components\\sep_token.pt": {
         "hash": "9812f56ba3dc9fd87bc965d28d89ed3bebdee4d6e9c2a7169320e93095aa253d",
@@ -554,5 +534,9 @@
     ".know\\decisions\\026_gradient_stabilization_rkd_cosine.md": {
         "hash": "ec7f3dec2543d62d26183f014ff50e8666148b2844635e460fc6caf2301f37c9",
         "mtime": 1779900329.8353047
+    },
+    "hugging face\\upload_weights.py": {
+        "hash": "8f1e7231e0a1e9f2d189ced97c62cf05544602f92b29a0b4fdc12dcb921c1e4f",
+        "mtime": 1787683856.5382526
     }
 }
