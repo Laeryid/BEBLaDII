@@ -161,7 +161,7 @@ class Config:
     dus_learning_rate    = 2e-6   # Пиковый LR для тела BERT
     new_layers_lr        = 1e-5   # Пиковый LR для новых слоев
     epochs               = 100
-    max_steps            = 400000
+    max_steps            = 4000
     log_steps            = 10
     val_steps            = 200
     save_steps           = 1000
@@ -340,12 +340,12 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     """
     B, T, D = x0.shape
     eps = safe_normalize(torch.randn_like(x0), dim=-1)  # [B, T, D]
-    
+
     if t.dim() == 1:
         t = t.view(B, 1, 1)
     elif t.dim() == 2:
         t = t.unsqueeze(-1)
-        
+
     mu = cosine_noise_schedule(t)
     sigma = torch.sin(t * (math.pi / 2))
     x_t = mu * x0 + sigma * eps
@@ -505,19 +505,19 @@ class BEBLaDIIPhase4a(nn.Module):
         # 4. Time Embedding (Phase 4: Hierarchical)
         hidden_dim = 1024  # размерность DUS/ModernBERT-large
         self.t_sin_embed = SinusoidalEmbedding(t_emb_dim)
-        
+
         self.t_proj_global = nn.Sequential(
             nn.Linear(t_emb_dim, t_emb_dim * 4),
             nn.SiLU(),
             nn.Linear(t_emb_dim * 4, t_emb_dim),
         )
-        
+
         self.t_proj_token = nn.Sequential(
             nn.Linear(t_emb_dim, t_emb_dim * 4),
             nn.SiLU(),
             nn.Linear(t_emb_dim * 4, t_emb_dim),
         )
-        
+
         self.t_joint_proj = nn.Linear(t_emb_dim * 2, t_emb_dim)
         # Zero-Init Compatibility Trick: cat([token, global]) -> global
         nn.init.zeros_(self.t_joint_proj.weight)
@@ -593,7 +593,7 @@ class BEBLaDIIPhase4a(nn.Module):
 
                 t_min_true = torch.clamp(t_global - 0.3, min=0.0)
                 t_max_true = torch.clamp(t_global + 0.3, max=1.0)
-                
+
                 # Normal tokens
                 t_actual_true = torch.rand(B, T, device=z_clean.device) * (t_max_true - t_min_true).unsqueeze(-1) + t_min_true.unsqueeze(-1)
                 t_reported_true = t_actual_true
@@ -607,7 +607,7 @@ class BEBLaDIIPhase4a(nn.Module):
 
             z_clean_f = z_clean.float()
             z_clean_f = safe_normalize(z_clean_f, dim=-1)  # страховка
-            
+
             if z_noisy_input is not None:
                 z_noisy = z_noisy_input
             else:
@@ -616,10 +616,10 @@ class BEBLaDIIPhase4a(nn.Module):
         # --- Time Embedding (Hierarchical) ---
         t_sin_global = self.t_sin_embed(t_global)           # [B, t_emb_dim]
         t_emb_global = self.t_proj_global(t_sin_global)     # [B, t_emb_dim]
-        
+
         t_sin_token = self.t_sin_embed(t_reported)          # [B, T, t_emb_dim]
         t_emb_token = self.t_proj_token(t_sin_token)        # [B, T, t_emb_dim]
-        
+
         cond = torch.cat([t_emb_token, t_emb_global.unsqueeze(1).expand(-1, T, -1)], dim=-1)
         t_emb = self.t_joint_proj(cond)                     # [B, T, t_emb_dim]
 
@@ -971,21 +971,21 @@ def load_checkpoint_split(
         if "adaLN_mlp_ema" in ckpt:
             for k, v in ckpt["adaLN_mlp_ema"].items():
                 ema_update[f"adaLN_mlp.{k}"] = v
-        
+
         if "t_proj_global_ema" in ckpt:
             for k, v in ckpt["t_proj_global_ema"].items():
                 ema_update[f"t_proj_global.{k}"] = v
         elif "t_proj_ema" in ckpt:
             for k, v in ckpt["t_proj_ema"].items():
                 ema_update[f"t_proj_global.{k}"] = v
-                
+
         if "t_proj_token_ema" in ckpt:
             for k, v in ckpt["t_proj_token_ema"].items():
                 ema_update[f"t_proj_token.{k}"] = v
         if "t_joint_proj_ema" in ckpt:
             for k, v in ckpt["t_joint_proj_ema"].items():
                 ema_update[f"t_joint_proj.{k}"] = v
-                
+
         if "self_cond_proj_ema" in ckpt:
             for k, v in ckpt["self_cond_proj_ema"].items():
                 ema_update[f"self_cond_proj.{k}" ] = v
