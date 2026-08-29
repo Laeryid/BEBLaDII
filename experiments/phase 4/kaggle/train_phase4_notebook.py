@@ -158,9 +158,9 @@ class Config:
     # Гиперпараметры Phase 4a (~0.1x Phase 3 LR)
     batch_size    = 8
     max_length    = 512
-    dus_learning_rate    = 2e-6   # Пиковый LR для тела BERT
-    new_layers_lr        = 1e-5   # Пиковый LR для новых слоев
-    epochs               = 100
+    dus_learning_rate    = 2e-5   # Пиковый LR для тела BERT (ModernBERT)
+    new_layers_lr        = 1e-4   # Пиковый LR для новых слоев (AdaLN, t_proj)
+     epochs               = 100
     max_steps            = 4000
     log_steps            = 10
     val_steps            = 200
@@ -183,7 +183,7 @@ class Config:
     use_gradient_checkpointing = True
 
     wandb_project = "BEBLaDII-Phase4-Kaggle"
-    
+
     # Optimizer options
     optimizer_mode = "cyclic"  # "cyclic" or "pace"
     pullback_alpha = 0.1       # Для режима pace
@@ -216,7 +216,7 @@ class EMA:
                 if param.requires_grad and name in self.shadow:
                     param_cpu = param.data.float().cpu()
                     self.shadow[name].mul_(self.decay).add_(param_cpu, alpha=1.0 - self.decay)
-                    
+
                     if self.pullback_alpha > 0:
                         # Pullback: w_live = w_live - alpha * (w_live - w_ema)
                         # We push the difference to GPU to subtract from live weights
@@ -1206,7 +1206,7 @@ def train():
     # Параметры warmup
     warmup_steps = min(1000, int(total_steps * 0.1))  # 10% от total_steps или 1000
     restart_warmup_steps = 200  # Warmup внутри каждого цикла
-    
+
     # Инициализация EMA и PACE
     if getattr(args, "optimizer_mode", "cyclic") == "pace":
         ema = EMA(actual_model, decay=0.998, pullback_alpha=getattr(args, "pullback_alpha", 0.1))
@@ -1310,11 +1310,11 @@ def train():
             grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0).item()
             optimizer.step()
             ema.step(actual_model)
-            
+
             # Логика LR
             current_optim_step = step + 1
             is_pace = getattr(args, "optimizer_mode", "cyclic") == "pace"
-            
+
             if is_pace:
                 # PACE: Постоянный LR с первичным warmup
                 if current_optim_step <= warmup_steps:
