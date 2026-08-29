@@ -804,11 +804,15 @@ def compute_adaln_diagnostics(actual_model, t_emb: torch.Tensor) -> dict:
         w_norm_attn = torch.stack([m.modulation[-1].weight.norm() for m in actual_model.adaLN_attn]).mean()
         w_norm_mlp  = torch.stack([m.modulation[-1].weight.norm() for m in actual_model.adaLN_mlp]).mean()
 
-        all_outs_attn = torch.stack([m.modulation(t_emb) for m in actual_model.adaLN_attn], dim=0)  # [L, B, 2*D]
-        all_outs_mlp  = torch.stack([m.modulation(t_emb) for m in actual_model.adaLN_mlp], dim=0)   # [L, B, 2*D]
+        out_attn_sum = 0
+        for m in actual_model.adaLN_attn:
+            out_attn_sum = out_attn_sum + m.modulation(t_emb)
+        out_attn_mean = out_attn_sum / len(actual_model.adaLN_attn)
 
-        out_attn_mean = all_outs_attn.mean(dim=0)
-        out_mlp_mean  = all_outs_mlp.mean(dim=0)
+        out_mlp_sum = 0
+        for m in actual_model.adaLN_mlp:
+            out_mlp_sum = out_mlp_sum + m.modulation(t_emb)
+        out_mlp_mean = out_mlp_sum / len(actual_model.adaLN_mlp)
 
         shift_attn, scale_attn = out_attn_mean.chunk(2, dim=-1)
         shift_mlp, scale_mlp   = out_mlp_mean.chunk(2, dim=-1)
