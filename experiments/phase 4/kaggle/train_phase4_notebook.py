@@ -183,6 +183,10 @@ class Config:
     use_gradient_checkpointing = True
 
     wandb_project = "BEBLaDII-Phase4-Kaggle"
+    
+    # Optimizer options
+    optimizer_mode = "cyclic"  # "cyclic" or "pace"
+    pullback_alpha = 0.1       # Для режима pace
 
 
 args = Config()
@@ -197,8 +201,9 @@ class EMA:
     Тени хранятся на CPU (float32) для экономии VRAM.
     Копирование CPU<->GPU только при apply/restore (раз в save_steps).
     """
-    def __init__(self, model, decay=0.998):
+    def __init__(self, model, decay=0.998, pullback_alpha=0.0):
         self.decay = decay
+        self.pullback_alpha = pullback_alpha
         self.shadow = {}
         self.backup = {}
         for name, param in model.named_parameters():
@@ -211,6 +216,12 @@ class EMA:
                 if param.requires_grad and name in self.shadow:
                     param_cpu = param.data.float().cpu()
                     self.shadow[name].mul_(self.decay).add_(param_cpu, alpha=1.0 - self.decay)
+                    
+                    if self.pullback_alpha > 0:
+                        # Pullback: w_live = w_live - alpha * (w_live - w_ema)
+                        # We push the difference to GPU to subtract from live weights
+                        ema_gpu = self.shadow[name].to(param.device, dtype=param.dtype)
+                        param.data.sub_(param.data - ema_gpu, alpha=self.pullback_alpha)
 
     def apply(self, model):
         with torch.no_grad():
@@ -377,10 +388,12 @@ class AdaLNModulation(nn.Module):
         self.modulation[-1].bias = nn.Parameter(bias)
 
     def forward(self, t_emb: torch.Tensor) -> tuple:
-        """Возвращает (shift, scale) — оба [B, 1, D]."""
-        out = self.modulation(t_emb)  # [B, 2*D]
+        """Возвращает (shift, scale)."""
+        out = self.modulation(t_emb)
         shift, scale = out.chunk(2, dim=-1)
-        return shift.unsqueeze(1), scale.unsqueeze(1)  # [B, 1, D]
+        if shift.dim() == 2:
+            return shift.unsqueeze(1), scale.unsqueeze(1)
+        return shift, scale
 
 
 # %% [markdown]
@@ -623,6 +636,10 @@ class BEBLaDIIPhase4a(nn.Module):
         cond = torch.cat([t_emb_token, t_emb_global.unsqueeze(1).expand(-1, T, -1)], dim=-1)
         t_emb = self.t_joint_proj(cond)                     # [B, T, t_emb_dim]
 
+        # Pad t_emb for the sep_prefix (zero vector -> neutral AdaLN modulation)
+        sep_t_emb = torch.zeros(B, 1, t_emb_dim, device=t_emb.device, dtype=t_emb.dtype)
+        t_emb_extended = torch.cat([sep_t_emb, t_emb], dim=1) # [B, T+1, t_emb_dim]
+
         # --- Self-Conditioning injection (нейтрально при self_cond=None) ---
         x_in = z_noisy.float()
         if self_cond is not None:
@@ -636,9 +653,9 @@ class BEBLaDIIPhase4a(nn.Module):
         # --- Прокидываем t_emb в обертки AdaLN ---
         for layer in self.dus.layers:
             if hasattr(layer, "attn_norm") and isinstance(layer.attn_norm, AdaLNWrappedLayerNorm):
-                layer.attn_norm._current_t_emb = t_emb
+                layer.attn_norm._current_t_emb = t_emb_extended
             if hasattr(layer, "mlp_norm") and isinstance(layer.mlp_norm, AdaLNWrappedLayerNorm):
-                layer.mlp_norm._current_t_emb = t_emb
+                layer.mlp_norm._current_t_emb = t_emb_extended
 
         # --- DUS forward (float32, ADR 059) ---
         dus_outputs = self.dus(
@@ -1185,7 +1202,14 @@ def train():
     # Параметры warmup
     warmup_steps = min(1000, int(total_steps * 0.1))  # 10% от total_steps или 1000
     restart_warmup_steps = 200  # Warmup внутри каждого цикла
-    ema = EMA(actual_model, decay=0.998)
+    
+    # Инициализация EMA и PACE
+    if getattr(args, "optimizer_mode", "cyclic") == "pace":
+        ema = EMA(actual_model, decay=0.998, pullback_alpha=getattr(args, "pullback_alpha", 0.1))
+        print(f"[Init] Optimizer mode: PACE (pullback_alpha={getattr(args, 'pullback_alpha', 0.1)})", flush=True)
+    else:
+        ema = EMA(actual_model, decay=0.998, pullback_alpha=0.0)
+        print("[Init] Optimizer mode: Cyclic (CosineAnnealingWarmRestarts)", flush=True)
 
     # --- Resume ---
     actual_model = model.module if isinstance(model, nn.DataParallel) else model
@@ -1282,24 +1306,35 @@ def train():
             grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0).item()
             optimizer.step()
             ema.step(actual_model)
-            scheduler.step()
-
-
-            # Цикличная warmup логика (как в коммите bdd4ec3)
+            
+            # Логика LR
             current_optim_step = step + 1
-
-            if current_optim_step <= warmup_steps:
-                # Основной warmup в начале обучения
-                lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
-                for idx_p, param_group in enumerate(optimizer.param_groups):
-                    param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
-            else:
-                # Warmup внутри каждого цикла CosineAnnealingWarmRestarts
-                rel_step = current_optim_step % cosine_T0
-                if rel_step < restart_warmup_steps:
-                    lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
+            is_pace = getattr(args, "optimizer_mode", "cyclic") == "pace"
+            
+            if is_pace:
+                # PACE: Постоянный LR с первичным warmup
+                if current_optim_step <= warmup_steps:
+                    lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
                     for idx_p, param_group in enumerate(optimizer.param_groups):
-                        param_group["lr"] = param_group["lr"] * lr_warmup_factor
+                        param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+                else:
+                    for idx_p, param_group in enumerate(optimizer.param_groups):
+                        param_group["lr"] = scheduler.base_lrs[idx_p]
+            else:
+                # Cyclic: CosineAnnealingWarmRestarts
+                scheduler.step()
+                if current_optim_step <= warmup_steps:
+                    # Основной warmup в начале обучения
+                    lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+                    for idx_p, param_group in enumerate(optimizer.param_groups):
+                        param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+                else:
+                    # Warmup внутри каждого цикла CosineAnnealingWarmRestarts
+                    rel_step = current_optim_step % cosine_T0
+                    if rel_step < restart_warmup_steps:
+                        lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
+                        for idx_p, param_group in enumerate(optimizer.param_groups):
+                            param_group["lr"] = param_group["lr"] * lr_warmup_factor
 
             # Логирование
             if step % args.log_steps == 0:
