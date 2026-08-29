@@ -1072,7 +1072,8 @@ def train():
     dus_weights_path = args.local_dus_weights
     if dus_weights_path.startswith("hf://"):
         from huggingface_hub import hf_hub_download
-        repo_id, filename = dus_weights_path.replace("hf://", "").split("/", 1)
+        parts = dus_weights_path.replace("hf://", "").split("/", 2)
+        repo_id, filename = f"{parts[0]}/{parts[1]}", parts[2]
         print(f"[Init] Downloading DUS weights from HF: {repo_id}/{filename} ...", flush=True)
         dus_weights_path = hf_hub_download(repo_id=repo_id, filename=filename)
         print(f"[Init] DUS weights downloaded to {dus_weights_path}", flush=True)
