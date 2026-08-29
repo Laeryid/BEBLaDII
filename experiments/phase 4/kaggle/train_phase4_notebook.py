@@ -637,7 +637,7 @@ class BEBLaDIIPhase4a(nn.Module):
         t_emb = self.t_joint_proj(cond)                     # [B, T, t_emb_dim]
 
         # Pad t_emb for the sep_prefix (zero vector -> neutral AdaLN modulation)
-        sep_t_emb = torch.zeros(B, 1, t_emb_dim, device=t_emb.device, dtype=t_emb.dtype)
+        sep_t_emb = torch.zeros(B, 1, t_emb.shape[-1], device=t_emb.device, dtype=t_emb.dtype)
         t_emb_extended = torch.cat([sep_t_emb, t_emb], dim=1) # [B, T+1, t_emb_dim]
 
         # --- Self-Conditioning injection (нейтрально при self_cond=None) ---
