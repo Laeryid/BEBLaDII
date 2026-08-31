@@ -11,7 +11,7 @@
 # ## 1. Setup Environment
 
 # %%
-# !pip install -q einops wandb indexed_parquet_dataset
+# !pip install -q einops wandb indexed_parquet_dataset google-cloud-storage
 
 # %%
 
@@ -207,7 +207,7 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase4"
 
     # Гиперпараметры Phase 4a (~0.1x Phase 3 LR)
-    batch_size    = 8
+    batch_size    = 32
     max_length    = 512
     dus_learning_rate    = 2e-5   # Пиковый LR для тела BERT (ModernBERT)
     new_layers_lr        = 1e-4   # Пиковый LR для новых слоев (AdaLN, t_proj)
@@ -290,8 +290,13 @@ def get_latest_gcs_checkpoint(gcs_dir: str, suffix: str = ".pth"):
     suffix: ".pth" (модель) или "_opt.pth" (оптимайзер).
     """
     try:
-        result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True, check=True)
-        files = result.stdout.splitlines()
+        from google.cloud import storage
+        bucket_name = gcs_dir.replace("gs://", "").split("/")[0]
+        prefix = gcs_dir.replace(f"gs://{bucket_name}/", "")
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blobs = bucket.list_blobs(prefix=prefix)
+        files = [f"gs://{bucket_name}/{blob.name}" for blob in blobs]
         ckpt_files = [f for f in files if "phase4_step_" in f and f.endswith(suffix)]
         # Исключаем optimizer-файлы при поиске модели
         if suffix == ".pth":
@@ -315,7 +320,13 @@ def sync_to_gcs_and_delete(local_path: str, gcs_dir: str):
     """Копирует файл в GCS и удаляет локально для освобождения дискового пространства."""
     gcs_path = gcs_dir + os.path.basename(local_path)
     try:
-        subprocess.run(["gsutil", "-q", "cp", local_path, gcs_path], check=True)
+        from google.cloud import storage
+        bucket_name = gcs_path.replace("gs://", "").split("/")[0]
+        blob_name = gcs_path.replace(f"gs://{bucket_name}/", "")
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.upload_from_filename(local_path)
         os.remove(local_path)
         print(f"[GCS] Synced and deleted: {local_path} → {gcs_path}")
     except Exception as e:
@@ -775,15 +786,12 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     hi_mask_2d  = (t_actual > 0.7).float()
 
     # --- cos_sim_t_* : cos(dus_final, z_clean) — выход ПОСЛЕ gate ---
-    if lo_mask_2d.sum() > 0:
-        lo_tokens = (attn_f * lo_mask_2d).sum().clamp(min=1.0)
-        metrics["cos_sim_t_low"]  = ((cos_sim * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
-    if hi_mask_2d.sum() > 0:
-        hi_tokens = (attn_f * hi_mask_2d).sum().clamp(min=1.0)
-        metrics["cos_sim_t_high"] = ((cos_sim * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
-    if mid_mask_2d.sum() > 0:
-        mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
-        metrics["cos_sim_t_mid"]  = ((cos_sim * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
+    lo_tokens = (attn_f * lo_mask_2d).sum().clamp(min=1.0)
+    metrics["cos_sim_t_low"]  = ((cos_sim * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
+    hi_tokens = (attn_f * hi_mask_2d).sum().clamp(min=1.0)
+    metrics["cos_sim_t_high"] = ((cos_sim * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
+    mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
+    metrics["cos_sim_t_mid"]  = ((cos_sim * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
 
     # --- cos_h39_t_* : cos(h_39, z_clean) — выход DUS ДО gate (истинный деноизинг) ---
     h39_low_loss = torch.tensor(0.0, device=z_clean.device)
@@ -791,15 +799,9 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
         h_39_norm   = safe_normalize(outputs["h_39"].float(), dim=-1)
         cos_h39     = (h_39_norm * target).sum(dim=-1)  # [B, T]
         metrics["cos_h39_all"] = (cos_h39 * attn_f).sum().detach() / active_tokens
-        if lo_mask_2d.sum() > 0:
-            lo_tokens = (attn_f * lo_mask_2d).sum().clamp(min=1.0)
-            metrics["cos_h39_t_low"]  = ((cos_h39 * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
-        if hi_mask_2d.sum() > 0:
-            hi_tokens = (attn_f * hi_mask_2d).sum().clamp(min=1.0)
-            metrics["cos_h39_t_high"] = ((cos_h39 * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
-        if mid_mask_2d.sum() > 0:
-            mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
-            metrics["cos_h39_t_mid"]  = ((cos_h39 * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
+        metrics["cos_h39_t_low"]  = ((cos_h39 * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
+        metrics["cos_h39_t_high"] = ((cos_h39 * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
+        metrics["cos_h39_t_mid"]  = ((cos_h39 * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
 
         # h39 Identity Loss удален (ADR 072)
 
@@ -812,7 +814,7 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     var_floor = 1.0 / (D * 2)
     var_loss  = F.relu(var_floor - v_state).mean()
     cov       = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
-    cov_off   = cov - torch.diag(torch.diag(cov))
+    cov_off   = cov * (1.0 - torch.eye(D, device=cov.device, dtype=cov.dtype))
     cov_loss  = cov_off.pow(2).sum() / D
     prior_loss = m_state.pow(2).mean() + var_loss + 0.1 * cov_loss
 
@@ -991,7 +993,13 @@ def load_checkpoint_split(
     local_model = os.path.join(output_dir, "resume_model.pth")
 
     try:
-        subprocess.run(["gsutil", "-q", "cp", latest_model_gs, local_model], check=True)
+        from google.cloud import storage
+        bucket_name = latest_model_gs.replace("gs://", "").split("/")[0]
+        blob_name = latest_model_gs.replace(f"gs://{bucket_name}/", "")
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.download_to_filename(local_model)
         ckpt = torch.load(local_model, map_location="cpu", weights_only=False)
 
         if "dus" in ckpt:
@@ -1077,7 +1085,13 @@ def load_checkpoint_split(
     opt_gcs = gcs_checkpoint_dir + f"phase4_step_{step_num}_opt.pth"
     local_opt = os.path.join(output_dir, "resume_opt.pth")
     try:
-        subprocess.run(["gsutil", "-q", "cp", opt_gcs, local_opt], check=True, timeout=120)
+        from google.cloud import storage
+        bucket_name = opt_gcs.replace("gs://", "").split("/")[0]
+        blob_name = opt_gcs.replace(f"gs://{bucket_name}/", "")
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.download_to_filename(local_opt)
         opt_ckpt = torch.load(local_opt, map_location="cpu", weights_only=False)
         optimizer.load_state_dict(opt_ckpt["optimizer"])
         print(f"[Resume] Optimizer state loaded.")
@@ -1116,18 +1130,15 @@ def train():
                 gcp_sa = user_secrets.get_secret("GCP_SA_JSON")
                 with open("gcp_sa.json", "w") as f:
                     f.write(gcp_sa)
-                subprocess.run(
-                    ["gcloud", "auth", "activate-service-account", "--key-file", "gcp_sa.json"],
-                    check=True,
-                )
-                print("[Init] GCP Authentication successful.")
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath("gcp_sa.json")
+                print("[Init] GCP Authentication (env var) set.")
                 with open("gcs_test.txt", "w") as f:
                     f.write("GCS Auth Test Successful")
-                subprocess.run(
-                    ["gsutil", "cp", "gcs_test.txt",
-                     "gs://bebladii-weigths-us/planB/phase4/checkpoints/gcs_test.txt"],
-                    check=True,
-                )
+                from google.cloud import storage
+                client = storage.Client()
+                bucket = client.bucket("bebladii-weigths-us")
+                blob = bucket.blob("planB/phase4/checkpoints/gcs_test.txt")
+                blob.upload_from_filename("gcs_test.txt")
                 print("[Init] GCS write access verified.")
             except Exception as e_gcp:
                 print(f"[Init] WARN: GCP auth failed: {e_gcp}")
