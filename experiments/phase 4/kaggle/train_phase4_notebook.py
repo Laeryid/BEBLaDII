@@ -155,7 +155,7 @@ class Config:
     # Директория вывода
     output_dir = "/kaggle/working/checkpoints/phase4"
 
-    # Гиперпараметры Phase 4a (~0.1x Phase 3 LR)
+    # Гиперпараметры Phase 4a
     batch_size    = 8
     max_length    = 512
     dus_learning_rate    = 2e-5   # Пиковый LR для тела BERT (ModernBERT)

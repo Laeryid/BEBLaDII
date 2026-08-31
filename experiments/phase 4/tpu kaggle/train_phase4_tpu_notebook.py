@@ -206,8 +206,8 @@ class Config:
     # Директория вывода
     output_dir = "/kaggle/working/checkpoints/phase4"
 
-    # Гиперпараметры Phase 4a (~0.1x Phase 3 LR)
-    batch_size    = 32
+    # Гиперпараметры Phase 4a
+    batch_size    = 128
     max_length    = 512
     dus_learning_rate    = 2e-5   # Пиковый LR для тела BERT (ModernBERT)
     new_layers_lr        = 1e-4   # Пиковый LR для новых слоев (AdaLN, t_proj)
@@ -346,7 +346,7 @@ def compute_layer_divergence(model_module):
             suffix = name[m.end():]
             if idx not in layer_params:
                 layer_params[idx] = {}
-            layer_params[idx][suffix] = param.data
+            layer_params[idx][suffix] = param.data.cpu()
 
     divergences = []
     for k in range(8, 20):
@@ -569,7 +569,7 @@ class BEBLaDIIPhase4a(nn.Module):
             print("[Init] Gradient Checkpointing disabled (prevents AdaLN hook conflict).", flush=True)
         if hasattr(self.dus, "_maybe_set_compile"):
             self.dus._maybe_set_compile = lambda *a, **kw: None
-        
+
         type(self.dus).dtype  = property(lambda self: torch.float32)
 
         # 4. Time Embedding (Phase 4: Hierarchical)
@@ -685,9 +685,11 @@ class BEBLaDIIPhase4a(nn.Module):
 
         # --- Time Embedding (Hierarchical) ---
         t_sin_global = self.t_sin_embed(t_global)           # [B, t_emb_dim]
+        t_sin_global.requires_grad_(True)                   # Fix FSDP backward hook warning
         t_emb_global = self.t_proj_global(t_sin_global)     # [B, t_emb_dim]
 
         t_sin_token = self.t_sin_embed(t_reported)          # [B, T, t_emb_dim]
+        t_sin_token.requires_grad_(True)                    # Fix FSDP backward hook warning
         t_emb_token = self.t_proj_token(t_sin_token)        # [B, T, t_emb_dim]
 
         cond = torch.cat([t_emb_token, t_emb_global.unsqueeze(1).expand(-1, T, -1)], dim=-1)
@@ -705,6 +707,7 @@ class BEBLaDIIPhase4a(nn.Module):
         # --- Конкатенируем sep_prefix (ADR 058) ---
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)            # [B, T+1, D]
+        dus_input_extended.requires_grad_(True)  # Fix FSDP backward hook warning
         attention_mask_extended = F.pad(attention_mask, (1, 0), value=1)    # [B, T+1]
 
         # --- Прокидываем t_emb в обертки AdaLN ---
@@ -1188,7 +1191,7 @@ def train():
     model.encoder = SpmdFullyShardedDataParallel(model.encoder, mesh=mesh, shard_output=shard_output)
     model.decoder = SpmdFullyShardedDataParallel(model.decoder, mesh=mesh, shard_output=shard_output)
     model.dus = SpmdFullyShardedDataParallel(model.dus, mesh=mesh, shard_output=shard_output)
-    
+
     # Wrap projection layers to distribute optimizer states
     model.t_proj_global = SpmdFullyShardedDataParallel(model.t_proj_global, mesh=mesh, shard_output=shard_output)
     model.t_proj_token = SpmdFullyShardedDataParallel(model.t_proj_token, mesh=mesh, shard_output=shard_output)
@@ -1485,13 +1488,14 @@ def train():
                             + (v_loss.mean().item() if isinstance(v_loss, torch.Tensor) else v_loss)
                         )
                         val_batches += 1
+                        
+                        # Очистка локальных ссылок на тензоры внутри батча, чтобы сборщик мусора Python мог их удалить
+                        del v_out, v_loss, v_metrics, v_adaln_diag
+                        # КРИТИЧЕСКИ ВАЖНО ДЛЯ XLA: Принудительный сброс графа после каждого валидационного батча, иначе память течет
+                        xm.mark_step()
+                        
                         if val_batches >= 50:
                             break
-
-                # --- Очистка памяти после валидации (OOM Fix) ---
-                if 'v_out' in locals():
-                    del v_out, v_loss, v_metrics
-                torch.cuda.empty_cache()
                 # ------------------------------------------------
 
                 if val_batches > 0:
