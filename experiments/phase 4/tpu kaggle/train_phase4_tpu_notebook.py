@@ -1002,37 +1002,49 @@ def load_checkpoint_split(
         blob.download_to_filename(local_model)
         ckpt = torch.load(local_model, map_location="cpu", weights_only=False)
 
+        def load_flexible(mod, sdict, strict=True):
+            expected = mod.state_dict().keys()
+            new_dict = {}
+            for k, v in sdict.items():
+                k_clean = k.replace("_orig_module.", "")
+                if k_clean in expected:
+                    new_dict[k_clean] = v
+                elif f"_orig_module.{k_clean}" in expected:
+                    new_dict[f"_orig_module.{k_clean}"] = v
+                else:
+                    new_dict[k] = v
+            return mod.load_state_dict(new_dict, strict=strict)
+
         if "dus" in ckpt:
-            clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
-            missing, unexpected = actual_model.dus.load_state_dict(clean_dus, strict=False)
+            missing, unexpected = load_flexible(actual_model.dus, ckpt["dus"], strict=False)
             if missing:
                 print(f"[Resume] DUS missing keys: {missing[:5]}")
             print(f"[Resume] DUS weights loaded.")
 
         if "adaLN_attn" in ckpt:
-            actual_model.adaLN_attn.load_state_dict(ckpt["adaLN_attn"], strict=True)
+            load_flexible(actual_model.adaLN_attn, ckpt["adaLN_attn"], strict=True)
             print(f"[Resume] AdaLN_attn weights loaded.")
         if "adaLN_mlp" in ckpt:
-            actual_model.adaLN_mlp.load_state_dict(ckpt["adaLN_mlp"], strict=True)
+            load_flexible(actual_model.adaLN_mlp, ckpt["adaLN_mlp"], strict=True)
             print(f"[Resume] AdaLN_mlp weights loaded.")
 
         if "t_proj_global" in ckpt:
-            actual_model.t_proj_global.load_state_dict(ckpt["t_proj_global"], strict=True)
+            load_flexible(actual_model.t_proj_global, ckpt["t_proj_global"], strict=True)
             print(f"[Resume] t_proj_global weights loaded.")
         elif "t_proj" in ckpt:
             # Migration from Phase 3
-            actual_model.t_proj_global.load_state_dict(ckpt["t_proj"], strict=True)
+            load_flexible(actual_model.t_proj_global, ckpt["t_proj"], strict=True)
             print(f"[Resume] t_proj_global loaded from legacy t_proj (Phase 3).")
 
         if "t_proj_token" in ckpt:
-            actual_model.t_proj_token.load_state_dict(ckpt["t_proj_token"], strict=True)
+            load_flexible(actual_model.t_proj_token, ckpt["t_proj_token"], strict=True)
             print(f"[Resume] t_proj_token weights loaded.")
         if "t_joint_proj" in ckpt:
-            actual_model.t_joint_proj.load_state_dict(ckpt["t_joint_proj"], strict=True)
+            load_flexible(actual_model.t_joint_proj, ckpt["t_joint_proj"], strict=True)
             print(f"[Resume] t_joint_proj weights loaded.")
 
         if "self_cond_proj" in ckpt:
-            actual_model.self_cond_proj.load_state_dict(ckpt["self_cond_proj"], strict=True)
+            load_flexible(actual_model.self_cond_proj, ckpt["self_cond_proj"], strict=True)
             print(f"[Resume] self_cond_proj weights loaded.")
 
         # EMA shadows
