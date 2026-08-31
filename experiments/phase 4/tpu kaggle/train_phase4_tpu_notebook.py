@@ -55,9 +55,32 @@ from transformers import AutoModel, AutoTokenizer
 
 import numpy as np
 import torch_xla.core.xla_model as xm
-import torch_xla.experimental.xla_sharding as xs
+
+# Handle torch_xla versions (Kaggle often updates to >=2.5 where experimental is moved)
+try:
+    import torch_xla.experimental.xla_sharding as xs
+    print("[Init] Loaded xs from torch_xla.experimental.xla_sharding")
+except ImportError:
+    import torch_xla.distributed.spmd as xs
+    if not hasattr(xs, 'mark_sharding'):
+        import torch_xla.distributed.spmd.xla_sharding as xs
+        print("[Init] Loaded xs from torch_xla.distributed.spmd.xla_sharding")
+    else:
+        print("[Init] Loaded xs from torch_xla.distributed.spmd")
+
 import torch_xla.runtime as xr
-from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel
+
+try:
+    from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel
+    print("[Init] Loaded SpmdFullyShardedDataParallel from experimental")
+except ImportError:
+    # In newer versions it might be in distributed.spmd or distributed.fsdp
+    try:
+        from torch_xla.distributed.spmd import SpmdFullyShardedDataParallel
+        print("[Init] Loaded SpmdFullyShardedDataParallel from distributed.spmd")
+    except ImportError:
+        from torch_xla.distributed.fsdp import XlaFullyShardedDataParallel as SpmdFullyShardedDataParallel
+        print("[Init] Loaded SpmdFullyShardedDataParallel from distributed.fsdp (XlaFullyShardedDataParallel)")
 
 xr.use_spmd()
 
