@@ -1,0 +1,220 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "BEBLaDII Architecture",
+    "subtitle": "Reasoning Latent Diffusion Model",
+    "visual_preset": "signal-flow",
+    "animation": "trace",
+    "locale": "en",
+    "legend": {
+      "mode": "auto"
+    }
+  },
+  "layout": {
+    "mode": "grid",
+    "cols": 8,
+    "gapX": 60,
+    "gapY": 80,
+    "cellW": 140,
+    "cellH": 60
+  },
+  "components": [
+    {
+      "id": "input_text",
+      "type": "external",
+      "label": "Input Text",
+      "row": 0,
+      "col": 0
+    },
+    {
+      "id": "tokenizer",
+      "type": "frontend",
+      "label": "Tokenizer",
+      "row": 0,
+      "col": 1
+    },
+    {
+      "id": "latent_encoder",
+      "type": "backend",
+      "label": "Latent Encoder",
+      "row": 0,
+      "col": 2
+    },
+    {
+      "id": "latent_decoder",
+      "type": "backend",
+      "label": "Latent Decoder",
+      "row": 0,
+      "col": 5
+    },
+    {
+      "id": "text_decoder",
+      "type": "frontend",
+      "label": "Text Decoder",
+      "row": 0,
+      "col": 6
+    },
+    {
+      "id": "output_text",
+      "type": "external",
+      "label": "Output Text",
+      "row": 0,
+      "col": 7
+    },
+    {
+      "id": "latent_bert",
+      "type": "backend",
+      "label": "Diffusion Backbone",
+      "sublabel": "latentBERT",
+      "row": 1,
+      "col": 3
+    },
+    {
+      "id": "confidence_head",
+      "type": "backend",
+      "label": "Confidence Head",
+      "row": 1,
+      "col": 4
+    },
+    {
+      "id": "orchestrator",
+      "type": "backend",
+      "label": "Orchestrator",
+      "row": 1,
+      "col": 5
+    },
+    {
+      "id": "context_register",
+      "type": "database",
+      "label": "Context Register",
+      "row": 2,
+      "col": 2
+    },
+    {
+      "id": "clm",
+      "type": "backend",
+      "label": "CLM",
+      "row": 2,
+      "col": 4
+    },
+    {
+      "id": "faiss_index",
+      "type": "database",
+      "label": "FAISS Index",
+      "sublabel": "Latent Chunks",
+      "row": 2,
+      "col": 5
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Discrete Verbal Space (System 1)",
+      "wraps": ["input_text", "tokenizer", "latent_encoder", "latent_decoder", "text_decoder", "output_text"]
+    },
+    {
+      "kind": "region",
+      "label": "Continuous Latent Space (System 2)",
+      "wraps": ["latent_bert", "confidence_head", "orchestrator"]
+    },
+    {
+      "kind": "region",
+      "label": "External Memory & Tools (CLM Space)",
+      "wraps": ["context_register", "clm", "faiss_index"]
+    }
+  ],
+  "connections": [
+    {
+      "from": "input_text",
+      "to": "tokenizer"
+    },
+    {
+      "from": "tokenizer",
+      "to": "latent_encoder"
+    },
+    {
+      "from": "latent_encoder",
+      "to": "latent_bert",
+      "label": "Base Diffusion Space"
+    },
+    {
+      "from": "latent_bert",
+      "to": "confidence_head"
+    },
+    {
+      "from": "confidence_head",
+      "to": "orchestrator",
+      "label": "Confidence Maps",
+      "labelAt": [950, 210]
+    },
+    {
+      "from": "orchestrator",
+      "to": "latent_bert",
+      "label": "High Confidence / Next Timestep",
+      "via": [
+        [1070, 175],
+        [670, 175]
+      ],
+      "labelAt": [870, 165]
+    },
+    {
+      "from": "orchestrator",
+      "to": "latent_decoder",
+      "label": "Final State",
+      "labelAt": [1070, 154]
+    },
+    {
+      "from": "latent_decoder",
+      "to": "text_decoder"
+    },
+    {
+      "from": "text_decoder",
+      "to": "output_text"
+    },
+    {
+      "from": "context_register",
+      "to": "latent_bert",
+      "label": "CA_Context",
+      "variant": "dashed"
+    },
+    {
+      "from": "orchestrator",
+      "to": "clm",
+      "label": "Low Confidence / Retrieve",
+      "via": [
+        [1070, 295],
+        [870, 295]
+      ],
+      "labelAt": [970, 285]
+    },
+    {
+      "from": "clm",
+      "to": "faiss_index",
+      "label": "Query",
+      "variant": "dashed",
+      "via": [
+        [870, 450],
+        [1070, 450]
+      ],
+      "labelAt": [970, 460]
+    },
+    {
+      "from": "faiss_index",
+      "to": "clm",
+      "label": "Retrieved + Relevance Gate eval",
+      "variant": "dashed",
+      "via": [
+        [1070, 315],
+        [870, 315]
+      ],
+      "labelAt": [970, 325]
+    },
+    {
+      "from": "clm",
+      "to": "latent_bert",
+      "label": "Inject via CA_Memory",
+      "labelAt": [800, 356]
+    }
+  ]
+}

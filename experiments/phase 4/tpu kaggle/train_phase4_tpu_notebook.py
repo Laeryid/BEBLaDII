@@ -208,7 +208,7 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase4"
 
     # Гиперпараметры Phase 4a
-    batch_size    = 128
+    batch_size    = 64
     max_length    = 512
     dus_learning_rate    = 2e-5   # Пиковый LR для тела BERT (ModernBERT)
     new_layers_lr        = 1e-4   # Пиковый LR для новых слоев (AdaLN, t_proj)
@@ -265,15 +265,13 @@ class EMA:
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad and name in self.shadow:
-                    # lerp_ is strictly equivalent to mul_(decay).add_(param, alpha=1-decay)
-                    # but avoids intermediate temporary tensors and fuses perfectly in XLA
-                    ema_dtype = self.shadow[name].dtype
-                    self.shadow[name].lerp_(param.data.to(ema_dtype), weight=1.0 - self.decay)
+                    # PyTorch XLA has a bug where lerp_ with a scalar weight boxes the scalar into a CPU tensor, causing a crash.
+                    # We revert to mul_().add_() but remove the explicit .float() cast to avoid allocating 2.5GB of temporary memory.
+                    self.shadow[name].mul_(self.decay).add_(param.data, alpha=1.0 - self.decay)
                     
                     if self.pullback_alpha > 0:
-                        # param = param - alpha * (param - ema) => param = lerp(param, ema, alpha)
                         ema_casted = self.shadow[name].to(param.dtype)
-                        param.data.lerp_(ema_casted, weight=self.pullback_alpha)
+                        param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
 
     def apply(self, model):
         with torch.no_grad():
@@ -1494,12 +1492,12 @@ def train():
                             + (v_loss.mean().item() if isinstance(v_loss, torch.Tensor) else v_loss)
                         )
                         val_batches += 1
-                        
+
                         # Очистка локальных ссылок на тензоры внутри батча, чтобы сборщик мусора Python мог их удалить
                         del v_out, v_loss, v_metrics, v_adaln_diag
                         # КРИТИЧЕСКИ ВАЖНО ДЛЯ XLA: Принудительный сброс графа после каждого валидационного батча, иначе память течет
                         torch_xla.sync()
-                        
+
                         if val_batches >= 50:
                             break
                 # ------------------------------------------------
