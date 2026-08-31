@@ -231,7 +231,7 @@ class Config:
 
     t_sample_alpha = 2.0
 
-    use_gradient_checkpointing = True
+    use_gradient_checkpointing = False
 
     wandb_project = "BEBLaDII-Phase4-Kaggle"
 
