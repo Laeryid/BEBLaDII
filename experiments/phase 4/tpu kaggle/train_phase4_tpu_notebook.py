@@ -1,10 +1,11 @@
 # %% [markdown]
-# # BEBLaDII Phase 4a Training — Hierarchical Noise (Kaggle T4 x2)
+# # BEBLaDII Phase 4a Training — Hierarchical Noise (Kaggle TPU v5e-8)
 # *Архитектура: ADR 060 + Phase 4 Plan (per-token diffusion)*
 # *Ключевые изменения:*
 # *- t_global и t_reported для каждого токена*
 # *- Ложные уверенности*
 # *- Убрано Min-SNR взвешивание*
+# *- Однопроцессный SPMD (ADR 008, 003, 004)*
 
 # %% [markdown]
 # ## 1. Setup Environment
@@ -13,6 +14,16 @@
 # !pip install -q einops wandb indexed_parquet_dataset
 
 # %%
+
+import os
+def setup_env():
+    os.environ["PJRT_DEVICE"] = "TPU"
+    os.environ["XLA_USE_BF16"] = "1"
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+    os.environ["XLA_USE_SPMD"] = "1"
+
+setup_env()
+
 import math
 import os
 import re
@@ -41,6 +52,23 @@ import wandb
 from torch.utils.data import DataLoader
 from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingWarmRestarts
 from transformers import AutoModel, AutoTokenizer
+
+import numpy as np
+import torch_xla.core.xla_model as xm
+import torch_xla.experimental.xla_sharding as xs
+import torch_xla.runtime as xr
+from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel
+
+xr.use_spmd()
+
+def setup_spmd_mesh():
+    num_devices = xr.global_runtime_device_count()
+    mesh_shape = (num_devices, 1)
+    device_ids = np.array(range(num_devices))
+    mesh = xs.Mesh(device_ids, mesh_shape, ("fsdp", "model"))
+    xs.set_global_mesh(mesh)
+    return mesh
+
 
 PROJECT_ROOT = "/kaggle/working/BEBLaDII"
 REPO_URL = "https://github.com/Laeryid/BEBLaDII.git"
@@ -160,7 +188,7 @@ class Config:
     max_length    = 512
     dus_learning_rate    = 2e-5   # Пиковый LR для тела BERT (ModernBERT)
     new_layers_lr        = 1e-4   # Пиковый LR для новых слоев (AdaLN, t_proj)
-     epochs               = 100
+    epochs               = 100
     max_steps            = 400000
     log_steps            = 10
     val_steps            = 200
@@ -198,8 +226,7 @@ args = Config()
 # %%
 class EMA:
     """
-    Тени хранятся на CPU (float32) для экономии VRAM.
-    Копирование CPU<->GPU только при apply/restore (раз в save_steps).
+    Тени хранятся на TPU в float32 (избегаем CPU transfers и XLA Graph Breaks).
     """
     def __init__(self, model, decay=0.998, pullback_alpha=0.0):
         self.decay = decay
@@ -208,33 +235,29 @@ class EMA:
         self.backup = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
-                self.shadow[name] = param.data.clone().detach().float().cpu()
+                self.shadow[name] = param.data.clone().detach().float()
 
     def step(self, model):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad and name in self.shadow:
-                    param_cpu = param.data.float().cpu()
-                    self.shadow[name].mul_(self.decay).add_(param_cpu, alpha=1.0 - self.decay)
-
+                    self.shadow[name].mul_(self.decay).add_(param.data.float(), alpha=1.0 - self.decay)
                     if self.pullback_alpha > 0:
-                        # Pullback: w_live = w_live - alpha * (w_live - w_ema)
-                        # We push the difference to GPU to subtract from live weights
-                        ema_gpu = self.shadow[name].to(param.device, dtype=param.dtype)
-                        param.data.sub_(param.data - ema_gpu, alpha=self.pullback_alpha)
+                        ema_casted = self.shadow[name].to(param.dtype)
+                        param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
 
     def apply(self, model):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad and name in self.shadow:
-                    self.backup[name] = param.data.clone().detach().cpu()
-                    param.data.copy_(self.shadow[name].to(param.device, dtype=param.dtype))
+                    self.backup[name] = param.data.clone().detach()
+                    param.data.copy_(self.shadow[name].to(param.dtype))
 
     def restore(self, model):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad and name in self.backup:
-                    param.data.copy_(self.backup[name].to(param.device, dtype=param.dtype))
+                    param.data.copy_(self.backup[name].to(param.dtype))
         self.backup = {}
 
 
@@ -512,7 +535,7 @@ class BEBLaDIIPhase4a(nn.Module):
             print("[Init] Gradient Checkpointing disabled (prevents AdaLN hook conflict).", flush=True)
         if hasattr(self.dus, "_maybe_set_compile"):
             self.dus._maybe_set_compile = lambda *a, **kw: None
-        type(self.dus).device = property(lambda self: torch.device("cuda"))
+        
         type(self.dus).dtype  = property(lambda self: torch.float32)
 
         # 4. Time Embedding (Phase 4: Hierarchical)
@@ -1053,10 +1076,10 @@ def load_checkpoint_split(
 
 # %%
 def train():
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[Init] Using device: {device}")
-    num_gpus = torch.cuda.device_count()
-    print(f"[Init] Available GPUs: {num_gpus}")
+    mesh = setup_spmd_mesh()
+    device = xm.xla_device()
+    print(f"[Init] Using XLA device: {device}")
+    num_gpus = 1
 
     # WandB + GCP Auth
     if args.wandb_project:
@@ -1111,9 +1134,20 @@ def train():
         t_emb_dim=args.t_emb_dim,
     ).to(device)
 
-    if num_gpus > 1:
-        print(f"[Init] Wrapping model in DataParallel across {num_gpus} GPUs", flush=True)
-        model = nn.DataParallel(model)
+    def shard_output(output, mesh):
+        return None
+
+    print("[Init] Starting SPMD FSDP sharding across TPU...", flush=True)
+    model.qwen_embeddings = SpmdFullyShardedDataParallel(model.qwen_embeddings, mesh=mesh, shard_output=shard_output)
+    model.encoder = SpmdFullyShardedDataParallel(model.encoder, mesh=mesh, shard_output=shard_output)
+    model.decoder = SpmdFullyShardedDataParallel(model.decoder, mesh=mesh, shard_output=shard_output)
+    model.dus = SpmdFullyShardedDataParallel(model.dus, mesh=mesh, shard_output=shard_output)
+    
+    # Wrap projection layers to distribute optimizer states
+    model.t_proj_global = SpmdFullyShardedDataParallel(model.t_proj_global, mesh=mesh, shard_output=shard_output)
+    model.t_proj_token = SpmdFullyShardedDataParallel(model.t_proj_token, mesh=mesh, shard_output=shard_output)
+    model.t_joint_proj = SpmdFullyShardedDataParallel(model.t_joint_proj, mesh=mesh, shard_output=shard_output)
+    print("[Init] FSDP sharding completed!", flush=True)
 
     trainable_params = [p for p in model.parameters() if p.requires_grad]
     n_trainable = sum(p.numel() for p in trainable_params)
@@ -1123,7 +1157,7 @@ def train():
     dus_params = []
     new_layers_params = []
 
-    actual_model = model.module if isinstance(model, nn.DataParallel) else model
+    actual_model = model
 
     # Параметры DUS (тело BERT) — низкий LR
     for name, param in actual_model.named_parameters():
@@ -1259,6 +1293,13 @@ def train():
             input_ids      = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
 
+            # --- OOM and Recompilation protection (TPU) ---
+            if input_ids.size(0) != args.batch_size:
+                continue
+
+            xs.mark_sharding(input_ids, mesh, ("fsdp", None))
+            xs.mark_sharding(attention_mask, mesh, ("fsdp", None))
+
             optimizer.zero_grad()
 
             # --- Self-Conditioning (SC) Injection ---
@@ -1307,9 +1348,11 @@ def train():
                 loss = loss.mean()
 
             loss.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0).item()
-            optimizer.step()
+            grad_norm_tensor = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            xm.optimizer_step(optimizer, barrier=True)
             ema.step(actual_model)
+            xm.mark_step()
+            grad_norm = grad_norm_tensor.item() if hasattr(grad_norm_tensor, 'item') else 0.0
 
             # Логика LR
             current_optim_step = step + 1
@@ -1375,6 +1418,10 @@ def train():
                     for val_batch in val_dataloader:
                         v_ids  = val_batch["input_ids"].to(device)
                         v_mask = val_batch["attention_mask"].to(device)
+                        if v_ids.size(0) != args.batch_size:
+                            continue
+                        xs.mark_sharding(v_ids, mesh, ("fsdp", None))
+                        xs.mark_sharding(v_mask, mesh, ("fsdp", None))
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
                         v_loss, v_metrics = compute_phase4_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
                         v_adaln_diag = compute_adaln_diagnostics(actual_model, v_out["t_emb"])
