@@ -54,6 +54,7 @@ from torch.optim.lr_scheduler import LambdaLR, CosineAnnealingWarmRestarts
 from transformers import AutoModel, AutoTokenizer
 
 import numpy as np
+import torch_xla
 import torch_xla.core.xla_model as xm
 
 # Handle torch_xla versions (Kaggle often updates to >=2.5 where experimental is moved)
@@ -264,10 +265,15 @@ class EMA:
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad and name in self.shadow:
-                    self.shadow[name].mul_(self.decay).add_(param.data.float(), alpha=1.0 - self.decay)
+                    # lerp_ is strictly equivalent to mul_(decay).add_(param, alpha=1-decay)
+                    # but avoids intermediate temporary tensors and fuses perfectly in XLA
+                    ema_dtype = self.shadow[name].dtype
+                    self.shadow[name].lerp_(param.data.to(ema_dtype), weight=1.0 - self.decay)
+                    
                     if self.pullback_alpha > 0:
+                        # param = param - alpha * (param - ema) => param = lerp(param, ema, alpha)
                         ema_casted = self.shadow[name].to(param.dtype)
-                        param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
+                        param.data.lerp_(ema_casted, weight=self.pullback_alpha)
 
     def apply(self, model):
         with torch.no_grad():
@@ -1400,7 +1406,7 @@ def train():
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             xm.optimizer_step(optimizer, barrier=True)
             ema.step(actual_model)
-            xm.mark_step()
+            torch_xla.sync()
             grad_norm = grad_norm_tensor.item() if hasattr(grad_norm_tensor, 'item') else 0.0
 
             # Логика LR
@@ -1492,7 +1498,7 @@ def train():
                         # Очистка локальных ссылок на тензоры внутри батча, чтобы сборщик мусора Python мог их удалить
                         del v_out, v_loss, v_metrics, v_adaln_diag
                         # КРИТИЧЕСКИ ВАЖНО ДЛЯ XLA: Принудительный сброс графа после каждого валидационного батча, иначе память течет
-                        xm.mark_step()
+                        torch_xla.sync()
                         
                         if val_batches >= 50:
                             break
