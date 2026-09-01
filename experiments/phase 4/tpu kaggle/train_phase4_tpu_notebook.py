@@ -210,8 +210,8 @@ class Config:
     # Гиперпараметры Phase 4a
     batch_size    = 64
     max_length    = 512
-    dus_learning_rate    = 2e-5   # Пиковый LR для тела BERT (ModernBERT)
-    new_layers_lr        = 1e-4   # Пиковый LR для новых слоев (AdaLN, t_proj)
+    dus_learning_rate    = 5.6e-5   # Scaled for batch=64 (from 2e-5)
+    new_layers_lr        = 2.8e-4   # Scaled for batch=64 (from 1e-4)
     epochs               = 100
     max_steps            = 400000
     log_steps            = 10
@@ -1296,10 +1296,10 @@ def train():
 
     # Инициализация EMA и PACE
     if getattr(args, "optimizer_mode", "cyclic") == "pace":
-        ema = EMA(actual_model, decay=0.998, pullback_alpha=getattr(args, "pullback_alpha", 0.1))
+        ema = EMA(actual_model, decay=0.99, pullback_alpha=getattr(args, "pullback_alpha", 0.1))
         print(f"[Init] Optimizer mode: PACE (pullback_alpha={getattr(args, 'pullback_alpha', 0.1)})", flush=True)
     else:
-        ema = EMA(actual_model, decay=0.998, pullback_alpha=0.0)
+        ema = EMA(actual_model, decay=0.99, pullback_alpha=0.0)
         print("[Init] Optimizer mode: Cyclic (CosineAnnealingWarmRestarts)", flush=True)
 
     # --- Resume ---
@@ -1334,6 +1334,10 @@ def train():
     model.train()
     step = start_step
 
+    import time
+    log_start_time = time.time()
+    log_samples_processed = 0
+
     from tqdm.auto import tqdm
     pbar = tqdm(total=total_steps, initial=start_step, desc="Phase 4 Hierarchical Noise")
     os.makedirs(args.output_dir, exist_ok=True)
@@ -1345,6 +1349,7 @@ def train():
 
             input_ids      = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
+            log_samples_processed += input_ids.size(0)
 
             # --- OOM and Recompilation protection (TPU) ---
             if input_ids.size(0) != args.batch_size:
@@ -1402,9 +1407,9 @@ def train():
 
             loss.backward()
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
-            xm.optimizer_step(optimizer, barrier=True)
+            optimizer.step()
             ema.step(actual_model)
-            torch_xla.sync()
+            xm.mark_step()
             grad_norm = grad_norm_tensor.item() if hasattr(grad_norm_tensor, 'item') else 0.0
 
             # Логика LR
@@ -1438,6 +1443,9 @@ def train():
 
             # Логирование
             if step % args.log_steps == 0:
+                elapsed = time.time() - log_start_time
+                samples_per_sec = log_samples_processed / elapsed if elapsed > 0 else 0.0
+                
                 adaln_diag = compute_adaln_diagnostics(actual_model, fwd_outputs["t_emb"])
                 metrics.update(adaln_diag)
                 metrics_dict = {
@@ -1449,18 +1457,20 @@ def train():
                 metrics_dict["lr_new"]   = optimizer.param_groups[1]["lr"]  # New layers LR
                 metrics_dict["step"]      = step
                 metrics_dict["grad_norm"] = grad_norm
+                metrics_dict["samples_per_sec"] = samples_per_sec
                 metrics_history.append(metrics_dict)
                 if args.wandb_project:
                     wandb.log(metrics_dict, step=step)
                 pbar.set_postfix({
                     "loss":      f"{metrics_dict['loss']:.4f}",
                     "h39_hi":    f"{metrics_dict.get('cos_h39_t_high', 0):.4f}",
-                    "h39_mid":   f"{metrics_dict.get('cos_h39_t_mid', 0):.4f}",
                     "cos_hi":    f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
-                    "adaln_w":   f"{metrics_dict.get('adaln_w_norm', 0):.4f}",
-                    "sc_w":      f"{metrics_dict.get('sc_w_norm', 0):.4f}",
                     "grad":      f"{grad_norm:.3f}",
+                    "smpl/s":    f"{samples_per_sec:.1f}",
                 })
+                
+                log_start_time = time.time()
+                log_samples_processed = 0
 
             # Validation
             if step > start_step and (step + 5) % args.val_steps == 0:
