@@ -1416,30 +1416,35 @@ def train():
             current_optim_step = step + 1
             is_pace = getattr(args, "optimizer_mode", "cyclic") == "pace"
 
-            if is_pace:
-                # PACE: Постоянный LR с первичным warmup
-                if current_optim_step <= warmup_steps:
-                    lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
-                    for idx_p, param_group in enumerate(optimizer.param_groups):
-                        param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
-                else:
-                    for idx_p, param_group in enumerate(optimizer.param_groups):
-                        param_group["lr"] = scheduler.base_lrs[idx_p]
-            else:
-                # Cyclic: CosineAnnealingWarmRestarts
-                scheduler.step()
-                if current_optim_step <= warmup_steps:
-                    # Основной warmup в начале обучения
-                    lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
-                    for idx_p, param_group in enumerate(optimizer.param_groups):
-                        param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
-                else:
-                    # Warmup внутри каждого цикла CosineAnnealingWarmRestarts
-                    rel_step = current_optim_step % cosine_T0
-                    if rel_step < restart_warmup_steps:
-                        lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
+            # [XLA FIX] Обновляем LR только раз в 50 шагов.
+            # Если LR (Python float) меняется каждый шаг, XLA вшивает его в граф 
+            # и вынужден перекомпилировать всю модель на КАЖДОМ шаге (4 мин/шаг).
+            if current_optim_step % 50 == 1 or current_optim_step == 1:
+                if is_pace:
+                    # PACE: Постоянный LR с первичным warmup
+                    if current_optim_step <= warmup_steps:
+                        lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
                         for idx_p, param_group in enumerate(optimizer.param_groups):
-                            param_group["lr"] = param_group["lr"] * lr_warmup_factor
+                            param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+                    else:
+                        for idx_p, param_group in enumerate(optimizer.param_groups):
+                            param_group["lr"] = scheduler.base_lrs[idx_p]
+                else:
+                    # Cyclic: CosineAnnealingWarmRestarts
+                    # Передаем абсолютный шаг, чтобы косинус посчитался правильно для текущего момента
+                    scheduler.step(current_optim_step)
+                    if current_optim_step <= warmup_steps:
+                        # Основной warmup в начале обучения
+                        lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+                        for idx_p, param_group in enumerate(optimizer.param_groups):
+                            param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+                    else:
+                        # Warmup внутри каждого цикла CosineAnnealingWarmRestarts
+                        rel_step = current_optim_step % cosine_T0
+                        if rel_step < restart_warmup_steps:
+                            lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
+                            for idx_p, param_group in enumerate(optimizer.param_groups):
+                                param_group["lr"] = param_group["lr"] * lr_warmup_factor
 
             # Логирование
             if step % args.log_steps == 0:
@@ -1472,25 +1477,15 @@ def train():
                 log_start_time = time.time()
                 log_samples_processed = 0
 
-            # --- XLA Performance Profiling ---
-            _profile_steps = {start_step + 5, start_step + 6}
-            if (step in _profile_steps) or (step > start_step + 10 and step % 200 == 0):
+            _profile_steps = {start_step + 1, start_step + 2, start_step + 3}
+            if (step in _profile_steps):
                 try:
                     import torch_xla.debug.metrics as xla_met
                     print(f"\n{'='*60}")
                     print(f"[XLA METRICS REPORT] Step {step}")
                     print(f"{'='*60}")
                     report = xla_met.metrics_report()
-                    _keywords = [
-                        "CompileTime", "ExecuteTime", "TransferToDeviceTime",
-                        "TransferFromDeviceTime", "CreateComputation",
-                        "AllReduceTime", "AllGatherTime", "ReduceScatterTime",
-                        "DeviceLockWaitTime",
-                        "Cached", "Compiled", "Executed",
-                    ]
-                    for line in report.split("\n"):
-                        if any(kw.lower() in line.lower() for kw in _keywords):
-                            print(line)
+                    print(report)
                     print(f"{'='*60}\n")
                 except Exception as e_prof:
                     print(f"[XLA METRICS] Skipped (error: {e_prof})")
