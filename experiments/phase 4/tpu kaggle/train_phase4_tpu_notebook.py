@@ -1421,14 +1421,15 @@ def train():
             # и вынужден перекомпилировать всю модель на КАЖДОМ шаге (4 мин/шаг).
             if current_optim_step % 50 == 1 or current_optim_step == 1:
                 if is_pace:
-                    # PACE: Постоянный LR с первичным warmup
+                    # PACE: Постоянный LR с первичным warmup (Fix: берем константы из args, игнорируем checkpoint)
+                    _pace_lrs = [args.dus_learning_rate, args.new_layers_lr]
                     if current_optim_step <= warmup_steps:
                         lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
                         for idx_p, param_group in enumerate(optimizer.param_groups):
-                            param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+                            param_group["lr"] = _pace_lrs[idx_p] * lr_warmup_factor
                     else:
                         for idx_p, param_group in enumerate(optimizer.param_groups):
-                            param_group["lr"] = scheduler.base_lrs[idx_p]
+                            param_group["lr"] = _pace_lrs[idx_p]
                 else:
                     # Cyclic: CosineAnnealingWarmRestarts
                     # Передаем абсолютный шаг, чтобы косинус посчитался правильно для текущего момента
@@ -1477,7 +1478,7 @@ def train():
                 log_start_time = time.time()
                 log_samples_processed = 0
 
-            _profile_steps = {start_step + 1, start_step + 2, start_step + 3}
+            _profile_steps = set(range(start_step + 1, start_step + 21))
             if (step in _profile_steps):
                 try:
                     import torch_xla.debug.metrics as xla_met
