@@ -1472,6 +1472,28 @@ def train():
                 log_start_time = time.time()
                 log_samples_processed = 0
 
+            # --- XLA Performance Profiling ---
+            # Шаг 5: после прогрева JIT-компиляции, чтобы увидеть реальную картину.
+            # Далее каждые 200 шагов для диагностики без значительных накладных расходов.
+            _profile_steps = {start_step + 5, start_step + 6}
+            if (step in _profile_steps) or (step > start_step + 10 and step % 200 == 0):
+                print(f"\n{'='*60}")
+                print(f"[XLA METRICS REPORT] Step {step}")
+                print(f"{'='*60}")
+                report = xm.metrics_report()
+                # Фильтруем только строки, релевантные для диагностики производительности
+                _keywords = [
+                    "CompileTime", "ExecuteTime", "TransferToDeviceTime",
+                    "TransferFromDeviceTime", "CreateComputation",
+                    "AllReduceTime", "AllGatherTime", "ReduceScatterTime",
+                    "DeviceLockWaitTime", "XrtComputationClient",
+                    "aten::", "Cached", "Compiled", "Executed",
+                ]
+                for line in report.split("\n"):
+                    if any(kw.lower() in line.lower() for kw in _keywords):
+                        print(line)
+                print(f"{'='*60}\n")
+
             # Validation
             if step > start_step and (step + 5) % args.val_steps == 0:
                 model.eval()
