@@ -45,7 +45,7 @@ class DistillationDataset(IterableDataset):
 
             # Apply file-group-aware chunked shuffle for training
             if split == 'train':
-                ds = ds.shuffle(seed=None, rg_buffer=20)
+                ds = ds.shuffle(seed=None, rg_buffer=2)
 
             self.datasets.append(ds)
             print(f"    Loaded {len(ds)} samples for '{split}'")
@@ -84,7 +84,7 @@ class DistillationDataset(IterableDataset):
                 sharded_ds = ds.select(slice(start, end))
             else:
                 sharded_ds = ds
-            
+
             for item in sharded_ds:
                 text = self._apply_mapper(item)
                 if not text:
