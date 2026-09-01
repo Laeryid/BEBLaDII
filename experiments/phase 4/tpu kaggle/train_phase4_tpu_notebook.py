@@ -1409,7 +1409,7 @@ def train():
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             optimizer.step()
             ema.step(actual_model)
-            xm.mark_step()
+            torch_xla.sync()
             grad_norm = grad_norm_tensor.item() if hasattr(grad_norm_tensor, 'item') else 0.0
 
             # Логика LR
@@ -1473,26 +1473,27 @@ def train():
                 log_samples_processed = 0
 
             # --- XLA Performance Profiling ---
-            # Шаг 5: после прогрева JIT-компиляции, чтобы увидеть реальную картину.
-            # Далее каждые 200 шагов для диагностики без значительных накладных расходов.
             _profile_steps = {start_step + 5, start_step + 6}
             if (step in _profile_steps) or (step > start_step + 10 and step % 200 == 0):
-                print(f"\n{'='*60}")
-                print(f"[XLA METRICS REPORT] Step {step}")
-                print(f"{'='*60}")
-                report = xm.metrics_report()
-                # Фильтруем только строки, релевантные для диагностики производительности
-                _keywords = [
-                    "CompileTime", "ExecuteTime", "TransferToDeviceTime",
-                    "TransferFromDeviceTime", "CreateComputation",
-                    "AllReduceTime", "AllGatherTime", "ReduceScatterTime",
-                    "DeviceLockWaitTime", "XrtComputationClient",
-                    "aten::", "Cached", "Compiled", "Executed",
-                ]
-                for line in report.split("\n"):
-                    if any(kw.lower() in line.lower() for kw in _keywords):
-                        print(line)
-                print(f"{'='*60}\n")
+                try:
+                    import torch_xla.debug.metrics as xla_met
+                    print(f"\n{'='*60}")
+                    print(f"[XLA METRICS REPORT] Step {step}")
+                    print(f"{'='*60}")
+                    report = xla_met.metrics_report()
+                    _keywords = [
+                        "CompileTime", "ExecuteTime", "TransferToDeviceTime",
+                        "TransferFromDeviceTime", "CreateComputation",
+                        "AllReduceTime", "AllGatherTime", "ReduceScatterTime",
+                        "DeviceLockWaitTime",
+                        "Cached", "Compiled", "Executed",
+                    ]
+                    for line in report.split("\n"):
+                        if any(kw.lower() in line.lower() for kw in _keywords):
+                            print(line)
+                    print(f"{'='*60}\n")
+                except Exception as e_prof:
+                    print(f"[XLA METRICS] Skipped (error: {e_prof})")
 
             # Validation
             if step > start_step and (step + 5) % args.val_steps == 0:
