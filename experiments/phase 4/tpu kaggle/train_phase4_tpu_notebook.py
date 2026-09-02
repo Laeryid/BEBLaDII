@@ -11,7 +11,7 @@
 # ## 1. Setup Environment
 
 # %%
-# !pip install -q einops wandb indexed_parquet_dataset google-cloud-storage
+# !pip install -q -U --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage
 
 # %%
 
@@ -1132,6 +1132,22 @@ def load_checkpoint_split(
 
 # %%
 def train():
+    import torch
+    import torch_xla
+    import transformers
+    import pyarrow
+    import numpy
+    import indexed_parquet_dataset
+    print("\n" + "="*50)
+    print("[PACKAGE VERSIONS]")
+    print(f"torch: {torch.__version__}")
+    print(f"torch_xla: {torch_xla.__version__}")
+    print(f"transformers: {transformers.__version__}")
+    print(f"pyarrow: {pyarrow.__version__}")
+    print(f"numpy: {numpy.__version__}")
+    print(f"indexed_parquet_dataset: {indexed_parquet_dataset.__version__}")
+    print("="*50 + "\n")
+
     mesh = setup_spmd_mesh()
     device = xm.xla_device()
     print(f"[Init] Using XLA device: {device}")
