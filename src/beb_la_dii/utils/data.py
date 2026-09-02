@@ -45,7 +45,7 @@ class DistillationDataset(IterableDataset):
 
             # Apply file-group-aware chunked shuffle for training
             if split == 'train':
-                ds = ds.shuffle(seed=None, rg_buffer=2)
+                ds = ds.shuffle(seed=None, rg_buffer=4)
 
             self.datasets.append(ds)
             print(f"    Loaded {len(ds)} samples for '{split}'")
