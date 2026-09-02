@@ -213,13 +213,13 @@ class Config:
     dus_learning_rate    = 5.6e-5   # Scaled for batch=64 (from 2e-5)
     new_layers_lr        = 2.8e-4   # Scaled for batch=64 (from 1e-4)
     epochs               = 100
-    max_steps            = 400000
+    max_steps            = 9050
     log_steps            = 10
     val_steps            = 200
     save_steps           = 1000
 
     # Параметры расписания LR
-    warmup_steps_ratio = 0.05
+    warmup_steps_ratio = 0.0
     min_lr_ratio       = 0.01
 
     t_min = 0.02
@@ -237,8 +237,8 @@ class Config:
     wandb_project = "BEBLaDII-Phase4-Kaggle"
 
     # Optimizer options
-    optimizer_mode = "cyclic"  # "cyclic" or "pace"
-    pullback_alpha = 0.002       # Для режима pace
+    optimizer_mode = "pace"  # "cyclic" or "pace"
+    pullback_alpha = 0.016       # Для режима pace
 
 
 args = Config()
@@ -268,7 +268,7 @@ class EMA:
                     # PyTorch XLA has a bug where lerp_ with a scalar weight boxes the scalar into a CPU tensor, causing a crash.
                     # We revert to mul_().add_() but remove the explicit .float() cast to avoid allocating 2.5GB of temporary memory.
                     self.shadow[name].mul_(self.decay).add_(param.data, alpha=1.0 - self.decay)
-                    
+
                     if self.pullback_alpha > 0:
                         ema_casted = self.shadow[name].to(param.dtype)
                         param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
@@ -1361,7 +1361,7 @@ def train():
             optimizer.zero_grad()
 
             # --- Self-Conditioning (SC) Injection ---
-            # 50% батча использует SC, 50% не использует. 
+            # 50% батча использует SC, 50% не использует.
             # Это гарантирует 1 фиксированный XLA-граф.
             B = input_ids.size(0)
             B_half = B // 2
@@ -1444,11 +1444,11 @@ def train():
             if step % args.log_steps == 0:
                 elapsed = time.time() - log_start_time
                 samples_per_sec = log_samples_processed / elapsed if elapsed > 0 else 0.0
-                
+
                 # ОТКЛЮЧЕН: compute_adaln_diagnostics вызывает раздувание графа (UncachedCompile)
                 # adaln_diag = compute_adaln_diagnostics(actual_model, fwd_outputs["t_emb"])
                 # metrics.update(adaln_diag)
-                
+
                 # Массовая оценка тензоров за один вызов .tolist(), чтобы избежать множественных .item()
                 metric_keys = list(metrics.keys())
                 metric_tensors = [metrics[k].mean() for k in metric_keys]
@@ -1457,9 +1457,9 @@ def train():
                     metric_tensors.append(grad_norm_tensor)
                 else:
                     metric_tensors.append(torch.tensor(0.0, device=loss.device))
-                    
+
                 stacked_metrics = torch.stack(metric_tensors).cpu().tolist()
-                
+
                 metrics_dict = {k: v for k, v in zip(metric_keys, stacked_metrics[:-2])}
                 metrics_dict["loss"]      = stacked_metrics[-2]
                 metrics_dict["lr_dus"]    = optimizer.param_groups[0]["lr"]  # DUS LR
@@ -1477,7 +1477,7 @@ def train():
                     "grad":      f"{grad_norm:.3f}",
                     "smpl/s":    f"{samples_per_sec:.1f}",
                 })
-                
+
                 log_start_time = time.time()
                 log_samples_processed = 0
 
@@ -1517,12 +1517,12 @@ def train():
                         metric_keys = list(v_metrics.keys())
                         metric_tensors = [v_metrics[k].mean() for k in metric_keys]
                         metric_tensors.append(v_loss.mean())
-                        
+
                         stacked_metrics = torch.stack(metric_tensors).cpu().tolist()
-                        
+
                         for k, v in zip(metric_keys, stacked_metrics[:-1]):
                             val_metrics_sum[f"val_{k}"] = val_metrics_sum.get(f"val_{k}", 0) + v
-                            
+
                         val_metrics_sum["val_loss"] = val_metrics_sum.get("val_loss", 0) + stacked_metrics[-1]
                         val_batches += 1
 

@@ -1,5 +1,4 @@
 import re
-import sys
 
 def parse_durations(filepath):
     try:
@@ -38,14 +37,14 @@ def parse_durations(filepath):
         if 'Metric:' in line:
             metric_name = line.split('Metric:')[-1].strip()
             data['last_metric'] = metric_name
-        elif 'Percentiles:' in line and data.get('last_metric') == 'TensorsGraphSize':
-            data['TensorsGraphSize_99'] = line.split('99%=')[-1].strip()
+        elif 'Percentiles:' in line and data.get('last_metric') == 'ExecuteReplicatedTime':
+            data['ExecRepTime_99'] = line.split('99%=')[-1].strip()
             del data['last_metric']
             
     if current_step is not None:
         steps.append(data)
         
-    print(f"{'Step':>6} | {'Timestamp (s)':>15} | {'Duration (s)':>15} | {'Uncached':>10} | {'TensorsGraphSize':>20}")
+    print(f"{'Step':>6} | {'Timestamp (s)':>15} | {'Duration (s)':>15} | {'Uncached':>10} | {'local_scalar_dense':>20}")
     print("-" * 75)
     prev_time = None
     for s in steps:
@@ -57,8 +56,8 @@ def parse_durations(filepath):
         prev_time = t
         
         uncached = s.get('UncachedCompile', 0)
-        graph_size = s.get('TensorsGraphSize_99', '-')
-        print(f"{step:>6} | {t:>15.2f} | {dur:>15} | {uncached:>10} | {graph_size:>20}")
+        scalar = s.get('aten::_local_scalar_dense', 0)
+        print(f"{step:>6} | {t:>15.2f} | {dur:>15} | {uncached:>10} | {scalar:>20}")
 
 if __name__ == '__main__':
     parse_durations('experiments/phase 4/tpu kaggle/metrics.txt')

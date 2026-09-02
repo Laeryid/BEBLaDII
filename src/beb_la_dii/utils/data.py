@@ -145,5 +145,7 @@ def get_dataloader(stage='awakening', batch_size=1, max_length=512, split='train
         shuffle=False,
         num_workers=4,
         multiprocessing_context=ctx,
-        pin_memory=False
+        pin_memory=False,
+        prefetch_factor=8,
+        persistent_workers=True
     )
