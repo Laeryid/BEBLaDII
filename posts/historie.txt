@@ -1,0 +1,28 @@
+
+
+
+04.09.2026
+
+𝗕𝗘𝗕𝗟𝗮𝗗𝗜𝗜
+
+It’s incredibly frustrating that I still can’t run a single reasonably smart AI locally on my laptop.
+
+Six months ago, a thought crossed my mind: why does an AI model need to memorize a massive amount of factual information when a separate component could just handle it? To me, decoupling logic from memory makes perfect sense (funnily enough, we’re seeing this exact trend in newer AI models lately).
+
+But human memory doesn’t work like RAG, or data retrieval tools based on CLI and MCP servers. We recall facts—or fail to—either automatically or through a chain of associations while thinking. Therefore, the retrieval of facts should happen 𝘥𝘶𝘳𝘪𝘯𝘨 the generation of a response.
+
+That’s why I started looking into diffusion models instead of autoregressive ones.
+
+Diffusion reveals meaning gradually. If we can inject new, relevant information into the context while this meaning is taking shape, the diffusion process could replace vague, generalized parts of the response with precise factual information.
+
+That’s how the idea for 𝗕𝗘𝗕𝗟𝗮𝗗𝗜𝗜 (Bidirectional Encoder Based Latent Diffusion with Information Injection) was born. And thanks to AI agents, Kaggle, and the Google TRC (TPU Research Cloud) grant program, I actually have the resources to try and build it.
+
+My first attempt failed, but Plan B is steadily making progress. The first three phases are showing outstanding results—or at least, that’s how the AI evaluates them. I’ll let you draw your own conclusions.
+
+I’ll break down the completed phases and their results in upcoming posts. For now, you can explore the architecture and code here:
+💾 Git repo: https://github.com/Laeryid/BEBLaDII
+🗄️ Weights are also up on Hugging Face (though keep in mind these are still individual components, not a fully-fledged model just yet): https://huggingface.co/bulyakovbr/bebladii-foundation-weights
+
+What do you think about injecting context from a memory store directly into the model during the text diffusion process? Has anyone experimented with something similar? Let’s discuss! 👇
+
+#MachineLearning #AI #DiffusionModels #RAG #NeuralNetworks #GoogleTRC

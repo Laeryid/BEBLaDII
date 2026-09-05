@@ -1,3 +1,4 @@
+<!-- created: 2026-08-22 -->
 # ADR 075: DataParallel Closure Trap and AdaLNWrappedLayerNorm
 
 **Дата**: 2026-08-22

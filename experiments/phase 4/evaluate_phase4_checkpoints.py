@@ -223,6 +223,7 @@ def output_msg(msg, file=None):
     print(msg)
     if file:
         file.write(msg + "\n")
+        file.flush()
 
 def analyze_weight_norms(diff_model, file):
     output_msg("\n" + "=" * 70, file)
@@ -437,44 +438,9 @@ def analyze_hierarchical_denoising(diff_model, texts, tokenizer, device, file):
 
 def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenizer, device: torch.device, file):
     output_msg(f"\n{'='*80}\nEvaluating Checkpoint: {os.path.basename(ckpt_path)}\n{'='*80}", file)
-    
     state = torch.load(ckpt_path, map_location="cpu")
-    
-    # In EMA training, keys might be under dus_ema
-    dus_raw = state.get("dus", {})
-    if dus_raw:
-        clean_dus_raw = {}
-        for k, v in dus_raw.items():
-            clean_k = k.replace("_orig_module.", "").replace("student.model.", "").replace("model.", "")
-            clean_dus_raw[clean_k] = v
-        diff_model.dus.load_state_dict(clean_dus_raw, strict=False)
 
-    dus_ema = state.get("dus_ema", {})
-    if dus_ema:
-        clean_dus_ema = {}
-        for k, v in dus_ema.items():
-            clean_k = k.replace("_orig_module.", "").replace("student.model.", "").replace("model.", "")
-            clean_dus_ema[clean_k] = v
-        
-        missing, unexpected = diff_model.dus.load_state_dict(clean_dus_ema, strict=False)
-        if missing:
-            output_msg(f"  [WARN] DUS_EMA missing keys: {len(missing)} (expected if EMA only tracks trainable params)", file)
-        
-    # Phase 4 specific components
-    for name in ["adaLN_attn", "adaLN_mlp", "t_proj_global", "t_proj_token", "t_joint_proj", "sep_embed", "self_cond_proj"]:
-        ema = state.get(f"{name}_ema", state.get(name, {}))
-        if ema:
-            if name == "sep_embed":
-                diff_model.sep_embed.copy_(ema)
-            else:
-                getattr(diff_model, name).load_state_dict(ema, strict=True)
-        else:
-            # Fallback for simple state_dict structure
-            comp_state = {k.replace(f"{name}.", ""): v for k, v in state.items() if k.startswith(f"{name}.")}
-            if comp_state:
-                getattr(diff_model, name).load_state_dict(comp_state, strict=True)
-
-    # Load LatentEncoder
+    # Load LatentEncoder once
     enc_paths = [
         "C:/Experiments/BEBLaDII/experiments/phase 1/planB_phase1_checkpoints_phase1_vae_step_20000.pth",
         "C:/Experiments/BEBLaDII/BEBLaDII-planB-Phase3-Data/planB_phase1_checkpoints_phase1_vae_step_20000.pth",
@@ -486,17 +452,46 @@ def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenize
     else:
         output_msg("  [WARN] LatentEncoder weights not found! Evaluation will use random VAE weights!", file)
 
-    diff_model.eval()
-    
-    analyze_weight_norms(diff_model, file)
-    analyze_adaln_sensitivity(diff_model, device, file)
-    analyze_topology_and_identity(diff_model, tokenizer, device, file)
+    modes_to_test = ["LIVE"]
+    if "dus_ema" in state:
+        modes_to_test.append("EMA")
+
     test_phrases = [
         "The quick brown fox jumps over the lazy dog.",
         "Мама мыла раму, а папа чинил телевизор.",
         "Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers."
     ]
-    analyze_hierarchical_denoising(diff_model, test_phrases, tokenizer, device, file)
+
+    for mode in modes_to_test:
+        output_msg(f"\n{'-'*40}\n>>> Mode: {mode} Weights <<<\n{'-'*40}", file)
+        
+        # 1. Load DUS
+        dus_key = "dus_ema" if mode == "EMA" else "dus"
+        dus_dict = state.get(dus_key, {})
+        if dus_dict:
+            clean_dus = {}
+            for k, v in dus_dict.items():
+                clean_k = k.replace("_orig_module.", "").replace("student.model.", "").replace("model.", "")
+                clean_dus[clean_k] = v
+            diff_model.dus.load_state_dict(clean_dus, strict=False)
+
+        # 2. Load other components
+        for name in ["adaLN_attn", "adaLN_mlp", "t_proj_global", "t_proj_token", "t_joint_proj", "sep_embed", "self_cond_proj"]:
+            comp_key = f"{name}_ema" if mode == "EMA" else name
+            comp_state = state.get(comp_key, state.get(name, {}))
+            if comp_state:
+                if name == "sep_embed":
+                    diff_model.sep_embed.copy_(comp_state)
+                else:
+                    clean_comp = {k.replace("_orig_module.", ""): v for k, v in comp_state.items()}
+                    getattr(diff_model, name).load_state_dict(clean_comp, strict=True)
+
+        diff_model.eval()
+        analyze_weight_norms(diff_model, file)
+        analyze_adaln_sensitivity(diff_model, device, file)
+        analyze_topology_and_identity(diff_model, tokenizer, device, file)
+        analyze_hierarchical_denoising(diff_model, test_phrases, tokenizer, device, file)
+        compute_layer_divergence(diff_model.dus, file)
 
 def compute_layer_divergence(model_module, file):
     layer_params = {}
@@ -552,7 +547,6 @@ def main():
     # Evaluate each checkpoint found
     for ckpt in sorted(ckpts):
         load_and_evaluate_checkpoint(ckpt, diff_model, tokenizer, device, f)
-        compute_layer_divergence(diff_model.dus, f)
         
     output_msg(f"\nAll done! Results saved to {out_path}", f)
     f.close()

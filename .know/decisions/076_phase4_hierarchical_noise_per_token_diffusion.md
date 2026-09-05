@@ -1,3 +1,4 @@
+<!-- created: 2026-08-28 -->
 # ADR 076: Phase 4a - Hierarchical Noise and Per-Token Diffusion
 
 **Date:** 2026-08-28  

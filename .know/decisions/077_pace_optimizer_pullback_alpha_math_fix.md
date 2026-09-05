@@ -1,3 +1,4 @@
+<!-- created: 2026-08-29 -->
 # ADR 077: Исправление математики Pullback (PACE Optimizer)
 
 **Date**: 2026-08-29

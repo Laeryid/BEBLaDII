@@ -238,7 +238,7 @@ class Config:
 
     # Optimizer options
     optimizer_mode = "pace"  # "cyclic" or "pace"
-    pullback_alpha = 0.016       # Для режима pace
+    pullback_alpha = 0.001       # Для режима pace (согласно ADR 077, согласовано со скоростью обновления EMA)
 
 
 args = Config()
@@ -279,6 +279,8 @@ class EMA:
                 if param.requires_grad and name in self.shadow:
                     self.backup[name] = param.data.clone().detach()
                     param.data.copy_(self.shadow[name].to(param.dtype))
+        import torch_xla.core.xla_model as xm
+        xm.mark_step()
 
     def restore(self, model):
         with torch.no_grad():
@@ -286,6 +288,8 @@ class EMA:
                 if param.requires_grad and name in self.backup:
                     param.data.copy_(self.backup[name].to(param.dtype))
         self.backup = {}
+        import torch_xla.core.xla_model as xm
+        xm.mark_step()
 
 
 def get_latest_gcs_checkpoint(gcs_dir: str, suffix: str = ".pth"):
@@ -801,7 +805,7 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     metrics["cos_sim_t_mid"]  = ((cos_sim * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
 
     # --- cos_h39_t_* : cos(h_39, z_clean) — выход DUS ДО gate (истинный деноизинг) ---
-    h39_low_loss = torch.tensor(0.0, device=z_clean.device)
+    h39_low_loss = torch.zeros((), device=z_clean.device, dtype=z_clean.dtype)
     if "h_39" in outputs:
         h_39_norm   = safe_normalize(outputs["h_39"].float(), dim=-1)
         cos_h39     = (h_39_norm * target).sum(dim=-1)  # [B, T]
@@ -830,10 +834,10 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     metrics["cov_loss"]   = cov_loss.detach()
 
     # Variance Matching Loss удален (ADR 072)
-    var_match_loss = torch.tensor(0.0, device=z_clean.device)
+    var_match_loss = torch.zeros((), device=z_clean.device, dtype=z_clean.dtype)
 
     # --- Token-to-Token RKD Loss (анти-коллапс внутри последовательности) ---
-    seq_rkd_loss = torch.tensor(0.0, device=z_clean.device)
+    seq_rkd_loss = torch.zeros((), device=z_clean.device, dtype=z_clean.dtype)
     if "h_39" in outputs and w_seq_rkd > 0:
         h_39_norm  = safe_normalize(outputs["h_39"].float(), dim=-1)
         sim_pred   = h_39_norm @ h_39_norm.transpose(1, 2)
@@ -1054,38 +1058,31 @@ def load_checkpoint_split(
             load_flexible(actual_model.self_cond_proj, ckpt["self_cond_proj"], strict=True)
             print(f"[Resume] self_cond_proj weights loaded.")
 
-        # EMA shadows
-        ema_update = {}
-        if "dus_ema" in ckpt:
-            for k, v in ckpt["dus_ema"].items():
-                ema_update[f"dus.{k}"] = v
-        if "adaLN_attn_ema" in ckpt:
-            for k, v in ckpt["adaLN_attn_ema"].items():
-                ema_update[f"adaLN_attn.{k}"] = v
-        if "adaLN_mlp_ema" in ckpt:
-            for k, v in ckpt["adaLN_mlp_ema"].items():
-                ema_update[f"adaLN_mlp.{k}"] = v
-
-        if "t_proj_global_ema" in ckpt:
-            for k, v in ckpt["t_proj_global_ema"].items():
-                ema_update[f"t_proj_global.{k}"] = v
-        elif "t_proj_ema" in ckpt:
-            for k, v in ckpt["t_proj_ema"].items():
-                ema_update[f"t_proj_global.{k}"] = v
-
-        if "t_proj_token_ema" in ckpt:
-            for k, v in ckpt["t_proj_token_ema"].items():
-                ema_update[f"t_proj_token.{k}"] = v
-        if "t_joint_proj_ema" in ckpt:
-            for k, v in ckpt["t_joint_proj_ema"].items():
-                ema_update[f"t_joint_proj.{k}"] = v
-
-        if "self_cond_proj_ema" in ckpt:
-            for k, v in ckpt["self_cond_proj_ema"].items():
-                ema_update[f"self_cond_proj.{k}" ] = v
-        if ema_update:
-            ema.shadow.update(ema_update)
-            print(f"[Resume] EMA shadows updated ({len(ema_update)} tensors).")
+        # EMA shadows (in-place copy into existing TPU sharded tensors)
+        ema_update_count = 0
+        ema_sources = [
+            ("dus", ckpt.get("dus_ema", {})),
+            ("adaLN_attn", ckpt.get("adaLN_attn_ema", {})),
+            ("adaLN_mlp", ckpt.get("adaLN_mlp_ema", {})),
+            ("t_proj_global", ckpt.get("t_proj_global_ema", ckpt.get("t_proj_ema", {}))),
+            ("t_proj_token", ckpt.get("t_proj_token_ema", {})),
+            ("t_joint_proj", ckpt.get("t_joint_proj_ema", {})),
+            ("self_cond_proj", ckpt.get("self_cond_proj_ema", {})),
+        ]
+        for prefix, sdict in ema_sources:
+            for k, v in sdict.items():
+                k_clean = k.replace("_orig_module.", "")
+                candidates = [
+                    f"{prefix}.{k}",
+                    f"{prefix}.{k_clean}",
+                    f"{prefix}._orig_module.{k_clean}",
+                ]
+                target_key = next((cand for cand in candidates if cand in ema.shadow), None)
+                if target_key is not None:
+                    ema.shadow[target_key].copy_(v.to(device=ema.shadow[target_key].device, dtype=torch.float32))
+                    ema_update_count += 1
+        if ema_update_count > 0:
+            print(f"[Resume] EMA shadows updated via in-place copy ({ema_update_count} tensors).")
 
         if "step" in ckpt:
             start_step = ckpt["step"]
@@ -1312,8 +1309,9 @@ def train():
 
     # Инициализация EMA и PACE
     if getattr(args, "optimizer_mode", "cyclic") == "pace":
-        ema = EMA(actual_model, decay=0.99, pullback_alpha=getattr(args, "pullback_alpha", 0.1))
-        print(f"[Init] Optimizer mode: PACE (pullback_alpha={getattr(args, 'pullback_alpha', 0.1)})", flush=True)
+        cur_alpha = getattr(args, "pullback_alpha", 0.001)
+        ema = EMA(actual_model, decay=0.99, pullback_alpha=cur_alpha)
+        print(f"[Init] Optimizer mode: PACE (pullback_alpha={cur_alpha})", flush=True)
     else:
         ema = EMA(actual_model, decay=0.99, pullback_alpha=0.0)
         print("[Init] Optimizer mode: Cyclic (CosineAnnealingWarmRestarts)", flush=True)
@@ -1341,7 +1339,7 @@ def train():
                 # Обновляем EMA shadow для self_cond_proj
                 for name, param in actual_model.named_parameters():
                     if 'self_cond_proj' in name and name in ema.shadow:
-                        ema.shadow[name] = param.data.clone().detach().float().cpu()
+                        ema.shadow[name].copy_(param.data.float())
                 print("[SC] self_cond_proj was zero → RE-INITIALIZED with xavier_uniform_ (SC ACTIVATED).")
             else:
                 print(f"[SC] self_cond_proj already active (max_w={sc_weight.abs().max().item():.6f}).")
@@ -1399,8 +1397,9 @@ def train():
                 z_noisy_sampled = out_sc["z_noisy"].detach()
 
             # Обнуляем первую половину батча для эмуляции SC=OFF
-            sc_mask = torch.zeros(B, 1, 1, device=self_cond_est.device, dtype=self_cond_est.dtype)
-            sc_mask[B_half:] = 1.0
+            sc_mask_0 = torch.zeros(B_half, 1, 1, device=self_cond_est.device, dtype=self_cond_est.dtype)
+            sc_mask_1 = torch.ones(B - B_half, 1, 1, device=self_cond_est.device, dtype=self_cond_est.dtype)
+            sc_mask = torch.cat([sc_mask_0, sc_mask_1], dim=0)
             self_cond_est = self_cond_est * sc_mask
 
             # 2. Actual pass using the exact same t, exact same noise, and masked self_cond estimate
@@ -1472,7 +1471,7 @@ def train():
                 if hasattr(grad_norm_tensor, 'item'):
                     metric_tensors.append(grad_norm_tensor)
                 else:
-                    metric_tensors.append(torch.tensor(0.0, device=loss.device))
+                    metric_tensors.append(torch.zeros((), device=loss.device, dtype=loss.dtype))
 
                 stacked_metrics = torch.stack(metric_tensors).cpu().tolist()
 
@@ -1510,61 +1509,63 @@ def train():
                 except Exception as e_prof:
                     print(f"[XLA METRICS] Skipped (error: {e_prof})")
 
-            # Validation
+            # Validation (evaluated strictly on EMA weights)
             if step > start_step and (step + 5) % args.val_steps == 0:
                 model.eval()
+                ema.apply(actual_model)
                 val_metrics_sum = {}
                 val_batches = 0
-                with torch.no_grad():
-                    for val_batch in val_dataloader:
-                        v_ids  = val_batch["input_ids"].to(device)
-                        v_mask = val_batch["attention_mask"].to(device)
-                        if v_ids.size(0) != args.batch_size:
-                            continue
-                        xs.mark_sharding(v_ids, mesh, ("fsdp", None))
-                        xs.mark_sharding(v_mask, mesh, ("fsdp", None))
-                        v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
-                        v_loss, v_metrics = compute_phase4_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
-                        v_adaln_diag = compute_adaln_diagnostics(actual_model, v_out["t_emb"])
-                        v_metrics.update(v_adaln_diag)
+                try:
+                    with torch.no_grad():
+                        for val_batch in val_dataloader:
+                            v_ids  = val_batch["input_ids"].to(device)
+                            v_mask = val_batch["attention_mask"].to(device)
+                            if v_ids.size(0) != args.batch_size:
+                                continue
+                            xs.mark_sharding(v_ids, mesh, ("fsdp", None))
+                            xs.mark_sharding(v_mask, mesh, ("fsdp", None))
+                            v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
+                            v_loss, v_metrics = compute_phase4_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
+                            v_adaln_diag = compute_adaln_diagnostics(actual_model, v_out["t_emb"])
+                            v_metrics.update(v_adaln_diag)
 
+                            metric_keys = list(v_metrics.keys())
+                            metric_tensors = [v_metrics[k].mean() for k in metric_keys]
+                            metric_tensors.append(v_loss.mean())
 
+                            stacked_metrics = torch.stack(metric_tensors).cpu().tolist()
 
-                        metric_keys = list(v_metrics.keys())
-                        metric_tensors = [v_metrics[k].mean() for k in metric_keys]
-                        metric_tensors.append(v_loss.mean())
+                            for k, v in zip(metric_keys, stacked_metrics[:-1]):
+                                val_metrics_sum[f"val_{k}"] = val_metrics_sum.get(f"val_{k}", 0) + v
 
-                        stacked_metrics = torch.stack(metric_tensors).cpu().tolist()
+                            val_metrics_sum["val_loss"] = val_metrics_sum.get("val_loss", 0) + stacked_metrics[-1]
+                            val_batches += 1
 
-                        for k, v in zip(metric_keys, stacked_metrics[:-1]):
-                            val_metrics_sum[f"val_{k}"] = val_metrics_sum.get(f"val_{k}", 0) + v
+                            # Очистка локальных ссылок на тензоры внутри батча, чтобы сборщик мусора Python мог их удалить
+                            del v_out, v_loss, v_metrics, v_adaln_diag
+                            # КРИТИЧЕСКИ ВАЖНО ДЛЯ XLA: Принудительный сброс графа после каждого валидационного батча, иначе память течет
+                            torch_xla.sync()
 
-                        val_metrics_sum["val_loss"] = val_metrics_sum.get("val_loss", 0) + stacked_metrics[-1]
-                        val_batches += 1
+                            if val_batches >= 50:
+                                break
+                    # ------------------------------------------------
 
-                        # Очистка локальных ссылок на тензоры внутри батча, чтобы сборщик мусора Python мог их удалить
-                        del v_out, v_loss, v_metrics, v_adaln_diag
-                        # КРИТИЧЕСКИ ВАЖНО ДЛЯ XLA: Принудительный сброс графа после каждого валидационного батча, иначе память течет
-                        torch_xla.sync()
-
-                        if val_batches >= 50:
-                            break
-                # ------------------------------------------------
-
-                if val_batches > 0:
-                    val_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
-                    layer_div = compute_layer_divergence(actual_model.dus)
-                    val_avg["val_layer_divergence"] = layer_div
-                    if args.wandb_project:
-                        wandb.log(val_avg, step=step)
-                    print(
-                        f"\n[VAL] Step {step} | loss: {val_avg.get('val_loss', 0):.4f} "
-                        f"| h39_hi: {val_avg.get('val_cos_h39_t_high', 0):.4f} "
-                        f"| h39_mid: {val_avg.get('val_cos_h39_t_mid', 0):.4f} "
-                        f"| h39_lo: {val_avg.get('val_cos_h39_t_low', 0):.4f} "
-                        f"| cos_hi(gated): {val_avg.get('val_cos_sim_t_high', 0):.4f}"
-                    )
-                model.train()
+                    if val_batches > 0:
+                        val_avg = {k: v / val_batches for k, v in val_metrics_sum.items()}
+                        layer_div = compute_layer_divergence(actual_model.dus)
+                        val_avg["val_layer_divergence"] = layer_div
+                        if args.wandb_project:
+                            wandb.log(val_avg, step=step)
+                        print(
+                            f"\n[VAL - EMA] Step {step} | loss: {val_avg.get('val_loss', 0):.4f} "
+                            f"| h39_hi: {val_avg.get('val_cos_h39_t_high', 0):.4f} "
+                            f"| h39_mid: {val_avg.get('val_cos_h39_t_mid', 0):.4f} "
+                            f"| h39_lo: {val_avg.get('val_cos_h39_t_low', 0):.4f} "
+                            f"| cos_hi(gated): {val_avg.get('val_cos_sim_t_high', 0):.4f}"
+                        )
+                finally:
+                    ema.restore(actual_model)
+                    model.train()
 
             # Checkpoint (разделённый: модель + оптимайзер → GCS → удалить)
             if step > start_step and (step + 5) % args.save_steps == 0:
