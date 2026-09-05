@@ -525,11 +525,7 @@ def compute_layer_divergence(model_module, file):
 
 def main():
     checkpoints_dir = "C:/Experiments/BEBLaDII/experiments/phase 4/local_checkpoints"
-    out_path = os.path.join(checkpoints_dir, "evaluation_results.txt")
-    f = open(out_path, "w", encoding="utf-8")
-    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    output_msg(f"Device: {device}", f)
     
     base_qwen = "Qwen/Qwen2.5-1.5B"
     base_modernbert = "answerdotai/ModernBERT-large"
@@ -540,17 +536,19 @@ def main():
     
     ckpts = glob.glob(os.path.join(checkpoints_dir, "*.pth"))
     if not ckpts:
-        output_msg(f"No .pth checkpoints found in {checkpoints_dir}", f)
-        f.close()
+        print(f"No .pth checkpoints found in {checkpoints_dir}")
         return
 
-    # Evaluate each checkpoint found
+    # Evaluate each checkpoint found into its own output file
     for ckpt in sorted(ckpts):
-        load_and_evaluate_checkpoint(ckpt, diff_model, tokenizer, device, f)
-        
-    output_msg(f"\nAll done! Results saved to {out_path}", f)
-    f.close()
-    print(f"Results written to {out_path}")
+        ckpt_name = os.path.splitext(os.path.basename(ckpt))[0]
+        out_path = os.path.join(checkpoints_dir, f"evaluation_{ckpt_name}.txt")
+        with open(out_path, "w", encoding="utf-8") as f:
+            output_msg(f"Device: {device}", f)
+            load_and_evaluate_checkpoint(ckpt, diff_model, tokenizer, device, f)
+            output_msg(f"\nResults saved to {out_path}", f)
+        print(f"Results for {ckpt_name} written to {out_path}")
+    print("All evaluations complete!")
 
 if __name__ == "__main__":
     main()

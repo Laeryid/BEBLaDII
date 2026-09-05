@@ -213,7 +213,7 @@ class Config:
     dus_learning_rate    = 5.6e-5   # Scaled for batch=64 (from 2e-5)
     new_layers_lr        = 2.8e-4   # Scaled for batch=64 (from 1e-4)
     epochs               = 100
-    max_steps            = 9050
+    max_steps            = 40000
     log_steps            = 10
     val_steps            = 200
     save_steps           = 1000
@@ -238,7 +238,13 @@ class Config:
 
     # Optimizer options
     optimizer_mode = "pace"  # "cyclic" or "pace"
-    pullback_alpha = 0.001       # Для режима pace (согласно ADR 077, согласовано со скоростью обновления EMA)
+    pullback_alpha = 0.001       # Базовое значение (согласно ADR 077)
+    pullback_warmup_steps = 1000 # Шагов прогрева pullback_alpha
+    pullback_warmup_start = 0.03 # Стартовое значение pullback_alpha при прогреве
+    pullback_min          = 0.001# Минимальное значение (базовое)
+    pullback_max          = 0.01 # Максимальное значение в цикле
+    pullback_cycle_steps  = 2000 # Период цикла модуляции (в шагах)
+    pullback_warmup_on_resume = True # Прогрев при каждом возобновлении сессии
 
 
 args = Config()
@@ -252,14 +258,31 @@ class EMA:
     """
     Тени хранятся на TPU в float32 (избегаем CPU transfers и XLA Graph Breaks).
     """
-    def __init__(self, model, decay=0.998, pullback_alpha=0.0):
+    def __init__(self, model, decay=0.998, pullback_alpha=0.0, device=None):
         self.decay = decay
-        self.pullback_alpha = pullback_alpha
         self.shadow = {}
         self.backup = {}
+        self.use_pullback = (float(pullback_alpha) > 0.0)
+
+        # pullback_alpha хранится строго как обычный тензор (НЕ nn.Parameter)
+        dev = device
+        if dev is None:
+            try:
+                dev = next(model.parameters()).device
+            except StopIteration:
+                dev = torch.device("cpu")
+        self.pullback_alpha_tensor = torch.tensor(float(pullback_alpha), dtype=torch.float32, device=dev)
+        self.pullback_alpha_tensor.requires_grad_(False)
+        self.current_alpha_val = float(pullback_alpha)
+
         for name, param in model.named_parameters():
             if param.requires_grad:
                 self.shadow[name] = param.data.clone().detach().float()
+
+    def set_pullback_alpha(self, alpha_val: float):
+        self.current_alpha_val = float(alpha_val)
+        self.use_pullback = (self.current_alpha_val > 0.0)
+        self.pullback_alpha_tensor.fill_(alpha_val)
 
     def step(self, model):
         with torch.no_grad():
@@ -269,9 +292,9 @@ class EMA:
                     # We revert to mul_().add_() but remove the explicit .float() cast to avoid allocating 2.5GB of temporary memory.
                     self.shadow[name].mul_(self.decay).add_(param.data, alpha=1.0 - self.decay)
 
-                    if self.pullback_alpha > 0:
+                    if self.use_pullback:
                         ema_casted = self.shadow[name].to(param.dtype)
-                        param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
+                        param.data.sub_((param.data - ema_casted) * self.pullback_alpha_tensor.to(param.dtype))
 
     def apply(self, model):
         with torch.no_grad():
@@ -1309,11 +1332,11 @@ def train():
 
     # Инициализация EMA и PACE
     if getattr(args, "optimizer_mode", "cyclic") == "pace":
-        cur_alpha = getattr(args, "pullback_alpha", 0.001)
-        ema = EMA(actual_model, decay=0.99, pullback_alpha=cur_alpha)
-        print(f"[Init] Optimizer mode: PACE (pullback_alpha={cur_alpha})", flush=True)
+        cur_alpha = getattr(args, "pullback_warmup_start", getattr(args, "pullback_alpha", 0.001))
+        ema = EMA(actual_model, decay=0.99, pullback_alpha=cur_alpha, device=device)
+        print(f"[Init] Optimizer mode: PACE (pullback_alpha initial={cur_alpha})", flush=True)
     else:
-        ema = EMA(actual_model, decay=0.99, pullback_alpha=0.0)
+        ema = EMA(actual_model, decay=0.99, pullback_alpha=0.0, device=device)
         print("[Init] Optimizer mode: Cyclic (CosineAnnealingWarmRestarts)", flush=True)
 
     # --- Resume ---
@@ -1422,6 +1445,27 @@ def train():
             loss.backward()
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             optimizer.step()
+
+            # --- PACE pullback_alpha schedule & warmup ---
+            is_pace = getattr(args, "optimizer_mode", "cyclic") == "pace"
+            if is_pace:
+                step_for_pace = (step - start_step) if getattr(args, "pullback_warmup_on_resume", True) else step
+                p_warmup = getattr(args, "pullback_warmup_steps", 1000)
+                p_start = getattr(args, "pullback_warmup_start", 0.03)
+                p_min = getattr(args, "pullback_min", 0.001)
+                p_max = getattr(args, "pullback_max", 0.01)
+                p_cycle = getattr(args, "pullback_cycle_steps", 2000)
+
+                if step_for_pace < p_warmup:
+                    prog = step_for_pace / max(1, p_warmup)
+                    cur_pullback = p_min + (p_start - p_min) * (1.0 - prog)
+                else:
+                    rel_cycle = (step_for_pace - p_warmup) % p_cycle
+                    cycle_factor = 0.5 * (1.0 - math.cos(2.0 * math.pi * rel_cycle / p_cycle))
+                    cur_pullback = p_min + (p_max - p_min) * cycle_factor
+
+                ema.set_pullback_alpha(cur_pullback)
+
             ema.step(actual_model)
             torch_xla.sync()
             # grad_norm вычисляется асинхронно в блоке логирования
@@ -1429,7 +1473,6 @@ def train():
 
             # Логика LR
             current_optim_step = step + 1
-            is_pace = getattr(args, "optimizer_mode", "cyclic") == "pace"
 
             # Без XLA FIX. Если используется PACE с warmup_steps=0, LR будет константным,
             # и XLA не будет перекомпилировать граф.
@@ -1482,16 +1525,21 @@ def train():
                 metrics_dict["step"]      = step
                 metrics_dict["grad_norm"] = stacked_metrics[-1]
                 metrics_dict["samples_per_sec"] = samples_per_sec
+                if is_pace:
+                    metrics_dict["pullback_alpha"] = getattr(ema, "current_alpha_val", cur_alpha)
                 metrics_history.append(metrics_dict)
                 if args.wandb_project:
                     wandb.log(metrics_dict, step=step)
-                pbar.set_postfix({
+                postfix_data = {
                     "loss":      f"{metrics_dict['loss']:.4f}",
                     "h39_hi":    f"{metrics_dict.get('cos_h39_t_high', 0):.4f}",
                     "cos_hi":    f"{metrics_dict.get('cos_sim_t_high', 0):.4f}",
                     "grad":      f"{grad_norm:.3f}",
                     "smpl/s":    f"{samples_per_sec:.1f}",
-                })
+                }
+                if is_pace:
+                    postfix_data["p_alpha"] = f"{metrics_dict['pullback_alpha']:.4f}"
+                pbar.set_postfix(postfix_data)
 
                 log_start_time = time.time()
                 log_samples_processed = 0
