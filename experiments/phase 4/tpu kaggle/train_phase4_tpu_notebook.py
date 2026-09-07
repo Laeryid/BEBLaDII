@@ -1418,6 +1418,9 @@ def train():
                 t_r_sampled = out_sc["t_reported"].detach()
                 z_noisy_sampled = out_sc["z_noisy"].detach()
 
+            # --- OOM FIX: Принудительный барьер XLA для разделения графов первого и второго прохода ---
+            torch_xla.sync()
+
             # Обнуляем первую половину батча для эмуляции SC=OFF
             sc_mask_0 = torch.zeros(B_half, 1, 1, device=self_cond_est.device, dtype=self_cond_est.dtype)
             sc_mask_1 = torch.ones(B - B_half, 1, 1, device=self_cond_est.device, dtype=self_cond_est.dtype)
