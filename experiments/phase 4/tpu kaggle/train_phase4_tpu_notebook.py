@@ -18,7 +18,7 @@
 import os
 def setup_env():
     os.environ["PJRT_DEVICE"] = "TPU"
-    os.environ["XLA_USE_BF16"] = "1"
+    # Убрано: os.environ["XLA_USE_BF16"] = "1" (ADR 057 / Phase 4 Precision Fix)
     os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
     os.environ["XLA_USE_SPMD"] = "1"
 
@@ -210,8 +210,8 @@ class Config:
     # Гиперпараметры Phase 4a
     batch_size    = 64
     max_length    = 512
-    dus_learning_rate    = 5.6e-5   # Scaled for batch=64 (from 2e-5)
-    new_layers_lr        = 2.8e-4   # Scaled for batch=64 (from 1e-4)
+    dus_learning_rate    = 2e-5   # Возвращено к проверенному GPU-значению
+    new_layers_lr        = 1e-4   # Возвращено к проверенному GPU-значению
     epochs               = 100
     max_steps            = 40000
     log_steps            = 10
@@ -239,13 +239,12 @@ class Config:
     # Optimizer options
     optimizer_mode = "pace"  # "cyclic" or "pace"
     pullback_alpha = 0.001       # Базовое значение (согласно ADR 077)
-    pullback_warmup_steps = 1000 # Шагов прогрева pullback_alpha
+    pullback_warmup_steps = 200 # Шагов прогрева pullback_alpha
     pullback_warmup_start = 0.03 # Стартовое значение pullback_alpha при прогреве
     pullback_min          = 0.001# Минимальное значение (базовое)
-    pullback_max          = 0.01 # Максимальное значение в цикле
+    pullback_max          = 0.003 # Максимальное значение в цикле
     pullback_cycle_steps  = 2000 # Период цикла модуляции (в шагах)
-    pullback_warmup_on_resume = True # Прогрев при каждом возобновлении сессии
-
+    pullback_warmup_on_resume = False # Отключено, чтобы не затормаживать сеть при каждом возобновлении
 
 args = Config()
 

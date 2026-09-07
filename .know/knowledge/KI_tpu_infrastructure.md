@@ -14,6 +14,7 @@
 | `007` | [TPU Launch Stabilization](../decisions/007_tpu_v6e_launch_stabilization.md) | Переменные окружения и топология. |
 | `008` | [Single Process Victory](../decisions/008_single_process_spmd_victory.md) | Устранение дедлоков через однопроцессный SPMD. |
 | `010` | [Reasoning Restart](../decisions/010_spmd_fsdp_reasoning_restart.md) | Структура чекпоинтов для возобновления обучения. |
+| `082` | [TPU Precision Floor & LR Restoration](../decisions/082_tpu_precision_floor_fix_and_lr_restoration.md) | Устранение XLA_USE_BF16 (ADR 057) и возврат GPU LR. |
 
 ## Non-obvious Details
 - **XLA OOM**: Многие стандартные оптимизации (например, Gradient Checkpointing) могут вызывать OOM на XLA из-за статической компиляции графа.
