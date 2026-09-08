@@ -57,6 +57,33 @@ import numpy as np
 import torch_xla
 import torch_xla.core.xla_model as xm
 
+# --- Global NaN Debugging System ---
+GLOBAL_CURRENT_STEP = 0
+GLOBAL_START_STEP = 0
+GLOBAL_NAN_TRIGGERED = False
+
+def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):
+    """
+    Checks tensor for NaN or Inf. If step <= GLOBAL_START_STEP + step_limit,
+    logs the finding and updates GLOBAL_NAN_TRIGGERED.
+    """
+    global GLOBAL_NAN_TRIGGERED
+    if tensor is None or not isinstance(tensor, torch.Tensor):
+        return False
+    if GLOBAL_CURRENT_STEP > GLOBAL_START_STEP + step_limit and not print_always:
+        return False
+    try:
+        has_nan = bool(torch.isnan(tensor).any().item())
+        has_inf = bool(torch.isinf(tensor).any().item())
+        if has_nan or has_inf:
+            GLOBAL_NAN_TRIGGERED = True
+            msg = f"[NAN_ALERT][Step {GLOBAL_CURRENT_STEP}] {name} -> NaN: {has_nan}, Inf: {has_inf}, dtype: {tensor.dtype}, shape: {list(tensor.shape)}"
+            print(msg, flush=True)
+            return True
+    except Exception as e:
+        print(f"[NAN_ALERT_ERROR] Error checking {name}: {e}", flush=True)
+    return False
+
 # Handle torch_xla versions (Kaggle often updates to >=2.5 where experimental is moved)
 try:
     import torch_xla.experimental.xla_sharding as xs
@@ -210,8 +237,8 @@ class Config:
     # Гиперпараметры Phase 4a
     batch_size    = 32
     max_length    = 512
-    dus_learning_rate    = 2e-5   # Возвращено к проверенному GPU-значению
-    new_layers_lr        = 1e-4   # Возвращено к проверенному GPU-значению
+    dus_learning_rate = 2e-5   # GPU LR по ADR 082
+    new_layers_lr     = 1e-4   # GPU LR по ADR 082
     epochs               = 100
     max_steps            = 40000
     log_steps            = 10
@@ -598,8 +625,10 @@ class BEBLaDIIPhase4a(nn.Module):
                 self.dus.gradient_checkpointing_disable()
             print("[Init] Gradient Checkpointing disabled (prevents AdaLN hook conflict).", flush=True)
         if hasattr(self.dus, "_maybe_set_compile"):
-            self.dus._maybe_set_compile = lambda *a, **kw: None
+            self.dus._maybe_set_compile = lambda *args, **kwargs: None
 
+        # ЯВНЫЙ КАСТ К FLOAT32 (защита от bfloat16 NaN - ADR 057, 082)
+        self.dus.to(torch.float32)
         type(self.dus).dtype  = property(lambda self: torch.float32)
 
         # 4. Time Embedding (Phase 4: Hierarchical)
@@ -618,7 +647,8 @@ class BEBLaDIIPhase4a(nn.Module):
             nn.Linear(t_emb_dim * 4, t_emb_dim),
         )
 
-        self.t_joint_proj = nn.Linear(t_emb_dim * 2, t_emb_dim)
+        self.t_joint_proj = nn.Linear(t_emb_dim * 2, t_emb_dim).to(torch.float32)
+
         # Zero-Init Compatibility Trick: cat([token, global]) -> global
         nn.init.zeros_(self.t_joint_proj.weight)
         nn.init.zeros_(self.t_joint_proj.bias)
@@ -708,10 +738,16 @@ class BEBLaDIIPhase4a(nn.Module):
             z_clean_f = z_clean.float()
             z_clean_f = safe_normalize(z_clean_f, dim=-1)  # страховка
 
+            check_tensor_nan("forward.qwen_embeds", qwen_embeds)
+            check_tensor_nan("forward.z_clean", z_clean)
+            check_tensor_nan("forward.z_clean_f", z_clean_f)
+
             if z_noisy_input is not None:
                 z_noisy = z_noisy_input
             else:
                 z_noisy = spherical_noise(z_clean_f, t_actual)  # [B, T, D], float32
+
+            check_tensor_nan("forward.z_noisy", z_noisy)
 
         # --- Time Embedding (Hierarchical) ---
         t_sin_global = self.t_sin_embed(t_global)           # [B, t_emb_dim]
@@ -722,8 +758,12 @@ class BEBLaDIIPhase4a(nn.Module):
         t_sin_token.requires_grad_(True)                    # Fix FSDP backward hook warning
         t_emb_token = self.t_proj_token(t_sin_token)        # [B, T, t_emb_dim]
 
+        check_tensor_nan("forward.t_emb_global", t_emb_global)
+        check_tensor_nan("forward.t_emb_token", t_emb_token)
+
         cond = torch.cat([t_emb_token, t_emb_global.unsqueeze(1).expand(-1, T, -1)], dim=-1)
         t_emb = self.t_joint_proj(cond)                     # [B, T, t_emb_dim]
+        check_tensor_nan("forward.t_emb", t_emb)
 
         # Pad t_emb for the sep_prefix (zero vector -> neutral AdaLN modulation)
         sep_t_emb = torch.zeros(B, 1, t_emb.shape[-1], device=t_emb.device, dtype=t_emb.dtype)
@@ -732,13 +772,18 @@ class BEBLaDIIPhase4a(nn.Module):
         # --- Self-Conditioning injection (нейтрально при self_cond=None) ---
         x_in = z_noisy.float()
         if self_cond is not None:
-            x_in = x_in + self.self_cond_proj(self_cond.float().to(x_in.device))
+            check_tensor_nan("forward.self_cond_in", self_cond)
+            sc_proj_out = self.self_cond_proj(self_cond.float().to(x_in.device))
+            check_tensor_nan("forward.sc_proj_out", sc_proj_out)
+            x_in = x_in + sc_proj_out
+        check_tensor_nan("forward.x_in", x_in)
 
         # --- Конкатенируем sep_prefix (ADR 058) ---
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)            # [B, T+1, D]
         dus_input_extended.requires_grad_(True)  # Fix FSDP backward hook warning
         attention_mask_extended = F.pad(attention_mask, (1, 0), value=1)    # [B, T+1]
+        check_tensor_nan("forward.dus_input_extended", dus_input_extended)
 
         # --- Прокидываем t_emb в обертки AdaLN ---
         for layer in self.dus.layers:
@@ -756,8 +801,14 @@ class BEBLaDIIPhase4a(nn.Module):
 
         # --- Финальная нормализация (отрезаем sep) ---
         pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
+        check_tensor_nan("forward.dus_last_hidden_state", dus_outputs.last_hidden_state)
+        check_tensor_nan("forward.pre_norm", pre_norm)
+
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
+        check_tensor_nan("forward.dus_final_raw", dus_final_raw)
+
         h_39 = safe_normalize(dus_final_raw, dim=-1)  # [B, T, D] — выход DUS ядра
+        check_tensor_nan("forward.h_39", h_39)
 
         # --- ИНФЕРЕНС В ОТЛИЧИЕ ОТ ОБУЧЕНИЯ (ADR 072) ---
         # В обучении мы ТРЕБУЕМ, чтобы сеть предсказывала чистый x_0 напрямую.
@@ -800,11 +851,14 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
 
     # --- x0-prediction Cosine Loss ---
     target  = safe_normalize(z_clean, dim=-1)
+    check_tensor_nan("loss.target", target)
     cos_sim = (dus_final * target).sum(dim=-1)           # [B, T]
+    check_tensor_nan("loss.cos_sim", cos_sim)
     loss_el = 1.0 - cos_sim
 
     # В Phase 4 Min-SNR убран, взвешивание uniform (w=1.0)
     main_loss = (loss_el * attn_f).sum() / active_tokens
+    check_tensor_nan("loss.main_loss", main_loss)
 
     metrics["denoising_loss"] = main_loss.detach()
     metrics["cos_sim_all"]    = (cos_sim * attn_f).sum().detach() / active_tokens
@@ -830,7 +884,9 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     h39_low_loss = torch.zeros((), device=z_clean.device, dtype=z_clean.dtype)
     if "h_39" in outputs:
         h_39_norm   = safe_normalize(outputs["h_39"].float(), dim=-1)
+        check_tensor_nan("loss.h_39_norm", h_39_norm)
         cos_h39     = (h_39_norm * target).sum(dim=-1)  # [B, T]
+        check_tensor_nan("loss.cos_h39", cos_h39)
         metrics["cos_h39_all"] = (cos_h39 * attn_f).sum().detach() / active_tokens
         metrics["cos_h39_t_low"]  = ((cos_h39 * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
         metrics["cos_h39_t_high"] = ((cos_h39 * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
@@ -842,14 +898,19 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     z_flat    = dus_final.view(-1, D)
     mask_flat = attn_f.view(-1, 1)
     m_state   = (z_flat * mask_flat).sum(dim=0) / active_tokens
+    check_tensor_nan("loss.m_state", m_state)
     z_centered = z_flat - m_state
     v_state   = (z_centered.pow(2) * mask_flat).sum(dim=0) / active_tokens
+    check_tensor_nan("loss.v_state", v_state)
     var_floor = 1.0 / (D * 2)
     var_loss  = F.relu(var_floor - v_state).mean()
+    check_tensor_nan("loss.var_loss", var_loss)
     cov       = (z_centered.T @ (z_centered * mask_flat)) / active_tokens
     cov_off   = cov * (1.0 - torch.eye(D, device=cov.device, dtype=cov.dtype))
     cov_loss  = cov_off.pow(2).sum() / D
+    check_tensor_nan("loss.cov_loss", cov_loss)
     prior_loss = m_state.pow(2).mean() + var_loss + 0.1 * cov_loss
+    check_tensor_nan("loss.prior_loss", prior_loss)
 
     metrics["prior_loss"] = prior_loss.detach()
     metrics["var_loss"]   = var_loss.detach()
@@ -867,9 +928,11 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
         mask_2d    = (attn_f.unsqueeze(2) * attn_f.unsqueeze(1))
         active_pairs = mask_2d.sum().clamp(min=1.0)
         seq_rkd_loss = ((sim_pred - sim_target).pow(2) * mask_2d).sum() / active_pairs
+        check_tensor_nan("loss.seq_rkd_loss", seq_rkd_loss)
         metrics["seq_rkd_loss"] = seq_rkd_loss.detach()
 
     total_loss = main_loss + w_prior * prior_loss + w_seq_rkd * seq_rkd_loss
+    check_tensor_nan("loss.total_loss", total_loss)
 
     # Decoder Entropy Loss удален (ADR 072)
 
@@ -1039,6 +1102,8 @@ def load_checkpoint_split(
             expected = mod.state_dict().keys()
             new_dict = {}
             for k, v in sdict.items():
+                if torch.isnan(v).any() or torch.isinf(v).any():
+                    raise ValueError(f"CRITICAL: NaN/Inf detected in checkpoint weight '{k}'!")
                 k_clean = k.replace("_orig_module.", "")
                 if k_clean in expected:
                     new_dict[k_clean] = v
@@ -1093,6 +1158,8 @@ def load_checkpoint_split(
         ]
         for prefix, sdict in ema_sources:
             for k, v in sdict.items():
+                if torch.isnan(v).any() or torch.isinf(v).any():
+                    raise ValueError(f"CRITICAL: NaN/Inf detected in EMA shadow '{prefix}.{k}'!")
                 k_clean = k.replace("_orig_module.", "")
                 candidates = [
                     f"{prefix}.{k}",
@@ -1142,6 +1209,28 @@ def load_checkpoint_split(
         os.remove(local_opt)
     except Exception as e:
         print(f"[Resume] WARN: Optimizer checkpoint not found or failed ({e}). Fresh optimizer.")
+
+    # --- Comprehensive Post-Load Quality Audit ---
+    print("\n[Audit] Checking loaded model weights and optimizer buffers for NaN/Inf...")
+    bad_params = 0
+    for name, param in actual_model.named_parameters():
+        if param is not None:
+            if torch.isnan(param.data).any() or torch.isinf(param.data).any():
+                print(f"[AUDIT_FAIL] Model parameter '{name}' contains NaN/Inf!")
+                bad_params += 1
+    bad_opt_states = 0
+    for p_id, p_state in optimizer.state.items():
+        for s_key, s_val in p_state.items():
+            if isinstance(s_val, torch.Tensor):
+                if torch.isnan(s_val).any() or torch.isinf(s_val).any():
+                    print(f"[AUDIT_FAIL] Optimizer state '{s_key}' for param_id {p_id} contains NaN/Inf!")
+                    bad_opt_states += 1
+    if bad_params == 0 and bad_opt_states == 0:
+        print(f"[Audit] Model & Optimizer integrity VERIFIED (No NaN/Inf found).")
+    else:
+        print(f"[Audit] Found {bad_params} bad model params and {bad_opt_states} bad optimizer states!")
+        global GLOBAL_NAN_TRIGGERED
+        GLOBAL_NAN_TRIGGERED = True
 
     return start_step, metrics_history, scheduler_loaded
 
@@ -1391,6 +1480,10 @@ def train():
             if input_ids.size(0) != args.batch_size:
                 continue
 
+            global GLOBAL_CURRENT_STEP, GLOBAL_START_STEP
+            GLOBAL_CURRENT_STEP = step
+            GLOBAL_START_STEP = start_step
+
             xs.mark_sharding(input_ids, mesh, ("fsdp", None))
             xs.mark_sharding(attention_mask, mesh, ("fsdp", None))
 
@@ -1413,6 +1506,7 @@ def train():
                     self_cond=None
                 )
                 self_cond_est = out_sc["dus_final"].detach()
+                check_tensor_nan("sc_pass.dus_final", self_cond_est)
                 t_g_sampled = out_sc["t_global"].detach()
                 t_a_sampled = out_sc["t_actual"].detach()
                 t_r_sampled = out_sc["t_reported"].detach()
@@ -1423,6 +1517,7 @@ def train():
             sc_mask_1 = torch.ones(B - B_half, 1, 1, device=self_cond_est.device, dtype=self_cond_est.dtype)
             sc_mask = torch.cat([sc_mask_0, sc_mask_1], dim=0)
             self_cond_est = self_cond_est * sc_mask
+            check_tensor_nan("sc_pass.masked_self_cond_est", self_cond_est)
 
             # 2. Actual pass using the exact same t, exact same noise, and masked self_cond estimate
             fwd_outputs = model(
@@ -1441,8 +1536,24 @@ def train():
             if loss.dim() > 0:
                 loss = loss.mean()
 
+            check_tensor_nan("step.loss", loss)
+
             loss.backward()
+
+            # Check gradients across trainable parameters (first 10 steps)
+            if step <= start_step + 10:
+                bad_grads = 0
+                for name, param in actual_model.named_parameters():
+                    if param.requires_grad and param.grad is not None:
+                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                            print(f"[NAN_ALERT][Step {step}] Gradient for '{name}' contains NaN/Inf!", flush=True)
+                            bad_grads += 1
+                if bad_grads > 0:
+                    global GLOBAL_NAN_TRIGGERED
+                    GLOBAL_NAN_TRIGGERED = True
+
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            check_tensor_nan("step.grad_norm", grad_norm_tensor)
             optimizer.step()
 
             # --- PACE pullback_alpha schedule & warmup ---
@@ -1625,6 +1736,15 @@ def train():
             if 'fwd_outputs' in locals():
                 del fwd_outputs, loss, metrics
             # -----------------------------------------
+
+            # --- Graceful Early Exit on NaN/Inf Detection ---
+            if GLOBAL_NAN_TRIGGERED:
+                print(f"\n{'='*70}", flush=True)
+                print(f"[CRITICAL STOP] NaN/Inf was detected during Step {step}!", flush=True)
+                print(f"All diagnostic logs for Step {step} have been printed above.", flush=True)
+                print(f"Terminating execution to prevent wasting TPU compute resources.", flush=True)
+                print(f"{'='*70}\n", flush=True)
+                sys.exit(1)
 
             step += 1
             pbar.update(1)
