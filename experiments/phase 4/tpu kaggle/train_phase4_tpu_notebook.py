@@ -208,7 +208,7 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase4"
 
     # Гиперпараметры Phase 4a
-    batch_size    = 64
+    batch_size    = 32
     max_length    = 512
     dus_learning_rate    = 2e-5   # Возвращено к проверенному GPU-значению
     new_layers_lr        = 1e-4   # Возвращено к проверенному GPU-значению
@@ -1417,9 +1417,6 @@ def train():
                 t_a_sampled = out_sc["t_actual"].detach()
                 t_r_sampled = out_sc["t_reported"].detach()
                 z_noisy_sampled = out_sc["z_noisy"].detach()
-
-            # --- OOM FIX: Принудительный барьер XLA для разделения графов первого и второго прохода ---
-            torch_xla.sync()
 
             # Обнуляем первую половину батча для эмуляции SC=OFF
             sc_mask_0 = torch.zeros(B_half, 1, 1, device=self_cond_est.device, dtype=self_cond_est.dtype)
