@@ -94,7 +94,7 @@ graph TD
 - **Goal**: Initial creation and structuring of the latent diffusion space. Train the Latent Encoder.
 
 **Phase 2: Decoder training**
-- **Goal**: Обучение компактного декодера, способного без авторегрессии улучшить грамматику ответа.
+- **Goal**: Training a compact decoder capable of improving response grammar without autoregression.
 
 **Phase 3: Base diffusion latentBackbone training, without CA-prompt**
 - **Goal**: Train the core diffusion backbone on random phrases with a uniform noise level `t` applied identically to all tokens in a sequence. Establishes the foundational denoising capability and a stable latent geometry before introducing per-token conditioning.
