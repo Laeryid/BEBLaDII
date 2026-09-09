@@ -160,7 +160,7 @@ class Config:
     max_length    = 512
     dus_learning_rate    = 2e-5   # Пиковый LR для тела BERT (ModernBERT)
     new_layers_lr        = 1e-4   # Пиковый LR для новых слоев (AdaLN, t_proj)
-     epochs               = 100
+    epochs               = 100
     max_steps            = 400000
     log_steps            = 10
     val_steps            = 200
@@ -177,6 +177,7 @@ class Config:
     w_prior = 0.05
     w_entropy = 1.0
     w_seq_rkd = 0.0
+    w_scl = 0.5
 
     t_sample_alpha = 2.0
 
@@ -600,9 +601,13 @@ class BEBLaDIIPhase4a(nn.Module):
                     u = 1.0 - u ** t_sample_alpha
                 t_global = u * (t_max - t_min) + t_min
 
-                # Вероятность ложной уверенности p_false = t_global ** 1.5
-                p_false = t_global ** 1.5
+                # Ложная уверенность: только если шум t_global >= 0.3
+                p_false = 0.25 * (t_global ** 1.5)
+                p_false = torch.where(t_global < 0.3, torch.zeros_like(p_false), p_false)
                 is_false_confident = torch.rand(B, T, device=z_clean.device) < p_false.unsqueeze(-1)
+
+                # Истинные якоря (закрываем Data Leak) - 10% шанс быть чистым и честным
+                is_anchor = (torch.rand(B, T, device=z_clean.device) < 0.10) & (~is_false_confident)
 
                 t_min_true = torch.clamp(t_global - 0.3, min=0.0)
                 t_max_true = torch.clamp(t_global + 0.3, max=1.0)
@@ -611,12 +616,18 @@ class BEBLaDIIPhase4a(nn.Module):
                 t_actual_true = torch.rand(B, T, device=z_clean.device) * (t_max_true - t_min_true).unsqueeze(-1) + t_min_true.unsqueeze(-1)
                 t_reported_true = t_actual_true
 
-                # False confident tokens
+                # True Anchors
+                t_actual_anchor = torch.rand(B, T, device=z_clean.device) * 0.05
+                t_reported_anchor = t_actual_anchor
+
+                # False confident tokens (лжецы - шумные, но рапортуют чистоту)
                 t_actual_false = torch.rand(B, T, device=z_clean.device) * (t_global - t_global * 0.6).unsqueeze(-1) + (t_global * 0.6).unsqueeze(-1)
                 t_reported_false = torch.rand(B, T, device=z_clean.device) * (0.15 - 0.02) + 0.02
 
-                t_actual = torch.where(is_false_confident, t_actual_false, t_actual_true)
-                t_reported = torch.where(is_false_confident, t_reported_false, t_reported_true)
+                t_actual = torch.where(is_false_confident, t_actual_false, 
+                           torch.where(is_anchor, t_actual_anchor, t_actual_true))
+                t_reported = torch.where(is_false_confident, t_reported_false, 
+                             torch.where(is_anchor, t_reported_anchor, t_reported_true))
 
             z_clean_f = z_clean.float()
             z_clean_f = safe_normalize(z_clean_f, dim=-1)  # страховка
@@ -686,6 +697,7 @@ class BEBLaDIIPhase4a(nn.Module):
             "h_39":          h_39,
             "dus_final_raw": dus_final_raw,
             "attention_mask": attention_mask,
+            "is_false_confident": locals().get("is_false_confident"),
         }
 
 
@@ -697,12 +709,14 @@ class BEBLaDIIPhase4a(nn.Module):
 # + Prior Loss (геометрия сферы)
 
 # %%
-def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 0.0):
+def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 0.0, w_scl: float = 0.5):
     z_clean   = outputs["z_clean"].float()
+    z_noisy   = outputs["z_noisy"].float()
     dus_final = outputs["dus_final"].float()
     attn_f    = outputs["attention_mask"].float()
     t_global  = outputs["t_global"]
     t_actual  = outputs["t_actual"]
+    is_false_confident = outputs.get("is_false_confident")
 
     metrics = {}
     B, T, D = z_clean.size()
@@ -788,7 +802,24 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
         seq_rkd_loss = ((sim_pred - sim_target).pow(2) * mask_2d).sum() / active_pairs
         metrics["seq_rkd_loss"] = seq_rkd_loss.detach()
 
-    total_loss = main_loss + w_prior * prior_loss + w_seq_rkd * seq_rkd_loss
+    # --- Angular SCL Loss (Phase 4, Model Skepticism) ---
+    scl_loss = torch.tensor(0.0, device=z_clean.device)
+    if is_false_confident is not None and w_scl > 0:
+        mask_scl = (is_false_confident.float() * attn_f)
+        if mask_scl.sum() > 0:
+            active_scl_tokens = mask_scl.sum()
+            
+            # Половина угла диффузии: margin = cos(t_actual * pi / 4)
+            margin = torch.cos(t_actual * (math.pi / 4))
+            
+            target_noisy = safe_normalize(z_noisy, dim=-1)
+            cos_pred_noisy = (dus_final * target_noisy).sum(dim=-1)
+            
+            scl_loss_raw = F.relu(cos_pred_noisy - margin)
+            scl_loss = (scl_loss_raw * mask_scl).sum() / active_scl_tokens
+            metrics["scl_loss"] = scl_loss.detach()
+
+    total_loss = main_loss + w_prior * prior_loss + w_seq_rkd * seq_rkd_loss + w_scl * scl_loss
 
     # Decoder Entropy Loss удален (ADR 072)
 
@@ -1299,7 +1330,7 @@ def train():
                     t_sample_alpha=args.t_sample_alpha,
                     self_cond=None
                 )
-            loss, metrics = compute_phase4_loss(fwd_outputs, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
+            loss, metrics = compute_phase4_loss(fwd_outputs, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd, w_scl=args.w_scl)
 
 
 
@@ -1376,7 +1407,7 @@ def train():
                         v_ids  = val_batch["input_ids"].to(device)
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
-                        v_loss, v_metrics = compute_phase4_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
+                        v_loss, v_metrics = compute_phase4_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd, w_scl=args.w_scl)
                         v_adaln_diag = compute_adaln_diagnostics(actual_model, v_out["t_emb"])
                         v_metrics.update(v_adaln_diag)
 

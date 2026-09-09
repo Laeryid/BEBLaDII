@@ -48,8 +48,8 @@
         "mtime": 1775587798.347016
     },
     "src\\beb_la_dii\\utils\\data.py": {
-        "hash": "18c5f5f975d8c0a1ad0b377d9f2d847c0a1a27b7464b3700e9ceb5cd2dad9d9e",
-        "mtime": 1787086176.3818548
+        "hash": "62aed953333913836a8d076eb167bd40d9c806f28bfcbe3f8d51290257d0e6c8",
+        "mtime": 1788377363.175699
     },
     "src\\beb_la_dii\\utils\\experiment_manager.py": {
         "hash": "017a082828ddbfd93714cd779f991d32ea84822dd5bf23932b6c04ad76d8f6a4",
@@ -136,8 +136,8 @@
         "mtime": 1776536520.7468991
     },
     ".know\\knowledge\\KI_architectural_decisions.md": {
-        "hash": "dbc8350eedf516314ccd807fda491113db49e40438b6bf5dfb0c6a49ad9f69ec",
-        "mtime": 1786990655.9482803
+        "hash": "e64f7db17ba4e90fc250522d15b011aa4b79c3bedda7b8bd0fc896d0bafd3795",
+        "mtime": 1788972871.1219933
     },
     ".know\\knowledge\\KI_architecture.md": {
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -204,8 +204,8 @@
         "mtime": 1785406216.1986997
     },
     ".know\\knowledge\\KI_pace_optimizer.md": {
-        "hash": "ad01765b5cf2a0de1abd91c741ddfd18172c3bd290e4713892e2ba9da5537973",
-        "mtime": 1787686369.6363087
+        "hash": "e1839924770332a3e9a9e8d5b0e0bb20f4eb8a1880367dba3701f9d550757715",
+        "mtime": 1788606224.9468324
     },
     ".know\\knowledge\\KI_phase4_training.md": {
         "hash": "cab63d70bbb0a744303de2af3b35803473d13a003d1f997180fc7209f209488c",
@@ -220,8 +220,8 @@
         "mtime": 1785406215.9066088
     },
     ".know\\knowledge\\KI_tpu_infrastructure.md": {
-        "hash": "4f78574c4e2daf1b893562c9b58c3e1515f009528109dc2834758eb108a2fb2d",
-        "mtime": 1785406216.0064673
+        "hash": "0abe7315e5e7bf276da741a710233eef3f28dce9daf672cdb81a65db9f096ece",
+        "mtime": 1788805709.235473
     },
     ".know\\knowledge\\KI_training_infrastructure.md": {
         "hash": "87cad6af41d4f701202fdbc6acec0285c398d68df1e0ba213afac97446c3dc46",
@@ -236,8 +236,8 @@
         "mtime": 1785406215.8853543
     },
     ".know\\doc_config.json": {
-        "hash": "9d964dab4df74f8cf8c6baf215ee7e722715331c6e6ebb51c6861c166a5c5a37",
-        "mtime": 1787686872.4623818
+        "hash": "13e2949a4245651df1e0b8c142a392dad10213dd2d5745fc89be0b1f400e56a9",
+        "mtime": 1788972831.3763447
     },
     "ideas\\Architecture.md": {
         "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
@@ -534,6 +534,14 @@
     ".know\\decisions\\026_gradient_stabilization_rkd_cosine.md": {
         "hash": "ec7f3dec2543d62d26183f014ff50e8666148b2844635e460fc6caf2301f37c9",
         "mtime": 1779900329.8353047
+    },
+    "experiments\\phase 4\\kaggle\\train_phase4_notebook.py": {
+        "hash": "d2aacf69202f8680e16224f8d11f7e8f5dbbf903332ef0c06d37ea473248c6e1",
+        "mtime": 1788972085.742258
+    },
+    "experiments\\phase 4\\ideas.md": {
+        "hash": "429fbe4e156d918ddd068ce37675af4c1164de740650a3cb49b9c45d222d0038",
+        "mtime": 1788902397.5075426
     },
     "hugging face\\upload_weights.py": {
         "hash": "8f1e7231e0a1e9f2d189ced97c62cf05544602f92b29a0b4fdc12dcb921c1e4f",

@@ -57,32 +57,54 @@ import numpy as np
 import torch_xla
 import torch_xla.core.xla_model as xm
 
-# --- Global NaN Debugging System ---
+# --- Global NaN Debugging System (XLA Safe) ---
 GLOBAL_CURRENT_STEP = 0
 GLOBAL_START_STEP = 0
 GLOBAL_NAN_TRIGGERED = False
 
+GLOBAL_NAN_NAMES = []
+GLOBAL_NAN_CHECKS = []
+
 def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):
     """
-    Checks tensor for NaN or Inf. If step <= GLOBAL_START_STEP + step_limit,
-    logs the finding and updates GLOBAL_NAN_TRIGGERED.
+    Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.
+    This avoids breaking XLA graph into tiny pieces and causing OOM.
     """
-    global GLOBAL_NAN_TRIGGERED
     if tensor is None or not isinstance(tensor, torch.Tensor):
-        return False
+        return
     if GLOBAL_CURRENT_STEP > GLOBAL_START_STEP + step_limit and not print_always:
+        return
+    
+    # We use bitwise OR to create a single boolean condition
+    is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()
+    GLOBAL_NAN_NAMES.append(name)
+    GLOBAL_NAN_CHECKS.append(is_bad)
+
+def evaluate_nan_checks(context: str = ""):
+    """
+    Executes all aggregated NaN checks in a single XLA sync.
+    """
+    global GLOBAL_NAN_TRIGGERED, GLOBAL_NAN_NAMES, GLOBAL_NAN_CHECKS
+    if not GLOBAL_NAN_CHECKS:
         return False
-    try:
-        has_nan = bool(torch.isnan(tensor).any().item())
-        has_inf = bool(torch.isinf(tensor).any().item())
-        if has_nan or has_inf:
+    
+    # Execute all at once
+    stacked = torch.stack(GLOBAL_NAN_CHECKS)
+    import torch_xla.core.xla_model as xm
+    xm.mark_step()
+    
+    results = stacked.cpu().tolist()
+    found = False
+    for name, is_bad in zip(GLOBAL_NAN_NAMES, results):
+        if is_bad:
+            print(f"[NAN_ALERT] {context} -> '{name}' contains NaN/Inf!", flush=True)
+            found = True
             GLOBAL_NAN_TRIGGERED = True
-            msg = f"[NAN_ALERT][Step {GLOBAL_CURRENT_STEP}] {name} -> NaN: {has_nan}, Inf: {has_inf}, dtype: {tensor.dtype}, shape: {list(tensor.shape)}"
-            print(msg, flush=True)
-            return True
-    except Exception as e:
-        print(f"[NAN_ALERT_ERROR] Error checking {name}: {e}", flush=True)
-    return False
+            
+    GLOBAL_NAN_NAMES.clear()
+    GLOBAL_NAN_CHECKS.clear()
+    return found
+
 
 # Handle torch_xla versions (Kaggle often updates to >=2.5 where experimental is moved)
 try:
@@ -1537,23 +1559,23 @@ def train():
                 loss = loss.mean()
 
             check_tensor_nan("step.loss", loss)
+            
+            # Flush forward pass NaN checks
+            evaluate_nan_checks("Forward Pass")
 
             loss.backward()
 
-            # Check gradients across trainable parameters (first 10 steps)
+            # Check gradients safely
             if step <= start_step + 10:
-                bad_grads = 0
                 for name, param in actual_model.named_parameters():
                     if param.requires_grad and param.grad is not None:
-                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                            print(f"[NAN_ALERT][Step {step}] Gradient for '{name}' contains NaN/Inf!", flush=True)
-                            bad_grads += 1
-                if bad_grads > 0:
-                    global GLOBAL_NAN_TRIGGERED
-                    GLOBAL_NAN_TRIGGERED = True
+                        check_tensor_nan(f"grad.{name}", param.grad)
+                
+            evaluate_nan_checks("Backward Pass")
 
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             check_tensor_nan("step.grad_norm", grad_norm_tensor)
+            
             optimizer.step()
 
             # --- PACE pullback_alpha schedule & warmup ---

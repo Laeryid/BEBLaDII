@@ -609,6 +609,14 @@
         "src/beb_la_dii/utils/data.py"
       ]
     },
+    "decisions/083_phase4_semantic_skepticism_scl_and_anchors.md": {
+      "description": "ADR: Phase 4 семантический скептицизм, устранение Data Leak через Истинные Якоря и половинный Angular SCL.",
+      "covers": ["Architecture & Training Phases", "Utilities", "Model Core"],
+      "depends_on": [
+        "experiments/phase 4/kaggle/train_phase4_notebook.py",
+        "experiments/phase 4/ideas.md"
+      ]
+    },
     "KI_pace_optimizer.md": {
       "description": "PACE optimizer for iterate-averaged models: mechanism, benefits for diffusion, and usage.",
       "covers": ["Architecture & Training Phases"],

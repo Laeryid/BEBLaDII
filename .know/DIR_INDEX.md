@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~860 (excluding excluded directories)
-**Updated:** 2026-08-25
+**Total files in project:** ~948 (excluding excluded directories)
+**Updated:** 2026-09-09
 
 ```
 BEBLaDII/
 |-- .agent/  *(empty)*
-|-- .know/  *138 files*
-|   |-- decisions/  *74 files*
+|-- .know/  *146 files*
+|   |-- decisions/  *82 files*
 |   |-- knowledge/  *25 files*
 |   |-- scratch/  *1 files*
 |   |-- scripts/  *12 files*
@@ -29,7 +29,7 @@ BEBLaDII/
 |   `-- open_thoughts/  *37 files*
 |       |-- data/  *6 files*
 |       `-- metadata/  *12 files*
-|-- experiments/  *292 files*
+|-- experiments/  *367 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -47,9 +47,13 @@ BEBLaDII/
 |   |   |-- kaggle/  *18 files*
 |   |   |-- local_checkpoints/  *1 files*
 |   |   `-- screenshots/  *139 files*
-|   `-- phase 4/  *3 files*
+|   `-- phase 4/  *78 files*
+|       |-- kaggle/  *3 files*
+|       |-- local_checkpoints/  *5 files*
+|       |-- screenshots/  *58 files*
+|       `-- tpu kaggle/  *8 files*
 |-- hugging face/  *2 files*
-|-- ideas/  *39 files*
+|-- ideas/  *40 files*
 |-- kaggle_upload_1_2/  *2 files*
 |-- kaggle_upload_1_3/  *12 files*
 |   `-- data/  *11 files*
@@ -57,6 +61,7 @@ BEBLaDII/
 |       |-- Reasoning/  *2 files*
 |       |-- Reasoning_Tokenized/  *2 files*
 |       `-- _reasoning_source_backup/  *4 files*
+|-- posts/  *1 files*
 |-- reports/  *9 files*
 |   `-- plan_A/  *6 files*
 |-- scratch/  *22 files*
