@@ -178,6 +178,7 @@ class Config:
     w_entropy = 1.0
     w_seq_rkd = 0.0
     w_scl = 0.5
+    w_anchor = 0.3
 
     t_sample_alpha = 2.0
 
@@ -709,7 +710,7 @@ class BEBLaDIIPhase4a(nn.Module):
 # + Prior Loss (геометрия сферы)
 
 # %%
-def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 0.0, w_scl: float = 0.5):
+def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 0.0, w_scl: float = 0.5, w_anchor: float = 0.3):
     z_clean   = outputs["z_clean"].float()
     z_noisy   = outputs["z_noisy"].float()
     dus_final = outputs["dus_final"].float()
@@ -819,7 +820,22 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
             scl_loss = (scl_loss_raw * mask_scl).sum() / active_scl_tokens
             metrics["scl_loss"] = scl_loss.detach()
 
-    total_loss = main_loss + w_prior * prior_loss + w_seq_rkd * seq_rkd_loss + w_scl * scl_loss
+    # --- Anchor Identity Loss (Soft) ---
+    anchor_loss = torch.tensor(0.0, device=z_clean.device)
+    if w_anchor > 0:
+        target_noisy = safe_normalize(z_noisy, dim=-1)
+        cos_pred_input = (dus_final * target_noisy).sum(dim=-1)
+        
+        # Soft weights for anchors: 1.0 at t=0, linearly down to 0.0 at t=0.3
+        theta = 0.3
+        w_anchor_mask = F.relu(theta - t_actual) / theta
+        w_anchor_mask = w_anchor_mask * attn_f
+        
+        active_anchor_weight = w_anchor_mask.sum().clamp(min=1e-5)
+        anchor_loss = ((1.0 - cos_pred_input) * w_anchor_mask).sum() / active_anchor_weight
+        metrics["anchor_loss"] = anchor_loss.detach()
+
+    total_loss = main_loss + w_prior * prior_loss + w_seq_rkd * seq_rkd_loss + w_scl * scl_loss + w_anchor * anchor_loss
 
     # Decoder Entropy Loss удален (ADR 072)
 
@@ -1330,7 +1346,7 @@ def train():
                     t_sample_alpha=args.t_sample_alpha,
                     self_cond=None
                 )
-            loss, metrics = compute_phase4_loss(fwd_outputs, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd, w_scl=args.w_scl)
+            loss, metrics = compute_phase4_loss(fwd_outputs, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd, w_scl=args.w_scl, w_anchor=args.w_anchor)
 
 
 
@@ -1407,7 +1423,7 @@ def train():
                         v_ids  = val_batch["input_ids"].to(device)
                         v_mask = val_batch["attention_mask"].to(device)
                         v_out  = model(v_ids, attention_mask=v_mask, t_min=args.t_min, t_max=args.t_max, t_sample_alpha=args.t_sample_alpha)
-                        v_loss, v_metrics = compute_phase4_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd, w_scl=args.w_scl)
+                        v_loss, v_metrics = compute_phase4_loss(v_out, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd, w_scl=args.w_scl, w_anchor=args.w_anchor)
                         v_adaln_diag = compute_adaln_diagnostics(actual_model, v_out["t_emb"])
                         v_metrics.update(v_adaln_diag)
 

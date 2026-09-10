@@ -51,7 +51,7 @@ Below are the metrics extracted from the `phase3_step_17995.pth` checkpoint.
 **prior_loss / var_loss / cov_loss**: Control of the spherical topology. Penalties are kept near zero, indicating the preservation of isotropy and prevention of variance collapse in intermediate layers.
 
 ### 6. Diagnostic Sanity Tests Analysis (Step 17,995)
-[Test script](<experiments\phase 3\test_phase3_denoise_sanity.py>)
+[Test script](<experiments\phase 3\test_denoising_from_levels.py>)
 
 [Test results](<experiments\phase 3\sanity_tests.txt>)
 

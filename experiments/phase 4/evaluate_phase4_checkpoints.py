@@ -6,7 +6,7 @@ import glob
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from transformers import AutoModel, AutoTokenizer
+from transformers import AutoModel, AutoTokenizer, AutoModelForCausalLM
 
 if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
     sys.stdout.reconfigure(encoding='utf-8')
@@ -17,6 +17,7 @@ if PROJECT_ROOT not in sys.path:
 
 from src.beb_la_dii.model.dus import DUSModel
 from src.beb_la_dii.model.vae import LatentEncoder
+from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
 from src.beb_la_dii.utils.loss import safe_normalize
 
 def resolve_model_path(base_path: str) -> str:
@@ -210,10 +211,8 @@ class BEBLaDIIPhase4aEval(nn.Module):
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
         h_39 = safe_normalize(dus_final_raw, dim=-1)
 
-        # Identity Gate Inference (ADR 065) - t_global acts as the gate
-        gate_t = t_global.view(B, 1, 1).float()
-        dus_final_blended = gate_t * h_39 + (1.0 - gate_t) * x_in
-        dus_final = safe_normalize(dus_final_blended, dim=-1)
+        # ADR 072: Strict x0-prediction, no Identity Gate in forward
+        dus_final = h_39
 
         return {"z_clean": z_clean_f, "z_noisy": z_noisy, "t": t_global, "dus_final": dus_final, "h_39": h_39}
 
@@ -394,14 +393,26 @@ def analyze_hierarchical_denoising(diff_model, texts, tokenizer, device, file):
     for t_g in t_globals:
         output_msg(f"\n  --- t_global = {t_g} ---", file)
         
-        t_min = max(0.02, t_g - 0.3)
-        t_max = min(1.0, t_g + 0.3)
-        
-        # Simulate hierarchical noise for sequence
-        t_actual = torch.rand(B, T, device=device) * (t_max - t_min) + t_min
-        t_reported = t_actual  # The true noise level of each token
-        
         t_global_tensor = torch.tensor([t_g] * B, device=device)
+
+        # Simulate hierarchical noise (ADR 083)
+        p_false = 0.25 * (t_g ** 1.5) if t_g >= 0.3 else 0.0
+        is_false_confident = torch.rand(B, T, device=device) < p_false
+        is_anchor = (torch.rand(B, T, device=device) < 0.10) & (~is_false_confident)
+
+        t_min_true = max(0.0, t_g - 0.3)
+        t_max_true = min(1.0, t_g + 0.3)
+
+        t_actual_true = torch.rand(B, T, device=device) * (t_max_true - t_min_true) + t_min_true
+        t_actual_anchor = torch.rand(B, T, device=device) * 0.05
+        t_actual_false = torch.rand(B, T, device=device) * (t_g - t_g * 0.6) + t_g * 0.6
+        
+        t_reported_false = torch.rand(B, T, device=device) * (0.15 - 0.02) + 0.02
+        
+        t_actual = torch.where(is_false_confident, t_actual_false,
+                   torch.where(is_anchor, t_actual_anchor, t_actual_true))
+        t_reported = torch.where(is_false_confident, t_reported_false,
+                     torch.where(is_anchor, t_actual_anchor, t_actual_true))
         
         with torch.no_grad():
             z_noisy = spherical_noise(z_clean, t_actual)
@@ -423,20 +434,178 @@ def analyze_hierarchical_denoising(diff_model, texts, tokenizer, device, file):
             
             cos_per_token = (h_39_i * z_c_i).sum(dim=-1)
             
-            # Group into bins based on t_actual
-            lo_mask = t_a_i < 0.3
-            mid_mask = (t_a_i >= 0.3) & (t_a_i <= 0.7)
-            hi_mask = t_a_i > 0.7
+            # Group into bins based on token types
+            anchor_mask = is_anchor[i][m_i]
+            false_mask = is_false_confident[i][m_i]
+            normal_mask = (~anchor_mask) & (~false_mask)
             
-            lo_cos = cos_per_token[lo_mask].mean().item() if lo_mask.sum() > 0 else 0.0
-            mid_cos = cos_per_token[mid_mask].mean().item() if mid_mask.sum() > 0 else 0.0
-            hi_cos = cos_per_token[hi_mask].mean().item() if hi_mask.sum() > 0 else 0.0
+            anchor_cos = cos_per_token[anchor_mask].mean().item() if anchor_mask.sum() > 0 else 0.0
+            normal_cos = cos_per_token[normal_mask].mean().item() if normal_mask.sum() > 0 else 0.0
+            false_cos = cos_per_token[false_mask].mean().item() if false_mask.sum() > 0 else 0.0
             
             cat = "English" if i == 0 else "Russian" if i == 1 else "Science"
-            output_msg(f"  {cat[:7]:<7} | lo (t<0.3): {lo_cos:.4f} | mid (0.3<t<0.7): {mid_cos:.4f} | hi (t>0.7): {hi_cos:.4f}", file)
+            output_msg(f"  {cat[:7]:<7} | Anchor: {anchor_cos:.4f} | Normal: {normal_cos:.4f} | FalseConf: {false_cos:.4f}", file)
 
 
-def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenizer, device: torch.device, file):
+def decode_z(z: torch.Tensor, decoder: nn.Module, lm_head_weight: torch.Tensor, tokenizer) -> str:
+    with torch.no_grad():
+        projected = decoder(z.to(next(decoder.parameters()).dtype))
+        logits = F.linear(projected.float(), lm_head_weight.float())
+        pred_ids = logits.argmax(dim=-1)
+        if pred_ids.dim() > 1:
+            return tokenizer.decode(pred_ids[0], skip_special_tokens=True)
+        return tokenizer.decode(pred_ids, skip_special_tokens=True)
+
+def slerp_sampler(diff_model, input_ids, attn_mask, steps=25, device="cpu"):
+    B, T = input_ids.shape
+    D = 1024
+
+    x_t = safe_normalize(torch.randn(B, T, D, device=device), dim=-1)
+    t_steps = torch.linspace(1.0, 0.0, steps + 1, device=device)
+
+    for i in range(steps):
+        t_cur = t_steps[i]
+        t_next = t_steps[i + 1]
+
+        t_global_tensor = torch.tensor([t_cur.item()] * B, device=device)
+        
+        with torch.no_grad():
+            out_sc = diff_model(input_ids, attn_mask, t_global=t_global_tensor, z_noisy_override=x_t)
+            sc_est = out_sc["dus_final"].detach()
+            out = diff_model(input_ids, attn_mask, t_global=t_global_tensor, self_cond=sc_est, z_noisy_override=x_t)
+            pred_x0 = out["dus_final"]
+
+        theta_next = t_next * (math.pi / 2)
+
+        if t_cur > 0.0:
+            eps_pred = x_t - (x_t * pred_x0).sum(dim=-1, keepdim=True) * pred_x0
+            eps_pred = safe_normalize(eps_pred, dim=-1)
+        else:
+            eps_pred = torch.zeros_like(x_t)
+
+        x_t = math.cos(theta_next) * pred_x0 + math.sin(theta_next) * eps_pred
+        x_t = safe_normalize(x_t, dim=-1)
+
+    return x_t
+
+def hierarchical_slerp_sampler(diff_model, input_ids, attn_mask, z_clean, tokenizer, decoder, lm_head_weight, file, texts, model_version, steps=25, device="cpu"):
+    """
+    Асинхронный (иерархический) инференс с использованием Аналитического Spherical DDIM.
+    С экспортом промежуточных уровней шума и декодированного текста в CSV.
+    """
+    B, T = input_ids.shape
+    D = 1024
+
+    import csv
+    import os
+    csv_path = r"C:\Experiments\BEBLaDII\experiments\phase 4\local_checkpoints\diffusion_trajectory.csv"
+    
+    file_exists = os.path.exists(csv_path)
+    with open(csv_path, mode='a', newline='', encoding='utf-8') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["ModelVersion", "Phrase", "Iteration", "TokenIndex", "TokenString", "NoiseValue"])
+
+    t_init = torch.zeros(B, T, device=device)
+    for b in range(B):
+        t_b = torch.rand(T, device=device) * 0.7 + 0.2
+        indices = torch.randperm(T, device=device)
+        num_clean = max(1, int(0.20 * T))
+        num_noise = max(1, int(0.10 * T))
+        t_b[indices[:num_clean]] = 0.1
+        t_b[indices[num_clean:num_clean+num_noise]] = 1.0
+        t_init[b] = t_b
+        
+    x_t = spherical_noise(z_clean, t_init)
+    
+    def log_state_to_csv(iteration, current_x, current_t):
+        with torch.no_grad():
+            dec_out = decoder(current_x.to(next(decoder.parameters()).dtype))
+            logits = F.linear(dec_out.float(), lm_head_weight.float())
+            token_ids = logits.argmax(dim=-1)
+            
+            with open(csv_path, mode='a', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                for b in range(B):
+                    mask_len = int(attn_mask[b].sum().item())
+                    phrase_title = f"Phrase {b}: {texts[b][:20]}..."
+                    for j in range(mask_len):
+                        t_val = current_t[b, j].item()
+                        word = tokenizer.decode([token_ids[b, j].item()])
+                        writer.writerow([model_version, phrase_title, iteration, j, word, t_val])
+
+    log_state_to_csv(0, x_t, t_init)
+    
+    for i in range(steps):
+        t_global = max(0.0, 1.0 - i * (1.0 / steps))
+        t_global_tensor = torch.tensor([t_global] * B, device=device)
+        
+        cos_sim = (x_t * z_clean).sum(dim=-1)
+        cos_sim_clamped = torch.clamp(cos_sim, -0.9999, 0.9999)
+        t_reported = (2.0 / math.pi) * torch.acos(cos_sim_clamped)
+        
+        log_state_to_csv(i + 1, x_t, t_reported)
+        
+        with torch.no_grad():
+            out_sc = diff_model(input_ids, attn_mask, t_global=t_global_tensor, t_reported=t_reported, z_noisy_override=x_t)
+            sc_est = out_sc["dus_final"].detach()
+            out = diff_model(input_ids, attn_mask, t_global=t_global_tensor, t_reported=t_reported, self_cond=sc_est, z_noisy_override=x_t)
+            z_pred_raw = out["dus_final"]
+            
+        dt = 1.0 / steps
+        t_next = torch.clamp(t_reported - dt, min=0.0)
+        
+        gate_t = torch.sin(t_reported * (math.pi / 2)).unsqueeze(-1)
+        z_pred = safe_normalize(gate_t * z_pred_raw + (1.0 - gate_t) * x_t, dim=-1)
+
+        theta_now = (t_reported * (math.pi / 2)).unsqueeze(-1)
+        theta_next = (t_next * (math.pi / 2)).unsqueeze(-1)
+        sin_theta_now = torch.sin(theta_now)
+        sin_theta_now = torch.where(sin_theta_now < 1e-5, torch.ones_like(sin_theta_now) * 1e-5, sin_theta_now)
+        
+        w_pred = torch.sin(theta_now - theta_next) / sin_theta_now
+        w_cur  = torch.sin(theta_next) / sin_theta_now
+        
+        z_next = w_pred * z_pred + w_cur * x_t
+        x_t = torch.where(theta_now > 1e-5, safe_normalize(z_next, dim=-1), safe_normalize(z_pred, dim=-1))
+        
+    return x_t
+
+def analyze_multistep_diffusion(diff_model, texts, tokenizer, decoder, lm_head_weight, device, file, model_version="RAW"):
+    output_msg("\n======================================================================", file)
+    output_msg("БЛОК 6: Multistep Diffusion (Slerp 25 steps)", file)
+    output_msg("======================================================================", file)
+
+    tok = tokenizer(texts, return_tensors="pt", add_special_tokens=False, padding=True)
+    input_ids_batch = tok.input_ids.to(device)
+    mask_batch = tok.attention_mask.to(device)
+
+    with torch.no_grad():
+        q_embs = diff_model.qwen_embeddings(input_ids_batch)
+        z_clean_unnorm, _, _ = diff_model.encoder(q_embs)
+        z_clean = safe_normalize(z_clean_unnorm.float(), dim=-1)
+
+    output_msg("\n  [Baseline Clean Decoded]:", file)
+    for i, txt in enumerate(texts):
+        m_i = mask_batch[i].bool()
+        z_c_i = z_clean[i:i+1][:, m_i, :]
+        clean_dec = decode_z(z_c_i, decoder, lm_head_weight, tokenizer)
+        output_msg(f"    {i}: {clean_dec}", file)
+
+    output_msg("\n  [Sampling from Hierarchical Noise (t=1.0 & t=0.3 -> 0.0)]:", file)
+    x_sampled = hierarchical_slerp_sampler(diff_model, input_ids_batch, mask_batch, z_clean, tokenizer, decoder, lm_head_weight, file, texts, model_version, steps=25, device=device)
+    
+    for i, txt in enumerate(texts):
+        m_i = mask_batch[i].bool()
+        z_c_i = z_clean[i][m_i]
+        x_s_i = x_sampled[i][m_i]
+        
+        cos_sim = (x_s_i * z_c_i).sum(dim=-1).mean().item()
+        sampled_dec = decode_z(x_sampled[i:i+1][:, m_i, :], decoder, lm_head_weight, tokenizer)
+        
+        output_msg(f"    {i} (Cos={cos_sim:.4f}): {sampled_dec}", file)
+
+def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenizer, decoder, lm_head_weight, device: torch.device, file):
     output_msg(f"\n{'='*80}\nEvaluating Checkpoint: {os.path.basename(ckpt_path)}\n{'='*80}", file)
     state = torch.load(ckpt_path, map_location="cpu")
 
@@ -491,6 +660,10 @@ def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenize
         analyze_adaln_sensitivity(diff_model, device, file)
         analyze_topology_and_identity(diff_model, tokenizer, device, file)
         analyze_hierarchical_denoising(diff_model, test_phrases, tokenizer, device, file)
+        
+        ckpt_name = os.path.basename(ckpt_path).replace(".pth", "")
+        full_version = f"{ckpt_name}_{mode}"
+        analyze_multistep_diffusion(diff_model, test_phrases, tokenizer, decoder, lm_head_weight, device, file, model_version=full_version)
         compute_layer_divergence(diff_model.dus, file)
 
 def compute_layer_divergence(model_module, file):
@@ -531,6 +704,28 @@ def main():
     base_modernbert = "answerdotai/ModernBERT-large"
 
     tokenizer = AutoTokenizer.from_pretrained(base_qwen)
+    
+    # --- Load LM Head and Decoder ---
+    print("Loading AutoModelForCausalLM for lm_head...")
+    causal_model = AutoModelForCausalLM.from_pretrained(base_qwen, torch_dtype=torch.float32)
+    lm_head_weight = causal_model.lm_head.weight.detach().clone().to(device)
+    del causal_model
+
+    print("Loading ModernLatentDecoder...")
+    dus_weights_path = "C:/Experiments/BEBLaDII/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt"
+    decoder = ModernLatentDecoder(latent_dim=1024, qwen_dim=1536, num_layers=3, dus_weights_path=dus_weights_path).to(device)
+    dec_paths = [
+        "C:/Experiments/BEBLaDII/experiments/phase 2/planB_phase2_checkpoints_decoder_step_9000.pth",
+        "C:/Experiments/BEBLaDII/BEBLaDII-planB-Phase3-Data/planB_phase2_phase2_decoder_step_8000.pth",
+    ]
+    dec_path = next((p for p in dec_paths if os.path.exists(p)), None)
+    if dec_path:
+        st = torch.load(dec_path, map_location="cpu", weights_only=False)
+        decoder.load_state_dict({k.replace("decoder.", ""): v for k, v in st.get("decoder", st).items()}, strict=False)
+        print(f"Decoder loaded from {dec_path}")
+    decoder.eval()
+    # --------------------------------
+
     diff_model = BEBLaDIIPhase4aEval(embedding_model_path=base_qwen, modernbert_path=base_modernbert)
     diff_model.to(device)
     
@@ -545,7 +740,7 @@ def main():
         out_path = os.path.join(checkpoints_dir, f"evaluation_{ckpt_name}.txt")
         with open(out_path, "w", encoding="utf-8") as f:
             output_msg(f"Device: {device}", f)
-            load_and_evaluate_checkpoint(ckpt, diff_model, tokenizer, device, f)
+            load_and_evaluate_checkpoint(ckpt, diff_model, tokenizer, decoder, lm_head_weight, device, f)
             output_msg(f"\nResults saved to {out_path}", f)
         print(f"Results for {ckpt_name} written to {out_path}")
     print("All evaluations complete!")
