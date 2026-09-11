@@ -121,7 +121,7 @@ graph TD
   * [Phase 3 Same-Noise Diffusion core training](reports\plan_b_phase3_report.md)
 
 ### Plan A (failed)
-[README Plan A](<experiments\Plan A\README.md>)
+[README Plan A](<experiments/Plan A/README.md>)
 * Phase 1
   * [Phase 1 Awakening Report](reports/plan_A/phase1_awakening_report.md)
 

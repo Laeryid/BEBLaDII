@@ -1,5 +1,34 @@
+11.09.2026
 
+𝗕𝗘𝗕𝗟𝗮𝗗𝗜𝗜
 
+Attempt 1 - 𝗧𝗵𝗲 𝗙𝗮𝗶𝗹𝘂𝗿𝗲 𝗼𝗳 𝗣𝗹𝗮𝗻 𝗔. 📉
+
+So, for a couple of months, I’ve been discussing different aspects of my idea with an AI — building a diffusion model that injects information from an indexed data store. The further I dug into it, the more fascinated I became. So, when I learned that Kaggle offers free compute available for AI training, and later discovered Google’s TRC program, I put my other projects on hold and dove straight into designing the AI.
+
+From the very beginning, I placed my bets on small phases: training relatively small AI components and using a tailored approach for each stage with custom datasets and loss functions. Optimistically, I mapped out a 10-phase plan and got to work.
+
+There was a lot involved: reusing pre-trained decoders and encoders from other models, ruthlessly slicing models into pieces, applying DUS (Depth Up-Scaling) to build the diffusion core, and distilling knowledge from a much larger teacher model — basically, a ton of elegant tech. Naturally, a lot of time was spent simply trying to get the training runs to launch, whether on Kaggle or TPUs. And don't even get me started on how many loss function variations I had to test just to reconcile conflicting requirements... If you’re curious, you can read about the different ideas and attempts in ADRs 1-37:
+https://github.com/Laeryid/BEBLaDII/tree/main/.know/decisions
+
+I officially declared this attempt a failure during Phase 3. Not as late as it could have been, thankfully.
+
+In short, here are the reasons it failed:
+
+1. I shoved 𝗠𝗟𝗣 𝗽𝗿𝗼𝗷𝗲𝗰𝘁𝗼𝗿𝘀 𝗲𝘃𝗲𝗿𝘆𝘄𝗵𝗲𝗿𝗲 the vector spaces didn't match. And there were quite a few of those places (more on that later). But every single projector was imperfect and introduced its own distortions.
+2. I severely underestimated the importance of 𝗹𝗮𝘁𝗲𝗻𝘁 𝘀𝗽𝗮𝗰𝗲 𝗾𝘂𝗮𝗹𝗶𝘁𝘆. Specifically, the diffusion space, where canvas tokens must continuously move to form the final answer. To be honest, I had no real understanding of the math behind diffusion, what it requires, or how it actually works...
+3. I focused heavily on distilling knowledge from a teacher — a 7B parameter DeepSeek model. It turned out that the 𝗶𝗻𝘁𝗲𝗿𝗻𝗮𝗹 𝗮𝗻𝗶𝘀𝗼𝘁𝗿𝗼𝗽𝘆 𝗼𝗳 𝗮𝗻 𝗮𝘂𝘁𝗼𝗿𝗲𝗴𝗿𝗲𝘀𝘀𝗶𝘃𝗲 𝗟𝗟𝗠 heavily — HEAVILY — interfered with diffusion. And three projectors couldn't help. The loss function terms fought each other, and the model struggled to learn.
+
+Overall, Plan B is defined by the following changes:
+
+• Distillation from a teacher is postponed.
+• The initial phases don't touch diffusion weights at all — first, we must build a latent space that is actually suitable for diffusion.
+
+And this has yielded much better results! More on that in upcoming posts :)
+
+Have you ever had to scrap an entire architecture and start over? How did you know it was time to pivot?
+
+#MachineLearning #AI #DiffusionModels #NeuralNetworks #GoogleTRC #BEBLaDII
 
 04.09.2026
 

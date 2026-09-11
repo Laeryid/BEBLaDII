@@ -42,7 +42,7 @@ It was expected that the query would confidently match either itself or close sy
 
 ## 3. Code Logic: How Phase 3 Was Conducted
 
-The entire Phase 3 pipeline is concentrated in the `experiments/phase 3` folder. The logic is divided into dictionary precomputation and TPU training.
+The entire Phase 3 pipeline is concentrated in the `experiments/Plan A/phase 3` folder. The logic is divided into dictionary precomputation and TPU training.
 
 ### 3.1. Dictionary Precomputation (`build_dictionaries.py`)
 To avoid running the entire DUS on every step, we build static dictionaries (mappings) once on CPU/GPU:

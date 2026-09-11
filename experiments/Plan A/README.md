@@ -129,11 +129,14 @@ The training lifecycle is divided into 10 strict atomic phases to ensure perfect
 ## Reports
 
 * Phase 1
-  * [Phase 1 Awakening Report](reports/phase1_awakening_report.md)
+  * [Phase 1 Awakening Report](../../reports/plan_A/phase1_awakening_report.md)
 
 * Phase 2
-  * [Phase 2 Reasoning Report: Failures retrospective](reports/phase2_failures_retrospective.md)
-  * [Phase 2 Reasoning and Topology Report](reports/phase2_reasoning_and_topology_report.md)
+  * [Phase 2 Reasoning Report: Failures retrospective](../../reports/plan_A/phase2_failures_retrospective.md)
+  * [Phase 2 Reasoning and Topology Report](../../reports/plan_A/phase2_reasoning_and_topology_report.md)
+
+* Phase 3
+  * [Phase 3 Output projector Report: Failures retrospective](../../reports/plan_A/phase3_failures_retrospective.md)
 
 ## Acknowledgments
 
