@@ -488,7 +488,7 @@ def slerp_sampler(diff_model, input_ids, attn_mask, steps=25, device="cpu"):
 
     return x_t
 
-def hierarchical_slerp_sampler(diff_model, input_ids, attn_mask, z_clean, tokenizer, decoder, lm_head_weight, file, texts, model_version, steps=25, device="cpu"):
+def hierarchical_slerp_sampler(diff_model, input_ids, attn_mask, z_clean, tokenizer, decoder, lm_head_weight, file, texts, model_version, run_date, steps=25, device="cpu"):
     """
     Асинхронный (иерархический) инференс с использованием Аналитического Spherical DDIM.
     С экспортом промежуточных уровней шума и декодированного текста в CSV.
@@ -504,7 +504,7 @@ def hierarchical_slerp_sampler(diff_model, input_ids, attn_mask, z_clean, tokeni
     with open(csv_path, mode='a', newline='', encoding='utf-8') as f:
         writer = csv.writer(f)
         if not file_exists:
-            writer.writerow(["ModelVersion", "Phrase", "Iteration", "TokenIndex", "TokenString", "NoiseValue"])
+            writer.writerow(["ModelVersion", "Phrase", "Iteration", "TokenIndex", "TokenString", "NoiseValue", "RunDate"])
 
     t_init = torch.zeros(B, T, device=device)
     for b in range(B):
@@ -532,7 +532,7 @@ def hierarchical_slerp_sampler(diff_model, input_ids, attn_mask, z_clean, tokeni
                     for j in range(mask_len):
                         t_val = current_t[b, j].item()
                         word = tokenizer.decode([token_ids[b, j].item()])
-                        writer.writerow([model_version, phrase_title, iteration, j, word, t_val])
+                        writer.writerow([model_version, phrase_title, iteration, j, word, t_val, run_date])
 
     log_state_to_csv(0, x_t, t_init)
     
@@ -571,7 +571,7 @@ def hierarchical_slerp_sampler(diff_model, input_ids, attn_mask, z_clean, tokeni
         
     return x_t
 
-def analyze_multistep_diffusion(diff_model, texts, tokenizer, decoder, lm_head_weight, device, file, model_version="RAW"):
+def analyze_multistep_diffusion(diff_model, texts, tokenizer, decoder, lm_head_weight, device, file, run_date, model_version="RAW"):
     output_msg("\n======================================================================", file)
     output_msg("БЛОК 6: Multistep Diffusion (Slerp 25 steps)", file)
     output_msg("======================================================================", file)
@@ -593,7 +593,7 @@ def analyze_multistep_diffusion(diff_model, texts, tokenizer, decoder, lm_head_w
         output_msg(f"    {i}: {clean_dec}", file)
 
     output_msg("\n  [Sampling from Hierarchical Noise (t=1.0 & t=0.3 -> 0.0)]:", file)
-    x_sampled = hierarchical_slerp_sampler(diff_model, input_ids_batch, mask_batch, z_clean, tokenizer, decoder, lm_head_weight, file, texts, model_version, steps=25, device=device)
+    x_sampled = hierarchical_slerp_sampler(diff_model, input_ids_batch, mask_batch, z_clean, tokenizer, decoder, lm_head_weight, file, texts, model_version, run_date, steps=25, device=device)
     
     for i, txt in enumerate(texts):
         m_i = mask_batch[i].bool()
@@ -605,7 +605,7 @@ def analyze_multistep_diffusion(diff_model, texts, tokenizer, decoder, lm_head_w
         
         output_msg(f"    {i} (Cos={cos_sim:.4f}): {sampled_dec}", file)
 
-def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenizer, decoder, lm_head_weight, device: torch.device, file):
+def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenizer, decoder, lm_head_weight, device: torch.device, file, run_date: str):
     output_msg(f"\n{'='*80}\nEvaluating Checkpoint: {os.path.basename(ckpt_path)}\n{'='*80}", file)
     state = torch.load(ckpt_path, map_location="cpu")
 
@@ -663,7 +663,7 @@ def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenize
         
         ckpt_name = os.path.basename(ckpt_path).replace(".pth", "")
         full_version = f"{ckpt_name}_{mode}"
-        analyze_multistep_diffusion(diff_model, test_phrases, tokenizer, decoder, lm_head_weight, device, file, model_version=full_version)
+        analyze_multistep_diffusion(diff_model, test_phrases, tokenizer, decoder, lm_head_weight, device, file, run_date, model_version=full_version)
         compute_layer_divergence(diff_model.dus, file)
 
 def compute_layer_divergence(model_module, file):
@@ -697,6 +697,8 @@ def compute_layer_divergence(model_module, file):
 
 
 def main():
+    import datetime
+    run_date = datetime.datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     checkpoints_dir = "C:/Experiments/BEBLaDII/experiments/phase 4/local_checkpoints"
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
@@ -740,7 +742,7 @@ def main():
         out_path = os.path.join(checkpoints_dir, f"evaluation_{ckpt_name}.txt")
         with open(out_path, "w", encoding="utf-8") as f:
             output_msg(f"Device: {device}", f)
-            load_and_evaluate_checkpoint(ckpt, diff_model, tokenizer, decoder, lm_head_weight, device, f)
+            load_and_evaluate_checkpoint(ckpt, diff_model, tokenizer, decoder, lm_head_weight, device, f, run_date)
             output_msg(f"\nResults saved to {out_path}", f)
         print(f"Results for {ckpt_name} written to {out_path}")
     print("All evaluations complete!")

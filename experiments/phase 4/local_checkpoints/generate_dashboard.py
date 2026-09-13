@@ -11,35 +11,40 @@ if not os.path.exists(csv_path):
     exit(1)
 
 data = {}
-# data[phrase][model_version][iteration] = [{"token": "word", "noise": 0.5}, ...]
+# data[run_date][model_version][phrase][iteration] = [{"token": "word", "noise": 0.5}, ...]
 
 with open(csv_path, mode='r', encoding='utf-8') as f:
     reader = csv.DictReader(f)
     for row in reader:
+        run_date = row.get("RunDate", "Unknown")
         phrase = row["Phrase"]
         model_version = row["ModelVersion"]
         iteration = int(row["Iteration"])
         word = row["TokenString"]
         noise = float(row["NoiseValue"])
         
-        if phrase not in data:
-            data[phrase] = {}
-        if model_version not in data[phrase]:
-            data[phrase][model_version] = {}
-        if iteration not in data[phrase][model_version]:
-            data[phrase][model_version][iteration] = []
+        if run_date not in data:
+            data[run_date] = {}
+        if model_version not in data[run_date]:
+            data[run_date][model_version] = {}
+        if phrase not in data[run_date][model_version]:
+            data[run_date][model_version][phrase] = {}
+        if iteration not in data[run_date][model_version][phrase]:
+            data[run_date][model_version][phrase][iteration] = []
             
-        data[phrase][model_version][iteration].append({"token": word, "noise": noise})
+        data[run_date][model_version][phrase][iteration].append({"token": word, "noise": noise})
 
 # Convert to a format easy for JS
 js_data = {}
-for phrase, versions in data.items():
-    js_data[phrase] = {}
-    for version, iters in versions.items():
-        sorted_iters = sorted(iters.keys())
-        js_data[phrase][version] = []
-        for it in sorted_iters:
-            js_data[phrase][version].append({"iteration": it, "tokens": iters[it]})
+for run_date, versions in data.items():
+    js_data[run_date] = {}
+    for version, phrases in versions.items():
+        js_data[run_date][version] = {}
+        for phrase, iters in phrases.items():
+            sorted_iters = sorted(iters.keys())
+            js_data[run_date][version][phrase] = []
+            for it in sorted_iters:
+                js_data[run_date][version][phrase].append({"iteration": it, "tokens": iters[it]})
 
 html_content = f"""
 <!DOCTYPE html>
@@ -59,11 +64,14 @@ html_content = f"""
 <body>
     <h1>Token Noise Trajectory</h1>
     
-    <label for="phraseSelect">Select Phrase:</label>
-    <select id="phraseSelect" style="width: 50%;"></select>
+    <label for="dateSelect">Select Run Date:</label>
+    <select id="dateSelect" style="width: 20%;"></select>
     
     <label for="versionSelect">Select Model Version:</label>
-    <select id="versionSelect" style="width: 20%;"></select>
+    <select id="versionSelect" style="width: 30%;"></select>
+    
+    <label for="phraseSelect">Select Phrase:</label>
+    <select id="phraseSelect" style="width: 50%;"></select>
     
     <div class="slider-container">
         <label for="iterSlider">Diffusion Iteration: <strong id="iterLabel">0</strong> (0 = Start, 25 = Final)</label><br>
@@ -77,40 +85,54 @@ html_content = f"""
     <script>
         const trajectoryData = {json.dumps(js_data)};
         
-        const phraseSelect = document.getElementById('phraseSelect');
+        const dateSelect = document.getElementById('dateSelect');
         const versionSelect = document.getElementById('versionSelect');
+        const phraseSelect = document.getElementById('phraseSelect');
         const iterSlider = document.getElementById('iterSlider');
         const iterLabel = document.getElementById('iterLabel');
         const textDisplay = document.getElementById('textDisplay');
         
         let chart = null;
         
-        // Populate phrase select
-        for (const phrase in trajectoryData) {{
+        for (const date in trajectoryData) {{
             const option = document.createElement('option');
-            option.value = phrase;
-            option.textContent = phrase;
-            phraseSelect.appendChild(option);
+            option.value = date;
+            option.textContent = date;
+            dateSelect.appendChild(option);
         }}
         
         function updateVersionSelect() {{
-            const phrase = phraseSelect.value;
+            const date = dateSelect.value;
             versionSelect.innerHTML = '';
-            for (const version in trajectoryData[phrase]) {{
+            for (const version in trajectoryData[date]) {{
                 const option = document.createElement('option');
                 option.value = version;
                 option.textContent = version;
                 versionSelect.appendChild(option);
             }}
         }}
+
+        function updatePhraseSelect() {{
+            const date = dateSelect.value;
+            const version = versionSelect.value;
+            phraseSelect.innerHTML = '';
+            for (const phrase in trajectoryData[date][version]) {{
+                const option = document.createElement('option');
+                option.value = phrase;
+                option.textContent = phrase;
+                phraseSelect.appendChild(option);
+            }}
+        }}
         
         function updateView() {{
-            const phrase = phraseSelect.value;
+            const date = dateSelect.value;
             const version = versionSelect.value;
+            const phrase = phraseSelect.value;
             const iterIdx = parseInt(iterSlider.value);
             
-            const versionData = trajectoryData[phrase][version];
-            if (!versionData || iterIdx >= versionData.length) return;
+            if (!trajectoryData[date] || !trajectoryData[date][version] || !trajectoryData[date][version][phrase]) return;
+            const versionData = trajectoryData[date][version][phrase];
+            if (iterIdx >= versionData.length) return;
             
             const currentIter = versionData[iterIdx];
             iterLabel.textContent = currentIter.iteration;
@@ -124,7 +146,6 @@ html_content = f"""
                 const span = document.createElement('span');
                 span.className = 'token';
                 span.textContent = t.token;
-                // Color based on noise (red = high noise, green = low noise)
                 const r = Math.round(t.noise * 255);
                 const g = Math.round((1 - t.noise) * 200);
                 span.style.backgroundColor = `rgba(${{r}}, ${{g}}, 50, 0.4)`;
@@ -161,15 +182,23 @@ html_content = f"""
             }}
         }}
         
-        phraseSelect.addEventListener('change', () => {{
+        dateSelect.addEventListener('change', () => {{
             updateVersionSelect();
-            iterSlider.max = trajectoryData[phraseSelect.value][versionSelect.value].length - 1;
+            updatePhraseSelect();
+            iterSlider.max = trajectoryData[dateSelect.value][versionSelect.value][phraseSelect.value].length - 1;
             iterSlider.value = 0;
             updateView();
         }});
         
         versionSelect.addEventListener('change', () => {{
-            iterSlider.max = trajectoryData[phraseSelect.value][versionSelect.value].length - 1;
+            updatePhraseSelect();
+            iterSlider.max = trajectoryData[dateSelect.value][versionSelect.value][phraseSelect.value].length - 1;
+            iterSlider.value = 0;
+            updateView();
+        }});
+        
+        phraseSelect.addEventListener('change', () => {{
+            iterSlider.max = trajectoryData[dateSelect.value][versionSelect.value][phraseSelect.value].length - 1;
             iterSlider.value = 0;
             updateView();
         }});
@@ -178,7 +207,8 @@ html_content = f"""
         
         // Init
         updateVersionSelect();
-        iterSlider.max = trajectoryData[phraseSelect.value][versionSelect.value].length - 1;
+        updatePhraseSelect();
+        iterSlider.max = trajectoryData[dateSelect.value][versionSelect.value][phraseSelect.value].length - 1;
         updateView();
         
     </script>
