@@ -40,48 +40,48 @@ Evaluating Checkpoint: phase4_step_14995.pth
   -----------+---------+---------+--------
 
   --- Topology at t=0.1 ---
-  L4 : Iso=0.6260 R1=0.4022 CV=0.0436
-  L19: Iso=0.5471 R1=0.4404 CV=0.4396
-  L39: Iso=0.5734 R1=0.3457 CV=0.5293
+  L4 : Iso=0.6266 R1=0.4005 CV=0.0432
+  L19: Iso=0.5444 R1=0.4445 CV=0.4443
+  L39: Iso=0.5738 R1=0.3460 CV=0.5288
 
   --- Topology at t=0.5 ---
-  L4 : Iso=0.6791 R1=0.3718 CV=0.0390
-  L19: Iso=0.5968 R1=0.3785 CV=0.3995
-  L39: Iso=0.5800 R1=0.3424 CV=0.5172
+  L4 : Iso=0.7018 R1=0.3457 CV=0.0297
+  L19: Iso=0.6339 R1=0.3129 CV=0.3452
+  L39: Iso=0.5765 R1=0.3439 CV=0.5224
 
   --- Topology at t=0.9 ---
-  L4 : Iso=0.8415 R1=0.2053 CV=0.0206
-  L19: Iso=0.8056 R1=0.1140 CV=0.1287
-  L39: Iso=0.5763 R1=0.3823 CV=0.4793
+  L4 : Iso=0.8955 R1=0.1220 CV=0.0148
+  L19: Iso=0.8112 R1=0.1330 CV=0.1040
+  L39: Iso=0.7500 R1=0.1573 CV=0.1858
 
   Identity Cos(Pred, Clean) - POST GATE:
-  English    |  0.8107 |  0.7674 |  0.3493
-  Russian    |  0.9385 |  0.9253 |  0.5669
-  Science    |  0.7939 |  0.7520 |  0.3531
+  English    |  0.8117 |  0.7659 |  0.3403
+  Russian    |  0.9386 |  0.9234 |  0.4522
+  Science    |  0.7942 |  0.7420 |  0.3391
 
   Identity Cos(h39, Clean) - PRE GATE:
-  English    |  0.8107 |  0.7674 |  0.3493
-  Russian    |  0.9385 |  0.9253 |  0.5669
-  Science    |  0.7939 |  0.7520 |  0.3531
+  English    |  0.8117 |  0.7659 |  0.3403
+  Russian    |  0.9386 |  0.9234 |  0.4522
+  Science    |  0.7942 |  0.7420 |  0.3391
 
 ======================================================================
 БЛОК 5: Hierarchical Token Denoising (Phase 4 Simulation)
 ======================================================================
 
   --- t_global = 0.2 ---
-  English | Anchor: 0.0000 | Normal: 0.7869 | FalseConf: 0.0000
-  Russian | Anchor: 0.9556 | Normal: 0.9307 | FalseConf: 0.0000
-  Science | Anchor: 0.7766 | Normal: 0.8630 | FalseConf: 0.0000
+  English | Anchor: 0.7372 | Normal: 0.8166 | FalseConf: 0.0000
+  Russian | Anchor: 0.9344 | Normal: 0.9334 | FalseConf: 0.0000
+  Science | Anchor: 0.8760 | Normal: 0.8387 | FalseConf: 0.0000
 
   --- t_global = 0.5 ---
-  English | Anchor: 0.8163 | Normal: 0.7672 | FalseConf: 0.6359
-  Russian | Anchor: 0.9597 | Normal: 0.8956 | FalseConf: 0.9779
-  Science | Anchor: 0.9140 | Normal: 0.7767 | FalseConf: 0.7061
+  English | Anchor: 0.6850 | Normal: 0.7885 | FalseConf: 0.6833
+  Russian | Anchor: 0.9431 | Normal: 0.9065 | FalseConf: 0.8974
+  Science | Anchor: 0.0000 | Normal: 0.7729 | FalseConf: 0.8322
 
   --- t_global = 0.8 ---
-  English | Anchor: 0.6655 | Normal: 0.7007 | FalseConf: 0.7237
-  Russian | Anchor: 0.9397 | Normal: 0.8140 | FalseConf: 0.9185
-  Science | Anchor: 0.8758 | Normal: 0.5582 | FalseConf: 0.7583
+  English | Anchor: 0.0000 | Normal: 0.6277 | FalseConf: 0.7693
+  Russian | Anchor: 0.9717 | Normal: 0.7182 | FalseConf: 0.8072
+  Science | Anchor: 0.6762 | Normal: 0.6313 | FalseConf: 0.7955
 
 ======================================================================
 БЛОК 6: Multistep Diffusion (Slerp 25 steps)
@@ -93,9 +93,9 @@ Evaluating Checkpoint: phase4_step_14995.pth
     2: quantum computing is a rapidly-emerging technology that harnesses the law of quantum mechanics to solve problems too complex for classical computers.
 
   [Sampling from Hierarchical Noise (t=1.0 & t=0.3 -> 0.0)]:
-    0 (Cos=0.6773): The block brown radius jumps over the lazy dog,
-    1 (Cos=0.8475): Мамаtsyлаедину, а паба чинил телепизор.
-    2 (Cos=0.7134): Quant». computing is a veryEM adjustment, that harnesses the laws of graph mechanics to solve problems, complex for general computers.
+    0 (Cos=0.6200): The price brown files ends over the lazy dog有的人
+    1 (Cos=0.8077): Мама,лаneysу, а пупа чинил течевизор.
+    2 (Cos=0.7544): Quantum computing is a graphEMrist geometry that harnesses the vectors is quantum mechanics to solve problem more complex for standard calculations.
 
   Average Layer Divergence (Block 1 vs Block 2): 0.0667
 
@@ -135,48 +135,48 @@ Evaluating Checkpoint: phase4_step_14995.pth
   -----------+---------+---------+--------
 
   --- Topology at t=0.1 ---
-  L4 : Iso=0.7100 R1=0.2784 CV=0.0210
-  L19: Iso=0.6964 R1=0.2364 CV=0.1184
-  L39: Iso=0.5564 R1=0.3592 CV=0.5618
+  L4 : Iso=0.7104 R1=0.2787 CV=0.0211
+  L19: Iso=0.6968 R1=0.2358 CV=0.1189
+  L39: Iso=0.5573 R1=0.3585 CV=0.5604
 
   --- Topology at t=0.5 ---
-  L4 : Iso=0.7741 R1=0.2414 CV=0.0241
-  L19: Iso=0.7144 R1=0.2150 CV=0.1046
-  L39: Iso=0.5567 R1=0.3598 CV=0.5509
+  L4 : Iso=0.7849 R1=0.2315 CV=0.0207
+  L19: Iso=0.7248 R1=0.2131 CV=0.1047
+  L39: Iso=0.5579 R1=0.3610 CV=0.5552
 
   --- Topology at t=0.9 ---
-  L4 : Iso=0.8971 R1=0.1287 CV=0.0224
-  L19: Iso=0.7988 R1=0.1686 CV=0.0993
-  L39: Iso=0.5199 R1=0.4279 CV=0.5625
+  L4 : Iso=0.8929 R1=0.1259 CV=0.0249
+  L19: Iso=0.7937 R1=0.1550 CV=0.1035
+  L39: Iso=0.5387 R1=0.3881 CV=0.5684
 
   Identity Cos(Pred, Clean) - POST GATE:
-  English    |  0.8323 |  0.7822 |  0.4600
-  Russian    |  0.9387 |  0.9260 |  0.5909
-  Science    |  0.8129 |  0.7682 |  0.4150
+  English    |  0.8314 |  0.7876 |  0.3868
+  Russian    |  0.9390 |  0.9254 |  0.5618
+  Science    |  0.8125 |  0.7592 |  0.3654
 
   Identity Cos(h39, Clean) - PRE GATE:
-  English    |  0.8323 |  0.7822 |  0.4600
-  Russian    |  0.9387 |  0.9260 |  0.5909
-  Science    |  0.8129 |  0.7682 |  0.4150
+  English    |  0.8314 |  0.7876 |  0.3868
+  Russian    |  0.9390 |  0.9254 |  0.5618
+  Science    |  0.8125 |  0.7592 |  0.3654
 
 ======================================================================
 БЛОК 5: Hierarchical Token Denoising (Phase 4 Simulation)
 ======================================================================
 
   --- t_global = 0.2 ---
-  English | Anchor: 0.0000 | Normal: 0.8148 | FalseConf: 0.0000
-  Russian | Anchor: 0.8655 | Normal: 0.9487 | FalseConf: 0.0000
-  Science | Anchor: 0.8227 | Normal: 0.8600 | FalseConf: 0.0000
+  English | Anchor: 0.0000 | Normal: 0.8152 | FalseConf: 0.0000
+  Russian | Anchor: 0.8816 | Normal: 0.9380 | FalseConf: 0.0000
+  Science | Anchor: 0.9296 | Normal: 0.8466 | FalseConf: 0.0000
 
   --- t_global = 0.5 ---
-  English | Anchor: 0.7605 | Normal: 0.7874 | FalseConf: 0.8114
-  Russian | Anchor: 0.8797 | Normal: 0.9328 | FalseConf: 0.8772
-  Science | Anchor: 0.7577 | Normal: 0.8238 | FalseConf: 0.8511
+  English | Anchor: 0.7126 | Normal: 0.7983 | FalseConf: 0.8487
+  Russian | Anchor: 0.9167 | Normal: 0.9219 | FalseConf: 0.9326
+  Science | Anchor: 0.8146 | Normal: 0.8124 | FalseConf: 0.8801
 
   --- t_global = 0.8 ---
-  English | Anchor: 0.0000 | Normal: 0.3354 | FalseConf: 0.7464
-  Russian | Anchor: 0.0000 | Normal: 0.7957 | FalseConf: 0.8851
-  Science | Anchor: 0.9989 | Normal: 0.5567 | FalseConf: 0.9772
+  English | Anchor: 0.0000 | Normal: 0.4437 | FalseConf: 0.7858
+  Russian | Anchor: 0.9571 | Normal: 0.7824 | FalseConf: 0.9690
+  Science | Anchor: 0.7503 | Normal: 0.6829 | FalseConf: 0.8471
 
 ======================================================================
 БЛОК 6: Multistep Diffusion (Slerp 25 steps)
@@ -188,9 +188,9 @@ Evaluating Checkpoint: phase4_step_14995.pth
     2: quantum computing is a rapidly-emerging technology that harnesses the law of quantum mechanics to solve problems too complex for classical computers.
 
   [Sampling from Hierarchical Noise (t=1.0 & t=0.3 -> 0.0)]:
-    0 (Cos=0.7415): The_deg candy fox-stars over the lazy dog.
-    1 (Cos=0.8534): Кама мы-Cs гару, а папа чинный телевизор.
-    2 (Cos=0.7677):  Graphu compute is a quickly Emerging technology that harnesses the rows because geometricm to solve problem too complex for classical randomness.
+    0 (Cos=0.8368): The quick brown fox jumps over the lazy dog.
+    1 (Cos=0.8635): Мама цла раму, а пвина чинил телевизор.
+    2 (Cos=0.7513):  Functionum compute is a slowlyEMирования symmetric thatustesreste rows of geometric mechanics to make problem too complex for deterministic compute.
 
   Average Layer Divergence (Block 1 vs Block 2): 0.0649
 

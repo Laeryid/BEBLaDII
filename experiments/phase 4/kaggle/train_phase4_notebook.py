@@ -182,6 +182,11 @@ class Config:
 
     t_sample_alpha = 2.0
 
+    # Noise-Aware Context Trust (Phase 4, Curriculum Stage 1 defaults)
+    lambda_iso = 0.5
+    alpha_weighted = 1.5
+    beta_iso = 1.5
+
     use_gradient_checkpointing = True
 
     wandb_project = "BEBLaDII-Phase4-Kaggle"
@@ -602,33 +607,72 @@ class BEBLaDIIPhase4a(nn.Module):
                     u = 1.0 - u ** t_sample_alpha
                 t_global = u * (t_max - t_min) + t_min
 
-                # Ложная уверенность: только если шум t_global >= 0.3
-                p_false = 0.25 * (t_global ** 1.5)
-                p_false = torch.where(t_global < 0.3, torch.zeros_like(p_false), p_false)
-                is_false_confident = torch.rand(B, T, device=z_clean.device) < p_false.unsqueeze(-1)
+                batch_types = torch.rand(B, device=z_clean.device)
+                mask_A1 = batch_types < 0.2
+                mask_A2 = (batch_types >= 0.2) & (batch_types < 0.4)
+                mask_B  = (batch_types >= 0.4) & (batch_types < 0.8)
+                mask_C  = batch_types >= 0.8
 
-                # Истинные якоря (закрываем Data Leak) - 10% шанс быть чистым и честным
-                is_anchor = (torch.rand(B, T, device=z_clean.device) < 0.10) & (~is_false_confident)
+                t_actual = torch.zeros(B, T, device=z_clean.device)
+                t_reported = torch.zeros(B, T, device=z_clean.device)
+                is_false_confident = torch.zeros(B, T, device=z_clean.device, dtype=torch.bool)
 
-                t_min_true = torch.clamp(t_global - 0.3, min=0.0)
-                t_max_true = torch.clamp(t_global + 0.3, max=1.0)
-
-                # Normal tokens
-                t_actual_true = torch.rand(B, T, device=z_clean.device) * (t_max_true - t_min_true).unsqueeze(-1) + t_min_true.unsqueeze(-1)
-                t_reported_true = t_actual_true
-
-                # True Anchors
-                t_actual_anchor = torch.rand(B, T, device=z_clean.device) * 0.05
-                t_reported_anchor = t_actual_anchor
-
-                # False confident tokens (лжецы - шумные, но рапортуют чистоту)
-                t_actual_false = torch.rand(B, T, device=z_clean.device) * (t_global - t_global * 0.6).unsqueeze(-1) + (t_global * 0.6).unsqueeze(-1)
-                t_reported_false = torch.rand(B, T, device=z_clean.device) * (0.15 - 0.02) + 0.02
-
-                t_actual = torch.where(is_false_confident, t_actual_false, 
-                           torch.where(is_anchor, t_actual_anchor, t_actual_true))
-                t_reported = torch.where(is_false_confident, t_reported_false, 
-                             torch.where(is_anchor, t_reported_anchor, t_reported_true))
+                for b in range(B):
+                    if mask_A1[b]:
+                        # A1: Остров (Абсолютный якорь) - 1-3 чистых якоря
+                        t_actual[b] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
+                        num_anchors = torch.randint(1, 4, (1,)).item()
+                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
+                        t_actual[b, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.15
+                        t_reported[b] = t_actual[b]
+                        
+                    elif mask_A2[b]:
+                        # A2: Остров (Относительный якорь)
+                        t_global[b] = torch.rand(1, device=z_clean.device).squeeze() * 0.3 + 0.7
+                        t_actual[b] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
+                        num_anchors = torch.randint(1, 4, (1,)).item()
+                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
+                        t_actual[b, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.2 + 0.3
+                        t_reported[b] = t_actual[b]
+                        
+                    elif mask_B[b]:
+                        # B: Море чистоты - 1-3 шумных выброса
+                        t_global[b] = torch.rand(1, device=z_clean.device).squeeze() * 0.2
+                        t_actual[b] = torch.rand(T, device=z_clean.device) * 0.2
+                        num_noisy = torch.randint(1, 4, (1,)).item()
+                        noisy = torch.randperm(T, device=z_clean.device)[:num_noisy]
+                        t_actual[b, noisy] = torch.rand(num_noisy, device=z_clean.device) * 0.3 + 0.7
+                        t_reported[b] = t_actual[b]
+                        
+                    else: # mask_C
+                        # C: Смешанный (Старая логика)
+                        t_min_true = torch.clamp(t_global[b] - 0.3, min=0.0)
+                        t_max_true = torch.clamp(t_global[b] + 0.3, max=1.0)
+                        
+                        t_actual_true = torch.rand(T, device=z_clean.device) * (t_max_true - t_min_true) + t_min_true
+                        
+                        # Контекстный шум (окно 11)
+                        kernel = torch.ones(1, 1, 11, device=z_clean.device) / 11
+                        ctx_noise = F.conv1d(t_actual_true.view(1, 1, T), kernel, padding=5, padding_mode='reflect').view(T)
+                        ctx_noise = (ctx_noise * 11 - t_actual_true) / 10
+                        
+                        can_be_false = (t_global[b] >= 0.3) & (t_global[b] < 0.7) & (ctx_noise < 0.4)
+                        
+                        p_false = 0.25 * (t_global[b] ** 1.5)
+                        false_mask = can_be_false & (torch.rand(T, device=z_clean.device) < p_false)
+                        is_false_confident[b] = false_mask
+                        
+                        is_anchor = (torch.rand(T, device=z_clean.device) < 0.10) & (~false_mask)
+                        
+                        t_actual[b] = torch.where(false_mask, 
+                                        torch.rand(T, device=z_clean.device) * (t_global[b] - t_global[b]*0.6) + t_global[b]*0.6,
+                                        torch.where(is_anchor, 
+                                            torch.rand(T, device=z_clean.device) * 0.05, 
+                                            t_actual_true))
+                                            
+                        t_reported[b] = torch.where(false_mask,
+                                          torch.rand(T, device=z_clean.device) * (0.15 - 0.02) + 0.02,
+                                          t_actual[b])
 
             z_clean_f = z_clean.float()
             z_clean_f = safe_normalize(z_clean_f, dim=-1)  # страховка
@@ -710,13 +754,15 @@ class BEBLaDIIPhase4a(nn.Module):
 # + Prior Loss (геометрия сферы)
 
 # %%
-def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 0.0, w_scl: float = 0.5, w_anchor: float = 0.3):
+def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 0.0, w_scl: float = 0.5, w_anchor: float = 0.3,
+                        lambda_iso: float = 0.5, alpha_weighted: float = 1.5, beta_iso: float = 1.5):
     z_clean   = outputs["z_clean"].float()
     z_noisy   = outputs["z_noisy"].float()
     dus_final = outputs["dus_final"].float()
     attn_f    = outputs["attention_mask"].float()
     t_global  = outputs["t_global"]
     t_actual  = outputs["t_actual"]
+    t_reported = outputs.get("t_reported", t_actual)
     is_false_confident = outputs.get("is_false_confident")
 
     metrics = {}
@@ -728,10 +774,29 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     cos_sim = (dus_final * target).sum(dim=-1)           # [B, T]
     loss_el = 1.0 - cos_sim
 
-    # В Phase 4 Min-SNR убран, взвешивание uniform (w=1.0)
-    main_loss = (loss_el * attn_f).sum() / active_tokens
+    # L_weighted (вместо uniform взвешивания)
+    w_weighted = (1.0 - t_reported).pow(alpha_weighted) * attn_f
+    main_loss_w = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
+    
+    # L_isolation (штраф за контекстную коррупцию)
+    window = 5
+    t_exp = t_reported.unsqueeze(1) # [B, 1, T]
+    kernel = torch.ones(1, 1, 2 * window + 1, device=z_clean.device) / (2 * window + 1)
+    ctx_noise = F.conv1d(t_exp, kernel, padding=window, padding_mode='reflect').squeeze(1) # [B, T]
+    ctx_noise = (ctx_noise * (2*window+1) - t_reported) / (2*window)
+    ctx_noise = ctx_noise.clamp(0, 1)
+
+    k_sig = 5.0
+    clean_mask = torch.sigmoid(-k_sig * (t_reported - 0.5)) # [B, T]
+    
+    penalty = loss_el * (1.0 + beta_iso * ctx_noise) * clean_mask * attn_f
+    l_iso_loss = penalty.sum() / active_tokens
+
+    main_loss = main_loss_w + lambda_iso * l_iso_loss
 
     metrics["denoising_loss"] = main_loss.detach()
+    metrics["loss_weighted"]  = main_loss_w.detach()
+    metrics["loss_isolation"] = l_iso_loss.detach()
     metrics["cos_sim_all"]    = (cos_sim * attn_f).sum().detach() / active_tokens
 
     # Метрики по уровням шума (диагностика)
@@ -1346,9 +1411,16 @@ def train():
                     t_sample_alpha=args.t_sample_alpha,
                     self_cond=None
                 )
-            loss, metrics = compute_phase4_loss(fwd_outputs, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd, w_scl=args.w_scl, w_anchor=args.w_anchor)
-
-
+            loss, metrics = compute_phase4_loss(
+                fwd_outputs, 
+                w_prior=args.w_prior, 
+                w_seq_rkd=args.w_seq_rkd, 
+                w_scl=args.w_scl, 
+                w_anchor=args.w_anchor,
+                lambda_iso=args.lambda_iso,
+                alpha_weighted=args.alpha_weighted,
+                beta_iso=args.beta_iso
+            )
 
             if loss.dim() > 0:
                 loss = loss.mean()

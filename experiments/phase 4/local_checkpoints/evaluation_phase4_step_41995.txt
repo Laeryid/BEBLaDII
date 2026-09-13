@@ -1,0 +1,197 @@
+Device: cpu
+
+================================================================================
+Evaluating Checkpoint: phase4_step_41995.pth
+================================================================================
+
+----------------------------------------
+>>> Mode: LIVE Weights <<<
+----------------------------------------
+
+======================================================================
+БЛОК 1: Нормы весов (DUS + AdaLN)
+======================================================================
+   Layer |  AvgWeightNorm
+       0 |        53.2985
+      10 |        59.1407
+      20 |        57.9055
+      30 |        61.2202
+      39 |        68.7624
+  adaLN_attn: mean_w_norm=7.5722, min=4.6022, max=18.2702
+  adaLN_mlp: mean_w_norm=10.1104, min=4.7281, max=21.4988
+
+======================================================================
+БЛОК 2: AdaLN Sensitivity (delta t_global=0.01 vs 0.99)
+======================================================================
+    L | attn|Δshift| | attn|Δscale| | mlp|Δshift| | mlp|Δscale|
+  ----+--------------+--------------+-------------+------------
+    0 |     0.018735 |     0.127558 |    0.017280 |    0.051629
+    1 |     0.011065 |     0.074453 |    0.017858 |    0.047131
+    2 |     0.009338 |     0.065567 |    0.018813 |    0.048688
+    3 |     0.009141 |     0.057178 |    0.017983 |    0.050768
+    4 |     0.012374 |     0.038075 |    0.018893 |    0.047028
+
+======================================================================
+БЛОК 3 & 4: Topology & Identity Preservation
+======================================================================
+  [Baseline z_clean] Iso=0.8325 Rank1=0.1020 CV=0.0000
+
+  Text (Identity) | t=  0.1 | t=  0.5 | t=  0.9
+  -----------+---------+---------+--------
+
+  --- Topology at t=0.1 ---
+  L4 : Iso=0.5995 R1=0.4114 CV=0.0312
+  L19: Iso=0.6403 R1=0.3353 CV=0.2501
+  L39: Iso=0.6270 R1=0.2482 CV=0.4836
+
+  --- Topology at t=0.5 ---
+  L4 : Iso=0.6356 R1=0.3998 CV=0.0311
+  L19: Iso=0.6689 R1=0.2802 CV=0.2791
+  L39: Iso=0.6318 R1=0.2485 CV=0.4705
+
+  --- Topology at t=0.9 ---
+  L4 : Iso=0.6868 R1=0.4028 CV=0.0350
+  L19: Iso=0.7005 R1=0.2709 CV=0.2856
+  L39: Iso=0.5608 R1=0.3617 CV=0.4822
+
+  Identity Cos(Pred, Clean) - POST GATE:
+  English    |  0.8903 |  0.8588 |  0.4735
+  Russian    |  0.9824 |  0.9769 |  0.6479
+  Science    |  0.8853 |  0.8438 |  0.4291
+
+  Identity Cos(h39, Clean) - PRE GATE:
+  English    |  0.8903 |  0.8588 |  0.4735
+  Russian    |  0.9824 |  0.9769 |  0.6479
+  Science    |  0.8853 |  0.8438 |  0.4291
+
+======================================================================
+БЛОК 5: Hierarchical Token Denoising (Phase 4 Simulation)
+======================================================================
+
+  --- t_global = 0.2 ---
+  English | Anchor: 0.9826 | Normal: 0.8582 | FalseConf: 0.0000
+  Russian | Anchor: 0.9895 | Normal: 0.9788 | FalseConf: 0.0000
+  Science | Anchor: 0.8474 | Normal: 0.9232 | FalseConf: 0.0000
+
+  --- t_global = 0.5 ---
+  English | Anchor: 0.7993 | Normal: 0.8756 | FalseConf: 0.7832
+  Russian | Anchor: 0.0000 | Normal: 0.9689 | FalseConf: 0.9793
+  Science | Anchor: 0.9192 | Normal: 0.8735 | FalseConf: 0.9130
+
+  --- t_global = 0.8 ---
+  English | Anchor: 0.0000 | Normal: 0.7465 | FalseConf: 0.7156
+  Russian | Anchor: 0.9945 | Normal: 0.9395 | FalseConf: 0.8445
+  Science | Anchor: 0.9337 | Normal: 0.7759 | FalseConf: 0.8331
+
+======================================================================
+БЛОК 6: Multistep Diffusion (Slerp 25 steps)
+======================================================================
+
+  [Baseline Clean Decoded]:
+    0: The quick brown fox jumps over the lazy dog.
+    1: Мама мыла раму, а папа чинил телевизор.
+    2: quantum computing is a rapidly-emerging technology that harnesses the law of quantum mechanics to solve problems too complex for classical computers.
+
+  [Sampling from Hierarchical Noise (t=1.0 & t=0.3 -> 0.0)]:
+    0 (Cos=0.8504): The hack brown fox jumps over the lazy dog.
+    1 (Cos=0.9267): Мама мы где раму, а папа чинил телевизор.
+    2 (Cos=0.7801): Conceptomial computing is a rapidly-exberger technology that harness using the rows of quantum mechanics to solve solutions too complex for classical computers.
+
+  Average Layer Divergence (Block 1 vs Block 2): 0.1089
+
+----------------------------------------
+>>> Mode: EMA Weights <<<
+----------------------------------------
+
+======================================================================
+БЛОК 1: Нормы весов (DUS + AdaLN)
+======================================================================
+   Layer |  AvgWeightNorm
+       0 |        53.2930
+      10 |        59.1393
+      20 |        57.9038
+      30 |        61.2168
+      39 |        68.7520
+  adaLN_attn: mean_w_norm=7.5536, min=4.5867, max=18.1911
+  adaLN_mlp: mean_w_norm=10.0888, min=4.7144, max=21.4702
+
+======================================================================
+БЛОК 2: AdaLN Sensitivity (delta t_global=0.01 vs 0.99)
+======================================================================
+    L | attn|Δshift| | attn|Δscale| | mlp|Δshift| | mlp|Δscale|
+  ----+--------------+--------------+-------------+------------
+    0 |     0.019028 |     0.129650 |    0.017862 |    0.054687
+    1 |     0.011247 |     0.077085 |    0.018364 |    0.048643
+    2 |     0.009564 |     0.068343 |    0.019350 |    0.049898
+    3 |     0.009266 |     0.059202 |    0.018311 |    0.052334
+    4 |     0.012495 |     0.038951 |    0.019268 |    0.047948
+
+======================================================================
+БЛОК 3 & 4: Topology & Identity Preservation
+======================================================================
+  [Baseline z_clean] Iso=0.8325 Rank1=0.1020 CV=0.0000
+
+  Text (Identity) | t=  0.1 | t=  0.5 | t=  0.9
+  -----------+---------+---------+--------
+
+  --- Topology at t=0.1 ---
+  L4 : Iso=0.6033 R1=0.4044 CV=0.0342
+  L19: Iso=0.6441 R1=0.3588 CV=0.2655
+  L39: Iso=0.6296 R1=0.2451 CV=0.4785
+
+  --- Topology at t=0.5 ---
+  L4 : Iso=0.6465 R1=0.3847 CV=0.0354
+  L19: Iso=0.6884 R1=0.2998 CV=0.2354
+  L39: Iso=0.6309 R1=0.2466 CV=0.4725
+
+  --- Topology at t=0.9 ---
+  L4 : Iso=0.6953 R1=0.3815 CV=0.0417
+  L19: Iso=0.7917 R1=0.1720 CV=0.1214
+  L39: Iso=0.5136 R1=0.3334 CV=0.5040
+
+  Identity Cos(Pred, Clean) - POST GATE:
+  English    |  0.8917 |  0.8563 |  0.3843
+  Russian    |  0.9832 |  0.9793 |  0.6797
+  Science    |  0.8880 |  0.8525 |  0.3987
+
+  Identity Cos(h39, Clean) - PRE GATE:
+  English    |  0.8917 |  0.8563 |  0.3843
+  Russian    |  0.9832 |  0.9793 |  0.6797
+  Science    |  0.8880 |  0.8525 |  0.3987
+
+======================================================================
+БЛОК 5: Hierarchical Token Denoising (Phase 4 Simulation)
+======================================================================
+
+  --- t_global = 0.2 ---
+  English | Anchor: 0.0000 | Normal: 0.8886 | FalseConf: 0.0000
+  Russian | Anchor: 0.9903 | Normal: 0.9817 | FalseConf: 0.0000
+  Science | Anchor: 0.0000 | Normal: 0.9104 | FalseConf: 0.0000
+
+  --- t_global = 0.5 ---
+  English | Anchor: 0.8073 | Normal: 0.8580 | FalseConf: 0.9945
+  Russian | Anchor: 0.9901 | Normal: 0.9827 | FalseConf: 0.9405
+  Science | Anchor: 0.8763 | Normal: 0.8732 | FalseConf: 0.9992
+
+  --- t_global = 0.8 ---
+  English | Anchor: 0.8739 | Normal: 0.6924 | FalseConf: 0.8418
+  Russian | Anchor: 0.9963 | Normal: 0.7762 | FalseConf: 0.9830
+  Science | Anchor: 0.9356 | Normal: 0.7398 | FalseConf: 0.9590
+
+======================================================================
+БЛОК 6: Multistep Diffusion (Slerp 25 steps)
+======================================================================
+
+  [Baseline Clean Decoded]:
+    0: The quick brown fox jumps over the lazy dog.
+    1: Мама мыла раму, а папа чинил телевизор.
+    2: quantum computing is a rapidly-emerging technology that harnesses the law of quantum mechanics to solve problems too complex for classical computers.
+
+  [Sampling from Hierarchical Noise (t=1.0 & t=0.3 -> 0.0)]:
+    0 (Cos=0.7684): The job brown TE jumps over the lazy kids.
+    1 (Cos=0.8911): Мама мыла раму, а папа чинилую превизор.
+    2 (Cos=0.8008): ordinuminator is a rapidly energyging technology that harnesses the number of quantum mechanics to solve problems too technology for classical computers.
+
+  Average Layer Divergence (Block 1 vs Block 2): 0.1087
+
+Results saved to C:/Experiments/BEBLaDII/experiments/phase 4/local_checkpoints\evaluation_phase4_step_41995.txt
