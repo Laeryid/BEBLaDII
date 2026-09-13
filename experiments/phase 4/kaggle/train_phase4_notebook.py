@@ -618,11 +618,14 @@ class BEBLaDIIPhase4a(nn.Module):
                 is_false_confident = torch.zeros(B, T, device=z_clean.device, dtype=torch.bool)
 
                 for b in range(B):
+                    valid_len = int(attention_mask[b].sum().item())
+                    valid_len = max(valid_len, 1)
+                    
                     if mask_A1[b]:
                         # A1: Остров (Абсолютный якорь) - 1-3 чистых якоря
                         t_actual[b] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
                         num_anchors = torch.randint(1, 4, (1,)).item()
-                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
+                        anchors = torch.randperm(valid_len, device=z_clean.device)[:num_anchors]
                         t_actual[b, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.15
                         t_reported[b] = t_actual[b]
                         
@@ -631,7 +634,7 @@ class BEBLaDIIPhase4a(nn.Module):
                         t_global[b] = torch.rand(1, device=z_clean.device).squeeze() * 0.3 + 0.7
                         t_actual[b] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
                         num_anchors = torch.randint(1, 4, (1,)).item()
-                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
+                        anchors = torch.randperm(valid_len, device=z_clean.device)[:num_anchors]
                         t_actual[b, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.2 + 0.3
                         t_reported[b] = t_actual[b]
                         
@@ -640,7 +643,7 @@ class BEBLaDIIPhase4a(nn.Module):
                         t_global[b] = torch.rand(1, device=z_clean.device).squeeze() * 0.2
                         t_actual[b] = torch.rand(T, device=z_clean.device) * 0.2
                         num_noisy = torch.randint(1, 4, (1,)).item()
-                        noisy = torch.randperm(T, device=z_clean.device)[:num_noisy]
+                        noisy = torch.randperm(valid_len, device=z_clean.device)[:num_noisy]
                         t_actual[b, noisy] = torch.rand(num_noisy, device=z_clean.device) * 0.3 + 0.7
                         t_reported[b] = t_actual[b]
                         

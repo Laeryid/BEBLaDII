@@ -447,6 +447,70 @@ def analyze_hierarchical_denoising(diff_model, texts, tokenizer, device, file):
             output_msg(f"  {cat[:7]:<7} | Anchor: {anchor_cos:.4f} | Normal: {normal_cos:.4f} | FalseConf: {false_cos:.4f}", file)
 
 
+def analyze_context_isolation_score(diff_model, texts, tokenizer, device, file):
+    output_msg("\n======================================================================", file)
+    output_msg("БЛОК 7: Context Isolation Score (CIS)", file)
+    output_msg("======================================================================", file)
+
+    encoded = tokenizer(texts, padding=True, truncation=True, max_length=128, return_tensors="pt", add_special_tokens=False)
+    input_ids_batch = encoded.input_ids.to(device)
+    mask_batch = encoded.attention_mask.to(device)
+    B, T = input_ids_batch.shape
+
+    with torch.no_grad():
+        qwen_embeds = diff_model.qwen_embeddings(input_ids_batch)
+        z_clean_unnorm, _, _ = diff_model.encoder(qwen_embeds)
+        z_clean = safe_normalize(z_clean_unnorm.float(), dim=-1)
+
+    anchor_indices = []
+    for b in range(B):
+        seq_len = mask_batch[b].sum().item()
+        anchor_indices.append((b, seq_len // 2))
+
+    t_noisy_ctx = torch.ones(B, T, device=device) * 0.9
+    for b, idx in anchor_indices:
+        t_noisy_ctx[b, idx] = 0.0
+
+    t_clean_ctx = torch.zeros(B, T, device=device)
+
+    t_global_noisy = torch.tensor([0.9] * B, device=device)
+    t_global_clean = torch.tensor([0.0] * B, device=device)
+
+    with torch.no_grad():
+        # Noisy ctx
+        z_noisy_input = spherical_noise(z_clean, t_noisy_ctx)
+        out_noisy_sc = diff_model(input_ids_batch, mask_batch, t_global=t_global_noisy, t_reported=t_noisy_ctx, z_noisy_override=z_noisy_input)
+        out_noisy = diff_model(input_ids_batch, mask_batch, t_global=t_global_noisy, t_reported=t_noisy_ctx, self_cond=out_noisy_sc["dus_final"].detach(), z_noisy_override=z_noisy_input)
+        
+        # Clean ctx
+        z_clean_input = spherical_noise(z_clean, t_clean_ctx)
+        out_clean_sc = diff_model(input_ids_batch, mask_batch, t_global=t_global_clean, t_reported=t_clean_ctx, z_noisy_override=z_clean_input)
+        out_clean = diff_model(input_ids_batch, mask_batch, t_global=t_global_clean, t_reported=t_clean_ctx, self_cond=out_clean_sc["dus_final"].detach(), z_noisy_override=z_clean_input)
+
+    output_msg(f"  {'Text':<10} | {'Cos(CleanCtx)':>13} | {'Cos(NoisyCtx)':>13} | {'CIS (Diff)':>10}", file)
+    output_msg(f"  {'-'*10}-+-{'-'*13}-+-{'-'*13}-+-{'-'*10}", file)
+    
+    avg_cis = 0.0
+    for i in range(B):
+        b, idx = anchor_indices[i]
+        target = z_clean[b, idx]
+        
+        pred_noisy = out_noisy["dus_final"][b, idx]
+        pred_clean = out_clean["dus_final"][b, idx]
+        
+        cos_noisy = (pred_noisy * target).sum().item()
+        cos_clean = (pred_clean * target).sum().item()
+        
+        cis = abs(cos_clean - cos_noisy)
+        avg_cis += cis
+        
+        cat = "English" if i == 0 else "Russian" if i == 1 else "Science"
+        output_msg(f"  {cat[:10]:<10} | {cos_clean:>13.4f} | {cos_noisy:>13.4f} | {cis:>10.4f}", file)
+        
+    avg_cis /= B
+    output_msg(f"  {'-'*54}", file)
+    output_msg(f"  AVERAGE CIS = {avg_cis:.4f} (Target < 0.05)", file)
+
 def decode_z(z: torch.Tensor, decoder: nn.Module, lm_head_weight: torch.Tensor, tokenizer) -> str:
     with torch.no_grad():
         projected = decoder(z.to(next(decoder.parameters()).dtype))
@@ -660,6 +724,7 @@ def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenize
         analyze_adaln_sensitivity(diff_model, device, file)
         analyze_topology_and_identity(diff_model, tokenizer, device, file)
         analyze_hierarchical_denoising(diff_model, test_phrases, tokenizer, device, file)
+        analyze_context_isolation_score(diff_model, test_phrases, tokenizer, device, file)
         
         ckpt_name = os.path.basename(ckpt_path).replace(".pth", "")
         full_version = f"{ckpt_name}_{mode}"
