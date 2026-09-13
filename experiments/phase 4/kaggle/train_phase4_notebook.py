@@ -653,7 +653,8 @@ class BEBLaDIIPhase4a(nn.Module):
                         
                         # Контекстный шум (окно 11)
                         kernel = torch.ones(1, 1, 11, device=z_clean.device) / 11
-                        ctx_noise = F.conv1d(t_actual_true.view(1, 1, T), kernel, padding=5, padding_mode='reflect').view(T)
+                        padded_t = F.pad(t_actual_true.view(1, 1, T), (5, 5), mode='reflect')
+                        ctx_noise = F.conv1d(padded_t, kernel).view(T)
                         ctx_noise = (ctx_noise * 11 - t_actual_true) / 10
                         
                         can_be_false = (t_global[b] >= 0.3) & (t_global[b] < 0.7) & (ctx_noise < 0.4)
@@ -782,7 +783,8 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     window = 5
     t_exp = t_reported.unsqueeze(1) # [B, 1, T]
     kernel = torch.ones(1, 1, 2 * window + 1, device=z_clean.device) / (2 * window + 1)
-    ctx_noise = F.conv1d(t_exp, kernel, padding=window, padding_mode='reflect').squeeze(1) # [B, T]
+    padded_t_exp = F.pad(t_exp, (window, window), mode='reflect')
+    ctx_noise = F.conv1d(padded_t_exp, kernel).squeeze(1) # [B, T]
     ctx_noise = (ctx_noise * (2*window+1) - t_reported) / (2*window)
     ctx_noise = ctx_noise.clamp(0, 1)
 
