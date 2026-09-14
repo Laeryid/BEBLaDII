@@ -251,6 +251,7 @@ class Config:
 
     # GCS (для resume и сохранения чекпоинтов)
     resume_from_checkpoint = True
+    resume_optimizer = False  # Сброс оптимайзера при миграции с GPU на TPU (защита от NaN)
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase4/checkpoints/"
 
     # Директория вывода
@@ -1172,6 +1173,7 @@ def load_checkpoint_split(
     gcs_checkpoint_dir: str,
     output_dir: str,
     device,
+    resume_optimizer: bool = True,
 ):
     """
     Загружает модель и (если доступен) оптимайзер из GCS.
@@ -1288,29 +1290,32 @@ def load_checkpoint_split(
         return 0, [], False
 
     # Пробуем загрузить оптимайзер
-    step_num = int(latest_model_gs.split("_step_")[-1].replace(".pth", ""))
-    opt_gcs = gcs_checkpoint_dir + f"phase4_step_{step_num}_opt.pth"
-    local_opt = os.path.join(output_dir, "resume_opt.pth")
-    try:
-        from google.cloud import storage
-        bucket_name = opt_gcs.replace("gs://", "").split("/")[0]
-        blob_name = opt_gcs.replace(f"gs://{bucket_name}/", "")
-        client = storage.Client()
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-        blob.download_to_filename(local_opt)
-        opt_ckpt = torch.load(local_opt, map_location="cpu", weights_only=False)
-        optimizer.load_state_dict(opt_ckpt["optimizer"])
-        print(f"[Resume] Optimizer state loaded.")
+    if resume_optimizer:
+        step_num = int(latest_model_gs.split("_step_")[-1].replace(".pth", ""))
+        opt_gcs = gcs_checkpoint_dir + f"phase4_step_{step_num}_opt.pth"
+        local_opt = os.path.join(output_dir, "resume_opt.pth")
         try:
-            scheduler.load_state_dict(opt_ckpt["scheduler"])
-            scheduler_loaded = True
-            print(f"[Resume] Scheduler state loaded successfully.")
+            from google.cloud import storage
+            bucket_name = opt_gcs.replace("gs://", "").split("/")[0]
+            blob_name = opt_gcs.replace(f"gs://{bucket_name}/", "")
+            client = storage.Client()
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            blob.download_to_filename(local_opt)
+            opt_ckpt = torch.load(local_opt, map_location="cpu", weights_only=False)
+            optimizer.load_state_dict(opt_ckpt["optimizer"])
+            print(f"[Resume] Optimizer state loaded.")
+            try:
+                scheduler.load_state_dict(opt_ckpt["scheduler"])
+                scheduler_loaded = True
+                print(f"[Resume] Scheduler state loaded successfully.")
+            except Exception as e:
+                print(f"[Resume] Scheduler load skipped: {e}")
+            os.remove(local_opt)
         except Exception as e:
-            print(f"[Resume] Scheduler load skipped: {e}")
-        os.remove(local_opt)
-    except Exception as e:
-        print(f"[Resume] WARN: Optimizer checkpoint not found or failed ({e}). Fresh optimizer.")
+            print(f"[Resume] WARN: Optimizer checkpoint not found or failed ({e}). Fresh optimizer.")
+    else:
+        print("[Resume] INFO: Optimizer loading skipped (resume_optimizer=False). Using fresh optimizer.")
 
     # --- Comprehensive Post-Load Quality Audit ---
     print("\n[Audit] Checking loaded model weights and optimizer buffers for NaN/Inf...")
@@ -1538,6 +1543,7 @@ def train():
         start_step, metrics_history, scheduler_loaded = load_checkpoint_split(
             actual_model, optimizer, scheduler, ema,
             args.gcs_checkpoint_dir, args.output_dir, device,
+            resume_optimizer=getattr(args, "resume_optimizer", True)
         )
         if start_step > 0 and not scheduler_loaded:
             # Восстанавливаем состояние шедулера (fast-forward) только если он не был загружен
