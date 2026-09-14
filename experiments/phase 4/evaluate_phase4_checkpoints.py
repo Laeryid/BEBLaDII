@@ -439,9 +439,9 @@ def analyze_hierarchical_denoising(diff_model, texts, tokenizer, device, file):
             false_mask = is_false_confident[i][m_i]
             normal_mask = (~anchor_mask) & (~false_mask)
             
-            anchor_cos = cos_per_token[anchor_mask].mean().item() if anchor_mask.sum() > 0 else 0.0
-            normal_cos = cos_per_token[normal_mask].mean().item() if normal_mask.sum() > 0 else 0.0
-            false_cos = cos_per_token[false_mask].mean().item() if false_mask.sum() > 0 else 0.0
+            anchor_cos = cos_per_token[anchor_mask].mean().item() if anchor_mask.sum() > 0 else float('nan')
+            normal_cos = cos_per_token[normal_mask].mean().item() if normal_mask.sum() > 0 else float('nan')
+            false_cos = cos_per_token[false_mask].mean().item() if false_mask.sum() > 0 else float('nan')
             
             cat = "English" if i == 0 else "Russian" if i == 1 else "Science"
             output_msg(f"  {cat[:7]:<7} | Anchor: {anchor_cos:.4f} | Normal: {normal_cos:.4f} | FalseConf: {false_cos:.4f}", file)
@@ -696,6 +696,7 @@ def load_and_evaluate_checkpoint(ckpt_path: str, diff_model: nn.Module, tokenize
     ]
 
     for mode in modes_to_test:
+        torch.manual_seed(42)  # Fix seed for identical noise and masks across modes
         output_msg(f"\n{'-'*40}\n>>> Mode: {mode} Weights <<<\n{'-'*40}", file)
         
         # 1. Load DUS
