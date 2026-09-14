@@ -274,7 +274,15 @@ class Config:
     t_min = 0.02
     t_max = 1.00
     t_emb_dim = 256
-
+    
+    # Noise-Aware & Skepticism params (Phase 4.2 / ADR 083, 084, 085)
+    w_scl = 0.5           # ADR 083: Semantic Skepticism Angular SCL
+    w_anchor = 0.3        # ADR 084: Soft Anchor Identity Loss
+    lambda_iso = 0.3      # ADR 085: Noise-Aware Context Trust (Stage 2)
+    alpha_weighted = 2.0  # ADR 085: (Stage 2)
+    beta_iso = 2.0        # ADR 085: (Stage 2)
+    window_iso = 5        # ADR 085: Window for context noise
+    
     w_prior = 0.05
     w_entropy = 1.0
     w_seq_rkd = 0.0
@@ -732,30 +740,72 @@ class BEBLaDIIPhase4a(nn.Module):
             z_clean, _, _ = self.encoder(qwen_embeds)  # [B, T, 1024], нормализованы
             B, T, D = z_clean.shape
 
-            # --- Сэмплируем t если не передан (Phase 4 Hierarchical Noise) ---
+            # --- Сэмплируем t если не передан (Phase 4.2 Hierarchical Noise + ADR 083, 085) ---
             if t_global is None or t_actual is None or t_reported is None:
                 u = torch.rand(B, device=z_clean.device)
                 if t_sample_alpha != 1.0:
                     u = 1.0 - u ** t_sample_alpha
                 t_global = u * (t_max - t_min) + t_min
 
-                # Вероятность ложной уверенности p_false = t_global ** 1.5
-                p_false = t_global ** 1.5
+                t_actual = torch.zeros(B, T, device=z_clean.device)
+
+                # Curriculum Batching (ADR 085 Stage 2)
+                b_type_a = int(B * 0.2)
+                b_type_b = int(B * 0.2)
+                b_type_a1 = b_type_a // 2
+
+                for i in range(B):
+                    if i < b_type_a1:
+                        # Type A1 - Absolute Anchor
+                        t_actual[i] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
+                        num_anchors = torch.randint(1, 4, (1,)).item()
+                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
+                        t_actual[i, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.15
+                    elif i < b_type_a:
+                        # Type A2 - Relative Anchor
+                        t_actual[i] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
+                        num_anchors = torch.randint(1, 4, (1,)).item()
+                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
+                        t_actual[i, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.2 + 0.3
+                    elif i < b_type_a + b_type_b:
+                        # Type B - Sea of clarity
+                        t_actual[i] = torch.rand(T, device=z_clean.device) * 0.2
+                        num_noisy = torch.randint(1, 4, (1,)).item()
+                        noisy = torch.randperm(T, device=z_clean.device)[:num_noisy]
+                        t_actual[i, noisy] = torch.rand(num_noisy, device=z_clean.device) * 0.3 + 0.7
+                    else:
+                        # Type C - Mixed
+                        tg = t_global[i]
+                        t_min_true = torch.clamp(tg - 0.3, min=0.0)
+                        t_max_true = torch.clamp(tg + 0.3, max=1.0)
+                        t_actual[i] = torch.rand(T, device=z_clean.device) * (t_max_true - t_min_true) + t_min_true
+
+                t_reported = t_actual.clone()
+
+                # True Anchors (10% reservation, ADR 083)
+                is_true_anchor = torch.rand(B, T, device=z_clean.device) < 0.10
+                t_actual_anchor = torch.rand(B, T, device=z_clean.device) * 0.05
+                t_actual = torch.where(is_true_anchor, t_actual_anchor, t_actual)
+                t_reported = torch.where(is_true_anchor, t_actual_anchor, t_reported)
+
+                # False confident logic (ADR 083 + ADR 085)
+                ctx_noise = t_actual.mean(dim=-1)
+                can_be_false_confident = (t_global >= 0.3) & (t_global < 0.7) & (ctx_noise < 0.4)
+                
+                p_false = torch.where(can_be_false_confident, 0.25 * (t_global ** 1.5), torch.zeros_like(t_global))
                 is_false_confident = torch.rand(B, T, device=z_clean.device) < p_false.unsqueeze(-1)
+                is_false_confident = is_false_confident & ~is_true_anchor
 
-                t_min_true = torch.clamp(t_global - 0.3, min=0.0)
-                t_max_true = torch.clamp(t_global + 0.3, max=1.0)
-
-                # Normal tokens
-                t_actual_true = torch.rand(B, T, device=z_clean.device) * (t_max_true - t_min_true).unsqueeze(-1) + t_min_true.unsqueeze(-1)
-                t_reported_true = t_actual_true
-
-                # False confident tokens
-                t_actual_false = torch.rand(B, T, device=z_clean.device) * (t_global - t_global * 0.6).unsqueeze(-1) + (t_global * 0.6).unsqueeze(-1)
+                t_actual_false = torch.rand(B, T, device=z_clean.device) * (t_global.unsqueeze(-1) - t_global.unsqueeze(-1) * 0.6) + (t_global.unsqueeze(-1) * 0.6)
                 t_reported_false = torch.rand(B, T, device=z_clean.device) * (0.15 - 0.02) + 0.02
 
-                t_actual = torch.where(is_false_confident, t_actual_false, t_actual_true)
-                t_reported = torch.where(is_false_confident, t_reported_false, t_reported_true)
+                t_actual = torch.where(is_false_confident, t_actual_false, t_actual)
+                t_reported = torch.where(is_false_confident, t_reported_false, t_reported)
+                
+                # Let model know false confident masks for logging (optional, maybe save inside outputs dict if needed later)
+                
+                t_actual = torch.clamp(t_actual, 0.0, 1.0)
+                t_reported = torch.clamp(t_reported, 0.0, 1.0)
 
             z_clean_f = z_clean.float()
             z_clean_f = safe_normalize(z_clean_f, dim=-1)  # страховка
@@ -860,61 +910,91 @@ class BEBLaDIIPhase4a(nn.Module):
 # + Prior Loss (геометрия сферы)
 
 # %%
-def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 0.0):
+def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float = 0.0,
+                        w_scl: float = 0.5, w_anchor: float = 0.3, lambda_iso: float = 0.3,
+                        alpha_weighted: float = 2.0, beta_iso: float = 2.0, window_iso: int = 5):
     z_clean   = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
+    z_noisy   = outputs["z_noisy"].float() # Added for SCL
     attn_f    = outputs["attention_mask"].float()
     t_global  = outputs["t_global"]
     t_actual  = outputs["t_actual"]
+    t_reported = outputs["t_reported"]
 
     metrics = {}
     B, T, D = z_clean.size()
     active_tokens = attn_f.sum().clamp(min=1.0)
 
-    # --- x0-prediction Cosine Loss ---
     target  = safe_normalize(z_clean, dim=-1)
+    dus_final_norm = safe_normalize(dus_final, dim=-1) # Pred
     check_tensor_nan("loss.target", target)
-    cos_sim = (dus_final * target).sum(dim=-1)           # [B, T]
+    
+    # 1. L_weighted (ADR 085)
+    cos_sim = (dus_final_norm * target).sum(dim=-1)           # [B, T]
     check_tensor_nan("loss.cos_sim", cos_sim)
+    
+    w_weighted = (1.0 - t_reported).pow(alpha_weighted)
     loss_el = 1.0 - cos_sim
+    l_weighted_val = (w_weighted * loss_el * attn_f).sum() / ( (w_weighted * attn_f).sum().clamp(min=1e-8) )
+    check_tensor_nan("loss.l_weighted", l_weighted_val)
+    metrics["l_weighted"] = l_weighted_val.detach()
 
-    # В Phase 4 Min-SNR убран, взвешивание uniform (w=1.0)
-    main_loss = (loss_el * attn_f).sum() / active_tokens
+    # 2. L_isolation (ADR 085)
+    t_exp = t_reported.unsqueeze(1) # [B, 1, T]
+    kernel = torch.ones(1, 1, 2 * window_iso + 1, device=z_clean.device) / (2 * window_iso + 1)
+    t_padded = F.pad(t_exp, (window_iso, window_iso), mode='reflect')
+    ctx_noise = F.conv1d(t_padded, kernel).squeeze(1) # [B, T]
+    ctx_noise = (ctx_noise * (2*window_iso+1) - t_reported) / (2*window_iso)
+    ctx_noise = ctx_noise.clamp(0, 1)
+
+    clean_mask = torch.sigmoid(-5.0 * (t_reported - 0.5))
+    penalty = loss_el * (1.0 + beta_iso * ctx_noise) * clean_mask
+    l_isolation_val = (penalty * attn_f).sum() / active_tokens
+    check_tensor_nan("loss.l_isolation", l_isolation_val)
+    metrics["l_isolation"] = l_isolation_val.detach()
+    
+    main_loss = l_weighted_val + lambda_iso * l_isolation_val
     check_tensor_nan("loss.main_loss", main_loss)
 
     metrics["denoising_loss"] = main_loss.detach()
     metrics["cos_sim_all"]    = (cos_sim * attn_f).sum().detach() / active_tokens
 
-    # Метрики по уровням шума (диагностика)
     metrics["t_global_mean"] = t_global.mean().detach()
     metrics["t_actual_mean"] = t_actual.mean().detach()
 
-    # Маски по диапазонам t_actual — вычисляем один раз для обоих блоков метрик
     lo_mask_2d  = (t_actual < 0.3).float()   # [B, T]
     mid_mask_2d = ((t_actual >= 0.3) & (t_actual <= 0.7)).float()
     hi_mask_2d  = (t_actual > 0.7).float()
 
-    # --- cos_sim_t_* : cos(dus_final, z_clean) — выход ПОСЛЕ gate ---
     lo_tokens = (attn_f * lo_mask_2d).sum().clamp(min=1.0)
     metrics["cos_sim_t_low"]  = ((cos_sim * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
     hi_tokens = (attn_f * hi_mask_2d).sum().clamp(min=1.0)
     metrics["cos_sim_t_high"] = ((cos_sim * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
     mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
     metrics["cos_sim_t_mid"]  = ((cos_sim * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
+    
+    # 3. L_SCL (ADR 083) - Target-Aware Angular SCL
+    is_false_confident_mask = ((t_actual - t_reported) > 0.2).float() 
+    margin = torch.cos(t_actual * (math.pi / 4))
+    z_noisy_norm = safe_normalize(z_noisy, dim=-1)
+    cos_z_noisy = (dus_final_norm * z_noisy_norm).sum(dim=-1)
+    scl_loss_per_token = F.relu(cos_z_noisy - margin)
+    l_scl_val = (scl_loss_per_token * is_false_confident_mask * attn_f).sum() / ( (is_false_confident_mask * attn_f).sum().clamp(min=1.0) )
+    metrics["l_scl"] = l_scl_val.detach()
+    
+    # 4. L_anchor (ADR 084) - Soft Anchor Identity Loss
+    w_anchor_t = F.relu(0.3 - t_actual) / 0.3
+    h_39_norm = safe_normalize(outputs["h_39"].float(), dim=-1)
+    cos_anchor = (h_39_norm * z_noisy_norm).sum(dim=-1)
+    l_anchor_val = ( (1.0 - cos_anchor) * w_anchor_t * attn_f ).sum() / ( (w_anchor_t * attn_f).sum().clamp(min=1.0) )
+    metrics["l_anchor"] = l_anchor_val.detach()
 
-    # --- cos_h39_t_* : cos(h_39, z_clean) — выход DUS ДО gate (истинный деноизинг) ---
-    h39_low_loss = torch.zeros((), device=z_clean.device, dtype=z_clean.dtype)
     if "h_39" in outputs:
-        h_39_norm   = safe_normalize(outputs["h_39"].float(), dim=-1)
-        check_tensor_nan("loss.h_39_norm", h_39_norm)
         cos_h39     = (h_39_norm * target).sum(dim=-1)  # [B, T]
-        check_tensor_nan("loss.cos_h39", cos_h39)
         metrics["cos_h39_all"] = (cos_h39 * attn_f).sum().detach() / active_tokens
         metrics["cos_h39_t_low"]  = ((cos_h39 * attn_f * lo_mask_2d).sum() / lo_tokens).detach()
         metrics["cos_h39_t_high"] = ((cos_h39 * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
         metrics["cos_h39_t_mid"]  = ((cos_h39 * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
-
-        # h39 Identity Loss удален (ADR 072)
 
     # --- Prior Loss (геометрия сферы) ---
     z_flat    = dus_final.view(-1, D)
@@ -953,7 +1033,7 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
         check_tensor_nan("loss.seq_rkd_loss", seq_rkd_loss)
         metrics["seq_rkd_loss"] = seq_rkd_loss.detach()
 
-    total_loss = main_loss + w_prior * prior_loss + w_seq_rkd * seq_rkd_loss
+    total_loss = main_loss + w_prior * prior_loss + w_seq_rkd * seq_rkd_loss + w_scl * l_scl_val + w_anchor * l_anchor_val
     check_tensor_nan("loss.total_loss", total_loss)
 
     # Decoder Entropy Loss удален (ADR 072)
@@ -1551,7 +1631,17 @@ def train():
                 self_cond=self_cond_est,
                 z_noisy_input=z_noisy_sampled
             )
-            loss, metrics = compute_phase4_loss(fwd_outputs, w_prior=args.w_prior, w_seq_rkd=args.w_seq_rkd)
+            loss, metrics = compute_phase4_loss(
+                fwd_outputs, 
+                w_prior=args.w_prior, 
+                w_seq_rkd=args.w_seq_rkd,
+                w_scl=args.w_scl,
+                w_anchor=args.w_anchor,
+                lambda_iso=args.lambda_iso,
+                alpha_weighted=args.alpha_weighted,
+                beta_iso=args.beta_iso,
+                window_iso=args.window_iso
+            )
 
 
 
