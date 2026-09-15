@@ -743,12 +743,13 @@ class BEBLaDIIPhase4a(nn.Module):
 
             # --- Сэмплируем t если не передан (Phase 4.2 Hierarchical Noise + ADR 083, 085) ---
             if t_global is None or t_actual is None or t_reported is None:
-                u = torch.rand(B, device=z_clean.device)
+                cpu_dev = torch.device('cpu')
+                u = torch.rand(B, device=cpu_dev)
                 if t_sample_alpha != 1.0:
                     u = 1.0 - u ** t_sample_alpha
                 t_global = u * (t_max - t_min) + t_min
 
-                t_actual = torch.zeros(B, T, device=z_clean.device)
+                t_actual = torch.zeros(B, T, device=cpu_dev)
 
                 # Curriculum Batching (ADR 085 Stage 2)
                 b_type_a = int(B * 0.2)
@@ -758,34 +759,34 @@ class BEBLaDIIPhase4a(nn.Module):
                 for i in range(B):
                     if i < b_type_a1:
                         # Type A1 - Absolute Anchor
-                        t_actual[i] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
-                        num_anchors = torch.randint(1, 4, (1,)).item()
-                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
-                        t_actual[i, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.15
+                        t_actual[i] = torch.rand(T, device=cpu_dev) * 0.3 + 0.7
+                        num_anchors = torch.randint(1, 4, (1,), device=cpu_dev).item()
+                        anchors = torch.randperm(T, device=cpu_dev)[:num_anchors]
+                        t_actual[i, anchors] = torch.rand(num_anchors, device=cpu_dev) * 0.15
                     elif i < b_type_a:
                         # Type A2 - Relative Anchor
-                        t_actual[i] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
-                        num_anchors = torch.randint(1, 4, (1,)).item()
-                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
-                        t_actual[i, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.2 + 0.3
+                        t_actual[i] = torch.rand(T, device=cpu_dev) * 0.3 + 0.7
+                        num_anchors = torch.randint(1, 4, (1,), device=cpu_dev).item()
+                        anchors = torch.randperm(T, device=cpu_dev)[:num_anchors]
+                        t_actual[i, anchors] = torch.rand(num_anchors, device=cpu_dev) * 0.2 + 0.3
                     elif i < b_type_a + b_type_b:
                         # Type B - Sea of clarity
-                        t_actual[i] = torch.rand(T, device=z_clean.device) * 0.2
-                        num_noisy = torch.randint(1, 4, (1,)).item()
-                        noisy = torch.randperm(T, device=z_clean.device)[:num_noisy]
-                        t_actual[i, noisy] = torch.rand(num_noisy, device=z_clean.device) * 0.3 + 0.7
+                        t_actual[i] = torch.rand(T, device=cpu_dev) * 0.2
+                        num_noisy = torch.randint(1, 4, (1,), device=cpu_dev).item()
+                        noisy = torch.randperm(T, device=cpu_dev)[:num_noisy]
+                        t_actual[i, noisy] = torch.rand(num_noisy, device=cpu_dev) * 0.3 + 0.7
                     else:
                         # Type C - Mixed
                         tg = t_global[i]
                         t_min_true = torch.clamp(tg - 0.3, min=0.0)
                         t_max_true = torch.clamp(tg + 0.3, max=1.0)
-                        t_actual[i] = torch.rand(T, device=z_clean.device) * (t_max_true - t_min_true) + t_min_true
+                        t_actual[i] = torch.rand(T, device=cpu_dev) * (t_max_true - t_min_true) + t_min_true
 
                 t_reported = t_actual.clone()
 
                 # True Anchors (10% reservation, ADR 083)
-                is_true_anchor = torch.rand(B, T, device=z_clean.device) < 0.10
-                t_actual_anchor = torch.rand(B, T, device=z_clean.device) * 0.05
+                is_true_anchor = torch.rand(B, T, device=cpu_dev) < 0.10
+                t_actual_anchor = torch.rand(B, T, device=cpu_dev) * 0.05
                 t_actual = torch.where(is_true_anchor, t_actual_anchor, t_actual)
                 t_reported = torch.where(is_true_anchor, t_actual_anchor, t_reported)
 
@@ -794,11 +795,11 @@ class BEBLaDIIPhase4a(nn.Module):
                 can_be_false_confident = (t_global >= 0.3) & (t_global < 0.7) & (ctx_noise < 0.4)
                 
                 p_false = torch.where(can_be_false_confident, 0.25 * (t_global ** 1.5), torch.zeros_like(t_global))
-                is_false_confident = torch.rand(B, T, device=z_clean.device) < p_false.unsqueeze(-1)
+                is_false_confident = torch.rand(B, T, device=cpu_dev) < p_false.unsqueeze(-1)
                 is_false_confident = is_false_confident & ~is_true_anchor
 
-                t_actual_false = torch.rand(B, T, device=z_clean.device) * (t_global.unsqueeze(-1) - t_global.unsqueeze(-1) * 0.6) + (t_global.unsqueeze(-1) * 0.6)
-                t_reported_false = torch.rand(B, T, device=z_clean.device) * (0.15 - 0.02) + 0.02
+                t_actual_false = torch.rand(B, T, device=cpu_dev) * (t_global.unsqueeze(-1) - t_global.unsqueeze(-1) * 0.6) + (t_global.unsqueeze(-1) * 0.6)
+                t_reported_false = torch.rand(B, T, device=cpu_dev) * (0.15 - 0.02) + 0.02
 
                 t_actual = torch.where(is_false_confident, t_actual_false, t_actual)
                 t_reported = torch.where(is_false_confident, t_reported_false, t_reported)
@@ -807,6 +808,11 @@ class BEBLaDIIPhase4a(nn.Module):
                 
                 t_actual = torch.clamp(t_actual, 0.0, 1.0)
                 t_reported = torch.clamp(t_reported, 0.0, 1.0)
+
+                # Move generated tensors to target device
+                t_global = t_global.to(z_clean.device)
+                t_actual = t_actual.to(z_clean.device)
+                t_reported = t_reported.to(z_clean.device)
 
             z_clean_f = z_clean.float()
             z_clean_f = safe_normalize(z_clean_f, dim=-1)  # страховка
