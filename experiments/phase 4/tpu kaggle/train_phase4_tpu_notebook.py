@@ -1335,6 +1335,7 @@ def load_checkpoint_split(
 
 # %%
 def train():
+    global GLOBAL_NAN_TRIGGERED
     import torch
     import torch_xla
     import transformers
