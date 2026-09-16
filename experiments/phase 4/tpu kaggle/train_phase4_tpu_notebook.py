@@ -67,43 +67,17 @@ GLOBAL_NAN_CHECKS = []
 
 def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):
     """
-    Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.
-    This avoids breaking XLA graph into tiny pieces and causing OOM.
+    Disabled to prevent XLA graph accumulation and memory leaks.
     """
-    if tensor is None or not isinstance(tensor, torch.Tensor):
-        return
-    if GLOBAL_CURRENT_STEP > GLOBAL_START_STEP + step_limit and not print_always:
-        return
-    
-    # We use bitwise OR to create a single boolean condition
-    is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()
-    GLOBAL_NAN_NAMES.append(name)
-    GLOBAL_NAN_CHECKS.append(is_bad)
+    pass
 
 def evaluate_nan_checks(context: str = ""):
     """
-    Executes all aggregated NaN checks in a single XLA sync.
+    Disabled to prevent XLA graph breaks (xm.mark_step) before backward pass,
+    which was causing RESOURCE_EXHAUSTED OOM errors.
     """
-    global GLOBAL_NAN_TRIGGERED, GLOBAL_NAN_NAMES, GLOBAL_NAN_CHECKS
-    if not GLOBAL_NAN_CHECKS:
-        return False
-    
-    # Execute all at once
-    stacked = torch.stack(GLOBAL_NAN_CHECKS)
-    import torch_xla.core.xla_model as xm
-    xm.mark_step()
-    
-    results = stacked.cpu().tolist()
-    found = False
-    for name, is_bad in zip(GLOBAL_NAN_NAMES, results):
-        if is_bad:
-            print(f"[NAN_ALERT] {context} -> '{name}' contains NaN/Inf!", flush=True)
-            found = True
-            GLOBAL_NAN_TRIGGERED = True
-            
-    GLOBAL_NAN_NAMES.clear()
-    GLOBAL_NAN_CHECKS.clear()
-    return found
+    return False
+
 
 
 # Handle torch_xla versions (Kaggle often updates to >=2.5 where experimental is moved)
@@ -258,12 +232,12 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase4"
 
     # Гиперпараметры Phase 4a
-    batch_size    = 32
+    batch_size    = 64
     max_length    = 512
     dus_learning_rate = 2e-5   # GPU LR по ADR 082
     new_layers_lr     = 1e-4   # GPU LR по ADR 082
     epochs               = 100
-    max_steps            = 40000
+    max_steps            = 400000
     log_steps            = 10
     val_steps            = 200
     save_steps           = 1000
@@ -275,7 +249,7 @@ class Config:
     t_min = 0.02
     t_max = 1.00
     t_emb_dim = 256
-    
+
     # Noise-Aware & Skepticism params (Phase 4.2 / ADR 083, 084, 085)
     w_scl = 0.5           # ADR 083: Semantic Skepticism Angular SCL
     w_anchor = 0.3        # ADR 084: Soft Anchor Identity Loss
@@ -283,7 +257,7 @@ class Config:
     alpha_weighted = 2.0  # ADR 085: (Stage 2)
     beta_iso = 2.0        # ADR 085: (Stage 2)
     window_iso = 5        # ADR 085: Window for context noise
-    
+
     w_prior = 0.05
     w_entropy = 1.0
     w_seq_rkd = 0.0
@@ -793,7 +767,7 @@ class BEBLaDIIPhase4a(nn.Module):
                 # False confident logic (ADR 083 + ADR 085)
                 ctx_noise = t_actual.mean(dim=-1)
                 can_be_false_confident = (t_global >= 0.3) & (t_global < 0.7) & (ctx_noise < 0.4)
-                
+
                 p_false = torch.where(can_be_false_confident, 0.25 * (t_global ** 1.5), torch.zeros_like(t_global))
                 is_false_confident = torch.rand(B, T, device=cpu_dev) < p_false.unsqueeze(-1)
                 is_false_confident = is_false_confident & ~is_true_anchor
@@ -803,9 +777,9 @@ class BEBLaDIIPhase4a(nn.Module):
 
                 t_actual = torch.where(is_false_confident, t_actual_false, t_actual)
                 t_reported = torch.where(is_false_confident, t_reported_false, t_reported)
-                
+
                 # Let model know false confident masks for logging (optional, maybe save inside outputs dict if needed later)
-                
+
                 t_actual = torch.clamp(t_actual, 0.0, 1.0)
                 t_reported = torch.clamp(t_reported, 0.0, 1.0)
 
@@ -935,11 +909,11 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     target  = safe_normalize(z_clean, dim=-1)
     dus_final_norm = safe_normalize(dus_final, dim=-1) # Pred
     check_tensor_nan("loss.target", target)
-    
+
     # 1. L_weighted (ADR 085)
     cos_sim = (dus_final_norm * target).sum(dim=-1)           # [B, T]
     check_tensor_nan("loss.cos_sim", cos_sim)
-    
+
     w_weighted = (1.0 - t_reported).pow(alpha_weighted)
     loss_el = 1.0 - cos_sim
     l_weighted_val = (w_weighted * loss_el * attn_f).sum() / ( (w_weighted * attn_f).sum().clamp(min=1e-8) )
@@ -959,7 +933,7 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     l_isolation_val = (penalty * attn_f).sum() / active_tokens
     check_tensor_nan("loss.l_isolation", l_isolation_val)
     metrics["l_isolation"] = l_isolation_val.detach()
-    
+
     main_loss = l_weighted_val + lambda_iso * l_isolation_val
     check_tensor_nan("loss.main_loss", main_loss)
 
@@ -979,16 +953,16 @@ def compute_phase4_loss(outputs: dict, w_prior: float = 0.05, w_seq_rkd: float =
     metrics["cos_sim_t_high"] = ((cos_sim * attn_f * hi_mask_2d).sum() / hi_tokens).detach()
     mid_tokens = (attn_f * mid_mask_2d).sum().clamp(min=1.0)
     metrics["cos_sim_t_mid"]  = ((cos_sim * attn_f * mid_mask_2d).sum() / mid_tokens).detach()
-    
+
     # 3. L_SCL (ADR 083) - Target-Aware Angular SCL
-    is_false_confident_mask = ((t_actual - t_reported) > 0.2).float() 
+    is_false_confident_mask = ((t_actual - t_reported) > 0.2).float()
     margin = torch.cos(t_actual * (math.pi / 4))
     z_noisy_norm = safe_normalize(z_noisy, dim=-1)
     cos_z_noisy = (dus_final_norm * z_noisy_norm).sum(dim=-1)
     scl_loss_per_token = F.relu(cos_z_noisy - margin)
     l_scl_val = (scl_loss_per_token * is_false_confident_mask * attn_f).sum() / ( (is_false_confident_mask * attn_f).sum().clamp(min=1.0) )
     metrics["l_scl"] = l_scl_val.detach()
-    
+
     # 4. L_anchor (ADR 084) - Soft Anchor Identity Loss
     w_anchor_t = F.relu(0.3 - t_actual) / 0.3
     h_39_norm = safe_normalize(outputs["h_39"].float(), dim=-1)
@@ -1644,8 +1618,8 @@ def train():
                 z_noisy_input=z_noisy_sampled
             )
             loss, metrics = compute_phase4_loss(
-                fwd_outputs, 
-                w_prior=args.w_prior, 
+                fwd_outputs,
+                w_prior=args.w_prior,
                 w_seq_rkd=args.w_seq_rkd,
                 w_scl=args.w_scl,
                 w_anchor=args.w_anchor,
@@ -1661,7 +1635,7 @@ def train():
                 loss = loss.mean()
 
             check_tensor_nan("step.loss", loss)
-            
+
             # Flush forward pass NaN checks
             evaluate_nan_checks("Forward Pass")
 
@@ -1672,12 +1646,12 @@ def train():
                 for name, param in actual_model.named_parameters():
                     if param.requires_grad and param.grad is not None:
                         check_tensor_nan(f"grad.{name}", param.grad)
-                
+
             evaluate_nan_checks("Backward Pass")
 
             grad_norm_tensor = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             check_tensor_nan("step.grad_norm", grad_norm_tensor)
-            
+
             optimizer.step()
 
             # --- PACE pullback_alpha schedule & warmup ---
