@@ -67,16 +67,24 @@ GLOBAL_NAN_CHECKS = []
 
 def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):
     """
-    Disabled to prevent XLA graph accumulation and memory leaks.
+    Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.
     """
-    pass
+    if tensor is None or not isinstance(tensor, torch.Tensor):
+        return
+    if GLOBAL_CURRENT_STEP > GLOBAL_START_STEP + step_limit and not print_always:
+        return
+
+    is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()
+    GLOBAL_NAN_NAMES.append(name)
+    GLOBAL_NAN_CHECKS.append(is_bad)
 
 def evaluate_nan_checks(context: str = ""):
     """
-    Disabled to prevent XLA graph breaks (xm.mark_step) before backward pass,
-    which was causing RESOURCE_EXHAUSTED OOM errors.
+    Disabled in the middle of the step to prevent XLA graph breaks.
+    Evaluation is now deferred to the end of the step after torch_xla.sync().
     """
     return False
+
 
 
 
@@ -1676,6 +1684,23 @@ def train():
 
             ema.step(actual_model)
             torch_xla.sync()
+            
+            # --- Delayed NaN Evaluation (XLA Safe) ---
+            if GLOBAL_NAN_CHECKS:
+                stacked = torch.stack(GLOBAL_NAN_CHECKS)
+                results = stacked.cpu().tolist()
+                found_nan = False
+                for name, is_bad in zip(GLOBAL_NAN_NAMES, results):
+                    if is_bad:
+                        print(f"[NAN_ALERT] '{name}' contains NaN/Inf!", flush=True)
+                        found_nan = True
+                
+                GLOBAL_NAN_CHECKS.clear()
+                GLOBAL_NAN_NAMES.clear()
+                
+                if found_nan:
+                    GLOBAL_NAN_TRIGGERED = True
+
             # grad_norm вычисляется асинхронно в блоке логирования
             grad_norm = 0.0
 
