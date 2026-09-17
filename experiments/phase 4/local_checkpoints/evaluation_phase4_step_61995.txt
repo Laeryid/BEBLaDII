@@ -1,7 +1,7 @@
 Device: cpu
 
 ================================================================================
-Evaluating Checkpoint: phase4_step_49995.pth
+Evaluating Checkpoint: phase4_step_61995.pth
 ================================================================================
 
 ----------------------------------------
@@ -12,24 +12,24 @@ Evaluating Checkpoint: phase4_step_49995.pth
 БЛОК 1: Нормы весов (DUS + AdaLN)
 ======================================================================
    Layer |  AvgWeightNorm
-       0 |        53.5446
-      10 |        59.1516
-      20 |        57.9300
-      30 |        61.3122
-      39 |        68.9323
-  adaLN_attn: mean_w_norm=8.0872, min=4.9457, max=19.6630
-  adaLN_mlp: mean_w_norm=10.6216, min=5.0292, max=22.0302
+       0 |        53.8926
+      10 |        59.1494
+      20 |        57.9095
+      30 |        61.4139
+      39 |        69.2064
+  adaLN_attn: mean_w_norm=8.9585, min=5.4460, max=22.3294
+  adaLN_mlp: mean_w_norm=11.3544, min=5.8463, max=22.0230
 
 ======================================================================
 БЛОК 2: AdaLN Sensitivity (delta t_global=0.01 vs 0.99)
 ======================================================================
     L | attn|Δshift| | attn|Δscale| | mlp|Δshift| | mlp|Δscale|
   ----+--------------+--------------+-------------+------------
-    0 |     0.020872 |     0.200719 |    0.021213 |    0.066584
-    1 |     0.012101 |     0.106061 |    0.021175 |    0.062814
-    2 |     0.010587 |     0.093698 |    0.023861 |    0.066168
-    3 |     0.010166 |     0.079509 |    0.022626 |    0.068019
-    4 |     0.014746 |     0.052501 |    0.022788 |    0.063074
+    0 |     0.031186 |     0.252480 |    0.025744 |    0.087252
+    1 |     0.014498 |     0.133604 |    0.026646 |    0.095789
+    2 |     0.011968 |     0.121856 |    0.030711 |    0.097679
+    3 |     0.011766 |     0.103937 |    0.029250 |    0.095222
+    4 |     0.018645 |     0.069975 |    0.029555 |    0.090948
 
 ======================================================================
 БЛОК 3 & 4: Topology & Identity Preservation
@@ -40,59 +40,59 @@ Evaluating Checkpoint: phase4_step_49995.pth
   -----------+---------+---------+--------
 
   --- Topology at t=0.1 ---
-  L4 : Iso=0.6546 R1=0.3462 CV=0.0433
-  L19: Iso=0.5018 R1=0.4400 CV=0.4810
-  L39: Iso=0.6346 R1=0.2246 CV=0.4826
+  L4 : Iso=0.6263 R1=0.3979 CV=0.0485
+  L19: Iso=0.2498 R1=0.7902 CV=0.9978 ! rank1 high
+  L39: Iso=0.6402 R1=0.1916 CV=0.4972
 
   --- Topology at t=0.5 ---
-  L4 : Iso=0.6991 R1=0.3259 CV=0.0473
-  L19: Iso=0.5304 R1=0.4273 CV=0.4712
-  L39: Iso=0.6350 R1=0.2249 CV=0.4745
+  L4 : Iso=0.6603 R1=0.3833 CV=0.0493
+  L19: Iso=0.2479 R1=0.8072 CV=1.0387 *** COLLAPSE ***
+  L39: Iso=0.6384 R1=0.1913 CV=0.4972
 
   --- Topology at t=0.9 ---
-  L4 : Iso=0.7942 R1=0.2626 CV=0.0526
-  L19: Iso=0.7876 R1=0.1516 CV=0.1159
-  L39: Iso=0.5171 R1=0.3652 CV=0.5048
+  L4 : Iso=0.6584 R1=0.4143 CV=0.0598
+  L19: Iso=0.3738 R1=0.6878 CV=0.7848 ! rank1 high
+  L39: Iso=0.5030 R1=0.3137 CV=0.5706
 
   Identity Cos(Pred, Clean) - POST GATE:
-  English    |  0.9180 |  0.8786 |  0.5220
-  Russian    |  0.9853 |  0.9816 |  0.6358
-  Science    |  0.9144 |  0.8631 |  0.4544
+  English    |  0.9560 |  0.9096 |  0.5355
+  Russian    |  0.9951 |  0.9921 |  0.6797
+  Science    |  0.9506 |  0.9044 |  0.5049
 
   Identity Cos(h39, Clean) - PRE GATE:
-  English    |  0.9180 |  0.8786 |  0.5220
-  Russian    |  0.9853 |  0.9816 |  0.6358
-  Science    |  0.9144 |  0.8631 |  0.4544
+  English    |  0.9560 |  0.9096 |  0.5355
+  Russian    |  0.9951 |  0.9921 |  0.6797
+  Science    |  0.9506 |  0.9044 |  0.5049
 
 ======================================================================
 БЛОК 5: Hierarchical Token Denoising (Phase 4 Simulation)
 ======================================================================
 
   --- t_global = 0.2 ---
-  English | Anchor: 0.9934 | Normal: 0.8750 | FalseConf: nan
-  Russian | Anchor: 0.9946 | Normal: 0.9854 | FalseConf: nan
-  Science | Anchor: 0.8841 | Normal: 0.9283 | FalseConf: nan
+  English | Anchor: 0.9989 | Normal: 0.9288 | FalseConf: nan
+  Russian | Anchor: 0.9978 | Normal: 0.9941 | FalseConf: nan
+  Science | Anchor: 0.9544 | Normal: 0.9539 | FalseConf: nan
 
   --- t_global = 0.5 ---
-  English | Anchor: 0.9816 | Normal: 0.8322 | FalseConf: 0.9986
-  Russian | Anchor: 0.9271 | Normal: 0.9891 | FalseConf: 0.9927
-  Science | Anchor: 0.9989 | Normal: 0.8824 | FalseConf: 0.7907
+  English | Anchor: 0.9983 | Normal: 0.8702 | FalseConf: 0.9991
+  Russian | Anchor: 0.9691 | Normal: 0.9955 | FalseConf: 0.9975
+  Science | Anchor: 0.9995 | Normal: 0.9142 | FalseConf: 0.8380
 
   --- t_global = 0.8 ---
-  English | Anchor: nan | Normal: 0.6968 | FalseConf: 0.7574
-  Russian | Anchor: 0.9968 | Normal: 0.8740 | FalseConf: 0.9381
-  Science | Anchor: nan | Normal: 0.7138 | FalseConf: 0.7527
+  English | Anchor: nan | Normal: 0.7813 | FalseConf: 0.8055
+  Russian | Anchor: 0.9991 | Normal: 0.8970 | FalseConf: 0.9561
+  Science | Anchor: nan | Normal: 0.7218 | FalseConf: 0.8025
 
 ======================================================================
 БЛОК 7: Context Isolation Score (CIS)
 ======================================================================
   Text       | Cos(CleanCtx) | Cos(NoisyCtx) | CIS (Diff)
   -----------+---------------+---------------+-----------
-  English    |        0.9945 |        0.9945 |     0.0000
-  Russian    |        0.9894 |        0.9893 |     0.0001
-  Science    |        0.8950 |        0.8906 |     0.0044
+  English    |        0.9969 |        0.9969 |     0.0000
+  Russian    |        0.9958 |        0.9972 |     0.0014
+  Science    |        0.9382 |        0.9362 |     0.0020
   ------------------------------------------------------
-  AVERAGE CIS = 0.0015 (Target < 0.05)
+  AVERAGE CIS = 0.0011 (Target < 0.05)
 
 ======================================================================
 БЛОК 6: Multistep Diffusion (Slerp 25 steps)
@@ -104,11 +104,11 @@ Evaluating Checkpoint: phase4_step_49995.pth
     2: quantum computing is a rapidly-emerging technology that harnesses the law of quantum mechanics to solve problems too complex for classical computers.
 
   [Sampling from Hierarchical Noise (t=1.0 & t=0.3 -> 0.0)]:
-    0 (Cos=0.8141): The exc red fox dog over the lazy dog.
-    1 (Cos=0.8883): Мама мыла раму, а папку чмил телевизор.
-    2 (Cos=0.8344):  Thermum computing is geometric rapidlyEMuring programming that harnesses the cases of quantum mechanics to solve a too complex for classic computers.
+    0 (Cos=0.8321): The quick red fox is over the lazy dog.
+    1 (Cos=0.9040): Мама мыла раму, а папала часил телевизор.
+    2 (Cos=0.8602):  Thermum computing is complex rapidlyemuring technology that harnesses the rules of quantum mechanics to solve is too complex for classic computers.
 
-  Average Layer Divergence (Block 1 vs Block 2): 0.1158
+  Average Layer Divergence (Block 1 vs Block 2): 0.1445
 
 ----------------------------------------
 >>> Mode: EMA Weights <<<
@@ -118,24 +118,24 @@ Evaluating Checkpoint: phase4_step_49995.pth
 БЛОК 1: Нормы весов (DUS + AdaLN)
 ======================================================================
    Layer |  AvgWeightNorm
-       0 |        53.5397
-      10 |        59.1513
-      20 |        57.9295
-      30 |        61.3111
-      39 |        68.9295
-  adaLN_attn: mean_w_norm=8.0747, min=4.9371, max=19.6268
-  adaLN_mlp: mean_w_norm=10.6093, min=5.0177, max=22.0248
+       0 |        53.8905
+      10 |        59.1494
+      20 |        57.9092
+      30 |        61.4135
+      39 |        69.2045
+  adaLN_attn: mean_w_norm=8.9511, min=5.4408, max=22.3139
+  adaLN_mlp: mean_w_norm=11.3475, min=5.8409, max=22.0163
 
 ======================================================================
 БЛОК 2: AdaLN Sensitivity (delta t_global=0.01 vs 0.99)
 ======================================================================
     L | attn|Δshift| | attn|Δscale| | mlp|Δshift| | mlp|Δscale|
   ----+--------------+--------------+-------------+------------
-    0 |     0.020530 |     0.195543 |    0.020815 |    0.065465
-    1 |     0.011951 |     0.103855 |    0.020791 |    0.061523
-    2 |     0.010440 |     0.091898 |    0.023339 |    0.064760
-    3 |     0.010005 |     0.077959 |    0.022149 |    0.066620
-    4 |     0.014528 |     0.051414 |    0.022345 |    0.061649
+    0 |     0.031347 |     0.251720 |    0.025795 |    0.087303
+    1 |     0.014592 |     0.133621 |    0.026676 |    0.095825
+    2 |     0.012040 |     0.121968 |    0.030715 |    0.097676
+    3 |     0.011792 |     0.103981 |    0.029251 |    0.095111
+    4 |     0.018563 |     0.069902 |    0.029577 |    0.090840
 
 ======================================================================
 БЛОК 3 & 4: Topology & Identity Preservation
@@ -146,59 +146,59 @@ Evaluating Checkpoint: phase4_step_49995.pth
   -----------+---------+---------+--------
 
   --- Topology at t=0.1 ---
-  L4 : Iso=0.6527 R1=0.3492 CV=0.0431
-  L19: Iso=0.5054 R1=0.4364 CV=0.4777
-  L39: Iso=0.6356 R1=0.2245 CV=0.4803
+  L4 : Iso=0.6315 R1=0.3904 CV=0.0488
+  L19: Iso=0.2762 R1=0.7528 CV=0.9600 ! rank1 high
+  L39: Iso=0.6376 R1=0.1925 CV=0.5012
 
   --- Topology at t=0.5 ---
-  L4 : Iso=0.6960 R1=0.3305 CV=0.0469
-  L19: Iso=0.5327 R1=0.4248 CV=0.4693
-  L39: Iso=0.6360 R1=0.2246 CV=0.4724
+  L4 : Iso=0.6671 R1=0.3738 CV=0.0495
+  L19: Iso=0.2736 R1=0.7731 CV=1.0016 ! rank1 high
+  L39: Iso=0.6352 R1=0.1926 CV=0.5016
 
   --- Topology at t=0.9 ---
-  L4 : Iso=0.7863 R1=0.2736 CV=0.0523
-  L19: Iso=0.7867 R1=0.1510 CV=0.1163
-  L39: Iso=0.5223 R1=0.3609 CV=0.4963
+  L4 : Iso=0.6724 R1=0.3976 CV=0.0598
+  L19: Iso=0.3671 R1=0.6968 CV=0.7983 ! rank1 high
+  L39: Iso=0.5005 R1=0.3186 CV=0.5709
 
   Identity Cos(Pred, Clean) - POST GATE:
-  English    |  0.9173 |  0.8779 |  0.5241
-  Russian    |  0.9851 |  0.9812 |  0.6365
-  Science    |  0.9139 |  0.8629 |  0.4511
+  English    |  0.9568 |  0.9096 |  0.5192
+  Russian    |  0.9955 |  0.9923 |  0.6963
+  Science    |  0.9516 |  0.9057 |  0.5111
 
   Identity Cos(h39, Clean) - PRE GATE:
-  English    |  0.9173 |  0.8779 |  0.5241
-  Russian    |  0.9851 |  0.9812 |  0.6365
-  Science    |  0.9139 |  0.8629 |  0.4511
+  English    |  0.9568 |  0.9096 |  0.5192
+  Russian    |  0.9955 |  0.9923 |  0.6963
+  Science    |  0.9516 |  0.9057 |  0.5111
 
 ======================================================================
 БЛОК 5: Hierarchical Token Denoising (Phase 4 Simulation)
 ======================================================================
 
   --- t_global = 0.2 ---
-  English | Anchor: 0.9934 | Normal: 0.8741 | FalseConf: nan
-  Russian | Anchor: 0.9945 | Normal: 0.9853 | FalseConf: nan
-  Science | Anchor: 0.8834 | Normal: 0.9279 | FalseConf: nan
+  English | Anchor: 0.9990 | Normal: 0.9303 | FalseConf: nan
+  Russian | Anchor: 0.9981 | Normal: 0.9944 | FalseConf: nan
+  Science | Anchor: 0.9563 | Normal: 0.9545 | FalseConf: nan
 
   --- t_global = 0.5 ---
-  English | Anchor: 0.9814 | Normal: 0.8314 | FalseConf: 0.9986
-  Russian | Anchor: 0.9266 | Normal: 0.9894 | FalseConf: 0.9926
-  Science | Anchor: 0.9989 | Normal: 0.8817 | FalseConf: 0.7893
+  English | Anchor: 0.9986 | Normal: 0.8724 | FalseConf: 0.9991
+  Russian | Anchor: 0.9702 | Normal: 0.9963 | FalseConf: 0.9977
+  Science | Anchor: 0.9995 | Normal: 0.9144 | FalseConf: 0.8405
 
   --- t_global = 0.8 ---
-  English | Anchor: nan | Normal: 0.6954 | FalseConf: 0.7565
-  Russian | Anchor: 0.9968 | Normal: 0.8738 | FalseConf: 0.9376
-  Science | Anchor: nan | Normal: 0.7138 | FalseConf: 0.7528
+  English | Anchor: nan | Normal: 0.7928 | FalseConf: 0.8062
+  Russian | Anchor: 0.9992 | Normal: 0.8929 | FalseConf: 0.9565
+  Science | Anchor: nan | Normal: 0.7242 | FalseConf: 0.8040
 
 ======================================================================
 БЛОК 7: Context Isolation Score (CIS)
 ======================================================================
   Text       | Cos(CleanCtx) | Cos(NoisyCtx) | CIS (Diff)
   -----------+---------------+---------------+-----------
-  English    |        0.9945 |        0.9945 |     0.0000
-  Russian    |        0.9892 |        0.9892 |     0.0000
-  Science    |        0.8943 |        0.8902 |     0.0041
+  English    |        0.9971 |        0.9969 |     0.0001
+  Russian    |        0.9964 |        0.9975 |     0.0011
+  Science    |        0.9385 |        0.9360 |     0.0025
   ------------------------------------------------------
-  AVERAGE CIS = 0.0014 (Target < 0.05)
+  AVERAGE CIS = 0.0013 (Target < 0.05)
 
 ======================================================================
 БЛОК 6: Multistep Diffusion (Slerp 25 steps)
@@ -210,10 +210,10 @@ Evaluating Checkpoint: phase4_step_49995.pth
     2: quantum computing is a rapidly-emerging technology that harnesses the law of quantum mechanics to solve problems too complex for classical computers.
 
   [Sampling from Hierarchical Noise (t=1.0 & t=0.3 -> 0.0)]:
-    0 (Cos=0.8140): The exc red fox dog over the lazy dog.
-    1 (Cos=0.8886): Мама мыла раму, а папку чмил телевизор.
-    2 (Cos=0.8340):  Thermum computing is geometric rapidlyEMuring programming that harnesses the cases of quantum mechanics to solve a too complex for classic computers.
+    0 (Cos=0.8514): The quick red fox comes over the lazy dog.
+    1 (Cos=0.9039): Мама мыла раму, а папка чамил телевизор.
+    2 (Cos=0.8584): Inputum computing is graph rapidlyemuring technology that harnesses the cases of quantum mechanics to solve is too complex for classic computers.
 
-  Average Layer Divergence (Block 1 vs Block 2): 0.1156
+  Average Layer Divergence (Block 1 vs Block 2): 0.1443
 
-Results saved to C:/Experiments/BEBLaDII/experiments/phase 4/local_checkpoints\evaluation_phase4_step_49995.txt
+Results saved to C:/Experiments/BEBLaDII/experiments/phase 4/local_checkpoints\evaluation_phase4_step_61995.txt

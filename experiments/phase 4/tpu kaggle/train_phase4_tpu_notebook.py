@@ -730,6 +730,7 @@ class BEBLaDIIPhase4a(nn.Module):
                 if t_sample_alpha != 1.0:
                     u = 1.0 - u ** t_sample_alpha
                 t_global = u * (t_max - t_min) + t_min
+                t_global = t_global.clamp(max=0.99)  # t=1.0 — чистый шум без инфо, не обучаем
 
                 t_actual = torch.zeros(B, T, device=cpu_dev)
 
@@ -758,11 +759,11 @@ class BEBLaDIIPhase4a(nn.Module):
                         noisy = torch.randperm(T, device=cpu_dev)[:num_noisy]
                         t_actual[i, noisy] = torch.rand(num_noisy, device=cpu_dev) * 0.3 + 0.7
                     else:
-                        # Type C - Mixed
-                        tg = t_global[i]
-                        t_min_true = torch.clamp(tg - 0.3, min=0.0)
-                        t_max_true = torch.clamp(tg + 0.3, max=1.0)
-                        t_actual[i] = torch.rand(T, device=cpu_dev) * (t_max_true - t_min_true) + t_min_true
+                        # Type C - Mixed: полный диапазон [0, 1] без ограничений.
+                        # Учим модель работать с любым сочетанием чистых/зашумлённых токенов
+                        # независимо от t_global — это соответствует реальной диффузии с промптом,
+                        # где промпт-якоря могут быть чистыми даже в начале (высокий t_global).
+                        t_actual[i] = torch.rand(T, device=cpu_dev)
 
                 t_reported = t_actual.clone()
 
