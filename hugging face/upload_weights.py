@@ -1,4 +1,6 @@
 import os
+import sys
+sys.stdout.reconfigure(encoding='utf-8')
 from huggingface_hub import HfApi, create_repo
 
 # Массив с файлами для загрузки.
@@ -23,6 +25,18 @@ FILES_TO_UPLOAD = [
     {
         "local_path": r"C:\Experiments\BEBLaDII\storage\components\sep_token.pt",
         "repo_name": "sep_token.pt"
+    },
+    {
+        "local_path": r"C:\Experiments\BEBLaDII\experiments\phase 4\local_checkpoints\phase4_step_85995.pth",
+        "repo_name": "phase4_diffusion_core_step_85995.pth"
+    },
+    {
+        "local_path": r"C:\Experiments\BEBLaDII\experiments\phase 5\local\confidence_head_v2.pt",
+        "repo_name": "phase5_confidence_head_v2.pt"
+    },
+    {
+        "local_path": r"C:\Experiments\BEBLaDII\experiments\phase 5\local\latent_dict.pt",
+        "repo_name": "latent_dict.pt"
     }
 ]
 

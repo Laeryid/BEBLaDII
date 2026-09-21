@@ -15,11 +15,11 @@ tags:
 - vae
 ---
 
-# BEBLaDII Foundation Weights (Phases 1-3)
+# BEBLaDII Foundation Weights (Phases 1-5)
 
-This repository contains the foundation weights for the first three training phases of the experimental **BEBLaDII** architecture. (**Git Repository:** 
+This repository contains the foundation weights for the training phases of the experimental **BEBLaDII** architecture. (**Git Repository:** 
 [github.com/Laeryid/BEBLaDII](https://github.com/Laeryid/BEBLaDII))
-These weights are intended for further training (Phase 4 and beyond) and are not a standalone, chat-ready LLM.
+These weights are intended for further training (Phase 6 and beyond) and are not a standalone, chat-ready LLM.
 
 ## 📦 Checkpoints Included
 
@@ -29,8 +29,14 @@ These weights are intended for further training (Phase 4 and beyond) and are not
    * Initialized from ModernBERT-large. Decodes latent representations back into raw text.
 3. **Phase 3 (Canonical Diffusion / DUS):** `phase3_diffusion_step_17995.pth`
    * Continuous diffusion model on a sphere using AdaLN and UNet-style skip-connections. Provides Depth Up-Scaling (DUS) capabilities.
-4. **Separator Token:** `sep_token.pt`
+4. **Phase 4 (Hierarchical Per-Token Noise Diffusion core / DUS):** `phase4_diffusion_core_step_85995.pth`
+   * As phase 3, but now tokens may have individual noise level.
+5. **Separator Token:** `sep_token.pt`
    * A custom separator embedding tensor. Initially designed to pass `t` onto the canvas before switching to AdaLN. Preserved for potential future utility.
+6. **Phase 5 (Confidence Head):** `phase5_confidence_head_v2.pt`
+   * Computes confidence and geometric token status signals for the algorithmic Orchestrator to resolve lexical ambiguity without explicit teacher decoding.
+7. **Latent Dictionary:** `latent_dict.pt`
+   * Pre-computed normalized latent vectors for the entire Qwen2.5-1.5B vocabulary (151,936 tokens) through the Phase 1 VAE. Used by the Orchestrator's Sensor Ensemble to calculate geometric metrics instantly without re-running the encoder.
 
 ## 🚀 Usage
 

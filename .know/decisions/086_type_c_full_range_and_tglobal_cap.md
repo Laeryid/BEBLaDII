@@ -1,3 +1,4 @@
+<!-- created: 2026-09-17 -->
 # ADR 086: Type C Full Noise Range и ограничение t_global ≤ 0.99
 
 ## Context

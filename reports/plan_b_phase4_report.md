@@ -62,6 +62,7 @@ The graphs show noticeable changes in dynamics (jumps and trend breaks) at the f
 ## 4. Latest Checkpoint Analysis (step 85995)
 - [Evaluation code](<../experiments\phase 4\evaluate_phase4_checkpoints.py>)
 - [Evaluation results](<../experiments\phase 4\local_checkpoints\evaluation_phase4_step_85995.txt>)
+- [Evaluation demonstration](<https://laeryid.github.io/BEBLaDII/experiments/phase%204/local_checkpoints/noise_dashboard.html>)
 
 
 Metrics were extracted from the `phase4_step_85995.pth` checkpoint, and the evaluation report was analyzed:

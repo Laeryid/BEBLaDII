@@ -19,6 +19,7 @@
 | `082` | [Phase 4 TPU Precision Floor Fix & LR Restoration](../decisions/082_tpu_precision_floor_fix_and_lr_restoration.md) | Accepted | Устранение подпорогового округления XLA_USE_BF16 (ADR 057), возврат базовых LR с GPU (2e-5 / 1e-4) и доказательство стабильности PACE. |
 | `083` | [Phase 4 Semantic Skepticism & Angular SCL](../decisions/083_phase4_semantic_skepticism_scl_and_anchors.md) | Accepted | Устранение Data Leak через Истинные Якоря, калибровка p_false и внедрение половинного Target-Aware Angular SCL. |
 | `085` | [Noise-Aware Context Trust and Isolation](../decisions/085_noise_aware_context_trust_and_isolation.md) | Accepted | Внедрение сэмплирования Островов/Моря чистоты, `L_weighted` и `L_isolation` для предотвращения заражения чистых токенов от зашумленного контекста. |
+| `087` | [Confidence Head Custom Local Attention](../decisions/087_phase5_confidence_head_custom_attention.md) | Accepted | Отказ от хакинга слоя 39 в пользу кастомного Local Self-Attention для Головы Уверенности. |
 
 ## Usage
 Агенты должны обращаться к ADR при возникновении вопросов "почему это реализовано именно так". Если вопрос касается TPU или Оптимизации — переходите в соответствующие KI выше.

@@ -214,7 +214,7 @@ class BEBLaDIIPhase4aEval(nn.Module):
         # ADR 072: Strict x0-prediction, no Identity Gate in forward
         dus_final = h_39
 
-        return {"z_clean": z_clean_f, "z_noisy": z_noisy, "t": t_global, "dus_final": dus_final, "h_39": h_39}
+        return {"z_clean": z_clean_f, "z_noisy": z_noisy, "t": t_global, "dus_final": dus_final, "h_39": h_39, "h_39_raw": pre_norm}
 
 
 # --- Diagnostic Utilities ---

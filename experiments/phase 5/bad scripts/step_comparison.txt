@@ -1,0 +1,19 @@
+HEAD-TO-HEAD: 1-STEP DIFFUSION COMPARISON
+Token:  the
+Initial physical TrueN (Distance to z_clean): 0.6113
+Initial t_reported used for model: A=0.6113, B=0.6000
+
+--- Z_PRED (Model Output) ---
+z_pred_A cosine to z_clean: 0.1109 (TrueN: 0.9293)
+z_pred_B cosine to z_clean: 0.1193 (TrueN: 0.9239)
+Difference between z_pred_A and z_pred_B (L2): 0.014884
+
+--- SCHEDULE CALCULATION ---
+METHOD A (Phase 4): t_next = t_reported - 0.04 = 0.5713
+METHOD B (Option 2): 1-RawDProx = 0.8582, delta_t = 0.0400, t_next = 0.5600
+
+--- INTERPOLATION OUTCOME (x_next) ---
+Target: We want TrueN of x_next to be LOWER than TrueN of x_start (0.6113).
+METHOD A (Slerp): TrueN = 0.6132 (Delta TrueN: 0.0018)
+METHOD B (DDIM Normalize): TrueN = 0.6262 (Delta TrueN: 0.0149)
+METHOD C (Method B schedule + Slerp Math): TrueN = 0.6132 (Delta TrueN: 0.0018)

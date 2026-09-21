@@ -1,0 +1,529 @@
+Phase 5 Evaluation Report
+Date: 2026-09-21 21:59:52.471540
+
+
+================================================================================
+EVALUATING PHRASE: The quick brown fox jumps over the lazy dog.
+================================================================================
+
+================================================================================
+RUN: High Noise - The quick brown...
+================================================================================
+
+Step 0 (t_global: 0.84):
+  Token 4 'הם' | t_loc: 0.844 | RawDProx: 0.229 | Delta: 0.014 | ConfSim: 0.165 | Action: CONTINUE (DENOISING)
+  Token 5 '行政机关' | t_loc: 0.600 | RawDProx: 0.225 | Delta: 0.004 | ConfSim: 0.175 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brown Vampire הם行政机关 the lazy hockey激素
+
+Step 3 (t_global: 0.72):
+  Token 4 '💝' | t_loc: 0.691 | RawDProx: 0.223 | Delta: 0.008 | ConfSim: 0.228 | Action: CONTINUE (DENOISING)
+  Token 5 '_over' | t_loc: 0.480 | RawDProx: 0.303 | Delta: 0.004 | ConfSim: 0.826 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brownpheres💝_over the lazy hockey.
+
+Step 6 (t_global: 0.60):
+  Token 4 'hockey' | t_loc: 0.571 | RawDProx: 0.221 | Delta: 0.003 | ConfSim: 0.253 | Action: CONTINUE (DENOISING)
+  Token 5 'over' | t_loc: 0.360 | RawDProx: 0.353 | Delta: 0.024 | ConfSim: 0.826 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brown формы hockey over the lazy hockey.
+
+Step 9 (t_global: 0.48):
+  Token 4 'hockey' | t_loc: 0.451 | RawDProx: 0.229 | Delta: 0.011 | ConfSim: 0.232 | Action: CONTINUE (DENOISING)
+  Token 5 'over' | t_loc: 0.240 | RawDProx: 0.392 | Delta: 0.027 | ConfSim: 0.826 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brown формы hockey over the lazy dog.
+
+Step 12 (t_global: 0.36):
+  Token 4 'hobbies' | t_loc: 0.331 | RawDProx: 0.212 | Delta: 0.000 | ConfSim: 0.393 | Action: CONTINUE (DENOISING)
+  Token 5 'over' | t_loc: 0.120 | RawDProx: 0.411 | Delta: 0.031 | ConfSim: 0.826 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brown fox hobbies over the lazy dog.
+
+Step 15 (t_global: 0.24):
+  Token 4 '💝' | t_loc: 0.211 | RawDProx: 0.216 | Delta: 0.001 | ConfSim: 0.232 | Action: CONTINUE (DENOISING)
+  Token 5 'over' | t_loc: 0.000 | RawDProx: 0.414 | Delta: 0.032 | ConfSim: 0.826 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brown fox💝 over the lazy dog.
+
+Step 18 (t_global: 0.12):
+  Token 4 '💝' | t_loc: 0.091 | RawDProx: 0.215 | Delta: 0.000 | ConfSim: 0.232 | Action: CONTINUE (DENOISING)
+  Token 5 'over' | t_loc: 0.000 | RawDProx: 0.414 | Delta: 0.032 | ConfSim: 0.826 | Action: DECODER_READY (SYNTAX_VARIATION)
+  > Sentence: The quick brown fox💝 over the lazy dog.
+
+Step 21 (t_global: 0.00):
+  Token 4 'hockey' | t_loc: 0.000 | RawDProx: 0.215 | Delta: 0.000 | ConfSim: 0.232 | Action: CLM_HELP (SEMANTIC_CONFLICT)
+  Token 5 'over' | t_loc: 0.000 | RawDProx: 0.414 | Delta: 0.032 | ConfSim: 0.826 | Action: DECODER_READY (SYNTAX_VARIATION)
+  > Sentence: The quick brown fox hockey over the lazy dog.
+
+================================================================================
+RUN: Low Noise - The quick brown...
+================================================================================
+
+Step 0 (t_global: 0.70):
+  Token 4 'hockey' | t_loc: 0.700 | RawDProx: 0.236 | Delta: 0.014 | ConfSim: 0.160 | Action: CONTINUE (DENOISING)
+  Token 5 'exo' | t_loc: 0.700 | RawDProx: 0.208 | Delta: 0.024 | ConfSim: 0.277 | Action: CONTINUE (DENOISING)
+  > Sentence: _THE quick brown fox hockeyexo the lazy dog.
+
+Step 3 (t_global: 0.58):
+  Token 4 'hockey' | t_loc: 0.580 | RawDProx: 0.240 | Delta: 0.012 | ConfSim: 0.160 | Action: CONTINUE (DENOISING)
+  Token 5 '重回' | t_loc: 0.580 | RawDProx: 0.132 | Delta: 0.003 | ConfSim: 0.181 | Action: CONTINUE (DENOISING)
+  > Sentence: _THE quick brown fox hockey重回 the lazy dog.
+
+Step 6 (t_global: 0.46):
+  Token 4 'jumps' | t_loc: 0.460 | RawDProx: 0.273 | Delta: 0.020 | ConfSim: 0.269 | Action: CONTINUE (DENOISING)
+  Token 5 'OVER' | t_loc: 0.460 | RawDProx: 0.274 | Delta: 0.002 | ConfSim: 0.813 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brown fox jumps OVER the lazy dog.
+
+Step 9 (t_global: 0.34):
+  Token 4 'jumps' | t_loc: 0.340 | RawDProx: 0.311 | Delta: 0.044 | ConfSim: 0.790 | Action: CONTINUE (DENOISING)
+  Token 5 'over' | t_loc: 0.340 | RawDProx: 0.305 | Delta: 0.013 | ConfSim: 0.826 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brown fox jumps over the lazy dog.
+
+Step 12 (t_global: 0.22):
+  Token 4 'jumps' | t_loc: 0.220 | RawDProx: 0.331 | Delta: 0.052 | ConfSim: 0.790 | Action: CONTINUE (DENOISING)
+  Token 5 'over' | t_loc: 0.220 | RawDProx: 0.305 | Delta: 0.024 | ConfSim: 0.826 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brown fox jumps over the lazy dog.
+
+Step 15 (t_global: 0.10):
+  Token 4 'jumps' | t_loc: 0.100 | RawDProx: 0.342 | Delta: 0.055 | ConfSim: 0.790 | Action: CONTINUE (DENOISING)
+  Token 5 'over' | t_loc: 0.100 | RawDProx: 0.342 | Delta: 0.024 | ConfSim: 0.826 | Action: CONTINUE (DENOISING)
+  > Sentence: The quick brown fox jumps over the lazy dog.
+
+Step 18 (t_global: 0.00):
+  Token 4 'jumps' | t_loc: 0.000 | RawDProx: 0.344 | Delta: 0.056 | ConfSim: 0.790 | Action: DECODER_READY (CRYSTALLIZED)
+  Token 5 'over' | t_loc: 0.000 | RawDProx: 0.343 | Delta: 0.024 | ConfSim: 0.826 | Action: DECODER_READY (SYNTAX_VARIATION)
+  > Sentence: The quick brown fox jumps over the lazy dog.
+
+================================================================================
+EVALUATING PHRASE: A journey of a thousand miles begins with a single step.
+================================================================================
+
+================================================================================
+RUN: High Noise - A journey of a ...
+================================================================================
+
+Step 0 (t_global: 0.84):
+  Token 4 '�' | t_loc: 0.844 | RawDProx: 0.226 | Delta: 0.014 | ConfSim: 0.161 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.600 | RawDProx: 0.238 | Delta: 0.018 | ConfSim: 0.278 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey ofاختبار� miles begins_with外壳 melan step.
+
+Step 3 (t_global: 0.72):
+  Token 4 'geography' | t_loc: 0.694 | RawDProx: 0.214 | Delta: 0.002 | ConfSim: 0.232 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.480 | RawDProx: 0.339 | Delta: 0.037 | ConfSim: 0.803 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey ofpherical geography miles begins with a单一 step.
+
+Step 6 (t_global: 0.60):
+  Token 4 '.sh' | t_loc: 0.574 | RawDProx: 0.212 | Delta: 0.005 | ConfSim: 0.116 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.360 | RawDProx: 0.390 | Delta: 0.043 | ConfSim: 0.803 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey ofpherical.sh miles begins with a单一 step.
+
+Step 9 (t_global: 0.48):
+  Token 4 '.sh' | t_loc: 0.454 | RawDProx: 0.216 | Delta: 0.001 | ConfSim: 0.179 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.240 | RawDProx: 0.425 | Delta: 0.051 | ConfSim: 0.803 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey of french.sh miles begins with a single step.
+
+Step 12 (t_global: 0.36):
+  Token 4 'г' | t_loc: 0.334 | RawDProx: 0.218 | Delta: 0.003 | ConfSim: 0.179 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.120 | RawDProx: 0.443 | Delta: 0.056 | ConfSim: 0.803 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey ofⵀ г miles begins with a single step.
+
+Step 15 (t_global: 0.24):
+  Token 4 'ⵀ' | t_loc: 0.214 | RawDProx: 0.218 | Delta: 0.000 | ConfSim: 0.254 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.000 | RawDProx: 0.447 | Delta: 0.057 | ConfSim: 0.803 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey of	aⵀ miles begins with a single step.
+
+Step 18 (t_global: 0.12):
+  Token 4 'г' | t_loc: 0.094 | RawDProx: 0.218 | Delta: 0.003 | ConfSim: 0.254 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.000 | RawDProx: 0.447 | Delta: 0.057 | ConfSim: 0.803 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: A journey of	a г miles begins with a single step.
+
+Step 21 (t_global: 0.00):
+  Token 4 'г' | t_loc: 0.000 | RawDProx: 0.218 | Delta: 0.003 | ConfSim: 0.254 | Action: CLM_HELP (SEMANTIC_CONFLICT)
+  Token 5 'miles' | t_loc: 0.000 | RawDProx: 0.447 | Delta: 0.057 | ConfSim: 0.803 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: A journey of	a г miles begins with a single step.
+
+================================================================================
+RUN: Low Noise - A journey of a ...
+================================================================================
+
+Step 0 (t_global: 0.70):
+  Token 4 'fashioned' | t_loc: 0.700 | RawDProx: 0.225 | Delta: 0.004 | ConfSim: 0.133 | Action: CONTINUE (DENOISING)
+  Token 5 'geography' | t_loc: 0.700 | RawDProx: 0.220 | Delta: 0.007 | ConfSim: 0.248 | Action: CONTINUE (DENOISING)
+  > Sentence: A-sh of a fashioned geography begins雞 a single step.
+
+Step 3 (t_global: 0.58):
+  Token 4 'mph' | t_loc: 0.580 | RawDProx: 0.232 | Delta: 0.006 | ConfSim: 0.311 | Action: CONTINUE (DENOISING)
+  Token 5 'mph' | t_loc: 0.580 | RawDProx: 0.226 | Delta: 0.003 | ConfSim: 0.578 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey of a mph mph begins_with a single step.
+
+Step 6 (t_global: 0.46):
+  Token 4 'photographs' | t_loc: 0.460 | RawDProx: 0.243 | Delta: 0.004 | ConfSim: 0.133 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.460 | RawDProx: 0.260 | Delta: 0.010 | ConfSim: 0.803 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey of a photographs miles begins with a single step.
+
+Step 9 (t_global: 0.34):
+  Token 4 'thousand' | t_loc: 0.340 | RawDProx: 0.266 | Delta: 0.025 | ConfSim: 0.291 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.340 | RawDProx: 0.294 | Delta: 0.020 | ConfSim: 0.803 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey of a thousand miles begins with a single step.
+
+Step 12 (t_global: 0.22):
+  Token 4 'thousand' | t_loc: 0.220 | RawDProx: 0.289 | Delta: 0.043 | ConfSim: 0.297 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.220 | RawDProx: 0.319 | Delta: 0.025 | ConfSim: 0.803 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey of a thousand miles begins with a single step.
+
+Step 15 (t_global: 0.10):
+  Token 4 'thousand' | t_loc: 0.100 | RawDProx: 0.301 | Delta: 0.051 | ConfSim: 0.676 | Action: CONTINUE (DENOISING)
+  Token 5 'miles' | t_loc: 0.100 | RawDProx: 0.331 | Delta: 0.029 | ConfSim: 0.803 | Action: CONTINUE (DENOISING)
+  > Sentence: A journey of a thousand miles begins with a single step.
+
+Step 18 (t_global: 0.00):
+  Token 4 'thousand' | t_loc: 0.000 | RawDProx: 0.303 | Delta: 0.052 | ConfSim: 0.676 | Action: DECODER_READY (CRYSTALLIZED)
+  Token 5 'miles' | t_loc: 0.000 | RawDProx: 0.333 | Delta: 0.029 | ConfSim: 0.803 | Action: DECODER_READY (SYNTAX_VARIATION)
+  > Sentence: A journey of a thousand miles begins with a single step.
+
+================================================================================
+EVALUATING PHRASE: Мама мыла раму, а папа читал газету.
+================================================================================
+
+================================================================================
+RUN: High Noise - Мама мыла раму,...
+================================================================================
+
+Step 0 (t_global: 0.86):
+  Token 4 '극' | t_loc: 0.844 | RawDProx: 0.228 | Delta: 0.004 | ConfSim: 0.192 | Action: CONTINUE (DENOISING)
+  Token 5 '극' | t_loc: 0.600 | RawDProx: 0.253 | Delta: 0.000 | ConfSim: 0.156 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мы극극у, а frenchапа чит𝖒 газ Giriş-fashion.They
+
+Step 3 (t_global: 0.74):
+  Token 4 '公安机关' | t_loc: 0.692 | RawDProx: 0.233 | Delta: 0.002 | ConfSim: 0.131 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.480 | RawDProx: 0.341 | Delta: 0.054 | ConfSim: 0.303 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мы公安机关 раму, а frenchапа читployment газет-fashion.They
+
+Step 6 (t_global: 0.62):
+  Token 4 '公安机关' | t_loc: 0.572 | RawDProx: 0.232 | Delta: 0.011 | ConfSim: 0.131 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.360 | RawDProx: 0.398 | Delta: 0.107 | ConfSim: 0.303 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мы公安机关 раму, а папа читⵀ газет-fashion.
+
+Step 9 (t_global: 0.50):
+  Token 4 '公安机关' | t_loc: 0.452 | RawDProx: 0.234 | Delta: 0.017 | ConfSim: 0.338 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.240 | RawDProx: 0.430 | Delta: 0.138 | ConfSim: 0.303 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мы公安机关 раму, а папа читⵀ газет-fashion.
+
+Step 12 (t_global: 0.38):
+  Token 4 '公安机关' | t_loc: 0.332 | RawDProx: 0.232 | Delta: 0.012 | ConfSim: 0.338 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.120 | RawDProx: 0.448 | Delta: 0.153 | ConfSim: 0.303 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мы公安机关 раму, а папа читⵀ газет-fashion.
+
+Step 15 (t_global: 0.26):
+  Token 4 '公安机关' | t_loc: 0.212 | RawDProx: 0.230 | Delta: 0.011 | ConfSim: 0.338 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.000 | RawDProx: 0.452 | Delta: 0.156 | ConfSim: 0.303 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мы公安机关 раму, а папа читⵀ газет-fashion.
+
+Step 18 (t_global: 0.14):
+  Token 4 '公安机关' | t_loc: 0.092 | RawDProx: 0.229 | Delta: 0.010 | ConfSim: 0.234 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.000 | RawDProx: 0.452 | Delta: 0.156 | ConfSim: 0.303 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: Мама мы公安机关 раму, а папа читⵀ газет-fashion.
+
+Step 21 (t_global: 0.02):
+  Token 4 '公安机关' | t_loc: 0.000 | RawDProx: 0.229 | Delta: 0.010 | ConfSim: 0.234 | Action: CLM_HELP (SEMANTIC_CONFLICT)
+  Token 5 'рам' | t_loc: 0.000 | RawDProx: 0.452 | Delta: 0.156 | ConfSim: 0.303 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: Мама мы公安机关 раму, а папа читⵀ газет-fashion.
+
+================================================================================
+RUN: Low Noise - Мама мыла раму,...
+================================================================================
+
+Step 0 (t_global: 0.70):
+  Token 4 '公安机关' | t_loc: 0.700 | RawDProx: 0.237 | Delta: 0.009 | ConfSim: 0.131 | Action: CONTINUE (DENOISING)
+  Token 5 '-fashion' | t_loc: 0.700 | RawDProx: 0.246 | Delta: 0.013 | ConfSim: 0.154 | Action: CONTINUE (DENOISING)
+  > Sentence:  mobsам-fashion мы公安机关-fashionу shutdown а папа читал газету.
+
+Step 3 (t_global: 0.58):
+  Token 4 '公安机关' | t_loc: 0.580 | RawDProx: 0.241 | Delta: 0.010 | ConfSim: 0.131 | Action: CONTINUE (DENOISING)
+  Token 5 'ﯖ' | t_loc: 0.580 | RawDProx: 0.251 | Delta: 0.001 | ConfSim: 0.377 | Action: CONTINUE (DENOISING)
+  > Sentence: Мам-fashion мы公安机关ﯖу, а папа читал газету.
+
+Step 6 (t_global: 0.46):
+  Token 4 '公安机关' | t_loc: 0.460 | RawDProx: 0.231 | Delta: 0.004 | ConfSim: 0.556 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.460 | RawDProx: 0.286 | Delta: 0.035 | ConfSim: 0.303 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мы公安机关 раму, а папа читал газету.
+
+Step 9 (t_global: 0.34):
+  Token 4 'Police' | t_loc: 0.340 | RawDProx: 0.230 | Delta: 0.003 | ConfSim: 0.864 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.340 | RawDProx: 0.317 | Delta: 0.068 | ConfSim: 0.303 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мыPolice раму, а папа читал газету.
+
+Step 12 (t_global: 0.22):
+  Token 4 'ла' | t_loc: 0.220 | RawDProx: 0.237 | Delta: 0.004 | ConfSim: 0.230 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.220 | RawDProx: 0.337 | Delta: 0.083 | ConfSim: 0.303 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мыла раму, а папа читал газету.
+
+Step 15 (t_global: 0.10):
+  Token 4 'ла' | t_loc: 0.100 | RawDProx: 0.247 | Delta: 0.012 | ConfSim: 0.230 | Action: CONTINUE (DENOISING)
+  Token 5 'рам' | t_loc: 0.100 | RawDProx: 0.347 | Delta: 0.090 | ConfSim: 0.303 | Action: CONTINUE (DENOISING)
+  > Sentence: Мама мыла раму, а папа читал газету.
+
+Step 18 (t_global: 0.00):
+  Token 4 'ла' | t_loc: 0.000 | RawDProx: 0.249 | Delta: 0.014 | ConfSim: 0.230 | Action: CLM_HELP (SEMANTIC_CONFLICT)
+  Token 5 'рам' | t_loc: 0.000 | RawDProx: 0.348 | Delta: 0.091 | ConfSim: 0.303 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: Мама мыла раму, а папа читал газету.
+
+================================================================================
+EVALUATING PHRASE: В лесу родилась ёлочка, в лесу она росла.
+================================================================================
+
+================================================================================
+RUN: High Noise - В лесу родилась...
+================================================================================
+
+Step 0 (t_global: 0.90):
+  Token 4 '-fashion' | t_loc: 0.844 | RawDProx: 0.254 | Delta: 0.013 | ConfSim: 0.705 | Action: CONTINUE (DENOISING)
+  Token 5 '-fashion' | t_loc: 0.600 | RawDProx: 0.259 | Delta: 0.011 | ConfSim: 0.231 | Action: CONTINUE (DENOISING)
+  > Sentence: В лес-fashion-fashion-fashion �-fashionлочка, в-fashionесу она-fashion frenchла.
+
+Step 3 (t_global: 0.78):
+  Token 4 '-fashion' | t_loc: 0.666 | RawDProx: 0.263 | Delta: 0.013 | ConfSim: 0.310 | Action: CONTINUE (DENOISING)
+  Token 5 'илась' | t_loc: 0.480 | RawDProx: 0.288 | Delta: 0.020 | ConfSim: 0.169 | Action: CONTINUE (DENOISING)
+  > Sentence: В лес-fashion-fashionилась �-fashionлочка, в-fashionесу она-fashion-fashionла.
+
+Step 6 (t_global: 0.66):
+  Token 4 '-fashion' | t_loc: 0.546 | RawDProx: 0.255 | Delta: 0.014 | ConfSim: 0.172 | Action: CONTINUE (DENOISING)
+  Token 5 'илась' | t_loc: 0.360 | RawDProx: 0.346 | Delta: 0.038 | ConfSim: 0.876 | Action: CONTINUE (DENOISING)
+  > Sentence: В лес-fashion-fashionилась �-fashionлочка, в-fashionесу она-fashion-fashionла.
+
+Step 9 (t_global: 0.54):
+  Token 4 '-fashion' | t_loc: 0.426 | RawDProx: 0.249 | Delta: 0.009 | ConfSim: 0.382 | Action: CONTINUE (DENOISING)
+  Token 5 'илась' | t_loc: 0.240 | RawDProx: 0.388 | Delta: 0.043 | ConfSim: 0.876 | Action: CONTINUE (DENOISING)
+  > Sentence: В лес-fashion-fashionилась ёлочка, в-fashionесу она-fashion במהла.
+
+Step 12 (t_global: 0.42):
+  Token 4 '-fashion' | t_loc: 0.306 | RawDProx: 0.245 | Delta: 0.006 | ConfSim: 0.382 | Action: CONTINUE (DENOISING)
+  Token 5 'илась' | t_loc: 0.120 | RawDProx: 0.405 | Delta: 0.045 | ConfSim: 0.876 | Action: CONTINUE (DENOISING)
+  > Sentence: В лесу-fashionилась ёлочка, в-fashionесу она-fashion במהла.
+
+Step 15 (t_global: 0.30):
+  Token 4 '-fashion' | t_loc: 0.186 | RawDProx: 0.241 | Delta: 0.005 | ConfSim: 0.382 | Action: CONTINUE (DENOISING)
+  Token 5 'илась' | t_loc: 0.000 | RawDProx: 0.408 | Delta: 0.046 | ConfSim: 0.876 | Action: CONTINUE (DENOISING)
+  > Sentence: В лесу-fashionилась ёлочка, в-fashionесу она-fashion במהла.
+
+Step 18 (t_global: 0.18):
+  Token 4 '-fashion' | t_loc: 0.066 | RawDProx: 0.240 | Delta: 0.004 | ConfSim: 0.382 | Action: CONTINUE (DENOISING)
+  Token 5 'илась' | t_loc: 0.000 | RawDProx: 0.408 | Delta: 0.046 | ConfSim: 0.876 | Action: DECODER_READY (SYNTAX_VARIATION)
+  > Sentence: В лесу-fashionилась ёлочка, в-fashionесу онаﳋ במהла.
+
+Step 21 (t_global: 0.06):
+  Token 4 '-fashion' | t_loc: 0.000 | RawDProx: 0.240 | Delta: 0.004 | ConfSim: 0.382 | Action: CLM_HELP (MILD_AMBIGUITY)
+  Token 5 'илась' | t_loc: 0.000 | RawDProx: 0.408 | Delta: 0.046 | ConfSim: 0.876 | Action: DECODER_READY (SYNTAX_VARIATION)
+  > Sentence: В лесу-fashionилась ёлочка, в-fashionесу онаﳋ במהла.
+
+================================================================================
+RUN: Low Noise - В лесу родилась...
+================================================================================
+
+Step 0 (t_global: 0.70):
+  Token 4 'oauth' | t_loc: 0.700 | RawDProx: 0.255 | Delta: 0.010 | ConfSim: 0.319 | Action: CONTINUE (DENOISING)
+  Token 5 '-fashion' | t_loc: 0.700 | RawDProx: 0.239 | Delta: 0.006 | ConfSim: 0.231 | Action: CONTINUE (DENOISING)
+  > Sentence: В лесу oauth-fashion극�-fashionочка, в лесу она росла.
+
+Step 3 (t_global: 0.58):
+  Token 4 'oauth' | t_loc: 0.580 | RawDProx: 0.246 | Delta: 0.003 | ConfSim: 0.243 | Action: CONTINUE (DENOISING)
+  Token 5 '-fashion' | t_loc: 0.580 | RawDProx: 0.251 | Delta: 0.014 | ConfSim: 0.334 | Action: CONTINUE (DENOISING)
+  > Sentence: В лесу oauth-fashion극�лочка, в лесу она росла.
+
+Step 6 (t_global: 0.46):
+  Token 4 '-fashion' | t_loc: 0.460 | RawDProx: 0.248 | Delta: 0.006 | ConfSim: 0.382 | Action: CONTINUE (DENOISING)
+  Token 5 '-fashion' | t_loc: 0.460 | RawDProx: 0.261 | Delta: 0.017 | ConfSim: 0.404 | Action: CONTINUE (DENOISING)
+  > Sentence: В лесу-fashion-fashion ёлочка, в лесу она росла.
+
+Step 9 (t_global: 0.34):
+  Token 4 'род' | t_loc: 0.340 | RawDProx: 0.268 | Delta: 0.018 | ConfSim: 0.406 | Action: CONTINUE (DENOISING)
+  Token 5 'илась' | t_loc: 0.340 | RawDProx: 0.275 | Delta: 0.016 | ConfSim: 0.169 | Action: CONTINUE (DENOISING)
+  > Sentence: В лесу родилась ёлочка, в лесу она росла.
+
+Step 12 (t_global: 0.22):
+  Token 4 'род' | t_loc: 0.220 | RawDProx: 0.288 | Delta: 0.030 | ConfSim: 0.406 | Action: CONTINUE (DENOISING)
+  Token 5 'илась' | t_loc: 0.220 | RawDProx: 0.298 | Delta: 0.035 | ConfSim: 0.876 | Action: CONTINUE (DENOISING)
+  > Sentence: В лесу родилась ёлочка, в лесу она росла.
+
+Step 15 (t_global: 0.10):
+  Token 4 'род' | t_loc: 0.100 | RawDProx: 0.297 | Delta: 0.037 | ConfSim: 0.406 | Action: CONTINUE (DENOISING)
+  Token 5 'илась' | t_loc: 0.100 | RawDProx: 0.308 | Delta: 0.036 | ConfSim: 0.876 | Action: CONTINUE (DENOISING)
+  > Sentence: В лесу родилась ёлочка, в лесу она росла.
+
+Step 18 (t_global: 0.00):
+  Token 4 'род' | t_loc: 0.000 | RawDProx: 0.299 | Delta: 0.038 | ConfSim: 0.406 | Action: CLM_HELP (MILD_AMBIGUITY)
+  Token 5 'илась' | t_loc: 0.000 | RawDProx: 0.309 | Delta: 0.036 | ConfSim: 0.876 | Action: DECODER_READY (SYNTAX_VARIATION)
+  > Sentence: В лесу родилась ёлочка, в лесу она росла.
+
+================================================================================
+EVALUATING PHRASE: Strč prst skrz krk.
+================================================================================
+
+================================================================================
+RUN: High Noise - Strč prst skrz ...
+================================================================================
+
+Step 0 (t_global: 0.89):
+  Token 4 '.K' | t_loc: 0.844 | RawDProx: 0.231 | Delta: 0.000 | ConfSim: 0.567 | Action: CONTINUE (DENOISING)
+  Token 5 'ﲬ' | t_loc: 0.600 | RawDProx: 0.258 | Delta: 0.002 | ConfSim: 0.869 | Action: CONTINUE (DENOISING)
+  > Sentence: Str shutdown pr	template.Kﲬ krk.
+
+Step 3 (t_global: 0.77):
+  Token 4 '韩' | t_loc: 0.689 | RawDProx: 0.249 | Delta: 0.007 | ConfSim: 0.495 | Action: CONTINUE (DENOISING)
+  Token 5 'rz' | t_loc: 0.480 | RawDProx: 0.278 | Delta: 0.013 | ConfSim: 0.329 | Action: CONTINUE (DENOISING)
+  > Sentence: Str shutdown prkke韩rz krk.
+
+Step 6 (t_global: 0.65):
+  Token 4 'k' | t_loc: 0.569 | RawDProx: 0.245 | Delta: 0.004 | ConfSim: 0.764 | Action: CONTINUE (DENOISING)
+  Token 5 'rz' | t_loc: 0.360 | RawDProx: 0.333 | Delta: 0.055 | ConfSim: 0.329 | Action: CONTINUE (DENOISING)
+  > Sentence: Str.Fail pr kf	krz krk.
+
+Step 9 (t_global: 0.53):
+  Token 4 'k' | t_loc: 0.449 | RawDProx: 0.252 | Delta: 0.008 | ConfSim: 0.764 | Action: CONTINUE (DENOISING)
+  Token 5 'rz' | t_loc: 0.240 | RawDProx: 0.373 | Delta: 0.086 | ConfSim: 0.329 | Action: CONTINUE (DENOISING)
+  > Sentence: Str促 prsth	krz krk.
+
+Step 12 (t_global: 0.41):
+  Token 4 'k' | t_loc: 0.329 | RawDProx: 0.244 | Delta: 0.006 | ConfSim: 0.764 | Action: CONTINUE (DENOISING)
+  Token 5 'rz' | t_loc: 0.120 | RawDProx: 0.386 | Delta: 0.101 | ConfSim: 0.329 | Action: CONTINUE (DENOISING)
+  > Sentence: Str甜 prsth	krz krk.
+
+Step 15 (t_global: 0.29):
+  Token 4 'k' | t_loc: 0.209 | RawDProx: 0.243 | Delta: 0.005 | ConfSim: 0.764 | Action: CONTINUE (DENOISING)
+  Token 5 'rz' | t_loc: 0.000 | RawDProx: 0.390 | Delta: 0.104 | ConfSim: 0.329 | Action: CONTINUE (DENOISING)
+  > Sentence: Str鼠 prsth	krz krk.
+
+Step 18 (t_global: 0.17):
+  Token 4 'k' | t_loc: 0.089 | RawDProx: 0.243 | Delta: 0.004 | ConfSim: 0.764 | Action: CONTINUE (DENOISING)
+  Token 5 'rz' | t_loc: 0.000 | RawDProx: 0.390 | Delta: 0.104 | ConfSim: 0.329 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: Str鼠 prsth	krz krk.
+
+Step 21 (t_global: 0.05):
+  Token 4 'k' | t_loc: 0.000 | RawDProx: 0.243 | Delta: 0.004 | ConfSim: 0.764 | Action: DECODER_READY (SYNTAX_VARIATION)
+  Token 5 'rz' | t_loc: 0.000 | RawDProx: 0.390 | Delta: 0.104 | ConfSim: 0.329 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: Str鼠 prsth	krz krk.
+
+Step 23 (t_global: 0.00):
+
+================================================================================
+RUN: Low Noise - Strč prst skrz ...
+================================================================================
+
+Step 0 (t_global: 0.70):
+  Token 4 ',k' | t_loc: 0.700 | RawDProx: 0.251 | Delta: 0.003 | ConfSim: 0.764 | Action: CONTINUE (DENOISING)
+  Token 5 'fashioned' | t_loc: 0.700 | RawDProx: 0.261 | Delta: 0.004 | ConfSim: 0.334 | Action: CONTINUE (DENOISING)
+  > Sentence: Str-fashion鸡st,k fashioned krk.
+
+Step 3 (t_global: 0.58):
+  Token 4 'k' | t_loc: 0.580 | RawDProx: 0.274 | Delta: 0.014 | ConfSim: 0.764 | Action: CONTINUE (DENOISING)
+  Token 5 'fashioned' | t_loc: 0.580 | RawDProx: 0.254 | Delta: 0.003 | ConfSim: 0.334 | Action: CONTINUE (DENOISING)
+  > Sentence: Strﲬ	prst	k fashioned krk.
+
+Step 6 (t_global: 0.46):
+  Token 4 'k' | t_loc: 0.460 | RawDProx: 0.290 | Delta: 0.020 | ConfSim: 0.764 | Action: CONTINUE (DENOISING)
+  Token 5 '雞' | t_loc: 0.460 | RawDProx: 0.258 | Delta: 0.003 | ConfSim: 0.255 | Action: CONTINUE (DENOISING)
+  > Sentence: Strč prst	k雞 krk.
+
+Step 9 (t_global: 0.34):
+  Token 4 'sk' | t_loc: 0.340 | RawDProx: 0.305 | Delta: 0.014 | ConfSim: 0.317 | Action: CONTINUE (DENOISING)
+  Token 5 'rz' | t_loc: 0.340 | RawDProx: 0.273 | Delta: 0.006 | ConfSim: 0.211 | Action: CONTINUE (DENOISING)
+  > Sentence: Strč prst skrz krk.
+
+Step 12 (t_global: 0.22):
+  Token 4 'sk' | t_loc: 0.220 | RawDProx: 0.325 | Delta: 0.036 | ConfSim: 0.762 | Action: CONTINUE (DENOISING)
+  Token 5 'rz' | t_loc: 0.220 | RawDProx: 0.292 | Delta: 0.024 | ConfSim: 0.211 | Action: CONTINUE (DENOISING)
+  > Sentence: Strč prst skrz krk.
+
+Step 15 (t_global: 0.10):
+  Token 4 'sk' | t_loc: 0.100 | RawDProx: 0.334 | Delta: 0.039 | ConfSim: 0.762 | Action: CONTINUE (DENOISING)
+  Token 5 'rz' | t_loc: 0.100 | RawDProx: 0.300 | Delta: 0.033 | ConfSim: 0.211 | Action: CONTINUE (DENOISING)
+  > Sentence: Strč prst skrz krk.
+
+Step 18 (t_global: 0.00):
+  Token 4 'sk' | t_loc: 0.000 | RawDProx: 0.335 | Delta: 0.039 | ConfSim: 0.762 | Action: DECODER_READY (SYNTAX_VARIATION)
+  Token 5 'rz' | t_loc: 0.000 | RawDProx: 0.301 | Delta: 0.034 | ConfSim: 0.211 | Action: CLM_HELP (SEMANTIC_CONFLICT)
+  > Sentence: Strč prst skrz krk.
+
+================================================================================
+EVALUATING PHRASE: Příliš žluťoučký kůň úpěl ďábelské ódy.
+================================================================================
+
+================================================================================
+RUN: High Noise - Příliš žluťoučk...
+================================================================================
+
+Step 0 (t_global: 0.87):
+  Token 4 'shutdown' | t_loc: 0.844 | RawDProx: 0.126 | Delta: 0.002 | ConfSim: 0.363 | Action: CONTINUE (DENOISING)
+  Token 5 '鼠' | t_loc: 0.600 | RawDProx: 0.147 | Delta: 0.004 | ConfSim: 0.155 | Action: CONTINUE (DENOISING)
+  > Sentence: P hoşí shutdown shutdown鼠luťoučHEMEý kůň hoşHEMEěHEME ďábelsｋé鸡dy.
+
+Step 3 (t_global: 0.75):
+  Token 4 'fashioned' | t_loc: 0.724 | RawDProx: 0.237 | Delta: 0.016 | ConfSim: 0.340 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.480 | RawDProx: 0.193 | Delta: 0.027 | ConfSim: 0.582 | Action: CONTINUE (DENOISING)
+  > Sentence: P鸡í鸡 fashioned žluťouč fashionedý kůň г fashionedě fashioned ďábelské fashioneddy.
+
+Step 6 (t_global: 0.63):
+  Token 4 '鸡' | t_loc: 0.604 | RawDProx: 0.226 | Delta: 0.004 | ConfSim: 0.313 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.360 | RawDProx: 0.262 | Delta: 0.058 | ConfSim: 0.582 | Action: CONTINUE (DENOISING)
+  > Sentence: Pří鸡鸡 žluťoučký kůň г fashionedě鸡 ďábelskéخيdy.
+
+Step 9 (t_global: 0.51):
+  Token 4 '鸡' | t_loc: 0.484 | RawDProx: 0.229 | Delta: 0.001 | ConfSim: 0.141 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.240 | RawDProx: 0.306 | Delta: 0.077 | ConfSim: 0.582 | Action: CONTINUE (DENOISING)
+  > Sentence: Pří鸡鸡 žluťoučký kůň,k fashionedě鸡 ďábelskéخيdy.
+
+Step 12 (t_global: 0.39):
+  Token 4 'template' | t_loc: 0.364 | RawDProx: 0.231 | Delta: 0.004 | ConfSim: 0.141 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.120 | RawDProx: 0.327 | Delta: 0.086 | ConfSim: 0.582 | Action: CONTINUE (DENOISING)
+  > Sentence: Příli	template žluťoučký kůň鸡 fashionedě鸡 ďábelskéخيdy.
+
+Step 15 (t_global: 0.27):
+  Token 4 'template' | t_loc: 0.244 | RawDProx: 0.230 | Delta: 0.005 | ConfSim: 0.834 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.000 | RawDProx: 0.331 | Delta: 0.087 | ConfSim: 0.582 | Action: CONTINUE (DENOISING)
+  > Sentence: Příli	template žluťoučký kůň鸡 fashionedě鸡 ďábelskéخيdy.
+
+Step 18 (t_global: 0.15):
+  Token 4 'template' | t_loc: 0.124 | RawDProx: 0.229 | Delta: 0.005 | ConfSim: 0.222 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.000 | RawDProx: 0.331 | Delta: 0.087 | ConfSim: 0.582 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: Příli	template žluťoučký kůň鸡 fashionedě鸡 ďábelskéخيdy.
+
+Step 21 (t_global: 0.03):
+  Token 4 'template' | t_loc: 0.004 | RawDProx: 0.229 | Delta: 0.005 | ConfSim: 0.222 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.000 | RawDProx: 0.331 | Delta: 0.087 | ConfSim: 0.582 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: Příli	template žluťoučký kůň鸡 fashionedě鸡 ďábelskéخيdy.
+
+Step 22 (t_global: 0.00):
+
+================================================================================
+RUN: Low Noise - Příliš žluťoučk...
+================================================================================
+
+Step 0 (t_global: 0.70):
+  Token 4 'fashioned' | t_loc: 0.700 | RawDProx: 0.223 | Delta: 0.006 | ConfSim: 0.230 | Action: CONTINUE (DENOISING)
+  Token 5 '****' | t_loc: 0.700 | RawDProx: 0.130 | Delta: 0.002 | ConfSim: 0.173 | Action: CONTINUE (DENOISING)
+  > Sentence: PřHEMEli fashioned****luťoučký,kůň ú fashioneděl fashioned�ábelské ódy.
+
+Step 3 (t_global: 0.58):
+  Token 4 'template' | t_loc: 0.580 | RawDProx: 0.222 | Delta: 0.008 | ConfSim: 0.271 | Action: CONTINUE (DENOISING)
+  Token 5 '猴' | t_loc: 0.580 | RawDProx: 0.128 | Delta: 0.000 | ConfSim: 0.337 | Action: CONTINUE (DENOISING)
+  > Sentence: Příli	template猴luťoučký,kůň úpěl fk�ábelské ódy.
+
+Step 6 (t_global: 0.46):
+  Token 4 'template' | t_loc: 0.460 | RawDProx: 0.235 | Delta: 0.013 | ConfSim: 0.271 | Action: CONTINUE (DENOISING)
+  Token 5 '𝖒' | t_loc: 0.460 | RawDProx: 0.240 | Delta: 0.020 | ConfSim: 0.340 | Action: CONTINUE (DENOISING)
+  > Sentence: Příli	template𝖒luťoučký kůň úpěl ďábelské ódy.
+
+Step 9 (t_global: 0.34):
+  Token 4 'š' | t_loc: 0.340 | RawDProx: 0.247 | Delta: 0.008 | ConfSim: 0.172 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.340 | RawDProx: 0.252 | Delta: 0.013 | ConfSim: 0.256 | Action: CONTINUE (DENOISING)
+  > Sentence: Příliš žluťoučký kůň úpěl ďábelské ódy.
+
+Step 12 (t_global: 0.22):
+  Token 4 'š' | t_loc: 0.220 | RawDProx: 0.271 | Delta: 0.033 | ConfSim: 0.172 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.220 | RawDProx: 0.278 | Delta: 0.045 | ConfSim: 0.256 | Action: CONTINUE (DENOISING)
+  > Sentence: Příliš žluťoučký kůň úpěl ďábelské ódy.
+
+Step 15 (t_global: 0.10):
+  Token 4 'š' | t_loc: 0.100 | RawDProx: 0.282 | Delta: 0.043 | ConfSim: 0.172 | Action: CONTINUE (DENOISING)
+  Token 5 'ž' | t_loc: 0.100 | RawDProx: 0.289 | Delta: 0.054 | ConfSim: 0.256 | Action: CONTINUE (DENOISING)
+  > Sentence: Příliš žluťoučký kůň úpěl ďábelské ódy.
+
+Step 18 (t_global: 0.00):
+  Token 4 'š' | t_loc: 0.000 | RawDProx: 0.283 | Delta: 0.045 | ConfSim: 0.172 | Action: CLM_HELP (SEMANTIC_CONFLICT)
+  Token 5 'ž' | t_loc: 0.000 | RawDProx: 0.292 | Delta: 0.055 | ConfSim: 0.256 | Action: DECODER_READY (CRYSTALLIZED)
+  > Sentence: Příliš žluťoučký kůň úpěl ďábelské ódy.

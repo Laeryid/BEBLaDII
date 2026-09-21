@@ -1,3 +1,4 @@
+<!-- created: 2026-09-10 -->
 # ADR 084: Soft Anchor Identity Loss
 
 ## Контекст и Проблема

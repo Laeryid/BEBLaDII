@@ -1,3 +1,4 @@
+<!-- created: 2026-09-13 -->
 # ADR 085: Noise-Aware Context Trust and Isolation (Phase 4)
 
 ## Context

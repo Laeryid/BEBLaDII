@@ -19,6 +19,7 @@
 | **Phase 1 (VAE)** | `experiments\phase 1\planB_phase1_checkpoints_phase1_vae_step_20000.pth` | `phase1_vae_step_20000.pth` |
 | **Phase 2 (Decoder)** | `experiments\phase 2\planB_phase2_checkpoints_decoder_step_9000.pth` | `phase2_decoder_step_9000.pth` |
 | **Phase 3 (Diffusion)** | `experiments\phase 3\local_checkpoints\phase3_step_17995.pth` | `phase3_diffusion_step_17995.pth` |
+| **Phase 4 (Diffusion Core)** | `experiments\phase 4\local_checkpoints\phase4_step_85995.pth` | `phase4_diffusion_core_step_85995.pth` |
 | **Tokens** | `storage\components\sep_token.pt` | `sep_token.pt` |
 
 > [!WARNING]
