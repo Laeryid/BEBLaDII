@@ -102,6 +102,18 @@ def resolve_file_path(filename: str, fallback_dir="/kaggle/input") -> str:
             return str(f)
     return filename
 
+def sync_to_gcs_and_delete(local_path: str, gcs_dir: str):
+    """Копирует файл в GCS и удаляет локально для освобождения дискового пространства."""
+    if not gcs_dir.endswith("/"):
+        gcs_dir += "/"
+    gcs_path = gcs_dir + os.path.basename(local_path)
+    try:
+        subprocess.run(["gsutil", "-q", "cp", local_path, gcs_path], check=True)
+        os.remove(local_path)
+        print(f"[GCS] Synced and deleted: {local_path} → {gcs_path}")
+    except Exception as e:
+        print(f"[GCS] Error syncing {local_path}: {e}")
+
 # %% [markdown]
 # ## 2. Configuration
 
@@ -123,6 +135,9 @@ class Config:
 
     # Директория вывода
     output_dir = "/kaggle/working/checkpoints/phase6"
+    
+    # GCS (для сохранения чекпоинтов)
+    gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
 
     # Гиперпараметры Phase 6
     batch_size    = 8
@@ -642,8 +657,12 @@ def main():
                 
             if global_step % args.save_steps == 0 and global_step > 0:
                 ema_tracker.apply_shadow(model.ca_layers)
-                torch.save(model.ca_layers.state_dict(), os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth"))
+                ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
+                torch.save(model.ca_layers.state_dict(), ckpt_path)
                 ema_tracker.restore(model.ca_layers)
+                
+                if getattr(args, "gcs_checkpoint_dir", None):
+                    sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir)
                 
             global_step += 1
 
