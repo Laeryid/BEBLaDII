@@ -116,9 +116,9 @@ class Config:
 
     # Пути к весам
     encoder_weights = resolve_file_path("planB_phase1_checkpoints_phase1_vae_step_20000.pth")
-    dus_weights     = "/kaggle/input/bebladii-planb-phase4-data/phase4_step_85995.pth" # Чекпоинт Phase 4
+    dus_weights     = resolve_file_path("phase4_step_85995.pth") # Чекпоинт Phase 4
     sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
-    latent_dict     = "/kaggle/input/bebladii-planb-phase5-data/latent_dict.pt"
+    latent_dict     = resolve_file_path("latent_dict.pt")
 
     # Директория вывода
     output_dir = "/kaggle/working/checkpoints/phase6"
@@ -339,6 +339,8 @@ class BEBLaDIIPhase6(nn.Module):
             state = torch.load(config.encoder_weights, map_location="cpu", weights_only=False)
             if "encoder" in state: state = state["encoder"]
             self.encoder.load_state_dict(state, strict=False)
+        else:
+            raise FileNotFoundError(f"Encoder weights not found at {config.encoder_weights}")
         self.encoder.to(torch.bfloat16)
 
         # 3. DUS Backbone
@@ -375,6 +377,8 @@ class BEBLaDIIPhase6(nn.Module):
             clean_state = {k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", ""): v for k, v in state.items()}
             self.load_state_dict(clean_state, strict=False)
             print(f"[Init] Phase 4 weights loaded from {config.dus_weights}")
+        else:
+            raise FileNotFoundError(f"Phase 4 weights not found at {config.dus_weights}")
             
         # --- ПОЛНАЯ ЗАМОРОЗКА ---
         for p in self.parameters():
