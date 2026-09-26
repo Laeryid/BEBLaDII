@@ -113,6 +113,7 @@ class Config:
 
     # Пути к данным
     dataset_path = resolve_file_path("train_phase6.parquet")
+    val_dataset_path = resolve_file_path("val_phase6.parquet")
 
     # Пути к весам
     encoder_weights = resolve_file_path("planB_phase1_checkpoints_phase1_vae_step_20000.pth")
@@ -131,9 +132,13 @@ class Config:
     epochs        = 50
     max_steps     = 200000
     log_steps     = 10
-    val_steps     = 500
+    val_steps     = 200
     save_steps    = 1000
     warmup_steps  = 1000
+    
+    # EMA & PACE Optimizer
+    ema_decay     = 0.999
+    pace_alpha    = 0.001
 
     use_gradient_checkpointing = True
     wandb_project = "BEBLaDII-Phase6-Kaggle"
@@ -142,9 +147,42 @@ args = Config()
 
 
 # %% [markdown]
-# ## 3. Data & Tokenization
+# ## 3. Data & Tokenization & Optimization
 
 # %%
+class EMATracker:
+    def __init__(self, model, decay=0.999):
+        self.decay = decay
+        self.shadow = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone().detach()
+
+    def update(self, model):
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.data)
+                    
+    def pace_pullback(self, model, alpha):
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    param.data.sub_(alpha * (param.data - self.shadow[name]))
+                    
+    def apply_shadow(self, model):
+        self.backup = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.backup[name] = param.data.clone()
+                param.data.copy_(self.shadow[name])
+                
+    def restore(self, model):
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                param.data.copy_(self.backup[name])
+        self.backup = {}
+
 class QADataset(Dataset):
     def __init__(self, parquet_path, tokenizer, max_length_q=512, max_length_a=512):
         print(f"[Dataset] Loading from {parquet_path}...")
@@ -520,12 +558,24 @@ def main():
         
     try:
         dataset = QADataset(args.dataset_path, tokenizer, args.max_length_q, args.max_length_a)
+        print("\n=== First Sample Control ===")
+        print(dataset.df.iloc[0].to_dict())
+        print("============================\n")
         dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2)
+        
+        if os.path.exists(args.val_dataset_path):
+            val_dataset = QADataset(args.val_dataset_path, tokenizer, args.max_length_q, args.max_length_a)
+            val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2)
+        else:
+            print(f"Validation dataset not found at {args.val_dataset_path}. Validation will be skipped.")
+            val_dataloader = None
     except Exception as e:
         print(f"Failed to load dataset: {e}. Running dummy loop for compilation check.")
         dataloader = []
+        val_dataloader = None
         
     model = BEBLaDIIPhase6(args).to(device)
+    ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay)
     
     # Оптимизатор обновляет только CA_layers
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
@@ -552,6 +602,9 @@ def main():
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             
+            ema_tracker.update(model.ca_layers)
+            ema_tracker.pace_pullback(model.ca_layers, alpha=args.pace_alpha)
+            
             wandb.log({
                 "loss": loss.item(),
                 "warmup_factor": warmup_factor,
@@ -563,8 +616,34 @@ def main():
             if global_step % args.log_steps == 0:
                 print(f"Step {global_step} | Loss: {loss.item():.4f} | Gate_12: {model.ca_layers['12'].gate.item():.4f}")
                 
+            if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
+                ema_tracker.apply_shadow(model.ca_layers)
+                model.eval()
+                val_loss = 0.0
+                val_batches = 0
+                with torch.no_grad():
+                    for v_batch in val_dataloader:
+                        v_input_ids_q = v_batch['input_ids_q'].to(device)
+                        v_mask_q = v_batch['attention_mask_q'].to(device)
+                        v_input_ids_a = v_batch['input_ids_a'].to(device)
+                        v_mask_a = v_batch['attention_mask_a'].to(device)
+                        
+                        v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
+                        v_loss = compute_phase6_loss(v_out)
+                        val_loss += v_loss.item()
+                        val_batches += 1
+                        if val_batches >= 20: # limit validation for speed
+                            break
+                val_loss /= max(1, val_batches)
+                wandb.log({"val_loss_ema": val_loss}, step=global_step)
+                print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f}")
+                model.train()
+                ema_tracker.restore(model.ca_layers)
+                
             if global_step % args.save_steps == 0 and global_step > 0:
+                ema_tracker.apply_shadow(model.ca_layers)
                 torch.save(model.ca_layers.state_dict(), os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth"))
+                ema_tracker.restore(model.ca_layers)
                 
             global_step += 1
 
