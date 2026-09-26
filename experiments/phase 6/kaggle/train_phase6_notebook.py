@@ -476,6 +476,14 @@ def main():
     print(f"Using device: {device}")
     
     os.makedirs(args.output_dir, exist_ok=True)
+    try:
+        from kaggle_secrets import UserSecretsClient
+        user_secrets = UserSecretsClient()
+        wandb_api = user_secrets.get_secret("WANDB_API_KEY")
+        wandb.login(key=wandb_api)
+    except Exception as e:
+        print(f"Kaggle secrets not available or failed to login to wandb: {e}")
+        
     wandb.init(project=args.wandb_project, config=vars(args))
     
     tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path)
