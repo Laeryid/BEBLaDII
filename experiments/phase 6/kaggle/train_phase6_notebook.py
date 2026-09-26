@@ -96,9 +96,9 @@ class Config:
 
     # Пути к весам
     encoder_weights = resolve_file_path("planB_phase1_checkpoints_phase1_vae_step_20000.pth")
-    dus_weights     = resolve_file_path("phase4_step_85995.pth") # Чекпоинт Phase 4
+    dus_weights     = "/kaggle/input/bebladii-planb-phase4-data/phase4_step_85995.pth" # Чекпоинт Phase 4
     sep_token       = resolve_file_path("sep_token.pt")
-    latent_dict     = resolve_file_path("latent_dict.pt")
+    latent_dict     = "/kaggle/input/bebladii-planb-phase5-data/latent_dict.pt"
 
     # Директория вывода
     output_dir = "/kaggle/working/checkpoints/phase6"
