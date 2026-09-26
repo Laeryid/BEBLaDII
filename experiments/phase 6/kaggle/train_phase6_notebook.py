@@ -533,5 +533,4 @@ def main():
             global_step += 1
 
 if __name__ == "__main__":
-    # main() # Отключено для компиляции
-    pass
+    main()
