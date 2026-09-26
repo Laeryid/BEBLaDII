@@ -305,6 +305,10 @@ class Phase6BlockWrapper(nn.Module):
         self.original_layer = original_layer
         self.ca_layer = ca_layer
         
+    @property
+    def attention_type(self):
+        return self.original_layer.attention_type
+        
     def forward(self, hidden_states, attention_mask=None, **kwargs):
         out = self.original_layer(hidden_states, attention_mask=attention_mask, **kwargs)
         if self.ca_layer is not None:
