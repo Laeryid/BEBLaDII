@@ -65,13 +65,33 @@ except ImportError as e:
 def resolve_model_path(base_path: str) -> str:
     import pathlib
     p = pathlib.Path(base_path)
+
     def check_dir(dir_path):
         return (dir_path / "config.json").exists()
 
-    if check_dir(p): return str(p)
+    if check_dir(p):
+        print(f"[resolve_model_path] Found config.json at: {p}")
+        return str(p)
+    for parent in list(p.parents)[:4]:
+        if check_dir(parent):
+            print(f"[resolve_model_path] Found config.json in parent: {parent}")
+            return str(parent)
     if p.exists():
         for config_file in sorted(p.rglob("config.json")):
+            print(f"[resolve_model_path] Found config.json recursively: {config_file.parent}")
             return str(config_file.parent)
+    print(f"[resolve_model_path] WARNING: config.json not found under {base_path}. Searching globally...")
+    keyword = ""
+    if "qwen" in base_path.lower(): keyword = "qwen"
+    elif "modernbert" in base_path.lower(): keyword = "modernbert"
+    if keyword:
+        kaggle_input = pathlib.Path("/kaggle/input")
+        if kaggle_input.exists():
+            for config_file in kaggle_input.rglob("config.json"):
+                if keyword in str(config_file).lower():
+                    print(f"[resolve_model_path] Found fallback config for '{keyword}': {config_file.parent}")
+                    return str(config_file.parent)
+    print(f"[resolve_model_path] FAILED to resolve {base_path}, using as-is")
     return base_path
 
 def resolve_file_path(filename: str, fallback_dir="/kaggle/input") -> str:
