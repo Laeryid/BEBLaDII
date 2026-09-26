@@ -1,0 +1,30 @@
+𝐁𝐄𝐁𝐋𝐚𝐃𝐈𝐈: Phase 1 — Building a spherical latent space.
+
+Training diffusion models on text is a tough challenge. Text is discrete, but diffusion requires a continuous manifold. Otherwise, adding noise generates nonsense in the "dead zones" of the space. That's why I decided to work in the space of meanings, not words. The goal of Phase 1 was to build a reliable bridge between discrete tokens (Qwen) and a continuous diffusion core using a custom mu-VAE layer.
+
+🌌 𝐖𝐡𝐚𝐭 𝐤𝐢𝐧𝐝 𝐨𝐟 𝐬𝐩𝐚𝐜𝐞 𝐝𝐨 𝐰𝐞 𝐡𝐚𝐯𝐞 𝐧𝐨𝐰?
+I switched to a strictly spherical, continuous, and isotropic latent space. The biggest insight: replacing LayerNorm (which normalizes variance but doesn't guarantee unit norm) with a strict mathematical L2 normalization.
+
+This gave the space the shape of a perfect sphere, solving issues with classic Euclidean spaces like passing near zero where vectors hold no meaning. Now, the neural network doesn't have to struggle with amplitudes — vectors are projected back to the sphere, and the diffusion core focuses purely on angles.
+
+🛠️ 𝐋𝐨𝐬𝐬 𝐅𝐮𝐧𝐜𝐭𝐢𝐨𝐧: 𝐓𝐡𝐞 𝐭𝐨𝐩𝐨𝐥𝐨𝐠𝐲 𝐫𝐞𝐜𝐢𝐩𝐞
+To compress complex semantics into a sphere without losing meaning, we used a hybrid loss:
+
+✓ 𝐑𝐞𝐜𝐨𝐧𝐬𝐭𝐫𝐮𝐜𝐭𝐢𝐨𝐧 𝐋𝐨𝐬𝐬: Basic cross-entropy to control meaning recovery via a frozen Qwen decoder with a tiny adapter trained alongside the encoder.
+✓ 𝐕𝐚𝐫𝐢𝐚𝐧𝐜𝐞-𝐎𝐧𝐥𝐲 𝐊𝐋 𝐃𝐢𝐯𝐞𝐫𝐠𝐞𝐧𝐜𝐞: Full KL-loss caused gradient conflicts on the hypersphere. We kept only the variance penalty to maintain stochasticity and "blurred meanings," letting cluster centers move freely.
+✓ 𝐂𝐨𝐯𝐚𝐫𝐢𝐚𝐧𝐜𝐞 𝐋𝐨𝐬𝐬: Penalizes non-diagonal covariance matrix elements. Forces the use of all orthogonal dimensions and prevents collapsing into a "pancake."
+✓ 𝐔𝐧𝐢𝐟𝐨𝐫𝐦𝐢𝐭𝐲 𝐋𝐨𝐬𝐬: Replaced the problematic InfoNCE, uniformly distributing tokens across the hypersphere and completely eliminating the hubness problem.
+
+⚡𝐓𝐡𝐞 𝐑𝐞𝐬𝐮𝐥𝐭𝐬
+The checkpoint at 20k steps showed benchmark results:
+
+- 𝐏𝐞𝐫𝐟𝐞𝐜𝐭 𝐬𝐩𝐡𝐞𝐫𝐢𝐜𝐢𝐭𝐲, ensured by normalization math.
+- 𝐓𝐫𝐮𝐞 𝐬𝐞𝐦𝐚𝐧𝐭𝐢𝐜 𝐜𝐨𝐦𝐩𝐫𝐞𝐬𝐬𝐢𝐨𝐧: VAE doesn't memorize tokens, it grasps concepts. During decoding, it easily swaps words for synonyms (e.g., laws to principles), keeping the reasoning intact.
+- 𝐒𝐦𝐨𝐨𝐭𝐡 𝐢𝐧𝐭𝐞𝐫𝐩𝐨𝐥𝐚𝐭𝐢𝐨𝐧: SLERP tests show seamless transitions between concepts with no "voids" or garbage generations.
+- 𝐆𝐨𝐨𝐝 𝐢𝐬𝐨𝐭𝐫𝐨𝐩𝐲: ~330 effective dimensions out of 1024.
+
+The foundation is poured. The space is continuous and full of meaning. Moving on to training the Latent Diffusion Backbone itself.
+
+📦 Repo: https://github.com/Laeryid/BEBLaDII
+
+#AI #MachineLearning #Python #OpenSource #DiffusionModels
