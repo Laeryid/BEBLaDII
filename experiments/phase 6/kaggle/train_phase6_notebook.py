@@ -113,19 +113,19 @@ def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step
         result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True)
         if result.returncode != 0:
             return None, 0
-        
+
         files = result.stdout.strip().split("\n")
         ckpt_files = [f for f in files if prefix in f and f.endswith(".pth")]
         if not ckpt_files:
             return None, 0
-            
+
         def extract_step(filename):
             try:
                 base = filename.split("_step_")[-1].replace(".pth", "")
                 return int(base)
             except ValueError:
                 return -1
-                
+
         ckpt_files.sort(key=extract_step)
         latest_file = ckpt_files[-1]
         step = extract_step(latest_file)
@@ -167,23 +167,23 @@ class Config:
 
     # Директория вывода
     output_dir = "/kaggle/working/checkpoints/phase6"
-    
+
     # GCS (для сохранения чекпоинтов)
     resume_from_checkpoint = True
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
 
     # Гиперпараметры Phase 6
-    batch_size    = 8
+    batch_size    = 32
     max_length_q  = 512
     max_length_a  = 512
-    learning_rate = 1e-4
+    learning_rate = 2e-4
     epochs        = 50
     max_steps     = 200000
     log_steps     = 10
     val_steps     = 200
     save_steps    = 1000
     warmup_steps  = 1000
-    
+
     # EMA & PACE Optimizer
     ema_decay     = 0.999
     pace_alpha    = 0.001
@@ -211,20 +211,20 @@ class EMATracker:
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.data)
-                    
+
     def pace_pullback(self, model, alpha):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     param.data.sub_(alpha * (param.data - self.shadow[name]))
-                    
+
     def apply_shadow(self, model):
         self.backup = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
                 self.backup[name] = param.data.clone()
                 param.data.copy_(self.shadow[name])
-                
+
     def restore(self, model):
         for name, param in model.named_parameters():
             if param.requires_grad:
@@ -238,18 +238,18 @@ class QADataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length_q = max_length_q
         self.max_length_a = max_length_a
-        
+
     def __len__(self):
         return len(self.df)
-        
+
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         q_text = str(row['Q'])
         a_text = str(row['A'])
-        
+
         q_enc = self.tokenizer(q_text, truncation=True, max_length=self.max_length_q, padding='max_length', return_tensors='pt')
         a_enc = self.tokenizer(a_text, truncation=True, max_length=self.max_length_a, padding='max_length', return_tensors='pt')
-        
+
         return {
             'input_ids_q': q_enc.input_ids.squeeze(0),
             'attention_mask_q': q_enc.attention_mask.squeeze(0),
@@ -327,60 +327,60 @@ class CAPromptLayer(nn.Module):
         self.q_proj = nn.Linear(dim, dim, bias=False)
         self.kv_proj = nn.Linear(dim, dim * 2, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
-        
+
         self.norm2 = nn.RMSNorm(dim)
         self.qkv_proj_sa = nn.Linear(dim, dim * 3, bias=False)
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
-        
+
         self.gate = nn.Parameter(torch.zeros(1))
-        
+
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
         nn.init.xavier_uniform_(self.out_proj.weight)
         nn.init.xavier_uniform_(self.qkv_proj_sa.weight)
         nn.init.xavier_uniform_(self.out_proj_sa.weight)
-        
+
     def forward(self, A, Q, mask_Q=None, warmup_factor=1.0):
         # --- Cross-Attention ---
         A_norm = self.norm1(A)
-        Q_norm = self.norm1(Q) 
-        
+        Q_norm = self.norm1(Q)
+
         q = self.q_proj(A_norm)
         kv = self.kv_proj(Q_norm)
         k, v = kv.chunk(2, dim=-1)
-        
+
         attn_mask = None
         if mask_Q is not None:
             # mask_Q shape [B, T_q]. F.scaled_dot_product_attention expects [B, 1, 1, T_q] for bool mask
             attn_mask = mask_Q.view(A.shape[0], 1, 1, -1).expand(-1, 1, A.shape[1], -1).bool()
-            
+
         B, T_a, D = A.shape
         heads = 16
         head_dim = D // heads
-        
+
         q = q.view(B, T_a, heads, head_dim).transpose(1, 2)
         k = k.view(B, -1, heads, head_dim).transpose(1, 2)
         v = v.view(B, -1, heads, head_dim).transpose(1, 2)
-        
+
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
-        
+
         A = A + ca_out * (torch.tanh(self.gate) * warmup_factor)
-        
+
         # --- Self-Attention ---
         A_norm2 = self.norm2(A)
         qkv = self.qkv_proj_sa(A_norm2)
         q_sa, k_sa, v_sa = qkv.chunk(3, dim=-1)
-        
+
         q_sa = q_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         k_sa = k_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         v_sa = v_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
-        
+
         sa_out = F.scaled_dot_product_attention(q_sa, k_sa, v_sa)
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
-        
+
         A = A + sa_out * (torch.tanh(self.gate) * warmup_factor)
         return A
 
@@ -390,18 +390,18 @@ class Phase6BlockWrapper(nn.Module):
         super().__init__()
         self.original_layer = original_layer
         self.ca_layer = ca_layer
-        
+
     @property
     def attention_type(self):
         return self.original_layer.attention_type
-        
+
     def forward(self, hidden_states, attention_mask=None, **kwargs):
         out = self.original_layer(hidden_states, attention_mask=attention_mask, **kwargs)
         if self.ca_layer is not None:
             Z_prompt = getattr(self.ca_layer, '_current_Z_prompt', None)
             mask_Q = getattr(self.ca_layer, '_current_mask_Q', None)
             warmup_factor = getattr(self.ca_layer, '_current_warmup_factor', 1.0)
-            
+
             if Z_prompt is not None:
                 sep = out[0][:, 0:1, :]
                 ans = out[0][:, 1:, :]
@@ -417,12 +417,12 @@ class Phase6BlockWrapper(nn.Module):
 class BEBLaDIIPhase6(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
-        
+
         # 1. Загрузка Qwen Embeddings
         _qwen = AutoModel.from_pretrained(config.embedding_model_path, torch_dtype=torch.bfloat16, local_files_only=True)
         self.qwen_embeddings = _qwen.get_input_embeddings()
         del _qwen
-        
+
         # 2. Загрузка Latent Encoder
         self.encoder = LatentEncoder()
         if os.path.exists(config.encoder_weights):
@@ -438,7 +438,7 @@ class BEBLaDIIPhase6(nn.Module):
         self.dus = dus_wrapper.model
         if config.use_gradient_checkpointing and hasattr(self.dus, "gradient_checkpointing_enable"):
             self.dus.gradient_checkpointing_enable({"use_reentrant": False})
-        
+
         # 4. Phase 4 Time Projections (для совместимости)
         t_emb_dim = 256
         hidden_dim = 1024
@@ -446,17 +446,17 @@ class BEBLaDIIPhase6(nn.Module):
         self.t_proj_global = nn.Sequential(nn.Linear(t_emb_dim, t_emb_dim * 4), nn.SiLU(), nn.Linear(t_emb_dim * 4, t_emb_dim))
         self.t_proj_token = nn.Sequential(nn.Linear(t_emb_dim, t_emb_dim * 4), nn.SiLU(), nn.Linear(t_emb_dim * 4, t_emb_dim))
         self.t_joint_proj = nn.Linear(t_emb_dim * 2, t_emb_dim)
-        
+
         self.adaLN_attn = nn.ModuleList([AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(40)])
         self.adaLN_mlp = nn.ModuleList([AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(40)])
         for i, layer in enumerate(self.dus.layers):
             layer.attn_norm = AdaLNWrappedLayerNorm(layer.attn_norm, self.adaLN_attn[i])
             layer.mlp_norm = AdaLNWrappedLayerNorm(layer.mlp_norm, self.adaLN_mlp[i])
-            
+
         # 5. Separator Token & Latent Dict
         self.register_buffer("sep_embed", torch.load(config.sep_token).float())
         self.register_buffer("latent_dict", torch.load(config.latent_dict).float()) # [150000, 1024]
-        
+
         # --- ЗАГРУЗКА ВЕСОВ PHASE 4 ---
         if os.path.exists(config.dus_weights):
             state = torch.load(config.dus_weights, map_location="cpu", weights_only=False)
@@ -469,11 +469,11 @@ class BEBLaDIIPhase6(nn.Module):
             print(f"[Init] Phase 4 weights loaded from {config.dus_weights}")
         else:
             raise FileNotFoundError(f"Phase 4 weights not found at {config.dus_weights}")
-            
+
         # --- ПОЛНАЯ ЗАМОРОЗКА ---
         for p in self.parameters():
             p.requires_grad = False
-            
+
         # --- ВНЕДРЕНИЕ CAPromptLayer (Trainable) ---
         self.ca_layers = nn.ModuleDict({
             "12": CAPromptLayer(1024),
@@ -482,7 +482,7 @@ class BEBLaDIIPhase6(nn.Module):
         })
         for i in [11, 23, 35]:
             self.dus.layers[i] = Phase6BlockWrapper(self.dus.layers[i], self.ca_layers[str(i+1)])
-            
+
         # Убедимся, что новые слои обучаются
         for p in self.ca_layers.parameters():
             p.requires_grad = True
@@ -495,48 +495,48 @@ class BEBLaDIIPhase6(nn.Module):
 
     def forward(self, input_ids_q, attention_mask_q, input_ids_a, attention_mask_a, warmup_factor=1.0):
         B, T_a = input_ids_a.shape
-        
+
         with torch.no_grad():
             # 1. Подготовка чистого латентного представления для Ответа (A)
             qwen_embeds_a = self.qwen_embeddings(input_ids_a)
             Z_A_clean, _, _ = self.encoder(qwen_embeds_a)
             Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
-            
+
             # 2. Подготовка латентного представления для Промпта (Q)
             qwen_embeds_q = self.qwen_embeddings(input_ids_q)
             Z_prompt, _, _ = self.encoder(qwen_embeds_q)
             Z_prompt = safe_normalize(Z_prompt.float(), dim=-1)
-            
+
             # 3. Шум и t_actual (25 дискретных шагов)
             t_actual = torch.randint(1, 26, (B, T_a), device=Z_A_clean.device) / 25.0
             z_noisy = spherical_noise(Z_A_clean, t_actual)
-            
+
             # 4. Вычисление RawDProx и t_reported
             # z_noisy: [B, T_a, 1024], latent_dict: [V, 1024] -> sims: [B, T_a, V]
             sims = torch.matmul(z_noisy, self.latent_dict.T)
             RawDProx, _ = sims.max(dim=-1)
             t_reported = (1.0 - RawDProx).clamp(0.0, 1.0)
-            
+
         # 5. Вычисление Time Embeddings (заморожено, как в Phase 4)
         t_global = torch.mean(t_actual, dim=-1)
         t_sin_global = self.t_sin_embed(t_global)
         t_emb_global = self.t_proj_global(t_sin_global)
-        
+
         t_sin_token = self.t_sin_embed(t_reported)
         t_emb_token = self.t_proj_token(t_sin_token)
-        
+
         cond = torch.cat([t_emb_token, t_emb_global.unsqueeze(1).expand(-1, T_a, -1)], dim=-1)
         t_emb = self.t_joint_proj(cond)
-        
+
         sep_t_emb = torch.zeros(B, 1, t_emb.shape[-1], device=t_emb.device, dtype=t_emb.dtype)
         t_emb_extended = torch.cat([sep_t_emb, t_emb], dim=1)
-        
+
         # Инъекция t_emb и контекста CA
         for layer in self.dus.layers:
             layer_to_check = layer.original_layer if isinstance(layer, Phase6BlockWrapper) else layer
             if hasattr(layer_to_check, "attn_norm"): layer_to_check.attn_norm._current_t_emb = t_emb_extended
             if hasattr(layer_to_check, "mlp_norm"): layer_to_check.mlp_norm._current_t_emb = t_emb_extended
-            
+
         for ca in self.ca_layers.values():
             ca._current_Z_prompt = Z_prompt
             ca._current_mask_Q = attention_mask_q
@@ -547,21 +547,21 @@ class BEBLaDIIPhase6(nn.Module):
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
         attention_mask_extended = F.pad(attention_mask_a, (1, 0), value=1)
-        
+
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
             attention_mask=attention_mask_extended,
             output_hidden_states=False,
         )
-        
+
         pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
         h_39 = safe_normalize(dus_final_raw, dim=-1)
-        
+
         gate = torch.sin(t_global * (math.pi / 2)).view(B, 1, 1).to(h_39.dtype)
         dus_gated = gate * h_39 + (1.0 - gate) * x_in
         dus_final = safe_normalize(dus_gated, dim=-1)
-        
+
         return {
             "z_clean": Z_A_clean,
             "dus_final": dus_final,
@@ -579,29 +579,29 @@ def compute_phase6_loss(outputs):
     dus_final = outputs["dus_final"].float()
     attn_f = outputs["attention_mask_a"].float()
     t_actual = outputs["t_actual"].float()
-    
+
     target = safe_normalize(z_clean, dim=-1)
     cos_sim = (dus_final * target).sum(dim=-1)
     loss_el = 1.0 - cos_sim
-    
+
     # Weighting: (1 - t_actual)^2.0 * mask_A
     w_weighted = (1.0 - t_actual).pow(2.0) * attn_f
     loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
-    
+
     avg_cos_sim = (cos_sim * attn_f).sum() / attn_f.sum().clamp(min=1e-8)
     return loss, avg_cos_sim
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
-    
+
     os.makedirs(args.output_dir, exist_ok=True)
     try:
         from kaggle_secrets import UserSecretsClient
         user_secrets = UserSecretsClient()
         wandb_api = user_secrets.get_secret("WANDB_API_KEY")
         wandb.login(key=wandb_api)
-        
+
         try:
             gcp_sa = user_secrets.get_secret("GCP_SA_JSON")
             with open("gcp_sa.json", "w") as f:
@@ -613,23 +613,23 @@ def main():
             print("[Init] GCP Authentication successful.")
         except Exception as e_gcp:
             print(f"[Init] WARN: GCP auth failed: {e_gcp}")
-            
+
     except Exception as e:
         print(f"Kaggle secrets not available or failed to login: {e}")
-        
+
     wandb.init(project=args.wandb_project, config=vars(args))
-    
+
     tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-        
+
     try:
         dataset = QADataset(args.dataset_path, tokenizer, args.max_length_q, args.max_length_a)
         print("\n=== First Sample Control ===")
         print(dataset.df.iloc[0].to_dict())
         print("============================\n")
         dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=2)
-        
+
         if os.path.exists(args.val_dataset_path):
             val_dataset = QADataset(args.val_dataset_path, tokenizer, args.max_length_q, args.max_length_a)
             val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2)
@@ -640,16 +640,16 @@ def main():
         print(f"Failed to load dataset: {e}. Running dummy loop for compilation check.")
         dataloader = []
         val_dataloader = None
-        
+
     model = BEBLaDIIPhase6(args).to(device)
     ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay)
-    
+
     # Оптимизатор обновляет только CA_layers
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
-    
+
     model.train()
     global_step = 0
-    
+
     if getattr(args, "resume_from_checkpoint", False) and getattr(args, "gcs_checkpoint_dir", None):
         latest_ckpt, step = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir)
         if latest_ckpt:
@@ -660,43 +660,43 @@ def main():
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
                 model.ca_layers.load_state_dict(ckpt_state)
                 # Re-initialize EMA tracker to mirror loaded weights
-                ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay) 
+                ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay)
                 global_step = step
                 print(f"[Resume] Successfully loaded CA layers. Resuming from step {global_step}.")
                 os.remove(local_ckpt)
             except Exception as e:
                 print(f"[Resume] WARN: Failed to load checkpoint: {e}")
-                
+
 
     for epoch in range(args.epochs):
         for batch in dataloader:
             if global_step >= args.max_steps: return
-            
+
             warmup_factor = min(1.0, global_step / args.warmup_steps)
-            
+
             input_ids_q = batch['input_ids_q'].to(device)
             mask_q = batch['attention_mask_q'].to(device)
             input_ids_a = batch['input_ids_a'].to(device)
             mask_a = batch['attention_mask_a'].to(device)
-            
+
             optimizer.zero_grad()
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
             loss, avg_cos_sim = compute_phase6_loss(outputs)
-            
+
             loss.backward()
-            
+
             grad_norm = 0.0
             for p in model.parameters():
                 if p.grad is not None:
                     grad_norm += p.grad.data.norm(2).item() ** 2
             grad_norm = grad_norm ** 0.5
-            
+
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
-            
+
             ema_tracker.update(model.ca_layers)
             ema_tracker.pace_pullback(model.ca_layers, alpha=args.pace_alpha)
-            
+
             wandb.log({
                 "loss": loss.item(),
                 "cos_sim": avg_cos_sim.item(),
@@ -706,10 +706,10 @@ def main():
                 "gate_24": model.ca_layers["24"].gate.item(),
                 "gate_36": model.ca_layers["36"].gate.item(),
             }, step=global_step)
-            
+
             if global_step % args.log_steps == 0:
                 print(f"Step {global_step} | Loss: {loss.item():.4f} | Gate_12: {model.ca_layers['12'].gate.item():.4f}")
-                
+
             if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
                 ema_tracker.apply_shadow(model.ca_layers)
                 model.eval()
@@ -722,7 +722,7 @@ def main():
                         v_mask_q = v_batch['attention_mask_q'].to(device)
                         v_input_ids_a = v_batch['input_ids_a'].to(device)
                         v_mask_a = v_batch['attention_mask_a'].to(device)
-                        
+
                         v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
                         v_loss, v_cos = compute_phase6_loss(v_out)
                         val_loss += v_loss.item()
@@ -736,16 +736,16 @@ def main():
                 print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
                 model.train()
                 ema_tracker.restore(model.ca_layers)
-                
+
             if global_step % args.save_steps == 0 and global_step > 0:
                 ema_tracker.apply_shadow(model.ca_layers)
                 ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
                 torch.save(model.ca_layers.state_dict(), ckpt_path)
                 ema_tracker.restore(model.ca_layers)
-                
+
                 if getattr(args, "gcs_checkpoint_dir", None):
                     sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir)
-                
+
             global_step += 1
 
 if __name__ == "__main__":

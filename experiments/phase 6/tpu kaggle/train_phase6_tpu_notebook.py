@@ -92,15 +92,15 @@ def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step
             return None, 0
         result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True)
         if result.returncode != 0: return None, 0
-        
+
         files = result.stdout.strip().split("\n")
         ckpt_files = [f for f in files if prefix in f and f.endswith(".pth")]
         if not ckpt_files: return None, 0
-            
+
         def extract_step(filename):
             try: return int(filename.split("_step_")[-1].replace(".pth", ""))
             except ValueError: return -1
-                
+
         ckpt_files.sort(key=extract_step)
         latest_file = ckpt_files[-1]
         return latest_file, extract_step(latest_file)
@@ -119,10 +119,10 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase6"
     resume_from_checkpoint = True
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
-    batch_size    = 8
+    batch_size    = 64 * 4
     max_length_q  = 512
     max_length_a  = 512
-    learning_rate = 1e-4
+    learning_rate = 2e-4
     epochs        = 50
     max_steps     = 200000
     log_steps     = 10
@@ -149,14 +149,14 @@ class EMATracker:
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.data.float())
-                    
+
     def pace_pullback(self, model, alpha):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     ema_casted = self.shadow[name].to(param.dtype)
                     param.data.sub_(alpha * (param.data - ema_casted))
-                    
+
     def apply_shadow(self, model):
         self.backup = {}
         for name, param in model.named_parameters():
@@ -164,7 +164,7 @@ class EMATracker:
                 self.backup[name] = param.data.clone()
                 param.data.copy_(self.shadow[name].to(param.dtype))
         xm.mark_step()
-                
+
     def restore(self, model):
         for name, param in model.named_parameters():
             if param.requires_grad:
@@ -178,9 +178,9 @@ class QADataset(Dataset):
         self.tokenizer = tokenizer
         self.max_length_q = max_length_q
         self.max_length_a = max_length_a
-        
+
     def __len__(self): return len(self.df)
-        
+
     def __getitem__(self, idx):
         row = self.df.iloc[idx]
         q_text, a_text = str(row['Q']), str(row['A'])
@@ -258,43 +258,43 @@ class CAPromptLayer(nn.Module):
         nn.init.xavier_uniform_(self.out_proj.weight)
         nn.init.xavier_uniform_(self.qkv_proj_sa.weight)
         nn.init.xavier_uniform_(self.out_proj_sa.weight)
-        
+
     def forward(self, A, Q, mask_Q=None, warmup_factor=1.0):
         A_norm = self.norm1(A)
-        Q_norm = self.norm1(Q) 
+        Q_norm = self.norm1(Q)
         q = self.q_proj(A_norm)
         kv = self.kv_proj(Q_norm)
         k, v = kv.chunk(2, dim=-1)
-        
+
         attn_mask = None
         if mask_Q is not None:
             attn_mask = mask_Q.view(A.shape[0], 1, 1, -1).expand(-1, 1, A.shape[1], -1).bool()
-            
+
         B, T_a, D = A.shape
         heads = 16
         head_dim = D // heads
-        
+
         q = q.view(B, T_a, heads, head_dim).transpose(1, 2)
         k = k.view(B, -1, heads, head_dim).transpose(1, 2)
         v = v.view(B, -1, heads, head_dim).transpose(1, 2)
-        
+
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
         A = A + ca_out * (torch.tanh(self.gate) * warmup_factor)
-        
+
         A_norm2 = self.norm2(A)
         qkv = self.qkv_proj_sa(A_norm2)
         q_sa, k_sa, v_sa = qkv.chunk(3, dim=-1)
-        
+
         q_sa = q_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         k_sa = k_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         v_sa = v_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
-        
+
         sa_out = F.scaled_dot_product_attention(q_sa, k_sa, v_sa)
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
-        
+
         A = A + sa_out * (torch.tanh(self.gate) * warmup_factor)
         return A
 
@@ -324,7 +324,7 @@ class BEBLaDIIPhase6(nn.Module):
         _qwen = AutoModel.from_pretrained(config.embedding_model_path, torch_dtype=torch.bfloat16, local_files_only=True)
         self.qwen_embeddings = _qwen.get_input_embeddings()
         del _qwen
-        
+
         self.encoder = LatentEncoder()
         if os.path.exists(config.encoder_weights):
             state = torch.load(config.encoder_weights, map_location="cpu", weights_only=False)
@@ -336,23 +336,23 @@ class BEBLaDIIPhase6(nn.Module):
         self.dus = dus_wrapper.model
         if config.use_gradient_checkpointing and hasattr(self.dus, "gradient_checkpointing_enable"):
             self.dus.gradient_checkpointing_enable({"use_reentrant": False})
-        
+
         t_emb_dim = 256
         hidden_dim = 1024
         self.t_sin_embed = SinusoidalEmbedding(t_emb_dim)
         self.t_proj_global = nn.Sequential(nn.Linear(t_emb_dim, t_emb_dim * 4), nn.SiLU(), nn.Linear(t_emb_dim * 4, t_emb_dim))
         self.t_proj_token = nn.Sequential(nn.Linear(t_emb_dim, t_emb_dim * 4), nn.SiLU(), nn.Linear(t_emb_dim * 4, t_emb_dim))
         self.t_joint_proj = nn.Linear(t_emb_dim * 2, t_emb_dim)
-        
+
         self.adaLN_attn = nn.ModuleList([AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(40)])
         self.adaLN_mlp = nn.ModuleList([AdaLNModulation(t_emb_dim, hidden_dim) for _ in range(40)])
         for i, layer in enumerate(self.dus.layers):
             layer.attn_norm = AdaLNWrappedLayerNorm(layer.attn_norm, self.adaLN_attn[i])
             layer.mlp_norm = AdaLNWrappedLayerNorm(layer.mlp_norm, self.adaLN_mlp[i])
-            
+
         self.register_buffer("sep_embed", torch.load(config.sep_token).float())
         self.register_buffer("latent_dict", torch.load(config.latent_dict).float())
-        
+
         if os.path.exists(config.dus_weights):
             state = torch.load(config.dus_weights, map_location="cpu", weights_only=False)
             if "dus_ema" in state: state = state["dus_ema"]
@@ -361,9 +361,9 @@ class BEBLaDIIPhase6(nn.Module):
             elif "model" in state: state = state["model"]
             clean_state = {k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", ""): v for k, v in state.items()}
             self.load_state_dict(clean_state, strict=False)
-            
+
         for p in self.parameters(): p.requires_grad = False
-            
+
         self.ca_layers = nn.ModuleDict({
             "12": CAPromptLayer(1024),
             "24": CAPromptLayer(1024),
@@ -371,7 +371,7 @@ class BEBLaDIIPhase6(nn.Module):
         })
         for i in [11, 23, 35]:
             self.dus.layers[i] = Phase6BlockWrapper(self.dus.layers[i], self.ca_layers[str(i+1)])
-            
+
         for p in self.ca_layers.parameters(): p.requires_grad = True
 
     def train(self, mode=True):
@@ -385,36 +385,36 @@ class BEBLaDIIPhase6(nn.Module):
             qwen_embeds_a = self.qwen_embeddings(input_ids_a)
             Z_A_clean, _, _ = self.encoder(qwen_embeds_a)
             Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
-            
+
             qwen_embeds_q = self.qwen_embeddings(input_ids_q)
             Z_prompt, _, _ = self.encoder(qwen_embeds_q)
             Z_prompt = safe_normalize(Z_prompt.float(), dim=-1)
-            
+
             t_actual = torch.randint(1, 26, (B, T_a), device=Z_A_clean.device) / 25.0
             z_noisy = spherical_noise(Z_A_clean, t_actual)
-            
+
             sims = torch.matmul(z_noisy, self.latent_dict.T)
             RawDProx, _ = sims.max(dim=-1)
             t_reported = (1.0 - RawDProx).clamp(0.0, 1.0)
-            
+
         t_global = torch.mean(t_actual, dim=-1)
         t_sin_global = self.t_sin_embed(t_global)
         t_emb_global = self.t_proj_global(t_sin_global)
-        
+
         t_sin_token = self.t_sin_embed(t_reported)
         t_emb_token = self.t_proj_token(t_sin_token)
-        
+
         cond = torch.cat([t_emb_token, t_emb_global.unsqueeze(1).expand(-1, T_a, -1)], dim=-1)
         t_emb = self.t_joint_proj(cond)
-        
+
         sep_t_emb = torch.zeros(B, 1, t_emb.shape[-1], device=t_emb.device, dtype=t_emb.dtype)
         t_emb_extended = torch.cat([sep_t_emb, t_emb], dim=1)
-        
+
         for layer in self.dus.layers:
             layer_to_check = layer.original_layer if isinstance(layer, Phase6BlockWrapper) else layer
             if hasattr(layer_to_check, "attn_norm"): layer_to_check.attn_norm._current_t_emb = t_emb_extended
             if hasattr(layer_to_check, "mlp_norm"): layer_to_check.mlp_norm._current_t_emb = t_emb_extended
-            
+
         for ca in self.ca_layers.values():
             ca._current_Z_prompt = Z_prompt
             ca._current_mask_Q = attention_mask_q
@@ -424,21 +424,21 @@ class BEBLaDIIPhase6(nn.Module):
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
         attention_mask_extended = F.pad(attention_mask_a, (1, 0), value=1)
-        
+
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
             attention_mask=attention_mask_extended,
             output_hidden_states=False,
         )
-        
+
         pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
         h_39 = safe_normalize(dus_final_raw, dim=-1)
-        
+
         gate = torch.sin(t_global * (math.pi / 2)).view(B, 1, 1).to(h_39.dtype)
         dus_gated = gate * h_39 + (1.0 - gate) * x_in
         dus_final = safe_normalize(dus_gated, dim=-1)
-        
+
         return {
             "z_clean": Z_A_clean,
             "dus_final": dus_final,
@@ -451,11 +451,11 @@ def compute_phase6_loss(outputs):
     dus_final = outputs["dus_final"].float()
     attn_f = outputs["attention_mask_a"].float()
     t_actual = outputs["t_actual"].float()
-    
+
     target = safe_normalize(z_clean, dim=-1)
     cos_sim = (dus_final * target).sum(dim=-1)
     loss_el = 1.0 - cos_sim
-    
+
     w_weighted = (1.0 - t_actual).pow(2.0) * attn_f
     loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
     avg_cos_sim = (cos_sim * attn_f).sum() / attn_f.sum().clamp(min=1e-8)
@@ -465,7 +465,7 @@ def main():
     mesh = setup_spmd_mesh()
     device = xm.xla_device()
     os.makedirs(args.output_dir, exist_ok=True)
-    
+
     if args.wandb_project:
         try:
             from kaggle_secrets import UserSecretsClient
@@ -476,10 +476,10 @@ def main():
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath("gcp_sa.json")
         except Exception: pass
         wandb.init(project=args.wandb_project, config=vars(args))
-    
+
     tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path)
     if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
-    
+
     try:
         dataset = QADataset(args.dataset_path, tokenizer, args.max_length_q, args.max_length_a)
         dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=2)
@@ -488,16 +488,16 @@ def main():
         return
 
     model = BEBLaDIIPhase6(args).to(device)
-    
+
     def shard_output(output, mesh): return None
     model.ca_layers = SpmdFullyShardedDataParallel(model.ca_layers, mesh=mesh, shard_output=shard_output)
-    
+
     ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay)
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
-    
+
     model.train()
     global_step = 0
-    
+
     if args.resume_from_checkpoint and args.gcs_checkpoint_dir:
         latest_ckpt, step = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir)
         if latest_ckpt:
@@ -506,7 +506,7 @@ def main():
                 subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
                 model.ca_layers.load_state_dict(ckpt_state)
-                ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay) 
+                ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay)
                 global_step = step
                 os.remove(local_ckpt)
             except Exception as e: print(f"Resume failed: {e}")
@@ -514,34 +514,34 @@ def main():
     for epoch in range(args.epochs):
         for batch in dataloader:
             if global_step >= args.max_steps: return
-            
+
             warmup_factor_val = min(1.0, global_step / args.warmup_steps)
             warmup_factor = torch.tensor(warmup_factor_val, dtype=torch.float32, device=device)
-            
+
             input_ids_q = batch['input_ids_q'].to(device)
             mask_q = batch['attention_mask_q'].to(device)
             input_ids_a = batch['input_ids_a'].to(device)
             mask_a = batch['attention_mask_a'].to(device)
-            
+
             xs.mark_sharding(input_ids_q, mesh, ("fsdp", None))
             xs.mark_sharding(mask_q, mesh, ("fsdp", None))
             xs.mark_sharding(input_ids_a, mesh, ("fsdp", None))
             xs.mark_sharding(mask_a, mesh, ("fsdp", None))
-            
+
             optimizer.zero_grad()
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
             loss, avg_cos_sim = compute_phase6_loss(outputs)
-            
+
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             xm.optimizer_step(optimizer)
-            
+
             ema_tracker.update(model.ca_layers)
             ema_tracker.pace_pullback(model.ca_layers, alpha=args.pace_alpha)
-            
+
             if global_step % args.log_steps == 0:
                 xm.add_step_closure(lambda s, l: wandb.log({"loss": l.item()}, step=s), args=(global_step, loss))
-                
+
             if global_step % args.save_steps == 0 and global_step > 0:
                 ema_tracker.apply_shadow(model.ca_layers)
                 ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
@@ -549,7 +549,7 @@ def main():
                 ema_tracker.restore(model.ca_layers)
                 if args.gcs_checkpoint_dir:
                     xm.add_step_closure(lambda: sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir))
-                
+
             global_step += 1
 
 if __name__ == "__main__":
