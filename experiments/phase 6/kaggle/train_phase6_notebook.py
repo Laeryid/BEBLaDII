@@ -523,7 +523,11 @@ class BEBLaDIIPhase6(nn.Module):
         
         pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
         dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
-        dus_final = safe_normalize(dus_final_raw, dim=-1)
+        h_39 = safe_normalize(dus_final_raw, dim=-1)
+        
+        gate = torch.sin(t_global * (math.pi / 2)).view(B, 1, 1).to(h_39.dtype)
+        dus_gated = gate * h_39 + (1.0 - gate) * x_in
+        dus_final = safe_normalize(dus_gated, dim=-1)
         
         return {
             "z_clean": Z_A_clean,
@@ -550,7 +554,9 @@ def compute_phase6_loss(outputs):
     # Weighting: (1 - t_actual)^2.0 * mask_A
     w_weighted = (1.0 - t_actual).pow(2.0) * attn_f
     loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
-    return loss
+    
+    avg_cos_sim = (cos_sim * attn_f).sum() / attn_f.sum().clamp(min=1e-8)
+    return loss, avg_cos_sim
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -562,8 +568,21 @@ def main():
         user_secrets = UserSecretsClient()
         wandb_api = user_secrets.get_secret("WANDB_API_KEY")
         wandb.login(key=wandb_api)
+        
+        try:
+            gcp_sa = user_secrets.get_secret("GCP_SA_JSON")
+            with open("gcp_sa.json", "w") as f:
+                f.write(gcp_sa)
+            subprocess.run(
+                ["gcloud", "auth", "activate-service-account", "--key-file", "gcp_sa.json"],
+                check=True,
+            )
+            print("[Init] GCP Authentication successful.")
+        except Exception as e_gcp:
+            print(f"[Init] WARN: GCP auth failed: {e_gcp}")
+            
     except Exception as e:
-        print(f"Kaggle secrets not available or failed to login to wandb: {e}")
+        print(f"Kaggle secrets not available or failed to login: {e}")
         
     wandb.init(project=args.wandb_project, config=vars(args))
     
@@ -611,9 +630,16 @@ def main():
             
             optimizer.zero_grad()
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
-            loss = compute_phase6_loss(outputs)
+            loss, avg_cos_sim = compute_phase6_loss(outputs)
             
             loss.backward()
+            
+            grad_norm = 0.0
+            for p in model.parameters():
+                if p.grad is not None:
+                    grad_norm += p.grad.data.norm(2).item() ** 2
+            grad_norm = grad_norm ** 0.5
+            
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             
@@ -622,6 +648,8 @@ def main():
             
             wandb.log({
                 "loss": loss.item(),
+                "cos_sim": avg_cos_sim.item(),
+                "grad_norm": grad_norm,
                 "warmup_factor": warmup_factor,
                 "gate_12": model.ca_layers["12"].gate.item(),
                 "gate_24": model.ca_layers["24"].gate.item(),
@@ -635,6 +663,7 @@ def main():
                 ema_tracker.apply_shadow(model.ca_layers)
                 model.eval()
                 val_loss = 0.0
+                val_cos = 0.0
                 val_batches = 0
                 with torch.no_grad():
                     for v_batch in val_dataloader:
@@ -644,14 +673,16 @@ def main():
                         v_mask_a = v_batch['attention_mask_a'].to(device)
                         
                         v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
-                        v_loss = compute_phase6_loss(v_out)
+                        v_loss, v_cos = compute_phase6_loss(v_out)
                         val_loss += v_loss.item()
+                        val_cos += v_cos.item()
                         val_batches += 1
                         if val_batches >= 20: # limit validation for speed
                             break
                 val_loss /= max(1, val_batches)
-                wandb.log({"val_loss_ema": val_loss}, step=global_step)
-                print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f}")
+                val_cos /= max(1, val_batches)
+                wandb.log({"val_loss_ema": val_loss, "val_cos_ema": val_cos}, step=global_step)
+                print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
                 model.train()
                 ema_tracker.restore(model.ca_layers)
                 

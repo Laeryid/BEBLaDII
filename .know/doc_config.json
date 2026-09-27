@@ -628,6 +628,14 @@
       "depends_on": [
         "hugging face/upload_weights.py"
       ]
+    },
+    "decisions/091_global_scheduled_identity_gate.md": {
+      "description": "ADR 091: Global Scheduled Identity Gate vs Per-Token Sensored Gate.",
+      "covers": ["Architecture & Training Phases", "Model Core"],
+      "depends_on": [
+        "experiments/phase 6/kaggle/train_phase6_notebook.py",
+        ".know/decisions/065_unet_skip_connections_and_identity_gate.md"
+      ]
     }
   },
   "knowledge_system": {
