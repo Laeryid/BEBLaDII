@@ -2,6 +2,15 @@ import math
 import os
 import subprocess
 import sys
+
+# Install Kaggle TPU dependencies (equivalent to: !pip install -q -U --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage)
+try:
+    import wandb
+    import einops
+except ImportError:
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "--no-cache-dir", 
+                    "einops", "wandb", "indexed_parquet_dataset", "google-cloud-storage"])
+
 import pandas as pd
 import torch
 import torch.nn as nn
