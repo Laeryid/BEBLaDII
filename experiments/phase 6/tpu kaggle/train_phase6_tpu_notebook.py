@@ -499,7 +499,11 @@ def main():
     model = BEBLaDIIPhase6(args).to(device)
 
     def shard_output(output, mesh): return None
-    model.ca_layers = SpmdFullyShardedDataParallel(model.ca_layers, mesh=mesh, shard_output=shard_output)
+    for key in list(model.ca_layers.keys()):
+        wrapped = SpmdFullyShardedDataParallel(model.ca_layers[key], mesh=mesh, shard_output=shard_output)
+        model.ca_layers[key] = wrapped
+        layer_idx = int(key) - 1
+        model.dus.layers[layer_idx].ca_layer = wrapped
 
     ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay)
     optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
