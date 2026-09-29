@@ -163,6 +163,7 @@ class Config:
     encoder_weights = resolve_file_path("planB_phase1_checkpoints_phase1_vae_step_20000.pth")
     dus_weights     = resolve_file_path("phase4_step_85995.pth") # Чекпоинт Phase 4
     sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
+    void_token      = "/kaggle/working/BEBLaDII/storage/components/void_token.pt"
     latent_dict     = resolve_file_path("latent_dict.pt")
 
     # Директория вывода
@@ -453,8 +454,9 @@ class BEBLaDIIPhase6(nn.Module):
             layer.attn_norm = AdaLNWrappedLayerNorm(layer.attn_norm, self.adaLN_attn[i])
             layer.mlp_norm = AdaLNWrappedLayerNorm(layer.mlp_norm, self.adaLN_mlp[i])
 
-        # 5. Separator Token & Latent Dict
+        # 5. Separator & Void Tokens & Latent Dict
         self.register_buffer("sep_embed", torch.load(config.sep_token).float())
+        self.register_buffer("void_embed", torch.load(config.void_token).float())
         self.register_buffer("latent_dict", torch.load(config.latent_dict).float()) # [150000, 1024]
 
         # --- ЗАГРУЗКА ВЕСОВ PHASE 4 ---
@@ -507,6 +509,47 @@ class BEBLaDIIPhase6(nn.Module):
             Z_prompt, _, _ = self.encoder(qwen_embeds_q)
             Z_prompt = safe_normalize(Z_prompt.float(), dim=-1)
 
+            # --- VOID TOKEN INJECTION ---
+            void_embed = self.void_embed.to(Z_A_clean.dtype)
+            
+            # 1. Генерация маски слотов для void (5% шанс для mid-voids)
+            is_void = torch.rand((B, T_a), device=Z_A_clean.device) < 0.05
+            
+            # 2. Префиксный сдвиг (0-10 void в начале)
+            shift_k = torch.randint(0, 11, (B,), device=Z_A_clean.device)
+            seq_indices = torch.arange(T_a, device=Z_A_clean.device).unsqueeze(0).expand(B, T_a)
+            prefix_mask = seq_indices < shift_k.unsqueeze(1)
+            is_void = is_void | prefix_mask
+            
+            # 3. Проверка на переполнение холста
+            content_indices = torch.cumsum(~is_void, dim=1) - 1
+            orig_len = attention_mask_a.sum(dim=1)
+            overflow_mask = content_indices[:, -1] < (orig_len - 1)
+            
+            # Отменяем инъекцию для тех фраз, где контент не помещается (оставляем только PAD)
+            is_void = is_void & ~overflow_mask.unsqueeze(1)
+            
+            # Пересчитываем индексы после отмены
+            content_indices = torch.cumsum(~is_void, dim=1) - 1
+            content_indices = content_indices.clamp(min=0, max=T_a - 1)
+            
+            # 4. Векторизованный сдвиг
+            batch_indices = torch.arange(B, device=Z_A_clean.device).unsqueeze(1).expand(B, T_a)
+            shifted_Z_A_clean = Z_A_clean[batch_indices, content_indices, :]
+            shifted_attention_mask_a = attention_mask_a[batch_indices, content_indices]
+            
+            # 5. Итоговая маска void: инжектированные + оригинальные PAD-позиции
+            void_mask = is_void | (shifted_attention_mask_a == 0)
+            
+            # 6. Применение void_embed
+            void_mask_expanded = void_mask.unsqueeze(-1)
+            void_embed_expanded = void_embed.view(1, 1, -1).expand(B, T_a, -1)
+            Z_A_clean = torch.where(void_mask_expanded, void_embed_expanded, shifted_Z_A_clean)
+            Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1).to(void_embed.dtype)
+            
+            attention_mask_a = shifted_attention_mask_a
+            # ---------------------------
+
             # 3. Шум и t_actual (25 дискретных шагов)
             t_actual = torch.randint(1, 26, (B, T_a), device=Z_A_clean.device) / 25.0
             z_noisy = spherical_noise(Z_A_clean, t_actual)
@@ -546,7 +589,9 @@ class BEBLaDIIPhase6(nn.Module):
         x_in = z_noisy.float()
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
-        attention_mask_extended = F.pad(attention_mask_a, (1, 0), value=1)
+        
+        # Полностью снимаем маску с холста для DUS, так как void-позиции тоже обучаются
+        attention_mask_extended = torch.ones((B, T_a + 1), device=x_in.device, dtype=torch.long)
 
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
@@ -566,7 +611,8 @@ class BEBLaDIIPhase6(nn.Module):
             "z_clean": Z_A_clean,
             "dus_final": dus_final,
             "t_actual": t_actual,
-            "attention_mask_a": attention_mask_a
+            "void_mask": void_mask,
+            "void_embed": void_embed
         }
 
 
@@ -577,19 +623,28 @@ class BEBLaDIIPhase6(nn.Module):
 def compute_phase6_loss(outputs):
     z_clean = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
-    attn_f = outputs["attention_mask_a"].float()
     t_actual = outputs["t_actual"].float()
+    void_mask = outputs["void_mask"].float()
+    void_embed = outputs["void_embed"].float()
 
     target = safe_normalize(z_clean, dim=-1)
     cos_sim = (dus_final * target).sum(dim=-1)
     loss_el = 1.0 - cos_sim
 
-    # Weighting: (1 - t_actual)^2.0 * mask_A
-    w_weighted = (1.0 - t_actual).pow(2.0) * attn_f
+    # Weighting: (1 - t_actual)^2.0. No mask applied, loss applies to ALL tokens.
+    w_weighted = (1.0 - t_actual).pow(2.0)
     loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
 
-    avg_cos_sim = (cos_sim * attn_f).sum() / attn_f.sum().clamp(min=1e-8)
-    return loss, avg_cos_sim
+    # Metrics
+    avg_cos_sim = cos_sim.mean()
+    
+    cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
+    content_mask = 1.0 - void_mask
+    
+    void_cos_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
+    content_cos_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
+    
+    return loss, avg_cos_sim, void_cos_sim, content_cos_sim
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -681,7 +736,7 @@ def main():
 
             optimizer.zero_grad()
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
-            loss, avg_cos_sim = compute_phase6_loss(outputs)
+            loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs)
 
             loss.backward()
 
@@ -700,6 +755,8 @@ def main():
             wandb.log({
                 "loss": loss.item(),
                 "cos_sim": avg_cos_sim.item(),
+                "void_cos_sim": void_cos_sim.item(),
+                "content_cos_sim": content_cos_sim.item(),
                 "grad_norm": grad_norm,
                 "warmup_factor": warmup_factor,
                 "gate_12": model.ca_layers["12"].gate.item(),
@@ -715,6 +772,8 @@ def main():
                 model.eval()
                 val_loss = 0.0
                 val_cos = 0.0
+                val_void_cos = 0.0
+                val_content_cos = 0.0
                 val_batches = 0
                 with torch.no_grad():
                     for v_batch in val_dataloader:
@@ -724,15 +783,24 @@ def main():
                         v_mask_a = v_batch['attention_mask_a'].to(device)
 
                         v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
-                        v_loss, v_cos = compute_phase6_loss(v_out)
+                        v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out)
                         val_loss += v_loss.item()
                         val_cos += v_cos.item()
+                        val_void_cos += v_v_cos.item()
+                        val_content_cos += v_c_cos.item()
                         val_batches += 1
                         if val_batches >= 20: # limit validation for speed
                             break
                 val_loss /= max(1, val_batches)
                 val_cos /= max(1, val_batches)
-                wandb.log({"val_loss_ema": val_loss, "val_cos_ema": val_cos}, step=global_step)
+                val_void_cos /= max(1, val_batches)
+                val_content_cos /= max(1, val_batches)
+                wandb.log({
+                    "val_loss_ema": val_loss, 
+                    "val_cos_ema": val_cos,
+                    "val_void_cos_ema": val_void_cos,
+                    "val_content_cos_ema": val_content_cos
+                }, step=global_step)
                 print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
                 model.train()
                 ema_tracker.restore(model.ca_layers)
