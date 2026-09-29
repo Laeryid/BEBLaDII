@@ -1,0 +1,845 @@
+
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>Coding Theory Metrics Demo (w/ Noise)</title>
+        <style>
+            body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f4f9; color: #333; margin: 20px; }
+            h1, h2 { color: #2c3e50; }
+            .legend-container { background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); margin-bottom: 20px; font-size: 14px; }
+            .legend-item { margin-bottom: 8px; }
+            .run-container { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); margin-bottom: 30px; display: flex; flex-wrap: nowrap; overflow-x: auto; align-items: stretch; gap: 8px; }
+            .token-card { display: flex; flex-direction: column; padding: 10px; margin: 0; border-radius: 6px; font-family: monospace; font-size: 13px; border: 1px solid #ccc; flex-shrink: 0; width: 140px; background: #fafafa; }
+            .token-card.pool { border: 2px solid #e74c3c; background: #fdf2f2; }
+            .token-card.noise { border: 2px solid #9b59b6; background: #f4ecf7; }
+            .word-label { font-weight: bold; text-align: center; margin-bottom: 12px; min-height: 35px; display: flex; align-items: center; justify-content: center; word-break: break-word; }
+            .metric-row { margin-bottom: 8px; display: flex; flex-direction: column; }
+            .metric-labels { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; color: #555; }
+            .metric-bar-container { width: 100%; background-color: #ddd; height: 6px; border-radius: 3px; }
+            .metric-bar { height: 100%; border-radius: 3px; }
+            .val-high { font-weight: bold; color: #c0392b; }
+            .val-noise { font-weight: bold; color: #8e44ad; }
+        </style>
+    </head>
+    <body>
+        <h1>Phase 6: Coding Theory Metrics (Pool vs Noise vs Clean)</h1>
+        
+        <div class="legend-container">
+            <h3>Card Types</h3>
+            <div class="legend-item"><span style="border: 1px solid #ccc; background: #fafafa; padding: 2px 5px;">Normal</span> - Clean token straight from the encoder.</div>
+            <div class="legend-item"><span style="border: 2px solid #e74c3c; background: #fdf2f2; padding: 2px 5px;">Pool</span> - Bottleneck simulation (mean of 5 consecutive normal tokens).</div>
+            <div class="legend-item"><span style="border: 2px solid #9b59b6; background: #f4ecf7; padding: 2px 5px;">Noise</span> - Pure L2-normalized Gaussian noise.</div>
+        </div>
+        
+        <div class="run-container">
+    
+        <div class='token-card normal'>
+            <div class='word-label'>In</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.001</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.163</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 16.290175914764404%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.837</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 83.72734189033508%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>322.6</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 90.87988673460974%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.222</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> the</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.001</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.320</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 31.997376680374146%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.680</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 68.04784536361694%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class='val-high'>3.1</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 0.8806055901742653%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>3.007</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 48.32936173591327%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card noise'>
+            <div class='word-label'>[NOISE @ 2]</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.129</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 12.948504090309143%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.003</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 0.30483901500701904%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.228</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 22.750124335289%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>354.9</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.217</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.92658918436975%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> of</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.002</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.333</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 33.34382772445679%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.667</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 66.72424077987671%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>206.6</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 58.21195145567539%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.044</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 97.13815840397115%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> latent</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.003</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.111</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 11.099159717559814%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.889</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 88.92795443534851%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>99.9</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 28.148820067633523%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>5.979</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 96.08802124629632%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> diffusion</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.003</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.299</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 29.938137531280518%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.702</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 70.15458941459656%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>132.4</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 37.313627968833444%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.011</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 96.61569932327781%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> models</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.003</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.103</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 10.25819182395935%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.898</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 89.77817296981812%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>263.9</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 74.34123778345905%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.186</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.42003999544468%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card noise'>
+            <div class='word-label'>[NOISE @ 7]</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.113</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 11.310416460037231%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.001</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 0.11644288897514343%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.170</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 17.044711112976074%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>331.1</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 93.2813764640868%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.201</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.65871136314205%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> the</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.001</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.320</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 31.996649503707886%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.680</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 68.04784536361694%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class='val-high'>3.1</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 0.8806055901742653%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>3.007</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 48.328407602230634%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> intricate</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.002</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.233</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 23.303961753845215%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.767</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 76.74504518508911%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>95.2</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 26.83007035836792%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>5.950</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 95.62763066918262%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card pool'>
+            <div class='word-label'>[POOL: complexities of semantic dependencies often]</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.621</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 62.08820343017578%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.024</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 2.3566842079162598%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.300</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 30.00483512878418%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class='val-high'>32.6</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 9.17368362990606%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>5.539</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 89.01623529350455%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> el</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.003</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.194</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 19.368672370910645%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.807</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 80.68523406982422%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>317.4</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 89.42949507185321%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.209</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.79353926578149%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'>ude</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.001</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.274</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 27.36453413963318%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.727</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 72.66309857368469%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>275.4</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 77.58949223781089%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.153</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 98.89668425900139%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> simpl</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.998</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.81675148010254%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.166</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 16.649234294891357%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.833</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 83.32024812698364%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>227.4</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 64.05743888386884%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.126</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 98.46130041446955%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card noise'>
+            <div class='word-label'>[NOISE @ 18]</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.119</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 11.910989880561829%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.003</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 0.2832472324371338%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.149</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 14.945970475673676%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>347.5</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 97.91495826623334%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.213</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.8576463200405%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> designed</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.999</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.9335527420044%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.148</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 14.78503942489624%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.852</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 85.20514965057373%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>107.9</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 30.413661408125225%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>5.950</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 95.63020568056709%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> pooling</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.000</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.232</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 23.199665546417236%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.768</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 76.80625319480896%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>150.2</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 42.33144778375913%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.067</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 97.5014879120842%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> mechanisms</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.999</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.92222785949707%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.107</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 10.718083381652832%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.893</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 89.27358388900757%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>110.6</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 31.17573805263288%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>5.991</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 96.28717845120116%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card pool'>
+            <div class='word-label'>[POOL: , forcing the network to]</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.515</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 51.4980673789978%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.036</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 3.5953164100646973%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.064</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 6.434006243944168%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class='val-high'>23.9</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 6.743466547939554%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>5.412</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 86.98049720097796%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> dynamically</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.999</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.85262155532837%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.252</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 25.21463632583618%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.747</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 74.74817037582397%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>89.8</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 25.304537021440442%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>5.939</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 95.45803244912858%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> adapt</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.998</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.83402490615845%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.176</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 17.62748956680298%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.823</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 82.34318494796753%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>199.3</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 56.1589689657749%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.055</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 97.31843219205662%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> its</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.998</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.81034994125366%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.152</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 15.229469537734985%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.847</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 84.74159240722656%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>173.2</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 48.80295675910064%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.020</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 96.755523974199%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> represent</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>0.999</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.9430775642395%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.180</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 18.003928661346436%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.820</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 81.9858193397522%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>292.4</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 82.37689134276597%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.139</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 98.67229040978394%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'>ational</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.000</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 99.96289014816284%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.174</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 17.407000064849854%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.826</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 82.5865626335144%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>209.9</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 59.13310549215217%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.108</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 98.17168827096108%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'> capacity</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.004</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.089</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 8.937931060791016%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.911</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 91.09522700309753%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class=''>156.7</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 44.160608858222304%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>6.091</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 97.89311955425327%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        <div class='token-card normal'>
+            <div class='word-label'>.</div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>RawDProx</span><span>1.002</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 100%; background-color: #3498db;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Delta</span><span>0.450</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 44.950926303863525%; background-color: #9b59b6;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>ConflictSim</span><span>0.552</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 55.1581084728241%; background-color: #e67e22;'></div></div>
+            </div>
+            
+            <hr style="border: 0; border-top: 1px dashed #ccc; margin: 4px 0 8px 0;">
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>PR (Dim)</span><span class='val-high'>34.6</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 9.737221465703746%; background-color: #e74c3c;'></div></div>
+            </div>
+            
+            <div class='metric-row'>
+                <div class='metric-labels'><span>Entropy</span><span class=''>5.446</span></div>
+                <div class='metric-bar-container'><div class='metric-bar' style='width: 87.52879069648387%; background-color: #c0392b;'></div></div>
+            </div>
+        </div>
+        
+        </div>
+    </body>
+    </html>
+    
