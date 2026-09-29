@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~71095 (excluding excluded directories)
-**Updated:** 2026-09-27
+**Total files in project:** ~71113 (excluding excluded directories)
+**Updated:** 2026-09-29
 
 ```
 BEBLaDII/
 |-- .agent/  *(empty)*
-|-- .know/  *155 files*
-|   |-- decisions/  *90 files*
+|-- .know/  *158 files*
+|   |-- decisions/  *93 files*
 |   |-- knowledge/  *26 files*
 |   |-- scratch/  *1 files*
 |   |-- scripts/  *12 files*
@@ -23,9 +23,9 @@ BEBLaDII/
 |       `-- train_data/  *2 files*
 |-- BEBLaDII-planB-Phase4-Data/  *2 files*
 |-- BEBLaDII-planB-Phase5-Data/  *3 files*
-|-- BEBLaDII-planB-Phase6-Data/  *11 files*
-|   `-- phase 6/  *10 files*
-|       `-- data/  *10 files*
+|-- BEBLaDII-planB-Phase6-Data/  *12 files*
+|   `-- phase 6/  *11 files*
+|       `-- data/  *11 files*
 |-- data/  *70095 files*
 |   |-- CulturaX/  *2 files*
 |   |   `-- data/  *2 files*
@@ -50,7 +50,7 @@ BEBLaDII/
 |   |   |-- data/  *6 files*
 |   |   `-- metadata/  *12 files*
 |   `-- russian-reasoning/  *2 files*
-|-- experiments/  *438 files*
+|-- experiments/  *446 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -79,18 +79,20 @@ BEBLaDII/
 |   |   |-- local/  *6 files*
 |   |   |-- local_checkpoints/  *(empty)*
 |   |   `-- screenshots/  *(empty)*
-|   `-- phase 6/  *14 files*
-|       |-- data/  *10 files*
-|       `-- kaggle/  *3 files*
+|   `-- phase 6/  *22 files*
+|       |-- checkpoints/  *1 files*
+|       |-- data/  *12 files*
+|       |-- kaggle/  *3 files*
+|       `-- tpu kaggle/  *2 files*
 |-- hugging face/  *2 files*
-|-- ideas/  *62 files*
+|-- ideas/  *65 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
 |-- kaggle_upload_1_2/  *2 files*
 |-- posts/  *6 files*
 |-- reports/  *11 files*
 |   `-- plan_A/  *6 files*
 |-- scratch/  *22 files*
-|-- scripts/  *31 files*
+|-- scripts/  *33 files*
 |-- src/  *27 files*
 |   |-- beb_la_dii/  *22 files*
 |   |   |-- data/  *1 files*
@@ -99,8 +101,8 @@ BEBLaDII/
 |   |   |-- rag/  *1 files*
 |   |   `-- utils/  *7 files*
 |   `-- beb_la_dii.egg-info/  *5 files*
-|-- storage/  *33 files*
-|   |-- components/  *7 files*
+|-- storage/  *34 files*
+|   |-- components/  *8 files*
 |   |   |-- model/  *2 files*
 |   |   `-- projector/  *4 files*
 |   |-- dictionaries/  *2 files*

@@ -636,6 +636,29 @@
         "experiments/phase 6/kaggle/train_phase6_notebook.py",
         ".know/decisions/065_unet_skip_connections_and_identity_gate.md"
       ]
+    },
+    "decisions/092_phase6_void_token_and_canvas_unmasking.md": {
+      "description": "ADR 092: Phase 6 Void Token, Canvas Unmasking, and Elastic Mid-Sequence Injection.",
+      "covers": ["Architecture & Training Phases", "Model Core", "Utilities"],
+      "depends_on": [
+        "experiments/phase 6/kaggle/train_phase6_tpu_notebook.py",
+        "experiments/phase 6/plan.md"
+      ]
+    },
+    "decisions/093_phase6_self_identity_dataset_and_alignment_anchor.md": {
+      "description": "ADR 093: Phase 6 Architectural Self-Identity Dataset and Alignment Anchor.",
+      "covers": ["Architecture & Training Phases", "Data & Ops Scripts"],
+      "depends_on": [
+        "experiments/phase 6/plan.md"
+      ]
+    },
+    "decisions/094_orchestrator_canvas_expansion_vs_expand_token.md": {
+      "description": "ADR 094: Rejection of Explicit Expand Token in Favor of Sensor-Driven Orchestrator Expansion.",
+      "covers": ["Architecture & Training Phases", "Model Core"],
+      "depends_on": [
+        "experiments/phase 6/plan.md",
+        ".know/decisions/092_phase6_void_token_and_canvas_unmasking.md"
+      ]
     }
   },
   "knowledge_system": {

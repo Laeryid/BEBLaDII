@@ -3,21 +3,26 @@ import sys
 import glob
 import pandas as pd
 
-PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
-DATA_DIR = os.path.join(PROJECT_ROOT, "BEBLaDII-planB-Phase6-Data", "phase 6", "train_data", "data")
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
+DATA_DIR = os.path.join(PROJECT_ROOT, "BEBLaDII-planB-Phase6-Data", "phase 6", "data")
 VAL_SIZE = 2000
 
 def main():
     # Ищем все файлы data_*.parquet
-    files = glob.glob(os.path.join(DATA_DIR, "data_*.parquet"))
+    files = sorted(glob.glob(os.path.join(DATA_DIR, "data_*.parquet")))
     if not files:
-        print("No data_*.parquet files found!")
+        print(f"No data_*.parquet files found in {DATA_DIR}!")
         return
 
     print(f"Found {len(files)} dataset files:")
     dfs = []
     for f in files:
         df = pd.read_parquet(f)
+        # Ensure canonical columns
+        if 'Q' in df.columns and 'A' in df.columns:
+            if 'length' not in df.columns:
+                df['length'] = df['A'].apply(lambda x: len(str(x).split()))
+            df = df[['Q', 'A', 'length']]
         print(f" - {os.path.basename(f)}: {len(df)} rows")
         dfs.append(df)
 

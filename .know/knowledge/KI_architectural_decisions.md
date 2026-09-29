@@ -20,6 +20,9 @@
 | `083` | [Phase 4 Semantic Skepticism & Angular SCL](../decisions/083_phase4_semantic_skepticism_scl_and_anchors.md) | Accepted | Устранение Data Leak через Истинные Якоря, калибровка p_false и внедрение половинного Target-Aware Angular SCL. |
 | `085` | [Noise-Aware Context Trust and Isolation](../decisions/085_noise_aware_context_trust_and_isolation.md) | Accepted | Внедрение сэмплирования Островов/Моря чистоты, `L_weighted` и `L_isolation` для предотвращения заражения чистых токенов от зашумленного контекста. |
 | `087` | [Confidence Head Custom Local Attention](../decisions/087_phase5_confidence_head_custom_attention.md) | Accepted | Отказ от хакинга слоя 39 в пользу кастомного Local Self-Attention для Головы Уверенности. |
+| `091` | [Global Scheduled Identity Gate vs Per-Token Sensored Gate](../decisions/091_global_scheduled_identity_gate.md) | Accepted | Отказ от per-token sensored gate в пользу глобального расписания t_global для предотвращения блокировки исправления галлюцинаций. |
+| `092` | [Phase 6 Void Token, Canvas Unmasking, and Elastic Mid-Sequence Injection](../decisions/092_phase6_void_token_and_canvas_unmasking.md) | Accepted | Внедрение `void_token`, снятие маски холста, вставка void со сдвигом (cumsum), защита от переполнения и TPU gradient checkpointing fix. |
+| `093` | [Phase 6 Architectural Self-Identity Dataset and Alignment Anchor](../decisions/093_phase6_self_identity_dataset_and_alignment_anchor.md) | Accepted | Создание датасета самоидентификации (15 тем, 165 формулировок, 750 сэмплов Parquet) как базового якоря Alignment без риска Shortcut Learning. |
 
 ## Usage
 Агенты должны обращаться к ADR при возникновении вопросов "почему это реализовано именно так". Если вопрос касается TPU или Оптимизации — переходите в соответствующие KI выше.
