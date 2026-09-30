@@ -255,15 +255,20 @@ class AdaLNWrappedLayerNorm(nn.Module):
         return out * scale.to(out.dtype) + shift.to(out.dtype)
 
 class CAPromptLayer(nn.Module):
-    def __init__(self, dim=1024):
+    def __init__(self, dim=1024, t_emb_dim=256):
         super().__init__()
         self.norm1 = nn.RMSNorm(dim)
+        self.norm_q = nn.RMSNorm(dim)  # отдельная норма для Q промпта (без AdaLN)
         self.q_proj = nn.Linear(dim, dim, bias=False)
         self.kv_proj = nn.Linear(dim, dim * 2, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
+        self.adaln_ca = AdaLNModulation(t_emb_dim, dim)  # AdaLN для CA (модулирует A перед Q-проекцией)
+
         self.norm2 = nn.RMSNorm(dim)
         self.qkv_proj_sa = nn.Linear(dim, dim * 3, bias=False)
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
+        self.adaln_sa = AdaLNModulation(t_emb_dim, dim)  # AdaLN для SA (модулирует холст перед Self-Attention)
+
         self.gate = nn.Parameter(torch.zeros(1))
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
@@ -271,9 +276,16 @@ class CAPromptLayer(nn.Module):
         nn.init.xavier_uniform_(self.qkv_proj_sa.weight)
         nn.init.xavier_uniform_(self.out_proj_sa.weight)
 
-    def forward(self, A, Q, mask_Q=None, warmup_factor=1.0):
+    def forward(self, A, Q, mask_Q=None, warmup_factor=1.0, t_emb=None):
+        # --- Cross-Attention ---
+        # Q из промпта: статическая нормализация (вопрос не зависит от t)
+        Q_norm = self.norm_q(Q)
+        # A (холст): AdaLN — модулируем, что именно ищем в вопросе, в зависимости от t
         A_norm = self.norm1(A)
-        Q_norm = self.norm1(Q)
+        if t_emb is not None:
+            shift_ca, scale_ca = self.adaln_ca(t_emb)
+            A_norm = A_norm * scale_ca + shift_ca
+
         q = self.q_proj(A_norm)
         kv = self.kv_proj(Q_norm)
         k, v = kv.chunk(2, dim=-1)
@@ -295,7 +307,13 @@ class CAPromptLayer(nn.Module):
         ca_out = self.out_proj(ca_out)
         A = A + ca_out * (torch.tanh(self.gate) * warmup_factor)
 
+        # --- Self-Attention ---
+        # AdaLN — модулируем пропорции смешивания токенов холста в зависимости от t
         A_norm2 = self.norm2(A)
+        if t_emb is not None:
+            shift_sa, scale_sa = self.adaln_sa(t_emb)
+            A_norm2 = A_norm2 * scale_sa + shift_sa
+
         qkv = self.qkv_proj_sa(A_norm2)
         q_sa, k_sa, v_sa = qkv.chunk(3, dim=-1)
 
@@ -323,10 +341,11 @@ class Phase6BlockWrapper(nn.Module):
             Z_prompt = getattr(self.ca_layer, '_current_Z_prompt', None)
             mask_Q = getattr(self.ca_layer, '_current_mask_Q', None)
             warmup_factor = getattr(self.ca_layer, '_current_warmup_factor', 1.0)
+            t_emb = getattr(self.ca_layer, '_current_t_emb', None)
             if Z_prompt is not None:
                 sep = out[0][:, 0:1, :]
                 ans = out[0][:, 1:, :]
-                ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor)
+                ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor, t_emb=t_emb)
                 out = (torch.cat([sep, ans], dim=1),) + out[1:]
         return out
 
@@ -378,9 +397,9 @@ class BEBLaDIIPhase6(nn.Module):
         for p in self.parameters(): p.requires_grad = False
 
         self.ca_layers = nn.ModuleDict({
-            "12": CAPromptLayer(1024),
-            "24": CAPromptLayer(1024),
-            "36": CAPromptLayer(1024),
+            "12": CAPromptLayer(1024, t_emb_dim=256),
+            "24": CAPromptLayer(1024, t_emb_dim=256),
+            "36": CAPromptLayer(1024, t_emb_dim=256),
         })
         for i in [11, 23, 35]:
             self.dus.layers[i] = Phase6BlockWrapper(self.dus.layers[i], self.ca_layers[str(i+1)])
@@ -473,6 +492,7 @@ class BEBLaDIIPhase6(nn.Module):
             ca._current_Z_prompt = Z_prompt
             ca._current_mask_Q = attention_mask_q
             ca._current_warmup_factor = warmup_factor
+            ca._current_t_emb = t_emb  # [B, T_a, 256] — per-token time embedding для AdaLN в CA/SA
 
         x_in = z_noisy.float()
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
