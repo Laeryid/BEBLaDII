@@ -414,7 +414,7 @@ class BEBLaDIIPhase6(nn.Module):
             is_void = is_void | prefix_mask
             
             # 3. Проверка на переполнение холста
-            content_indices = torch.cumsum(~is_void, dim=1) - 1
+            content_indices = torch.cumsum((~is_void).long(), dim=1) - 1
             orig_len = attention_mask_a.sum(dim=1)
             overflow_mask = content_indices[:, -1] < (orig_len - 1)
             
@@ -422,7 +422,7 @@ class BEBLaDIIPhase6(nn.Module):
             is_void = is_void & ~overflow_mask.unsqueeze(1)
             
             # Пересчитываем индексы после отмены
-            content_indices = torch.cumsum(~is_void, dim=1) - 1
+            content_indices = torch.cumsum((~is_void).long(), dim=1) - 1
             content_indices = content_indices.clamp(min=0, max=T_a - 1)
             
             # 4. Векторизованный сдвиг
@@ -434,7 +434,7 @@ class BEBLaDIIPhase6(nn.Module):
             void_mask = is_void | (shifted_attention_mask_a == 0)
             
             # 6. Применение void_embed
-            void_mask_expanded = void_mask.unsqueeze(-1)
+            void_mask_expanded = void_mask.unsqueeze(-1).expand(-1, -1, Z_A_clean.shape[-1])
             void_embed_expanded = void_embed.view(1, 1, -1).expand(B, T_a, -1)
             Z_A_clean = torch.where(void_mask_expanded, void_embed_expanded, shifted_Z_A_clean)
             Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1).to(void_embed.dtype)
