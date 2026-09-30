@@ -152,33 +152,35 @@ class EMATracker:
         self.shadow = {}
         for name, param in model.named_parameters():
             if param.requires_grad:
-                self.shadow[name] = param.data.clone().detach().float()
+                self.shadow[name] = param.detach().clone().float()
 
     def update(self, model):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
-                    self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.data.float())
+                    self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.float())
 
     def pace_pullback(self, model, alpha):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     ema_casted = self.shadow[name].to(param.dtype)
-                    param.data.sub_(alpha * (param.data - ema_casted))
+                    param.sub_(alpha * (param - ema_casted))
 
     def apply_shadow(self, model):
         self.backup = {}
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                self.backup[name] = param.data.clone()
-                param.data.copy_(self.shadow[name].to(param.dtype))
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    self.backup[name] = param.detach().clone()
+                    param.copy_(self.shadow[name].to(param.dtype))
         xm.mark_step()
 
     def restore(self, model):
-        for name, param in model.named_parameters():
-            if param.requires_grad:
-                param.data.copy_(self.backup[name])
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad:
+                    param.copy_(self.backup[name])
         self.backup = {}
         xm.mark_step()
 
@@ -476,6 +478,9 @@ class BEBLaDIIPhase6(nn.Module):
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
         
+        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
+        dus_input_extended.requires_grad_(True)
+        
         # Полностью снимаем маску с холста для DUS, так как void-позиции тоже обучаются
         attention_mask_extended = torch.ones((B, T_a + 1), device=x_in.device, dtype=torch.long)
 
@@ -601,10 +606,13 @@ def main():
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            
             xm.optimizer_step(optimizer)
 
             ema_tracker.update(model.ca_layers)
             ema_tracker.pace_pullback(model.ca_layers, alpha=args.pace_alpha)
+            
+            xm.mark_step()
 
             if global_step % args.log_steps == 0:
                 xm.add_step_closure(lambda s, l, c, vc, cc: wandb.log({

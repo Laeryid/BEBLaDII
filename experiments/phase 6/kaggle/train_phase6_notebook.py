@@ -174,7 +174,8 @@ class Config:
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
 
     # Гиперпараметры Phase 6
-    batch_size    = 32
+    batch_size    = 8
+    gradient_accumulation_steps = 4
     max_length_q  = 512
     max_length_a  = 512
     learning_rate = 2e-4
@@ -593,6 +594,9 @@ class BEBLaDIIPhase6(nn.Module):
         # Полностью снимаем маску с холста для DUS, так как void-позиции тоже обучаются
         attention_mask_extended = torch.ones((B, T_a + 1), device=x_in.device, dtype=torch.long)
 
+        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
+        dus_input_extended.requires_grad_(True)
+
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
             attention_mask=attention_mask_extended,
@@ -723,8 +727,9 @@ def main():
                 print(f"[Resume] WARN: Failed to load checkpoint: {e}")
 
 
+    optimizer.zero_grad()
     for epoch in range(args.epochs):
-        for batch in dataloader:
+        for step_idx, batch in enumerate(dataloader):
             if global_step >= args.max_steps: return
 
             warmup_factor = min(1.0, global_step / args.warmup_steps)
@@ -734,87 +739,89 @@ def main():
             input_ids_a = batch['input_ids_a'].to(device)
             mask_a = batch['attention_mask_a'].to(device)
 
-            optimizer.zero_grad()
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
             loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs)
 
+            loss = loss / args.gradient_accumulation_steps
             loss.backward()
 
-            grad_norm = 0.0
-            for p in model.parameters():
-                if p.grad is not None:
-                    grad_norm += p.grad.data.norm(2).item() ** 2
-            grad_norm = grad_norm ** 0.5
+            if (step_idx + 1) % args.gradient_accumulation_steps == 0 or (step_idx + 1) == len(dataloader):
+                grad_norm = 0.0
+                for p in model.parameters():
+                    if p.grad is not None:
+                        grad_norm += p.grad.data.norm(2).item() ** 2
+                grad_norm = grad_norm ** 0.5
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            optimizer.step()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                optimizer.step()
+                optimizer.zero_grad()
 
-            ema_tracker.update(model.ca_layers)
-            ema_tracker.pace_pullback(model.ca_layers, alpha=args.pace_alpha)
+                ema_tracker.update(model.ca_layers)
+                ema_tracker.pace_pullback(model.ca_layers, alpha=args.pace_alpha)
 
-            wandb.log({
-                "loss": loss.item(),
-                "cos_sim": avg_cos_sim.item(),
-                "void_cos_sim": void_cos_sim.item(),
-                "content_cos_sim": content_cos_sim.item(),
-                "grad_norm": grad_norm,
-                "warmup_factor": warmup_factor,
-                "gate_12": model.ca_layers["12"].gate.item(),
-                "gate_24": model.ca_layers["24"].gate.item(),
-                "gate_36": model.ca_layers["36"].gate.item(),
-            }, step=global_step)
-
-            if global_step % args.log_steps == 0:
-                print(f"Step {global_step} | Loss: {loss.item():.4f} | Gate_12: {model.ca_layers['12'].gate.item():.4f}")
-
-            if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
-                ema_tracker.apply_shadow(model.ca_layers)
-                model.eval()
-                val_loss = 0.0
-                val_cos = 0.0
-                val_void_cos = 0.0
-                val_content_cos = 0.0
-                val_batches = 0
-                with torch.no_grad():
-                    for v_batch in val_dataloader:
-                        v_input_ids_q = v_batch['input_ids_q'].to(device)
-                        v_mask_q = v_batch['attention_mask_q'].to(device)
-                        v_input_ids_a = v_batch['input_ids_a'].to(device)
-                        v_mask_a = v_batch['attention_mask_a'].to(device)
-
-                        v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
-                        v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out)
-                        val_loss += v_loss.item()
-                        val_cos += v_cos.item()
-                        val_void_cos += v_v_cos.item()
-                        val_content_cos += v_c_cos.item()
-                        val_batches += 1
-                        if val_batches >= 20: # limit validation for speed
-                            break
-                val_loss /= max(1, val_batches)
-                val_cos /= max(1, val_batches)
-                val_void_cos /= max(1, val_batches)
-                val_content_cos /= max(1, val_batches)
                 wandb.log({
-                    "val_loss_ema": val_loss, 
-                    "val_cos_ema": val_cos,
-                    "val_void_cos_ema": val_void_cos,
-                    "val_content_cos_ema": val_content_cos
+                    "loss": loss.item() * args.gradient_accumulation_steps,
+                    "cos_sim": avg_cos_sim.item(),
+                    "void_cos_sim": void_cos_sim.item(),
+                    "content_cos_sim": content_cos_sim.item(),
+                    "grad_norm": grad_norm,
+                    "warmup_factor": warmup_factor,
+                    "gate_12": model.ca_layers["12"].gate.item(),
+                    "gate_24": model.ca_layers["24"].gate.item(),
+                    "gate_36": model.ca_layers["36"].gate.item(),
                 }, step=global_step)
-                print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
-                model.train()
-                ema_tracker.restore(model.ca_layers)
 
-            if global_step % args.save_steps == 0 and global_step > 0:
-                ema_tracker.apply_shadow(model.ca_layers)
-                ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
-                torch.save(model.ca_layers.state_dict(), ckpt_path)
-                ema_tracker.restore(model.ca_layers)
+                if global_step % args.log_steps == 0:
+                    print(f"Step {global_step} | Loss: {loss.item() * args.gradient_accumulation_steps:.4f} | Gate_12: {model.ca_layers['12'].gate.item():.4f}")
 
-                if getattr(args, "gcs_checkpoint_dir", None):
-                    sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir)
+                if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
+                    ema_tracker.apply_shadow(model.ca_layers)
+                    model.eval()
+                    val_loss = 0.0
+                    val_cos = 0.0
+                    val_void_cos = 0.0
+                    val_content_cos = 0.0
+                    val_batches = 0
+                    with torch.no_grad():
+                        for v_batch in val_dataloader:
+                            v_input_ids_q = v_batch['input_ids_q'].to(device)
+                            v_mask_q = v_batch['attention_mask_q'].to(device)
+                            v_input_ids_a = v_batch['input_ids_a'].to(device)
+                            v_mask_a = v_batch['attention_mask_a'].to(device)
 
-            global_step += 1
+                            v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
+                            v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out)
+                            val_loss += v_loss.item()
+                            val_cos += v_cos.item()
+                            val_void_cos += v_v_cos.item()
+                            val_content_cos += v_c_cos.item()
+                            val_batches += 1
+                            if val_batches >= 20: # limit validation for speed
+                                break
+                    val_loss /= max(1, val_batches)
+                    val_cos /= max(1, val_batches)
+                    val_void_cos /= max(1, val_batches)
+                    val_content_cos /= max(1, val_batches)
+                    wandb.log({
+                        "val_loss_ema": val_loss, 
+                        "val_cos_ema": val_cos,
+                        "val_void_cos_ema": val_void_cos,
+                        "val_content_cos_ema": val_content_cos
+                    }, step=global_step)
+                    print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
+                    model.train()
+                    ema_tracker.restore(model.ca_layers)
+
+                if global_step % args.save_steps == 0 and global_step > 0:
+                    ema_tracker.apply_shadow(model.ca_layers)
+                    ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
+                    torch.save(model.ca_layers.state_dict(), ckpt_path)
+                    ema_tracker.restore(model.ca_layers)
+
+                    if getattr(args, "gcs_checkpoint_dir", None):
+                        sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir)
+
+                global_step += 1
 
 if __name__ == "__main__":
     main()
