@@ -613,7 +613,7 @@ def main():
     ca_params = list(filter(lambda p: p.requires_grad, model.ca_layers.parameters()))
     dus_params = []
     for name, p in model.dus.named_parameters():
-        if p.requires_grad:
+        if p.requires_grad and "ca_layer" not in name:
             dus_params.append(p)
             
     optimizer = torch.optim.AdamW([
