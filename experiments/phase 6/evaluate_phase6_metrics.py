@@ -1,4 +1,4 @@
-import os
+﻿import os
 import sys
 import math
 import torch
@@ -21,17 +21,22 @@ from beb_la_dii.model.vae import LatentEncoder
 from beb_la_dii.model.dus import DUSModel
 from beb_la_dii.utils.loss import safe_normalize
 
+
+
 class CAPromptLayer(nn.Module):
-    def __init__(self, dim=1024):
+    def __init__(self, dim=1024, t_emb_dim=256):
         super().__init__()
         self.norm1 = getattr(nn, 'RMSNorm', nn.LayerNorm)(dim)
+        self.norm_q = getattr(nn, 'RMSNorm', nn.LayerNorm)(dim)
         self.q_proj = nn.Linear(dim, dim, bias=False)
         self.kv_proj = nn.Linear(dim, dim * 2, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
+        self.adaln_ca = AdaLNModulation(t_emb_dim, dim)
         
         self.norm2 = getattr(nn, 'RMSNorm', nn.LayerNorm)(dim)
         self.qkv_proj_sa = nn.Linear(dim, dim * 3, bias=False)
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
+        self.adaln_sa = AdaLNModulation(t_emb_dim, dim)
         
         self.gate = nn.Parameter(torch.zeros(1))
         
@@ -41,11 +46,13 @@ class CAPromptLayer(nn.Module):
         nn.init.xavier_uniform_(self.qkv_proj_sa.weight)
         nn.init.xavier_uniform_(self.out_proj_sa.weight)
         
-    def forward(self, A, Q, mask_Q=None, warmup_factor=1.0):
-        # Cross-Attention
+    def forward(self, A, Q, mask_Q=None, warmup_factor=1.0, t_emb=None):
+        Q_norm = self.norm_q(Q)
         A_norm = self.norm1(A)
-        Q_norm = self.norm1(Q) 
-        
+        if t_emb is not None:
+            shift_ca, scale_ca = self.adaln_ca(t_emb)
+            A_norm = A_norm * scale_ca.to(A_norm.dtype) + shift_ca.to(A_norm.dtype)
+            
         q = self.q_proj(A_norm)
         kv = self.kv_proj(Q_norm)
         k, v = kv.chunk(2, dim=-1)
@@ -65,11 +72,14 @@ class CAPromptLayer(nn.Module):
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
-        
         A = A + ca_out * (torch.tanh(self.gate) * warmup_factor)
         
         # Self-Attention
         A_norm2 = self.norm2(A)
+        if t_emb is not None:
+            shift_sa, scale_sa = self.adaln_sa(t_emb)
+            A_norm2 = A_norm2 * scale_sa.to(A_norm2.dtype) + shift_sa.to(A_norm2.dtype)
+            
         qkv = self.qkv_proj_sa(A_norm2)
         q_sa, k_sa, v_sa = qkv.chunk(3, dim=-1)
         
@@ -100,13 +110,16 @@ class Phase6BlockWrapper(nn.Module):
             Z_prompt = getattr(self.ca_layer, '_current_Z_prompt', None)
             mask_Q = getattr(self.ca_layer, '_current_mask_Q', None)
             warmup_factor = getattr(self.ca_layer, '_current_warmup_factor', 1.0)
+            t_emb = getattr(self.ca_layer, '_current_t_emb', None)
             
             if Z_prompt is not None:
                 sep = out[0][:, 0:1, :]
                 ans = out[0][:, 1:, :]
-                ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor)
+                ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor, t_emb=t_emb)
                 out = (torch.cat([sep, ans], dim=1),) + out[1:]
         return out
+
+
 
 class SinusoidalEmbedding(nn.Module):
     def __init__(self, dim: int):
@@ -191,9 +204,9 @@ class BEBLaDIIPhase6Eval(nn.Module):
             p.requires_grad = False
             
         self.ca_layers = nn.ModuleDict({
-            "12": CAPromptLayer(1024),
-            "24": CAPromptLayer(1024),
-            "36": CAPromptLayer(1024),
+            "12": CAPromptLayer(1024, t_emb_dim=256),
+            "24": CAPromptLayer(1024, t_emb_dim=256),
+            "36": CAPromptLayer(1024, t_emb_dim=256),
         })
         for i in [11, 23, 35]:
             self.dus.layers[i] = Phase6BlockWrapper(self.dus.layers[i], self.ca_layers[str(i+1)])
@@ -230,6 +243,7 @@ class BEBLaDIIPhase6Eval(nn.Module):
             ca._current_Z_prompt = Z_prompt
             ca._current_mask_Q = mask_Q
             ca._current_warmup_factor = 1.0
+            ca._current_t_emb = t_emb
 
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
@@ -276,7 +290,7 @@ def run_generation(model, sensor_ensemble, latent_dict, tokenizer, query_text, d
             h39, z_pred = model.forward_step(z_canvas, Z_prompt, q_enc.attention_mask, t_actual, t_reported)
             
             w1_words = [tokenizer.decode([idx]) for idx in w1_ids[0].tolist()]
-            step_text = "".join(w1_words).replace("Ġ", " ")
+            step_text = "".join(w1_words).replace("Ä ", " ")
             run_history.append({'step': i, 't': t_val, 'text': step_text, 'raw_dprox': raw_dprox[0].mean().item()})
             
             if i % 5 == 0 or i == steps - 1:
@@ -386,3 +400,5 @@ def main():
                 
 if __name__ == "__main__":
     main()
+
+

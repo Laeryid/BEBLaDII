@@ -189,6 +189,8 @@ class Config:
     # EMA & PACE Optimizer
     ema_decay     = 0.999
     pace_alpha    = 0.001
+    unfreeze_k_after_ca = 4
+
 
     use_gradient_checkpointing = True
     wandb_project = "BEBLaDII-Phase6-Kaggle"
@@ -503,6 +505,20 @@ class BEBLaDIIPhase6(nn.Module):
         # Убедимся, что новые слои обучаются
         for p in self.ca_layers.parameters():
             p.requires_grad = True
+            
+        unfreeze_k = getattr(config, "unfreeze_k_after_ca", 0)
+        if unfreeze_k > 0:
+            ca_indices = [11, 23, 35]
+            unfreeze_indices = []
+            for idx in ca_indices:
+                for k in range(1, unfreeze_k + 1):
+                    if idx + k < len(self.dus.layers):
+                        unfreeze_indices.append(idx + k)
+            
+            for i, layer in enumerate(self.dus.layers):
+                if i in unfreeze_indices:
+                    for p in layer.parameters():
+                        p.requires_grad = True
 
     def train(self, mode=True):
         super().train(mode)
@@ -716,10 +732,18 @@ def main():
         val_dataloader = None
 
     model = BEBLaDIIPhase6(args).to(device)
-    ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay)
+    ema_tracker = EMATracker(model, decay=args.ema_decay)
 
-    # Оптимизатор обновляет только CA_layers
-    optimizer = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=args.learning_rate)
+    ca_params = list(filter(lambda p: p.requires_grad, model.ca_layers.parameters()))
+    dus_params = []
+    for name, p in model.dus.named_parameters():
+        if p.requires_grad:
+            dus_params.append(p)
+            
+    optimizer = torch.optim.AdamW([
+        {'params': ca_params, 'lr': 2e-5},
+        {'params': dus_params, 'lr': 5e-5}
+    ])
 
     model.train()
     global_step = 0
@@ -734,7 +758,7 @@ def main():
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
                 model.ca_layers.load_state_dict(ckpt_state)
                 # Re-initialize EMA tracker to mirror loaded weights
-                ema_tracker = EMATracker(model.ca_layers, decay=args.ema_decay)
+                ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
                 print(f"[Resume] Successfully loaded CA layers. Resuming from step {global_step}.")
                 os.remove(local_ckpt)
@@ -771,8 +795,8 @@ def main():
                 optimizer.step()
                 optimizer.zero_grad()
 
-                ema_tracker.update(model.ca_layers)
-                ema_tracker.pace_pullback(model.ca_layers, alpha=args.pace_alpha)
+                ema_tracker.update(model)
+                ema_tracker.pace_pullback(model, alpha=args.pace_alpha)
 
                 wandb.log({
                     "loss": loss.item() * args.gradient_accumulation_steps,
@@ -790,7 +814,7 @@ def main():
                     print(f"Step {global_step} | Loss: {loss.item() * args.gradient_accumulation_steps:.4f} | Gate_12: {model.ca_layers['12'].gate.item():.4f}")
 
                 if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
-                    ema_tracker.apply_shadow(model.ca_layers)
+                    ema_tracker.apply_shadow(model)
                     model.eval()
                     val_loss = 0.0
                     val_cos = 0.0
@@ -825,13 +849,16 @@ def main():
                     }, step=global_step)
                     print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
                     model.train()
-                    ema_tracker.restore(model.ca_layers)
+                    ema_tracker.restore(model)
 
                 if global_step % args.save_steps == 0 and global_step > 0:
-                    ema_tracker.apply_shadow(model.ca_layers)
+                    ema_tracker.apply_shadow(model)
                     ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
-                    torch.save(model.ca_layers.state_dict(), ckpt_path)
-                    ema_tracker.restore(model.ca_layers)
+                    state_dict = model.state_dict()
+                    named_params = dict(model.named_parameters())
+                    trainable_state = {k: v for k, v in state_dict.items() if k in named_params and named_params[k].requires_grad}
+                    torch.save(trainable_state, ckpt_path)
+                    ema_tracker.restore(model)
 
                     if getattr(args, "gcs_checkpoint_dir", None):
                         sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir)
