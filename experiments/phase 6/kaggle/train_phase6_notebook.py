@@ -747,6 +747,8 @@ def main():
 
     model.train()
     global_step = 0
+    base_lrs = [group['lr'] for group in optimizer.param_groups]
+    session_step = 0
 
     if getattr(args, "resume_from_checkpoint", False) and getattr(args, "gcs_checkpoint_dir", None):
         latest_ckpt, step = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir)
@@ -792,11 +794,19 @@ def main():
                 grad_norm = grad_norm ** 0.5
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                
+                session_step += 1
+                lr_warmup_factor = min(1.0, session_step / 200.0)
+                for group, base_lr in zip(optimizer.param_groups, base_lrs):
+                    group['lr'] = base_lr * lr_warmup_factor
+
                 optimizer.step()
                 optimizer.zero_grad()
 
                 ema_tracker.update(model)
                 ema_tracker.pace_pullback(model, alpha=args.pace_alpha)
+
+                global_step += 1
 
                 wandb.log({
                     "loss": loss.item() * args.gradient_accumulation_steps,
@@ -862,8 +872,6 @@ def main():
 
                     if getattr(args, "gcs_checkpoint_dir", None):
                         sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir)
-
-                global_step += 1
 
 if __name__ == "__main__":
     main()
