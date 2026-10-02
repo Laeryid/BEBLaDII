@@ -189,7 +189,7 @@ class Config:
     # EMA & PACE Optimizer
     ema_decay     = 0.999
     pace_alpha    = 0.001
-    unfreeze_k_after_ca = 4
+    unfreeze_k_after_ca = 0
 
 
     use_gradient_checkpointing = True
@@ -343,9 +343,9 @@ class CAPromptLayer(nn.Module):
 
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
-        nn.init.xavier_uniform_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.weight)
         nn.init.xavier_uniform_(self.qkv_proj_sa.weight)
-        nn.init.xavier_uniform_(self.out_proj_sa.weight)
+        nn.init.zeros_(self.out_proj_sa.weight)
 
     def forward(self, A, Q, mask_Q=None, warmup_factor=1.0, t_emb=None):
         # --- Cross-Attention ---
@@ -378,7 +378,7 @@ class CAPromptLayer(nn.Module):
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
 
-        A = A + ca_out * (torch.tanh(self.gate) * warmup_factor)
+        A = A + ca_out
 
         # --- Self-Attention ---
         # AdaLN — модулируем пропорции смешивания токенов холста в зависимости от t
@@ -398,7 +398,7 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
-        A = A + sa_out * (torch.tanh(self.gate) * warmup_factor)
+        A = A + sa_out
         return A
 
 class Phase6BlockWrapper(nn.Module):
@@ -655,7 +655,7 @@ class BEBLaDIIPhase6(nn.Module):
 # ## 7. Loss & Training Loop
 
 # %%
-def compute_phase6_loss(outputs):
+def compute_phase6_loss(outputs, void_margin=0.0):
     z_clean = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
     t_actual = outputs["t_actual"].float()
@@ -665,6 +665,19 @@ def compute_phase6_loss(outputs):
     target = safe_normalize(z_clean, dim=-1)
     cos_sim = (dus_final * target).sum(dim=-1)
     loss_el = 1.0 - cos_sim
+
+    # --- NEW: Dynamic Void Penalty ---
+    cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
+    cos_sim_target_to_void = (target * void_embed.view(1, 1, -1)).sum(dim=-1)
+    content_mask = 1.0 - void_mask
+    
+    # 80% от расстояния между void и z_clean (в терминах косинусного сходства)
+    dynamic_margin = 1.0 - 0.8 * (1.0 - cos_sim_target_to_void)
+    
+    import torch.nn.functional as F
+    void_penalty = F.relu(cos_sim_to_void - dynamic_margin) * content_mask
+    loss_el = loss_el + 0.5 * void_penalty
+    # -------------------------
 
     # Weighting: (1 - t_actual)^2.0. No mask applied, loss applies to ALL tokens.
     w_weighted = (1.0 - t_actual).pow(2.0)
@@ -758,7 +771,7 @@ def main():
             try:
                 subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
-                model.ca_layers.load_state_dict(ckpt_state)
+                model.load_state_dict(ckpt_state, strict=False)
                 # Re-initialize EMA tracker to mirror loaded weights
                 ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
@@ -781,7 +794,7 @@ def main():
             mask_a = batch['attention_mask_a'].to(device)
 
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
-            loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs)
+            loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs, void_margin=0.5)
 
             loss = loss / args.gradient_accumulation_steps
             loss.backward()
@@ -815,9 +828,9 @@ def main():
                     "content_cos_sim": content_cos_sim.item(),
                     "grad_norm": grad_norm,
                     "warmup_factor": warmup_factor,
-                    "gate_12": model.ca_layers["12"].gate.item(),
-                    "gate_24": model.ca_layers["24"].gate.item(),
-                    "gate_36": model.ca_layers["36"].gate.item(),
+                    "out_proj_12_amp": model.ca_layers["12"].out_proj.weight.data.abs().mean().item(),
+                    "out_proj_36_amp": model.ca_layers["36"].out_proj.weight.data.abs().mean().item(),
+                    "q_proj_36_amp": model.ca_layers["36"].q_proj.weight.data.abs().mean().item(),
                 }, step=global_step)
 
                 if global_step % args.log_steps == 0:
@@ -839,7 +852,7 @@ def main():
                             v_mask_a = v_batch['attention_mask_a'].to(device)
 
                             v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
-                            v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out)
+                            v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out, void_margin=0.5)
                             val_loss += v_loss.item()
                             val_cos += v_cos.item()
                             val_void_cos += v_v_cos.item()
