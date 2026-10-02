@@ -1,0 +1,22 @@
+𝐁𝐄𝐁𝐋𝐚𝐃𝐈𝐈 Phase 2: Solving the Grammatical Porridge.
+
+Before training the diffusion core, I wanted to create a tool to evaluate its quality with my own eyes. This required a decoder capable of translating latent vectors back into words.
+
+In Phase 1, I used the Qwen decoder and a small projector layer between it and the latent space. However, this system ended up being comparable in size to the volume I hoped to fit my final model into. Moreover, I didn't actually need an autoregressive decoder since the phrase is generated all at once.
+
+I decided to try leveraging the strengths of a bidirectional approach — it felt like it could be even better at restoring grammar than autoregression. So I took the last 3 layers sliced from a pre-trained 𝐌𝐨𝐝𝐞𝐫𝐧𝐁𝐄𝐑𝐓-𝐥𝐚𝐫𝐠𝐞 and fine-tuned them to reconstruct sentences based on vectors from the spherical latent space built during Phase 1.
+
+This acts as a powerful syntax restorer over the frozen semantic latent space mapped by the VAE Encoder.
+
+Key optimizations and results:
+
+🛠️ 𝐌𝐚𝐬𝐬𝐢𝐯𝐞 𝐌𝐞𝐦𝐨𝐫𝐲 𝐒𝐚𝐯𝐢𝐧𝐠: Loaded Qwen 1.5B exclusively to extract the embed_tokens and lm_head matrices, deleting the rest. Essentially, I just took the dictionaries from Qwen.
+⚡ 𝐂𝐫𝐨𝐬𝐬-𝐄𝐧𝐭𝐫𝐨𝐩𝐲 𝐂𝐨𝐥𝐥𝐚𝐩𝐬𝐞: The loss stabilized at 0.03 by step 9,000. This corresponds to a 97% exact token probability out of a 151k vocabulary.
+✓ 𝐄𝐱𝐚𝐜𝐭 𝐑𝐞𝐜𝐨𝐧𝐬𝐭𝐫𝐮𝐜𝐭𝐢𝐨𝐧: Evolved past semantic substitution to achieve 100% exact token-for-token reconstruction on complex long-form texts in English and Russian, with zero prefix garbage tokens that were typical for the autoregressive decoder.
+🚀 𝐒𝐩𝐡𝐞𝐫𝐢𝐜𝐚𝐥 𝐈𝐧𝐭𝐞𝐫𝐩𝐨𝐥𝐚𝐭𝐢𝐨𝐧 (𝐒𝐋𝐄𝐑𝐏): The latent space smoothly morphs semantic meaning (e.g., from "sleeping cat" to "barking dog") while the deep attention layers hallucinate intermediate morphological transitions to maintain syntactic scaffolding.
+
+Phase 2 is a resounding success, and now I have a tool to evaluate the progress of upcoming phases with my own eyes.
+
+📦 Report with more details in repository: https://github.com/Laeryid/BEBLaDII/blob/main/reports/plan_b_phase2_report.md
+
+#AI #MachineLearning #DeepLearning #Research #BEBLaDII
