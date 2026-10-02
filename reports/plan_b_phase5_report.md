@@ -17,7 +17,7 @@ Instead of rolling back the noise, we transitioned to an **Adaptive ODE solver (
 ## 2. Achieved Results (Based on Tests)
 - [Evaluation code](<../experiments\phase 5\evaluate_phase5_metrics.py>)
 - [Evaluation results](<../experiments\phase 5\phase5_evaluation_report.txt>)
-- [Evaluation demonstration](<https://laeryid.github.io/BEBLaDII/experiments/phase%20/phase5_denoising_demo.html>)
+- [Evaluation demonstration](<https://laeryid.github.io/BEBLaDII/experiments/phase%205/phase5_denoising_demo.html>)
  
 Analysis of the logs (`phase5_evaluation_report.txt`) and visualizations (`phase5_denoising_demo.html`) shows that the introduced Orchestrator Decision Matrix successfully handles the classification of final token states. 
 
