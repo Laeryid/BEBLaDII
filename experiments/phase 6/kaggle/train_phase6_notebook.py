@@ -18,6 +18,7 @@ import math
 import os
 import subprocess
 import sys
+import time
 
 import pandas as pd
 import torch
@@ -782,6 +783,9 @@ def main():
 
 
     optimizer.zero_grad()
+    start_time = time.time()
+    checkpoints_saved = 0
+    time_limit_seconds = 11.5 * 3600  # 11.5 часов для Kaggle
     for epoch in range(args.epochs):
         for step_idx, batch in enumerate(dataloader):
             if global_step >= args.max_steps: return
@@ -885,6 +889,15 @@ def main():
 
                     if getattr(args, "gcs_checkpoint_dir", None):
                         sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir)
+
+                    checkpoints_saved += 1
+                    elapsed = time.time() - start_time
+                    time_per_ckpt = elapsed / checkpoints_saved
+                    
+                    if elapsed + time_per_ckpt > time_limit_seconds:
+                        print(f"Внимание: Оставшегося времени Kaggle ({time_limit_seconds - elapsed:.0f}s) "
+                              f"может не хватить на следующий чекпоинт (нужно ~{time_per_ckpt:.0f}s). Прерывание.")
+                        return
 
 if __name__ == "__main__":
     main()
