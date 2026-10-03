@@ -58,17 +58,22 @@ def analyze_j_space(config, model, tokenizer, latent_dict, void_vector, sample, 
         # Сначала прогоняем с CA-слоями
         h39, z_pred = model.forward_step(z_canvas, Z_prompt, q_enc.attention_mask, t_actual, t_reported)
         
-        # Теперь выключаем gates, чтобы посмотреть разницу (влияние CA)
-        original_gates = {}
+        # Теперь выключаем CA, чтобы посмотреть разницу (влияние CA)
+        original_weights = {}
         for k, ca in model.ca_layers.items():
-            original_gates[k] = ca.gate.item()
-            ca.gate.data = torch.zeros_like(ca.gate.data)
+            original_weights[k] = {
+                'out': ca.out_proj.weight.data.clone(),
+                'out_sa': ca.out_proj_sa.weight.data.clone()
+            }
+            ca.out_proj.weight.data.zero_()
+            ca.out_proj_sa.weight.data.zero_()
             
         h39_no_ca, z_pred_no_ca = model.forward_step(z_canvas, Z_prompt, q_enc.attention_mask, t_actual, t_reported)
         
-        # Возвращаем gates
+        # Возвращаем веса
         for k, ca in model.ca_layers.items():
-            ca.gate.data = torch.tensor([original_gates[k]], device=device)
+            ca.out_proj.weight.data.copy_(original_weights[k]['out'])
+            ca.out_proj_sa.weight.data.copy_(original_weights[k]['out_sa'])
             
     # 3. Аналитика
     # Куда толкает модель?
@@ -86,7 +91,7 @@ def analyze_j_space(config, model, tokenizer, latent_dict, void_vector, sample, 
     delta_norm_no_ca = torch.norm(delta_no_ca, dim=-1)
     
     # Векторное влияние CA
-    ca_effect = z_pred - z_pred_no_ca
+    ca_effect = h39 - h39_no_ca
     ca_effect_norm = torch.norm(ca_effect, dim=-1)
     
     # Направление сдвига
@@ -95,7 +100,6 @@ def analyze_j_space(config, model, tokenizer, latent_dict, void_vector, sample, 
     push_to_void = F.cosine_similarity(delta, void_vector.unsqueeze(0).unsqueeze(0), dim=-1)
     
     print(f"\n--- Analysis at t=0.0 (Clean Target Input) ---")
-    print(f"Gates: {original_gates}")
     print(f"Mean Cosine to Target (w/ CA): {cos_to_target.mean().item():.4f}")
     print(f"Mean Cosine to Target (w/o CA): {cos_to_target_no_ca.mean().item():.4f}")
     print(f"Mean Cosine to Void (w/ CA): {cos_to_void.mean().item():.4f}")
@@ -125,7 +129,7 @@ def main():
         'encoder_path': os.path.join(PROJECT_ROOT, "experiments", "phase 1", "planB_phase1_checkpoints_phase1_vae_step_20000.pth"),
         'phase4_path': os.path.join(PROJECT_ROOT, "experiments", "phase 4", "local_checkpoints", "phase4_step_85995.pth"),
         'sep_token_path': os.path.join(PROJECT_ROOT, "storage", "components", "sep_token.pt"),
-        'phase6_ckpt': os.path.join(PROJECT_ROOT, "experiments", "phase 6", "checkpoints", "planB_phase6_checkpoints_phase6_ca_layers_step_6000.pth")
+        'phase6_ckpt': os.path.join(PROJECT_ROOT, "experiments", "phase 6", "checkpoints", "planB_phase6_checkpoints_phase6_ca_layers_step_3000.pth")
     }
     
     tokenizer = AutoTokenizer.from_pretrained(config['qwen_path'])

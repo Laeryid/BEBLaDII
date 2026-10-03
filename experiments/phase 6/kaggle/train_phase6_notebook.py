@@ -190,7 +190,7 @@ class Config:
     # EMA & PACE Optimizer
     ema_decay     = 0.999
     pace_alpha    = 0.001
-    unfreeze_k_after_ca = 0
+    unfreeze_k_after_ca = 4
 
 
     use_gradient_checkpointing = True
@@ -671,10 +671,10 @@ def compute_phase6_loss(outputs, void_margin=0.0):
     cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
     cos_sim_target_to_void = (target * void_embed.view(1, 1, -1)).sum(dim=-1)
     content_mask = 1.0 - void_mask
-    
+
     # 80% от расстояния между void и z_clean (в терминах косинусного сходства)
     dynamic_margin = 1.0 - 0.8 * (1.0 - cos_sim_target_to_void)
-    
+
     import torch.nn.functional as F
     void_penalty = F.relu(cos_sim_to_void - dynamic_margin) * content_mask
     loss_el = loss_el + 0.5 * void_penalty
@@ -811,7 +811,7 @@ def main():
                 grad_norm = grad_norm ** 0.5
 
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                
+
                 session_step += 1
                 lr_warmup_factor = min(1.0, session_step / 200.0)
                 for group, base_lr in zip(optimizer.param_groups, base_lrs):
@@ -893,7 +893,7 @@ def main():
                     checkpoints_saved += 1
                     elapsed = time.time() - start_time
                     time_per_ckpt = elapsed / checkpoints_saved
-                    
+
                     if elapsed + time_per_ckpt > time_limit_seconds:
                         print(f"Внимание: Оставшегося времени Kaggle ({time_limit_seconds - elapsed:.0f}s) "
                               f"может не хватить на следующий чекпоинт (нужно ~{time_per_ckpt:.0f}s). Прерывание.")

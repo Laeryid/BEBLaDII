@@ -72,7 +72,7 @@ class CAPromptLayer(nn.Module):
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
-        A = A + ca_out * (torch.tanh(self.gate) * warmup_factor)
+        A = A + ca_out
         
         # Self-Attention
         A_norm2 = self.norm2(A)
@@ -91,7 +91,7 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
         
-        A = A + sa_out * (torch.tanh(self.gate) * warmup_factor)
+        A = A + sa_out
         return A
 
 class Phase6BlockWrapper(nn.Module):
