@@ -2,13 +2,14 @@ import math
 import os
 import subprocess
 import sys
+import time
 
 # Install Kaggle TPU dependencies (equivalent to: !pip install -q -U --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage)
 try:
     import wandb
     import einops
 except ImportError:
-    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "--no-cache-dir", 
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "--no-cache-dir",
                     "einops", "wandb", "indexed_parquet_dataset", "google-cloud-storage"])
 
 import pandas as pd
@@ -273,9 +274,9 @@ class CAPromptLayer(nn.Module):
         self.gate = nn.Parameter(torch.zeros(1))
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
-        nn.init.xavier_uniform_(self.out_proj.weight)
+        nn.init.zeros_(self.out_proj.weight)
         nn.init.xavier_uniform_(self.qkv_proj_sa.weight)
-        nn.init.xavier_uniform_(self.out_proj_sa.weight)
+        nn.init.zeros_(self.out_proj_sa.weight)
 
     def forward(self, A, Q, mask_Q=None, warmup_factor=1.0, t_emb=None):
         # --- Cross-Attention ---
@@ -306,7 +307,7 @@ class CAPromptLayer(nn.Module):
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
-        A = A + ca_out * (torch.tanh(self.gate) * warmup_factor)
+        A = A + ca_out
 
         # --- Self-Attention ---
         # AdaLN — модулируем пропорции смешивания токенов холста в зависимости от t
@@ -326,7 +327,7 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
-        A = A + sa_out * (torch.tanh(self.gate) * warmup_factor)
+        A = A + sa_out
         return A
 
 class Phase6BlockWrapper(nn.Module):
@@ -437,42 +438,42 @@ class BEBLaDIIPhase6(nn.Module):
 
             # --- VOID TOKEN INJECTION ---
             void_embed = self.void_embed.to(Z_A_clean.dtype)
-            
+
             # 1. Генерация маски слотов для void (5% шанс для mid-voids)
             is_void = torch.rand((B, T_a), device=Z_A_clean.device) < 0.05
-            
+
             # 2. Префиксный сдвиг (0-10 void в начале)
             shift_k = torch.randint(0, 11, (B,), device=Z_A_clean.device)
             seq_indices = torch.arange(T_a, device=Z_A_clean.device).unsqueeze(0).expand(B, T_a)
             prefix_mask = seq_indices < shift_k.unsqueeze(1)
             is_void = is_void | prefix_mask
-            
+
             # 3. Проверка на переполнение холста
             content_indices = torch.cumsum((~is_void).long(), dim=1) - 1
             orig_len = attention_mask_a.sum(dim=1)
             overflow_mask = content_indices[:, -1] < (orig_len - 1)
-            
+
             # Отменяем инъекцию для тех фраз, где контент не помещается (оставляем только PAD)
             is_void = is_void & ~overflow_mask.unsqueeze(1)
-            
+
             # Пересчитываем индексы после отмены
             content_indices = torch.cumsum((~is_void).long(), dim=1) - 1
             content_indices = content_indices.clamp(min=0, max=T_a - 1)
-            
+
             # 4. Векторизованный сдвиг
             batch_indices = torch.arange(B, device=Z_A_clean.device).unsqueeze(1).expand(B, T_a)
             shifted_Z_A_clean = Z_A_clean[batch_indices, content_indices, :]
             shifted_attention_mask_a = attention_mask_a[batch_indices, content_indices]
-            
+
             # 5. Итоговая маска void: инжектированные + оригинальные PAD-позиции
             void_mask = is_void | (shifted_attention_mask_a == 0)
-            
+
             # 6. Применение void_embed
             void_mask_expanded = void_mask.unsqueeze(-1).expand(-1, -1, Z_A_clean.shape[-1])
             void_embed_expanded = void_embed.view(1, 1, -1).expand(B, T_a, -1)
             Z_A_clean = torch.where(void_mask_expanded, void_embed_expanded, shifted_Z_A_clean)
             Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1).to(void_embed.dtype)
-            
+
             attention_mask_a = shifted_attention_mask_a
             # ---------------------------
 
@@ -510,10 +511,10 @@ class BEBLaDIIPhase6(nn.Module):
         x_in = z_noisy.float()
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
-        
+
         # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
         dus_input_extended.requires_grad_(True)
-        
+
         # Полностью снимаем маску с холста для DUS, так как void-позиции тоже обучаются
         attention_mask_extended = torch.ones((B, T_a + 1), device=x_in.device, dtype=torch.long)
 
@@ -539,7 +540,7 @@ class BEBLaDIIPhase6(nn.Module):
             "void_embed": void_embed
         }
 
-def compute_phase6_loss(outputs):
+def compute_phase6_loss(outputs, void_margin=0.0):
     z_clean = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
     t_actual = outputs["t_actual"].float()
@@ -550,16 +551,29 @@ def compute_phase6_loss(outputs):
     cos_sim = (dus_final * target).sum(dim=-1)
     loss_el = 1.0 - cos_sim
 
+    # --- NEW: Dynamic Void Penalty ---
+    cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
+    cos_sim_target_to_void = (target * void_embed.view(1, 1, -1)).sum(dim=-1)
+    content_mask = 1.0 - void_mask
+
+    # 80% от расстояния между void и z_clean (в терминах косинусного сходства)
+    dynamic_margin = 1.0 - 0.8 * (1.0 - cos_sim_target_to_void)
+
+    import torch.nn.functional as F
+    void_penalty = F.relu(cos_sim_to_void - dynamic_margin) * content_mask
+    loss_el = loss_el + 0.5 * void_penalty
+    # -------------------------
+
     w_weighted = (1.0 - t_actual).pow(2.0)
     loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
-    
+
     avg_cos_sim = cos_sim.mean()
     cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
     content_mask = 1.0 - void_mask
-    
+
     void_cos_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
     content_cos_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
-    
+
     return loss, avg_cos_sim, void_cos_sim, content_cos_sim
 
 def main():
@@ -615,7 +629,7 @@ def main():
     for name, p in model.dus.named_parameters():
         if p.requires_grad and "ca_layer" not in name:
             dus_params.append(p)
-            
+
     optimizer = torch.optim.AdamW([
         {'params': ca_params, 'lr': 2e-5},
         {'params': dus_params, 'lr': 5e-5}
@@ -623,6 +637,9 @@ def main():
 
     model.train()
     global_step = 0
+    start_time = time.time()
+    checkpoints_saved = 0
+    time_limit_seconds = 9.0 * 3600  # 9 часов для Kaggle TPU
 
     if args.resume_from_checkpoint and args.gcs_checkpoint_dir:
         latest_ckpt, step = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir)
@@ -656,25 +673,38 @@ def main():
 
             optimizer.zero_grad()
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
-            loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs)
+            loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs, void_margin=0.5)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            
+
             xm.optimizer_step(optimizer)
 
             ema_tracker.update(model)
             ema_tracker.pace_pullback(model, alpha=args.pace_alpha)
-            
+
             xm.mark_step()
 
+            try:
+                op12 = model.ca_layers["12"].out_proj.weight.detach().abs().mean()
+                op36 = model.ca_layers["36"].out_proj.weight.detach().abs().mean()
+                qp36 = model.ca_layers["36"].q_proj.weight.detach().abs().mean()
+            except AttributeError:
+                op12 = model.ca_layers["12"].module.out_proj.weight.detach().abs().mean()
+                op36 = model.ca_layers["36"].module.out_proj.weight.detach().abs().mean()
+                qp36 = model.ca_layers["36"].module.q_proj.weight.detach().abs().mean()
+
             if global_step % args.log_steps == 0:
-                xm.add_step_closure(lambda s, l, c, vc, cc: wandb.log({
+                xm.add_step_closure(lambda s, l, c, vc, cc, w, o12, o36, q36: wandb.log({
                     "loss": l.item(),
                     "cos_sim": c.item(),
                     "void_cos_sim": vc.item(),
-                    "content_cos_sim": cc.item()
-                }, step=s), args=(global_step, loss, avg_cos_sim, void_cos_sim, content_cos_sim))
+                    "content_cos_sim": cc.item(),
+                    "warmup_factor": w.item(),
+                    "out_proj_12_amp": o12.item(),
+                    "out_proj_36_amp": o36.item(),
+                    "q_proj_36_amp": q36.item(),
+                }, step=s), args=(global_step, loss, avg_cos_sim, void_cos_sim, content_cos_sim, warmup_factor, op12, op36, qp36))
 
             if global_step % args.save_steps == 0 and global_step > 0:
                 ema_tracker.apply_shadow(model)
@@ -686,6 +716,15 @@ def main():
                 ema_tracker.restore(model)
                 if args.gcs_checkpoint_dir:
                     xm.add_step_closure(lambda: sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir))
+
+                checkpoints_saved += 1
+                elapsed = time.time() - start_time
+                time_per_ckpt = elapsed / checkpoints_saved
+
+                if elapsed + time_per_ckpt > time_limit_seconds:
+                    print(f"Внимание: Оставшегося времени Kaggle ({time_limit_seconds - elapsed:.0f}s) "
+                          f"может не хватить на следующий чекпоинт (нужно ~{time_per_ckpt:.0f}s). Прерывание.")
+                    return
 
             global_step += 1
 
