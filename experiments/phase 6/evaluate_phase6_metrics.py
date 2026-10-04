@@ -213,17 +213,14 @@ class BEBLaDIIPhase6Eval(nn.Module):
             
         if config.get('phase6_ckpt') and os.path.exists(config['phase6_ckpt']):
             st = torch.load(config['phase6_ckpt'], map_location="cpu", weights_only=False)
-            
-            # Map keys from training format to evaluation format
-            mapped_st = {}
-            for k, v in st.items():
-                if k.startswith("dus.layers.11.ca_layer."): mapped_st[k.replace("dus.layers.11.ca_layer.", "12.")] = v
-                elif k.startswith("dus.layers.23.ca_layer."): mapped_st[k.replace("dus.layers.23.ca_layer.", "24.")] = v
-                elif k.startswith("dus.layers.35.ca_layer."): mapped_st[k.replace("dus.layers.35.ca_layer.", "36.")] = v
-                else: mapped_st[k] = v
-                
-            self.ca_layers.load_state_dict(mapped_st, strict=False)
-            print(f"Loaded Phase 6 CA layers from {config['phase6_ckpt']}")
+
+            # Чекпоинт содержит CA-слои (dus.layers.N.ca_layer.*) И размороженные слои DUS (dus.layers.N.*).
+            # Грузим всё в модель целиком (ca_layers разделяют параметры с обёртками слоёв 11/23/35).
+            res = self.load_state_dict(st, strict=False)
+            n_ca = sum(1 for k in st if "ca_layer" in k)
+            print(f"Loaded Phase 6 checkpoint from {config['phase6_ckpt']}: {len(st)} keys "
+                  f"({n_ca} CA, {len(st) - n_ca} unfrozen DUS), unexpected={len(res.unexpected_keys)}")
+
         else:
             print("Warning: Phase 6 checkpoint not found. CA layers are randomly initialized!")
 

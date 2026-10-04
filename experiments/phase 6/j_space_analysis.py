@@ -129,7 +129,7 @@ def main():
         'encoder_path': os.path.join(PROJECT_ROOT, "experiments", "phase 1", "planB_phase1_checkpoints_phase1_vae_step_20000.pth"),
         'phase4_path': os.path.join(PROJECT_ROOT, "experiments", "phase 4", "local_checkpoints", "phase4_step_85995.pth"),
         'sep_token_path': os.path.join(PROJECT_ROOT, "storage", "components", "sep_token.pt"),
-        'phase6_ckpt': os.path.join(PROJECT_ROOT, "experiments", "phase 6", "checkpoints", "planB_phase6_checkpoints_phase6_ca_layers_step_3000.pth")
+        'phase6_ckpt': os.path.join(PROJECT_ROOT, "experiments", "phase 6", "checkpoints", "planB_phase6_checkpoints_phase6_ca_layers_step_6000.pth")
     }
     
     tokenizer = AutoTokenizer.from_pretrained(config['qwen_path'])

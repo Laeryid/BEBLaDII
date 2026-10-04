@@ -291,6 +291,26 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     sigma = torch.sin(t * (math.pi / 2))
     return safe_normalize(mu * x0 + sigma * eps, dim=-1)
 
+def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0,
+                              kappa_max: float = 8.0, steps: int = 25) -> torch.Tensor:
+    """
+    Per-token t_i ~ Beta(t_g*kappa, (1-t_g)*kappa): E[t_i] = t_g.
+    Малое kappa -> бимодально (чистые vs сильно зашумлённые): при низком t_g в основном чистые токены,
+    при высоком - в основном зашумлённые. kappa выбирается на сэмпл (log-uniform [kappa_min, kappa_max]).
+    t_global >= 1.0 -> чистый шум (все t_i = 1). Результат квантуется до сетки k/steps.
+    """
+    B = t_global.shape[0]
+    dev = t_global.device
+    tg = t_global.float().clamp(0.02, 0.98)
+    u = torch.rand(B, device=dev)
+    kappa = torch.exp(math.log(kappa_min) + u * (math.log(kappa_max) - math.log(kappa_min)))
+    a = (tg * kappa).view(B, 1).expand(B, T).contiguous()
+    b = ((1.0 - tg) * kappa).view(B, 1).expand(B, T).contiguous()
+    t = torch.distributions.Beta(a, b).sample()
+    t = torch.round(t * steps) / steps
+    t = torch.where(t_global.view(B, 1) >= 1.0, torch.ones_like(t), t)
+    return t.clamp(0.0, 1.0)
+
 class AdaLNModulation(nn.Module):
     def __init__(self, t_emb_dim: int, hidden_dim: int):
         super().__init__()
@@ -527,7 +547,7 @@ class BEBLaDIIPhase6(nn.Module):
         if hasattr(self, "qwen_embeddings"): self.qwen_embeddings.eval()
         if hasattr(self, "encoder"): self.encoder.eval()
 
-    def forward(self, input_ids_q, attention_mask_q, input_ids_a, attention_mask_a, warmup_factor=1.0):
+    def forward(self, input_ids_q, attention_mask_q, input_ids_a, attention_mask_a, warmup_factor=1.0, t_global=None):
         B, T_a = input_ids_a.shape
 
         with torch.no_grad():
@@ -582,9 +602,14 @@ class BEBLaDIIPhase6(nn.Module):
             attention_mask_a = shifted_attention_mask_a
             # ---------------------------
 
-            # 3. Шум и t_actual (25 дискретных шагов)
-            t_actual = torch.randint(1, 26, (B, T_a), device=Z_A_clean.device) / 25.0
+            # 3. t_global (внешний параметр Оркестратора) и шум, зависящий от него
+            if t_global is None:
+                t_global = torch.randint(1, 26, (B,), device=Z_A_clean.device).float() / 25.0
+            else:
+                t_global = t_global.to(Z_A_clean.device).float()
+            t_actual = sample_token_noise_levels(t_global, T_a)
             z_noisy = spherical_noise(Z_A_clean, t_actual)
+
 
             # 4. Вычисление RawDProx и t_reported
             # z_noisy: [B, T_a, 1024], latent_dict: [V, 1024] -> sims: [B, T_a, V]
@@ -593,7 +618,7 @@ class BEBLaDIIPhase6(nn.Module):
             t_reported = (1.0 - RawDProx).clamp(0.0, 1.0)
 
         # 5. Вычисление Time Embeddings (заморожено, как в Phase 4)
-        t_global = torch.mean(t_actual, dim=-1)
+        # t_global — внешний параметр Оркестратора (задан выше), НЕ среднее по t_actual
         t_sin_global = self.t_sin_embed(t_global)
         t_emb_global = self.t_proj_global(t_sin_global)
 
@@ -647,6 +672,8 @@ class BEBLaDIIPhase6(nn.Module):
             "z_clean": Z_A_clean,
             "dus_final": dus_final,
             "t_actual": t_actual,
+            "t_global": t_global,
+            "z_noisy": z_noisy,
             "void_mask": void_mask,
             "void_embed": void_embed
         }
@@ -694,6 +721,14 @@ def compute_phase6_loss(outputs, void_margin=0.0):
     content_cos_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
 
     return loss, avg_cos_sim, void_cos_sim, content_cos_sim
+
+def content_cos_stats(outputs):
+    """cos(pred, target), cos(z_noisy, target) [baseline = копия входа] и маска контентных токенов."""
+    target = outputs["z_clean"].float()
+    cp = (outputs["dus_final"].float() * target).sum(dim=-1)
+    cb = (outputs["z_noisy"].float() * target).sum(dim=-1)
+    cm = (~outputs["void_mask"].bool()).float()
+    return cp, cb, cm
 
 def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -825,6 +860,15 @@ def main():
 
                 global_step += 1
 
+                train_bin_log = {}
+                with torch.no_grad():
+                    cp_t, _cb_t, cm_t = content_cos_stats(outputs)
+                    tg_t = outputs["t_global"].view(-1, 1)
+                    for lo, hi in ((0.0, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.01)):
+                        sel = ((tg_t > lo) & (tg_t <= hi)).float() * cm_t
+                        if sel.sum() > 0:
+                            train_bin_log[f"train_content_cos_tg_{lo}_{min(hi, 1.0)}"] = ((cp_t * sel).sum() / sel.sum()).item()
+
                 wandb.log({
                     "loss": loss.item() * args.gradient_accumulation_steps,
                     "cos_sim": avg_cos_sim.item(),
@@ -835,7 +879,9 @@ def main():
                     "out_proj_12_amp": model.ca_layers["12"].out_proj.weight.data.abs().mean().item(),
                     "out_proj_36_amp": model.ca_layers["36"].out_proj.weight.data.abs().mean().item(),
                     "q_proj_36_amp": model.ca_layers["36"].q_proj.weight.data.abs().mean().item(),
+                    **train_bin_log,
                 }, step=global_step)
+
 
                 if global_step % args.log_steps == 0:
                     print(f"Step {global_step} | Loss: {loss.item() * args.gradient_accumulation_steps:.4f} | Gate_12: {model.ca_layers['12'].gate.item():.4f}")
@@ -875,8 +921,37 @@ def main():
                         "val_content_cos_ema": val_content_cos
                     }, step=global_step)
                     print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
+
+                    # --- Валидация на фиксированных t_global: cos на контенте, baseline (копия входа), gain ---
+                    fixed_log = {}
+                    with torch.no_grad():
+                        for tg_val in (0.2, 0.5, 0.8, 1.0):
+                            cp_sum = cb_sum = n_tok = 0.0
+                            vb = 0
+                            for v_batch in val_dataloader:
+                                v_ids_q = v_batch['input_ids_q'].to(device)
+                                v_m_q = v_batch['attention_mask_q'].to(device)
+                                v_ids_a = v_batch['input_ids_a'].to(device)
+                                v_m_a = v_batch['attention_mask_a'].to(device)
+                                tg_t = torch.full((v_ids_a.shape[0],), tg_val, device=device)
+                                v_o = model(v_ids_q, v_m_q, v_ids_a, v_m_a, warmup_factor=1.0, t_global=tg_t)
+                                cp, cb, cm = content_cos_stats(v_o)
+                                cp_sum += (cp * cm).sum().item()
+                                cb_sum += (cb * cm).sum().item()
+                                n_tok += cm.sum().item()
+                                vb += 1
+                                if vb >= 5:
+                                    break
+                            n_tok = max(1.0, n_tok)
+                            fixed_log[f"val_content_cos_tg{tg_val}"] = cp_sum / n_tok
+                            fixed_log[f"val_content_baseline_tg{tg_val}"] = cb_sum / n_tok
+                            fixed_log[f"val_content_gain_tg{tg_val}"] = (cp_sum - cb_sum) / n_tok
+                    wandb.log(fixed_log, step=global_step)
+                    print(f"Step {global_step} | Val gain by t_global: " + ", ".join(
+                        f"{tg}: {fixed_log[f'val_content_gain_tg{tg}']:+.3f}" for tg in (0.2, 0.5, 0.8, 1.0)))
                     model.train()
                     ema_tracker.restore(model)
+
 
                 if global_step % args.save_steps == 0 and global_step > 0:
                     ema_tracker.apply_shadow(model)
