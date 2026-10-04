@@ -188,7 +188,7 @@ class Config:
     warmup_steps  = 1000
 
     # EMA & PACE Optimizer
-    ema_decay     = 0.999
+    ema_decay     = 0.998
     pace_alpha    = 0.001
     unfreeze_k_after_ca = 4
 
@@ -717,10 +717,10 @@ def compute_phase6_loss(outputs, void_margin=0.0):
     cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
     content_mask = 1.0 - void_mask
 
-    void_cos_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
-    content_cos_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
+    true_void_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
+    content_to_void_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
 
-    return loss, avg_cos_sim, void_cos_sim, content_cos_sim
+    return loss, avg_cos_sim, true_void_sim, content_to_void_sim
 
 def content_cos_stats(outputs):
     """cos(pred, target), cos(z_noisy, target) [baseline = копия входа] и маска контентных токенов."""
@@ -783,14 +783,23 @@ def main():
     model = BEBLaDIIPhase6(args).to(device)
     ema_tracker = EMATracker(model, decay=args.ema_decay)
 
-    ca_params = list(filter(lambda p: p.requires_grad, model.ca_layers.parameters()))
+    ca_qkv_params = []
+    ca_other_params = []
+    for name, p in model.ca_layers.named_parameters():
+        if p.requires_grad:
+            if "q_proj" in name or "k_proj" in name or "v_proj" in name or "qkv_proj" in name:
+                ca_qkv_params.append(p)
+            else:
+                ca_other_params.append(p)
+
     dus_params = []
     for name, p in model.dus.named_parameters():
         if p.requires_grad and "ca_layer" not in name:
             dus_params.append(p)
 
     optimizer = torch.optim.AdamW([
-        {'params': ca_params, 'lr': 2e-5},
+        {'params': ca_qkv_params, 'lr': 2e-4},     # x10 boost для разморозки Attention (Claude's fix)
+        {'params': ca_other_params, 'lr': 5e-5},   # Базовый CA LR
         {'params': dus_params, 'lr': 5e-5}
     ])
 
@@ -833,7 +842,7 @@ def main():
             mask_a = batch['attention_mask_a'].to(device)
 
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
-            loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs, void_margin=0.5)
+            loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(outputs, void_margin=0.5)
 
             loss = loss / args.gradient_accumulation_steps
             loss.backward()
@@ -872,8 +881,8 @@ def main():
                 wandb.log({
                     "loss": loss.item() * args.gradient_accumulation_steps,
                     "cos_sim": avg_cos_sim.item(),
-                    "void_cos_sim": void_cos_sim.item(),
-                    "content_cos_sim": content_cos_sim.item(),
+                    "true_void_sim": true_void_sim.item(),
+                    "content_to_void_sim": content_to_void_sim.item(),
                     "grad_norm": grad_norm,
                     "warmup_factor": warmup_factor,
                     "out_proj_12_amp": model.ca_layers["12"].out_proj.weight.data.abs().mean().item(),

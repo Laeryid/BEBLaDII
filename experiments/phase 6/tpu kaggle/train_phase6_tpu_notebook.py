@@ -125,7 +125,7 @@ def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float =
     kappa = torch.exp(math.log(kappa_min) + u * (math.log(kappa_max) - math.log(kappa_min)))
     a = (t_global * kappa).unsqueeze(1).expand(B, T)
     b = ((1.0 - t_global) * kappa).unsqueeze(1).expand(B, T)
-    
+
     try:
         from torch.distributions import Beta
         t_actual = Beta(a, b).sample()
@@ -134,7 +134,7 @@ def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float =
         t_actual = torch.rand((B, T), device=dev)
         # linear blend between uniform and extreme as a fallback
         pass
-    
+
     t_actual = t_actual.clamp(1e-4, 1.0)
     return t_actual
 
@@ -158,17 +158,17 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase6_v2"
     resume_from_checkpoint = False
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6_v2/checkpoints/"
-    batch_size    = 64 * 4
+    batch_size    = 64 * 2
     max_length_q  = 512
     max_length_a  = 512
-    learning_rate = 2e-4
+    learning_rate = 1e-4
     epochs        = 50
     max_steps     = 200000
     log_steps     = 10
     val_steps     = 200
     save_steps    = 1000
     warmup_steps  = 1000
-    ema_decay     = 0.999
+    ema_decay     = 0.998
     pace_alpha    = 0.001
     unfreeze_k_after_ca = 4
     use_gradient_checkpointing = True
@@ -608,10 +608,10 @@ def compute_phase6_loss(outputs, void_margin=0.0):
     cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
     content_mask = 1.0 - void_mask
 
-    void_cos_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
-    content_cos_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
+    true_void_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
+    content_to_void_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
 
-    return loss, avg_cos_sim, void_cos_sim, content_cos_sim
+    return loss, avg_cos_sim, true_void_sim, content_to_void_sim
 
 def main():
     mesh = setup_spmd_mesh()
@@ -710,7 +710,7 @@ def main():
 
             optimizer.zero_grad()
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
-            loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs, void_margin=0.5)
+            loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(outputs, void_margin=0.5)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -723,7 +723,7 @@ def main():
             xm.mark_step()
 
             cp, cb, cm = content_cos_stats(outputs)
-            
+
             try:
                 op12 = model.ca_layers["12"].out_proj.weight.detach().abs().mean()
                 op36 = model.ca_layers["36"].out_proj.weight.detach().abs().mean()
@@ -750,16 +750,16 @@ def main():
                     tg_cpu = tg_t.cpu()
                     B, T = cp_cpu.shape
                     tg_expanded = tg_cpu.unsqueeze(1).expand(B, T)
-                    
+
                     bins = [(0.0, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.0)]
                     for lo, hi in bins:
                         sel = ((tg_expanded > lo) & (tg_expanded <= hi)).float() * cm_cpu
                         if sel.sum() > 0:
                             log_dict[f"train_content_cos_tg_{lo}_{min(hi, 1.0)}"] = ((cp_cpu * sel).sum() / sel.sum()).item()
-                            
+
                     wandb.log(log_dict, step=s)
 
-                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, void_cos_sim, content_cos_sim, warmup_factor, op12, op36, qp36, cp, cm, outputs["t_global"]))
+                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp, cm, outputs["t_global"]))
 
             if global_step % args.save_steps == 0 and global_step > 0:
                 ema_tracker.apply_shadow(model)
