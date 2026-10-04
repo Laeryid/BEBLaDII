@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~71113 (excluding excluded directories)
-**Updated:** 2026-09-29
+**Total files in project:** ~71143 (excluding excluded directories)
+**Updated:** 2026-10-04
 
 ```
 BEBLaDII/
 |-- .agent/  *(empty)*
-|-- .know/  *158 files*
-|   |-- decisions/  *93 files*
+|-- .know/  *161 files*
+|   |-- decisions/  *96 files*
 |   |-- knowledge/  *26 files*
 |   |-- scratch/  *1 files*
 |   |-- scripts/  *12 files*
@@ -50,7 +50,7 @@ BEBLaDII/
 |   |   |-- data/  *6 files*
 |   |   `-- metadata/  *12 files*
 |   `-- russian-reasoning/  *2 files*
-|-- experiments/  *446 files*
+|-- experiments/  *464 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -73,25 +73,27 @@ BEBLaDII/
 |   |   |-- local_checkpoints/  *14 files*
 |   |   |-- screenshots/  *76 files*
 |   |   `-- tpu kaggle/  *8 files*
-|   |-- phase 5/  *24 files*
+|   |-- phase 5/  *29 files*
 |   |   |-- bad scripts/  *12 files*
+|   |   |-- coding theory exploration/  *5 files*
 |   |   |-- kaggle/  *(empty)*
 |   |   |-- local/  *6 files*
 |   |   |-- local_checkpoints/  *(empty)*
 |   |   `-- screenshots/  *(empty)*
-|   `-- phase 6/  *22 files*
-|       |-- checkpoints/  *1 files*
+|   `-- phase 6/  *35 files*
+|       |-- checkpoints/  *2 files*
 |       |-- data/  *12 files*
 |       |-- kaggle/  *3 files*
+|       |-- screenshots/  *9 files*
 |       `-- tpu kaggle/  *2 files*
 |-- hugging face/  *2 files*
-|-- ideas/  *65 files*
+|-- ideas/  *66 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
 |-- kaggle_upload_1_2/  *2 files*
-|-- posts/  *6 files*
+|-- posts/  *9 files*
 |-- reports/  *11 files*
 |   `-- plan_A/  *6 files*
-|-- scratch/  *22 files*
+|-- scratch/  *26 files*
 |-- scripts/  *33 files*
 |-- src/  *27 files*
 |   |-- beb_la_dii/  *22 files*

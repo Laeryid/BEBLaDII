@@ -659,6 +659,26 @@
         "experiments/phase 6/plan.md",
         ".know/decisions/092_phase6_void_token_and_canvas_unmasking.md"
       ]
+    },
+    "decisions/095_phase6_progressive_unfreezing_buffer_layers.md": {
+      "description": "ADR 095: Phase 6 Progressive Unfreezing (Buffer Layers) and DUS Manifold Alignment.",
+      "covers": ["Architecture & Training Phases"],
+      "depends_on": []
+    },
+    "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md": {
+      "description": "ADR 096: Phase 6 Gradient Collapse Fix and Dynamic Void Penalty.",
+      "covers": ["Architecture & Training Phases", "Model Core", "Utilities"],
+      "depends_on": [
+        "experiments/phase 6/kaggle/train_phase6_notebook.py"
+      ]
+    },
+    "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md": {
+      "description": "ADR 097: Phase 6 Global Scheduled Identity Gate, Beta Noise Sampling, and TPU Adaptation.",
+      "covers": ["Architecture & Training Phases", "Model Core"],
+      "depends_on": [
+        "experiments/phase 6/kaggle/train_phase6_notebook.py",
+        "experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py"
+      ]
     }
   },
   "knowledge_system": {

@@ -117,6 +117,34 @@ def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step
     except Exception:
         return None, 0
 
+def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0, kappa_max: float = 8.0) -> torch.Tensor:
+    # Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta
+    dev = t_global.device
+    B = t_global.shape[0]
+    u = torch.rand(B, device=dev)
+    kappa = torch.exp(math.log(kappa_min) + u * (math.log(kappa_max) - math.log(kappa_min)))
+    a = (t_global * kappa).unsqueeze(1).expand(B, T)
+    b = ((1.0 - t_global) * kappa).unsqueeze(1).expand(B, T)
+    
+    try:
+        from torch.distributions import Beta
+        t_actual = Beta(a, b).sample()
+    except Exception:
+        # XLA fallback safe approximation (хотя мы вызываем на CPU, это перестраховка)
+        t_actual = torch.rand((B, T), device=dev)
+        # linear blend between uniform and extreme as a fallback
+        pass
+    
+    t_actual = t_actual.clamp(1e-4, 1.0)
+    return t_actual
+
+def content_cos_stats(outputs):
+    target = safe_normalize(outputs["z_clean"], dim=-1)
+    cp = (outputs["dus_final"] * target).sum(dim=-1)
+    cb = (outputs["z_noisy"] * target).sum(dim=-1)
+    cm = (~outputs["void_mask"].bool()).float()
+    return cp, cb, cm
+
 class Config:
     embedding_model_path = resolve_model_path("/kaggle/input/datasets/ragnar123/qwen2-5-1-5b")
     modernbert_path      = resolve_model_path("/kaggle/input/models/answer-ai/modernbert/transformers/large/2")
@@ -127,9 +155,9 @@ class Config:
     sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
     void_token      = "/kaggle/working/BEBLaDII/storage/components/void_token.pt"
     latent_dict     = resolve_file_path("latent_dict.pt")
-    output_dir = "/kaggle/working/checkpoints/phase6"
-    resume_from_checkpoint = True
-    gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
+    output_dir = "/kaggle/working/checkpoints/phase6_v2"
+    resume_from_checkpoint = False
+    gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6_v2/checkpoints/"
     batch_size    = 64 * 4
     max_length_q  = 512
     max_length_a  = 512
@@ -477,14 +505,21 @@ class BEBLaDIIPhase6(nn.Module):
             attention_mask_a = shifted_attention_mask_a
             # ---------------------------
 
-            t_actual = torch.randint(1, 26, (B, T_a), device=Z_A_clean.device) / 25.0
+            # === XLA SAFE SAMPLING (CPU) ===
+            cpu_dev = torch.device('cpu')
+            t_global_cpu = torch.randint(1, 26, (B,), device=cpu_dev).float() / 25.0
+            t_actual_cpu = sample_token_noise_levels(t_global_cpu, T_a)
+            t_global = t_global_cpu.to(Z_A_clean.device)
+            t_actual = t_actual_cpu.to(Z_A_clean.device)
+            # ===============================
+
             z_noisy = spherical_noise(Z_A_clean, t_actual)
 
             sims = torch.matmul(z_noisy, self.latent_dict.T)
             RawDProx, _ = sims.max(dim=-1)
             t_reported = (1.0 - RawDProx).clamp(0.0, 1.0)
 
-        t_global = torch.mean(t_actual, dim=-1)
+        # t_global is already defined correctly above
         t_sin_global = self.t_sin_embed(t_global)
         t_emb_global = self.t_proj_global(t_sin_global)
 
@@ -534,8 +569,10 @@ class BEBLaDIIPhase6(nn.Module):
 
         return {
             "z_clean": Z_A_clean,
+            "z_noisy": z_noisy,
             "dus_final": dus_final,
             "t_actual": t_actual,
+            "t_global": t_global,
             "void_mask": void_mask,
             "void_embed": void_embed
         }
@@ -685,6 +722,8 @@ def main():
 
             xm.mark_step()
 
+            cp, cb, cm = content_cos_stats(outputs)
+            
             try:
                 op12 = model.ca_layers["12"].out_proj.weight.detach().abs().mean()
                 op36 = model.ca_layers["36"].out_proj.weight.detach().abs().mean()
@@ -695,16 +734,32 @@ def main():
                 qp36 = model.ca_layers["36"].module.q_proj.weight.detach().abs().mean()
 
             if global_step % args.log_steps == 0:
-                xm.add_step_closure(lambda s, l, c, vc, cc, w, o12, o36, q36: wandb.log({
-                    "loss": l.item(),
-                    "cos_sim": c.item(),
-                    "void_cos_sim": vc.item(),
-                    "content_cos_sim": cc.item(),
-                    "warmup_factor": w.item(),
-                    "out_proj_12_amp": o12.item(),
-                    "out_proj_36_amp": o36.item(),
-                    "q_proj_36_amp": q36.item(),
-                }, step=s), args=(global_step, loss, avg_cos_sim, void_cos_sim, content_cos_sim, warmup_factor, op12, op36, qp36))
+                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t):
+                    log_dict = {
+                        "loss": l.item(),
+                        "cos_sim": c.item(),
+                        "void_cos_sim": vc.item(),
+                        "content_cos_sim": cc.item(),
+                        "warmup_factor": w.item(),
+                        "out_proj_12_amp": o12.item(),
+                        "out_proj_36_amp": o36.item(),
+                        "q_proj_36_amp": q36.item(),
+                    }
+                    cp_cpu = cp_t.cpu()
+                    cm_cpu = cm_t.cpu()
+                    tg_cpu = tg_t.cpu()
+                    B, T = cp_cpu.shape
+                    tg_expanded = tg_cpu.unsqueeze(1).expand(B, T)
+                    
+                    bins = [(0.0, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.0)]
+                    for lo, hi in bins:
+                        sel = ((tg_expanded > lo) & (tg_expanded <= hi)).float() * cm_cpu
+                        if sel.sum() > 0:
+                            log_dict[f"train_content_cos_tg_{lo}_{min(hi, 1.0)}"] = ((cp_cpu * sel).sum() / sel.sum()).item()
+                            
+                    wandb.log(log_dict, step=s)
+
+                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, void_cos_sim, content_cos_sim, warmup_factor, op12, op36, qp36, cp, cm, outputs["t_global"]))
 
             if global_step % args.save_steps == 0 and global_step > 0:
                 ema_tracker.apply_shadow(model)
