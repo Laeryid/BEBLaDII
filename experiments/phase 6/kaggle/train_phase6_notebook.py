@@ -171,7 +171,7 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase6"
 
     # GCS (для сохранения чекпоинтов)
-    resume_from_checkpoint = True
+    resume_from_checkpoint = False
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
 
     # Гиперпараметры Phase 6
@@ -181,17 +181,21 @@ class Config:
     max_length_a  = 512
     learning_rate = 2e-4
     epochs        = 50
-    max_steps     = 200000
+    max_steps     = 1005
     log_steps     = 10
     val_steps     = 200
     save_steps    = 1000
     warmup_steps  = 1000
 
+    # Архитектурные и лосс флаги
+    loss_t_power  = 0.0   # 0.0 = равномерный вес лосса по токенам (полная опора на промпт при высоких t)
+    use_prompt_sa = True  # Контекстуализация промпта через Prompt-SA + RoPE перед входом в CA
+    val_num_samples = 200 # Количество сэмплов для валидации (25 батчей при bs=8)
+
     # EMA & PACE Optimizer
     ema_decay     = 0.998
     pace_alpha    = 0.001
     unfreeze_k_after_ca = 4
-
 
     use_gradient_checkpointing = True
     wandb_project = "BEBLaDII-Phase6-Kaggle"
@@ -344,9 +348,75 @@ class AdaLNWrappedLayerNorm(nn.Module):
 # ## 5. CAPromptLayer (Phase 6 Core)
 
 # %%
-class CAPromptLayer(nn.Module):
-    def __init__(self, dim=1024, t_emb_dim=256):
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
         super().__init__()
+        self.dim = dim
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
+
+    def forward(self, x: torch.Tensor, seq_len: int):
+        # x: [B, heads, T, head_dim]
+        cos = self.cos_cached[:seq_len, :].unsqueeze(0).unsqueeze(1).to(x.dtype)
+        sin = self.sin_cached[:seq_len, :].unsqueeze(0).unsqueeze(1).to(x.dtype)
+        d = x.shape[-1]
+        x1 = x[..., :d // 2]
+        x2 = x[..., d // 2:]
+        x_rot = torch.cat((-x2, x1), dim=-1)
+        return (x * cos) + (x_rot * sin)
+
+class PromptSelfAttention(nn.Module):
+    """Contextualization SA-слой для промпта (Q) перед подачей в Cross-Attention."""
+    def __init__(self, dim=1024, heads=16, max_seq_len=2048):
+        super().__init__()
+        self.dim = dim
+        self.heads = heads
+        self.head_dim = dim // heads
+        self.norm = nn.RMSNorm(dim)
+        self.qkv_proj = nn.Linear(dim, dim * 3, bias=False)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
+        self.rotary = RotaryEmbedding(self.head_dim, max_seq_len=max_seq_len)
+
+        nn.init.xavier_uniform_(self.qkv_proj.weight)
+        # Малый std 0.02 для устойчивого старта и немедленного градиентного потока
+        nn.init.normal_(self.out_proj.weight, mean=0.0, std=0.02)
+
+    def forward(self, Q, mask_Q=None):
+        B, T_q, D = Q.shape
+        Q_norm = self.norm(Q)
+        qkv = self.qkv_proj(Q_norm)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        q = q.view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
+
+        q = self.rotary(q, T_q)
+        k = self.rotary(k, T_q)
+
+        attn_mask = None
+        if mask_Q is not None:
+            attn_mask = mask_Q.view(B, 1, 1, T_q).expand(-1, 1, T_q, -1).bool()
+
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        out = out.transpose(1, 2).reshape(B, T_q, D)
+        out = self.out_proj(out)
+        return Q + out
+
+class CAPromptLayer(nn.Module):
+    def __init__(self, dim=1024, t_emb_dim=256, use_prompt_sa=True):
+        super().__init__()
+        self._disable = False
+        self.last_ca_ratio = 0.0
+
+        # Контекстуализация промпта перед Cross-Attention
+        self.prompt_sa = PromptSelfAttention(dim=dim) if use_prompt_sa else None
+
         self.norm1 = nn.RMSNorm(dim)
         self.norm_q = nn.RMSNorm(dim)  # отдельная норма для Q промпта (без AdaLN)
         # Q-KV sharing: A -> q, Q (prompt) -> k, v
@@ -369,6 +439,13 @@ class CAPromptLayer(nn.Module):
         nn.init.zeros_(self.out_proj_sa.weight)
 
     def forward(self, A, Q, mask_Q=None, warmup_factor=1.0, t_emb=None):
+        if getattr(self, '_disable', False):
+            return A
+
+        # --- Prompt Contextualization (RoPE SA) ---
+        if self.prompt_sa is not None:
+            Q = self.prompt_sa(Q, mask_Q=mask_Q)
+
         # --- Cross-Attention ---
         # Q из промпта: статическая нормализация (вопрос не зависит от t)
         Q_norm = self.norm_q(Q)
@@ -398,6 +475,9 @@ class CAPromptLayer(nn.Module):
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
+
+        with torch.no_grad():
+            self.last_ca_ratio = (ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)).item()
 
         A = A + ca_out
 
@@ -515,10 +595,11 @@ class BEBLaDIIPhase6(nn.Module):
             p.requires_grad = False
 
         # --- ВНЕДРЕНИЕ CAPromptLayer (Trainable) ---
+        use_prompt_sa = getattr(config, "use_prompt_sa", True)
         self.ca_layers = nn.ModuleDict({
-            "12": CAPromptLayer(1024, t_emb_dim=256),
-            "24": CAPromptLayer(1024, t_emb_dim=256),
-            "36": CAPromptLayer(1024, t_emb_dim=256),
+            "12": CAPromptLayer(1024, t_emb_dim=256, use_prompt_sa=use_prompt_sa),
+            "24": CAPromptLayer(1024, t_emb_dim=256, use_prompt_sa=use_prompt_sa),
+            "36": CAPromptLayer(1024, t_emb_dim=256, use_prompt_sa=use_prompt_sa),
         })
         for i in [11, 23, 35]:
             self.dus.layers[i] = Phase6BlockWrapper(self.dus.layers[i], self.ca_layers[str(i+1)])
@@ -683,7 +764,7 @@ class BEBLaDIIPhase6(nn.Module):
 # ## 7. Loss & Training Loop
 
 # %%
-def compute_phase6_loss(outputs, void_margin=0.0):
+def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     z_clean = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
     t_actual = outputs["t_actual"].float()
@@ -707,8 +788,12 @@ def compute_phase6_loss(outputs, void_margin=0.0):
     loss_el = loss_el + 0.5 * void_penalty
     # -------------------------
 
-    # Weighting: (1 - t_actual)^2.0. No mask applied, loss applies to ALL tokens.
-    w_weighted = (1.0 - t_actual).pow(2.0)
+    # Weighting: If loss_t_power > 0 -> (1 - t_actual)^power, otherwise uniform 1.0
+    if loss_t_power > 0.0:
+        w_weighted = (1.0 - t_actual).pow(loss_t_power)
+    else:
+        w_weighted = torch.ones_like(t_actual)
+
     loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
 
     # Metrics
@@ -783,11 +868,14 @@ def main():
     model = BEBLaDIIPhase6(args).to(device)
     ema_tracker = EMATracker(model, decay=args.ema_decay)
 
+    ca_out_params = []
     ca_qkv_params = []
     ca_other_params = []
     for name, p in model.ca_layers.named_parameters():
         if p.requires_grad:
-            if "q_proj" in name or "k_proj" in name or "v_proj" in name or "qkv_proj" in name:
+            if "out_proj" in name:
+                ca_out_params.append(p)
+            elif "q_proj" in name or "k_proj" in name or "v_proj" in name or "qkv_proj" in name:
                 ca_qkv_params.append(p)
             else:
                 ca_other_params.append(p)
@@ -798,8 +886,9 @@ def main():
             dus_params.append(p)
 
     optimizer = torch.optim.AdamW([
-        {'params': ca_qkv_params, 'lr': 2e-4},     # x10 boost для разморозки Attention (Claude's fix)
-        {'params': ca_other_params, 'lr': 5e-5},   # Базовый CA LR
+        {'params': ca_out_params, 'lr': 5e-4},     # x10 boost для выхода CA/SA (преодоление барьера zero/small init)
+        {'params': ca_qkv_params, 'lr': 2e-4},     # Attention projections (CA + Prompt-SA)
+        {'params': ca_other_params, 'lr': 5e-5},   # Базовый CA LR (AdaLN, norm)
         {'params': dus_params, 'lr': 5e-5}
     ])
 
@@ -842,7 +931,9 @@ def main():
             mask_a = batch['attention_mask_a'].to(device)
 
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
-            loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(outputs, void_margin=0.5)
+            loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(
+                outputs, void_margin=0.5, loss_t_power=args.loss_t_power
+            )
 
             loss = loss / args.gradient_accumulation_steps
             loss.backward()
@@ -888,6 +979,9 @@ def main():
                     "out_proj_12_amp": model.ca_layers["12"].out_proj.weight.data.abs().mean().item(),
                     "out_proj_36_amp": model.ca_layers["36"].out_proj.weight.data.abs().mean().item(),
                     "q_proj_36_amp": model.ca_layers["36"].q_proj.weight.data.abs().mean().item(),
+                    "ca_ratio_12": model.ca_layers["12"].last_ca_ratio,
+                    "ca_ratio_24": model.ca_layers["24"].last_ca_ratio,
+                    "ca_ratio_36": model.ca_layers["36"].last_ca_ratio,
                     **train_bin_log,
                 }, step=global_step)
 
@@ -903,6 +997,7 @@ def main():
                     val_void_cos = 0.0
                     val_content_cos = 0.0
                     val_batches = 0
+                    val_limit_batches = max(1, getattr(args, "val_num_samples", 200) // args.batch_size)
                     with torch.no_grad():
                         for v_batch in val_dataloader:
                             v_input_ids_q = v_batch['input_ids_q'].to(device)
@@ -911,13 +1006,15 @@ def main():
                             v_mask_a = v_batch['attention_mask_a'].to(device)
 
                             v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
-                            v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out, void_margin=0.5)
+                            v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(
+                                v_out, void_margin=0.5, loss_t_power=args.loss_t_power
+                            )
                             val_loss += v_loss.item()
                             val_cos += v_cos.item()
                             val_void_cos += v_v_cos.item()
                             val_content_cos += v_c_cos.item()
                             val_batches += 1
-                            if val_batches >= 20: # limit validation for speed
+                            if val_batches >= val_limit_batches:
                                 break
                     val_loss /= max(1, val_batches)
                     val_cos /= max(1, val_batches)
@@ -927,15 +1024,15 @@ def main():
                         "val_loss_ema": val_loss,
                         "val_cos_ema": val_cos,
                         "val_void_cos_ema": val_void_cos,
-                        "val_content_cos_ema": val_content_cos
+                        "val_content_to_void_ema": val_content_cos
                     }, step=global_step)
                     print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
 
-                    # --- Валидация на фиксированных t_global: cos на контенте, baseline (копия входа), gain ---
+                    # --- Валидация на фиксированных t_global: cos на контенте, baseline (копия входа), ablation без CA, gain ---
                     fixed_log = {}
                     with torch.no_grad():
                         for tg_val in (0.2, 0.5, 0.8, 1.0):
-                            cp_sum = cb_sum = n_tok = 0.0
+                            cp_sum = cp_no_ca_sum = cb_sum = n_tok = 0.0
                             vb = 0
                             for v_batch in val_dataloader:
                                 v_ids_q = v_batch['input_ids_q'].to(device)
@@ -943,21 +1040,53 @@ def main():
                                 v_ids_a = v_batch['input_ids_a'].to(device)
                                 v_m_a = v_batch['attention_mask_a'].to(device)
                                 tg_t = torch.full((v_ids_a.shape[0],), tg_val, device=device)
+
+                                # Прогон с активными CA-слоями (фиксируем сид шума)
+                                seed = 42 + vb * 100 + int(tg_val * 10)
+                                torch.manual_seed(seed)
+                                if torch.cuda.is_available():
+                                    torch.cuda.manual_seed_all(seed)
+
                                 v_o = model(v_ids_q, v_m_q, v_ids_a, v_m_a, warmup_factor=1.0, t_global=tg_t)
                                 cp, cb, cm = content_cos_stats(v_o)
+
+                                # Прогон с отключенными CA-слоями (чистый DUS-бэкбон)
+                                for ca in model.ca_layers.values():
+                                    ca._disable = True
+
+                                torch.manual_seed(seed)
+                                if torch.cuda.is_available():
+                                    torch.cuda.manual_seed_all(seed)
+
+                                v_o_no_ca = model(v_ids_q, v_m_q, v_ids_a, v_m_a, warmup_factor=1.0, t_global=tg_t)
+                                cp_no_ca, _, _ = content_cos_stats(v_o_no_ca)
+
+                                for ca in model.ca_layers.values():
+                                    ca._disable = False
+
                                 cp_sum += (cp * cm).sum().item()
+                                cp_no_ca_sum += (cp_no_ca * cm).sum().item()
                                 cb_sum += (cb * cm).sum().item()
                                 n_tok += cm.sum().item()
                                 vb += 1
-                                if vb >= 5:
+                                if vb >= val_limit_batches:
                                     break
                             n_tok = max(1.0, n_tok)
-                            fixed_log[f"val_content_cos_tg{tg_val}"] = cp_sum / n_tok
-                            fixed_log[f"val_content_baseline_tg{tg_val}"] = cb_sum / n_tok
-                            fixed_log[f"val_content_gain_tg{tg_val}"] = (cp_sum - cb_sum) / n_tok
+                            cos_with_ca = cp_sum / n_tok
+                            cos_without_ca = cp_no_ca_sum / n_tok
+                            cos_baseline = cb_sum / n_tok
+
+                            fixed_log[f"val_content_cos_tg{tg_val}"] = cos_with_ca
+                            fixed_log[f"val_content_cos_noCA_tg{tg_val}"] = cos_without_ca
+                            fixed_log[f"val_content_baseline_tg{tg_val}"] = cos_baseline
+                            fixed_log[f"val_content_gain_tg{tg_val}"] = cos_with_ca - cos_baseline
+                            fixed_log[f"val_content_gain_CA_tg{tg_val}"] = cos_with_ca - cos_without_ca
+
                     wandb.log(fixed_log, step=global_step)
-                    print(f"Step {global_step} | Val gain by t_global: " + ", ".join(
-                        f"{tg}: {fixed_log[f'val_content_gain_tg{tg}']:+.3f}" for tg in (0.2, 0.5, 0.8, 1.0)))
+                    print(f"Step {global_step} | Val gain by t_global (Total / CA only): " + ", ".join(
+                        f"tg{tg}: total={fixed_log[f'val_content_gain_tg{tg}']:+.3f} (CA: {fixed_log[f'val_content_gain_CA_tg{tg}']:+.3f})"
+                        for tg in (0.2, 0.5, 0.8, 1.0)
+                    ))
                     model.train()
                     ema_tracker.restore(model)
 
