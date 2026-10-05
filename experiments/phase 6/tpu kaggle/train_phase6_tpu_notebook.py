@@ -171,7 +171,7 @@ class Config:
     ema_decay     = 0.998
     pace_alpha    = 0.001
     unfreeze_k_after_ca = 4
-    use_gradient_checkpointing = True
+    use_gradient_checkpointing = False
     wandb_project = "BEBLaDII-Phase6-Kaggle"
 
 args = Config()
@@ -546,9 +546,6 @@ class BEBLaDIIPhase6(nn.Module):
         x_in = z_noisy.float()
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
         dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
-
-        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
-        dus_input_extended.requires_grad_(True)
 
         # Полностью снимаем маску с холста для DUS, так как void-позиции тоже обучаются
         attention_mask_extended = torch.ones((B, T_a + 1), device=x_in.device, dtype=torch.long)
