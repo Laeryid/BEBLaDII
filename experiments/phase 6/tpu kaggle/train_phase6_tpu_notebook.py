@@ -51,13 +51,16 @@ def setup_spmd_mesh():
     xs.set_global_mesh(mesh)
     return mesh
 
-PROJECT_ROOT = "/kaggle/working/BEBLaDII"
-REPO_URL = "https://github.com/Laeryid/BEBLaDII.git"
-
-if not os.path.exists(PROJECT_ROOT):
-    subprocess.run(["git", "clone", REPO_URL, PROJECT_ROOT], check=True)
+from pathlib import Path
+if Path("/kaggle/input").exists():
+    PROJECT_ROOT = "/kaggle/working/BEBLaDII"
+    REPO_URL = "https://github.com/Laeryid/BEBLaDII.git"
+    if not os.path.exists(PROJECT_ROOT):
+        subprocess.run(["git", "clone", REPO_URL, PROJECT_ROOT], check=True)
+    else:
+        subprocess.run(["git", "-C", PROJECT_ROOT, "pull"], check=True)
 else:
-    subprocess.run(["git", "-C", PROJECT_ROOT, "pull"], check=True)
+    PROJECT_ROOT = os.environ.get("PROJECT_ROOT", "C:/Experiments/BEBLaDII")
 
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
@@ -66,18 +69,18 @@ from src.beb_la_dii.model.dus import DUSModel
 from src.beb_la_dii.model.vae import LatentEncoder
 from src.beb_la_dii.utils.loss import safe_normalize
 
-def resolve_model_path(base_path: str) -> str:
+def resolve_model_path(base_path: str, fallback: str = "") -> str:
     import pathlib
     p = pathlib.Path(base_path)
+    if not p.exists(): return fallback
     def check_dir(dir_path):
         return (dir_path / "config.json").exists()
     if check_dir(p): return str(p)
     for parent in list(p.parents)[:4]:
         if check_dir(parent): return str(parent)
-    if p.exists():
-        for config_file in sorted(p.rglob("config.json")):
-            return str(config_file.parent)
-    return base_path
+    for config_file in sorted(p.rglob("config.json")):
+        return str(config_file.parent)
+    return fallback
 
 def resolve_file_path(filename: str, fallback_dir="/kaggle/input") -> str:
     import pathlib
@@ -146,16 +149,17 @@ def content_cos_stats(outputs):
     return cp, cb, cm
 
 class Config:
-    embedding_model_path = resolve_model_path("/kaggle/input/datasets/ragnar123/qwen2-5-1-5b")
-    modernbert_path      = resolve_model_path("/kaggle/input/models/answer-ai/modernbert/transformers/large/2")
+    embedding_model_path = resolve_model_path("/kaggle/input/datasets/ragnar123/qwen2-5-1-5b", "Qwen/Qwen2.5-1.5B")
+    modernbert_path      = resolve_model_path("/kaggle/input/models/answer-ai/modernbert/transformers/large/2", "answerdotai/ModernBERT-large")
+    local_files_only     = Path("/kaggle/input").exists()
     dataset_path = resolve_file_path("train_phase6.parquet")
     val_dataset_path = resolve_file_path("val_phase6.parquet")
     encoder_weights = resolve_file_path("planB_phase1_checkpoints_phase1_vae_step_20000.pth")
     dus_weights     = resolve_file_path("phase4_step_85995.pth")
-    sep_token       = "/kaggle/working/BEBLaDII/storage/components/sep_token.pt"
-    void_token      = "/kaggle/working/BEBLaDII/storage/components/void_token.pt"
+    sep_token       = os.path.join(PROJECT_ROOT, "storage/components/sep_token.pt")
+    void_token      = os.path.join(PROJECT_ROOT, "storage/components/void_token.pt")
     latent_dict     = resolve_file_path("latent_dict.pt")
-    output_dir = "/kaggle/working/checkpoints/phase6_v2"
+    output_dir      = "/kaggle/working/checkpoints/phase6_v2" if Path("/kaggle/input").exists() else os.path.join(PROJECT_ROOT, "checkpoints/phase6_v2")
     resume_from_checkpoint = False
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6_v2/checkpoints/"
     batch_size    = 64 * 2
@@ -399,7 +403,7 @@ class Phase6BlockWrapper(nn.Module):
 class BEBLaDIIPhase6(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
-        _qwen = AutoModel.from_pretrained(config.embedding_model_path, torch_dtype=torch.bfloat16, local_files_only=True)
+        _qwen = AutoModel.from_pretrained(config.embedding_model_path, torch_dtype=torch.bfloat16, local_files_only=config.local_files_only)
         self.qwen_embeddings = _qwen.get_input_embeddings()
         del _qwen
 
@@ -410,10 +414,10 @@ class BEBLaDIIPhase6(nn.Module):
             self.encoder.load_state_dict(state, strict=False)
         self.encoder.to(torch.bfloat16)
 
-        dus_wrapper = DUSModel.from_scratch(config={"base_model_id": config.modernbert_path}, weights_path=None, local_files_only=True)
+        dus_wrapper = DUSModel.from_scratch(config={"base_model_id": config.modernbert_path}, weights_path=None, local_files_only=config.local_files_only)
         self.dus = dus_wrapper.model
         if config.use_gradient_checkpointing and hasattr(self.dus, "gradient_checkpointing_enable"):
-            self.dus.gradient_checkpointing_enable({"use_reentrant": True})
+            self.dus.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True, "preserve_rng_state": False})
 
         t_emb_dim = 256
         hidden_dim = 1024
@@ -720,16 +724,21 @@ def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step
             ids_q, m_q, ids_a, m_a = to_dev(v_batch)
             v_out = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0)
             v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out, void_margin=0.5, loss_t_power=args.loss_t_power)
-            val_loss += v_loss.item(); val_cos += v_cos.item()
-            val_void_cos += v_v_cos.item(); val_content_cos += v_c_cos.item()
+            if val_batches == 0:
+                val_loss, val_cos, val_void_cos, val_content_cos = v_loss, v_cos, v_v_cos, v_c_cos
+            else:
+                val_loss += v_loss; val_cos += v_cos
+                val_void_cos += v_v_cos; val_content_cos += v_c_cos
             val_batches += 1
+            xm.mark_step()
             if val_batches >= val_limit_batches: break
     n = max(1, val_batches)
+    vals = torch.stack([val_loss, val_cos, val_void_cos, val_content_cos]).cpu().tolist() if val_batches > 0 else [0.0]*4
     log = {
-        "val_loss_ema": val_loss / n,
-        "val_cos_ema": val_cos / n,
-        "val_void_cos_ema": val_void_cos / n,
-        "val_content_to_void_ema": val_content_cos / n,
+        "val_loss_ema": vals[0] / n,
+        "val_cos_ema": vals[1] / n,
+        "val_void_cos_ema": vals[2] / n,
+        "val_content_to_void_ema": vals[3] / n,
     }
 
     # --- fixed-t валидация: baseline (копия входа), с CA, без CA (абляция), чистый вклад CA ---
@@ -745,20 +754,28 @@ def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step
                 _set_seed(seed)
                 v_o = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0, t_global=tg_t)
                 cp, cb, cm = content_cos_stats(v_o)
-                cp_s = (cp * cm).sum().item(); cb_s = (cb * cm).sum().item(); cm_s = cm.sum().item()
+                cp_s = (cp * cm).sum(); cb_s = (cb * cm).sum(); cm_s = cm.sum()
 
                 for ca in model.ca_layers.values(): _ca_inner(ca)._disable = True
                 _set_seed(seed)
                 v_o_no = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0, t_global=tg_t)
                 cp_no, _, _ = content_cos_stats(v_o_no)
-                cp_no_s = (cp_no * cm).sum().item()
+                cp_no_s = (cp_no * cm).sum()
                 for ca in model.ca_layers.values(): _ca_inner(ca)._disable = False
 
-                cp_sum += cp_s; cp_no_ca_sum += cp_no_s; cb_sum += cb_s; n_tok += cm_s
+                if vb == 0:
+                    cp_sum, cp_no_ca_sum, cb_sum, n_tok = cp_s, cp_no_s, cb_s, cm_s
+                else:
+                    cp_sum += cp_s; cp_no_ca_sum += cp_no_s; cb_sum += cb_s; n_tok += cm_s
                 vb += 1
+                xm.mark_step()
                 if vb >= val_limit_batches: break
-            n_tok = max(1.0, n_tok)
-            with_ca, without_ca, base = cp_sum / n_tok, cp_no_ca_sum / n_tok, cb_sum / n_tok
+            
+            s_vals = torch.stack([cp_sum, cp_no_ca_sum, cb_sum, n_tok]).cpu().tolist() if vb > 0 else [0.0]*4
+            cp_sum_v, cp_no_ca_sum_v, cb_sum_v, n_tok_v = s_vals
+            
+            n_tok_v = max(1.0, n_tok_v)
+            with_ca, without_ca, base = cp_sum_v / n_tok_v, cp_no_ca_sum_v / n_tok_v, cb_sum_v / n_tok_v
             log[f"val_content_cos_tg{tg_val}"] = with_ca
             log[f"val_content_cos_noCA_tg{tg_val}"] = without_ca
             log[f"val_content_baseline_tg{tg_val}"] = base
@@ -789,7 +806,7 @@ def main():
         except Exception: pass
         wandb.init(project=args.wandb_project, config=vars(args))
 
-    tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path)
+    tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path, local_files_only=args.local_files_only)
     if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
 
     val_dataloader = None
@@ -938,8 +955,9 @@ def main():
                     bins = [(0.0, 0.25), (0.25, 0.5), (0.5, 0.75), (0.75, 1.0)]
                     for lo, hi in bins:
                         sel = ((tg_expanded > lo) & (tg_expanded <= hi)).float() * cm_cpu
-                        if sel.sum() > 0:
-                            log_dict[f"train_content_cos_tg_{lo}_{min(hi, 1.0)}"] = ((cp_cpu * sel).sum() / sel.sum()).item()
+                        sel_sum = sel.sum()
+                        if sel_sum > 0:
+                            log_dict[f"train_content_cos_tg_{lo}_{min(hi, 1.0)}"] = float(((cp_cpu * sel).sum() / sel_sum))
 
                     wandb.log(log_dict, step=s)
 
