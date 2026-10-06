@@ -287,77 +287,14 @@ class AdaLNWrappedLayerNorm(nn.Module):
         shift, scale = self.adaln(self._current_t_emb)
         return out * scale.to(out.dtype) + shift.to(out.dtype)
 
-class RotaryEmbedding(nn.Module):
-    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
-        super().__init__()
-        self.dim = dim
-        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        t = torch.arange(max_seq_len, dtype=torch.float32)
-        freqs = torch.outer(t, self.inv_freq)
-        emb = torch.cat((freqs, freqs), dim=-1)
-        self.register_buffer("cos_cached", emb.cos(), persistent=False)
-        self.register_buffer("sin_cached", emb.sin(), persistent=False)
-
-    def forward(self, x: torch.Tensor, seq_len: int):
-        # x: [B, heads, T, head_dim]
-        cos = self.cos_cached[:seq_len, :].unsqueeze(0).unsqueeze(1).to(x.dtype)
-        sin = self.sin_cached[:seq_len, :].unsqueeze(0).unsqueeze(1).to(x.dtype)
-        d = x.shape[-1]
-        x1 = x[..., :d // 2]
-        x2 = x[..., d // 2:]
-        x_rot = torch.cat((-x2, x1), dim=-1)
-        return (x * cos) + (x_rot * sin)
-
-class PromptSelfAttention(nn.Module):
-    """Contextualization SA-слой для промпта (Q) перед подачей в Cross-Attention."""
-    def __init__(self, dim=1024, heads=16, max_seq_len=2048):
-        super().__init__()
-        self.dim = dim
-        self.heads = heads
-        self.head_dim = dim // heads
-        self.norm = nn.RMSNorm(dim)
-        self.qkv_proj = nn.Linear(dim, dim * 3, bias=False)
-        self.out_proj = nn.Linear(dim, dim, bias=False)
-        self.rotary = RotaryEmbedding(self.head_dim, max_seq_len=max_seq_len)
-
-        nn.init.xavier_uniform_(self.qkv_proj.weight)
-        # Малый std 0.02 для устойчивого старта и немедленного градиентного потока
-        nn.init.normal_(self.out_proj.weight, mean=0.0, std=0.02)
-
-    def forward(self, Q, mask_Q=None):
-        B, T_q, D = Q.shape
-        Q_norm = self.norm(Q)
-        qkv = self.qkv_proj(Q_norm)
-        q, k, v = qkv.chunk(3, dim=-1)
-
-        q = q.view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
-        k = k.view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
-        v = v.view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
-
-        q = self.rotary(q, T_q)
-        k = self.rotary(k, T_q)
-
-        attn_mask = None
-        if mask_Q is not None:
-            attn_mask = mask_Q.view(B, 1, 1, T_q).expand(-1, 1, T_q, -1).bool()
-
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
-        out = out.transpose(1, 2).reshape(B, T_q, D)
-        out = self.out_proj(out)
-        return Q + out
-
 class CAPromptLayer(nn.Module):
-    def __init__(self, dim=1024, t_emb_dim=256, use_prompt_sa=True):
+    def __init__(self, dim=1024, t_emb_dim=256):
         super().__init__()
         self._disable = False
         self.last_ca_ratio = 0.0
 
-        # Контекстуализация промпта перед Cross-Attention
-        self.prompt_sa = PromptSelfAttention(dim=dim) if use_prompt_sa else None
-
         self.norm1 = nn.RMSNorm(dim)
-        self.norm_q = nn.RMSNorm(dim)  # отдельная норма для Q промпта (без AdaLN)
+        self.norm_q = nn.RMSNorm(dim)  # отдельная норма для Q промпта
         self.q_proj = nn.Linear(dim, dim, bias=False)
         self.kv_proj = nn.Linear(dim, dim * 2, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
@@ -378,10 +315,6 @@ class CAPromptLayer(nn.Module):
     def forward(self, A, Q, mask_Q=None, warmup_factor=1.0, t_emb=None):
         if getattr(self, '_disable', False):
             return A
-
-        # --- Prompt Contextualization (RoPE SA) ---
-        if self.prompt_sa is not None:
-            Q = self.prompt_sa(Q, mask_Q=mask_Q)
 
         # --- Cross-Attention ---
         # Q из промпта: статическая нормализация (вопрос не зависит от t)
@@ -510,11 +443,10 @@ class BEBLaDIIPhase6(nn.Module):
 
         for p in self.parameters(): p.requires_grad = False
 
-        use_prompt_sa = getattr(config, "use_prompt_sa", True)
         self.ca_layers = nn.ModuleDict({
-            "12": CAPromptLayer(1024, t_emb_dim=256, use_prompt_sa=use_prompt_sa),
-            "24": CAPromptLayer(1024, t_emb_dim=256, use_prompt_sa=use_prompt_sa),
-            "36": CAPromptLayer(1024, t_emb_dim=256, use_prompt_sa=use_prompt_sa),
+            "12": CAPromptLayer(1024, t_emb_dim=256),
+            "24": CAPromptLayer(1024, t_emb_dim=256),
+            "36": CAPromptLayer(1024, t_emb_dim=256),
         })
         for i in [11, 23, 35]:
             self.dus.layers[i] = Phase6BlockWrapper(self.dus.layers[i], self.ca_layers[str(i+1)])
@@ -607,7 +539,60 @@ class BEBLaDIIPhase6(nn.Module):
             RawDProx, _ = sims.max(dim=-1)
             t_reported = (1.0 - RawDProx).clamp(0.0, 1.0)
 
-        # t_global is already defined correctly above
+        # ==========================================
+        # ПРОГОН ПРОМПТА (Слои 0-11, t=0)
+        # ==========================================
+        t_global_prompt = torch.zeros((B,), device=Z_A_clean.device, dtype=torch.float32)
+        t_sin_prompt_global = self.t_sin_embed(t_global_prompt)
+        t_emb_prompt_global = self.t_proj_global(t_sin_prompt_global)
+        
+        t_sin_prompt_token = self.t_sin_embed(t_global_prompt) # t=0
+        t_emb_prompt_token = self.t_proj_token(t_sin_prompt_token)
+        
+        cond_prompt = torch.cat([t_emb_prompt_token, t_emb_prompt_global.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1)], dim=-1)
+        t_emb_prompt = self.t_joint_proj(cond_prompt)
+        
+        sep_t_emb_prompt = torch.zeros(B, 1, t_emb_prompt.shape[-1], device=t_emb_prompt.device, dtype=t_emb_prompt.dtype)
+        t_emb_prompt_extended = torch.cat([sep_t_emb_prompt, t_emb_prompt], dim=1)
+
+        for layer in self.dus.layers:
+            layer_to_check = layer.original_layer if isinstance(layer, Phase6BlockWrapper) else layer
+            if hasattr(layer_to_check, "attn_norm"): layer_to_check.attn_norm._current_t_emb = t_emb_prompt_extended
+            if hasattr(layer_to_check, "mlp_norm"): layer_to_check.mlp_norm._current_t_emb = t_emb_prompt_extended
+
+        # Подготовка входа для промпта
+        prompt_in = Z_prompt.float()
+        sep_prefix_prompt = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(prompt_in.dtype)
+        dus_prompt_extended = torch.cat([sep_prefix_prompt, prompt_in], dim=1)
+        
+        ones_sep_prompt = torch.ones((B, 1), device=attention_mask_q.device, dtype=attention_mask_q.dtype)
+        prompt_mask_extended = torch.cat([ones_sep_prompt, attention_mask_q], dim=1)
+
+        # Отключаем CA и прогоняем промпт
+        with torch.no_grad():
+            for ca in self.ca_layers.values():
+                ca._disable = True
+            
+            prompt_outputs = self.dus(
+                inputs_embeds=dus_prompt_extended,
+                attention_mask=prompt_mask_extended,
+                output_hidden_states=True,
+            )
+            
+            # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
+            # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
+            Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
+            
+            for ca in self.ca_layers.values():
+                ca._disable = False
+
+        # Обновляем Q для CA-слоев
+        for ca in self.ca_layers.values():
+            ca._current_Z_prompt = Z_prompt_12
+
+        # ==========================================
+        # ПРОГОН ХОЛСТА (Слои 0-39, реальный t)
+        # ==========================================
         t_sin_global = self.t_sin_embed(t_global)
         t_emb_global = self.t_proj_global(t_sin_global)
 
@@ -620,13 +605,13 @@ class BEBLaDIIPhase6(nn.Module):
         sep_t_emb = torch.zeros(B, 1, t_emb.shape[-1], device=t_emb.device, dtype=t_emb.dtype)
         t_emb_extended = torch.cat([sep_t_emb, t_emb], dim=1)
 
+        # Инъекция t_emb и контекста CA
         for layer in self.dus.layers:
             layer_to_check = layer.original_layer if isinstance(layer, Phase6BlockWrapper) else layer
             if hasattr(layer_to_check, "attn_norm"): layer_to_check.attn_norm._current_t_emb = t_emb_extended
             if hasattr(layer_to_check, "mlp_norm"): layer_to_check.mlp_norm._current_t_emb = t_emb_extended
 
         for ca in self.ca_layers.values():
-            ca._current_Z_prompt = Z_prompt
             ca._current_mask_Q = attention_mask_q
             ca._current_warmup_factor = warmup_factor
             ca._current_t_emb = t_emb  # [B, T_a, 256] — per-token time embedding для AdaLN в CA/SA
@@ -637,6 +622,10 @@ class BEBLaDIIPhase6(nn.Module):
 
         # Полностью снимаем маску с холста для DUS, так как void-позиции тоже обучаются
         attention_mask_extended = torch.ones((B, T_a + 1), device=x_in.device, dtype=torch.long)
+
+        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
+        # (На TPU use_reentrant=True используется в config, поэтому requires_grad_(True) не обязателен, но не мешает)
+        # dus_input_extended.requires_grad_(True)
 
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
