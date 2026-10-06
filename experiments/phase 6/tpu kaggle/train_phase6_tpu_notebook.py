@@ -172,6 +172,9 @@ class Config:
     pace_alpha    = 0.001
     unfreeze_k_after_ca = 4
     use_gradient_checkpointing = False
+    loss_t_power  = 0.0   # 0.0 = равномерный вес лосса по токенам (ADR 098)
+    use_prompt_sa = True  # Prompt-SA + RoPE перед CA
+    val_num_samples = 200 # Размер валидационной выборки
     wandb_project = "BEBLaDII-Phase6-Kaggle"
 
 args = Config()
@@ -284,9 +287,75 @@ class AdaLNWrappedLayerNorm(nn.Module):
         shift, scale = self.adaln(self._current_t_emb)
         return out * scale.to(out.dtype) + shift.to(out.dtype)
 
-class CAPromptLayer(nn.Module):
-    def __init__(self, dim=1024, t_emb_dim=256):
+class RotaryEmbedding(nn.Module):
+    def __init__(self, dim: int, max_seq_len: int = 2048, base: float = 10000.0):
         super().__init__()
+        self.dim = dim
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
+
+    def forward(self, x: torch.Tensor, seq_len: int):
+        # x: [B, heads, T, head_dim]
+        cos = self.cos_cached[:seq_len, :].unsqueeze(0).unsqueeze(1).to(x.dtype)
+        sin = self.sin_cached[:seq_len, :].unsqueeze(0).unsqueeze(1).to(x.dtype)
+        d = x.shape[-1]
+        x1 = x[..., :d // 2]
+        x2 = x[..., d // 2:]
+        x_rot = torch.cat((-x2, x1), dim=-1)
+        return (x * cos) + (x_rot * sin)
+
+class PromptSelfAttention(nn.Module):
+    """Contextualization SA-слой для промпта (Q) перед подачей в Cross-Attention."""
+    def __init__(self, dim=1024, heads=16, max_seq_len=2048):
+        super().__init__()
+        self.dim = dim
+        self.heads = heads
+        self.head_dim = dim // heads
+        self.norm = nn.RMSNorm(dim)
+        self.qkv_proj = nn.Linear(dim, dim * 3, bias=False)
+        self.out_proj = nn.Linear(dim, dim, bias=False)
+        self.rotary = RotaryEmbedding(self.head_dim, max_seq_len=max_seq_len)
+
+        nn.init.xavier_uniform_(self.qkv_proj.weight)
+        # Малый std 0.02 для устойчивого старта и немедленного градиентного потока
+        nn.init.normal_(self.out_proj.weight, mean=0.0, std=0.02)
+
+    def forward(self, Q, mask_Q=None):
+        B, T_q, D = Q.shape
+        Q_norm = self.norm(Q)
+        qkv = self.qkv_proj(Q_norm)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        q = q.view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
+        k = k.view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
+        v = v.view(B, T_q, self.heads, self.head_dim).transpose(1, 2)
+
+        q = self.rotary(q, T_q)
+        k = self.rotary(k, T_q)
+
+        attn_mask = None
+        if mask_Q is not None:
+            attn_mask = mask_Q.view(B, 1, 1, T_q).expand(-1, 1, T_q, -1).bool()
+
+        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+        out = out.transpose(1, 2).reshape(B, T_q, D)
+        out = self.out_proj(out)
+        return Q + out
+
+class CAPromptLayer(nn.Module):
+    def __init__(self, dim=1024, t_emb_dim=256, use_prompt_sa=True):
+        super().__init__()
+        self._disable = False
+        self.last_ca_ratio = 0.0
+
+        # Контекстуализация промпта перед Cross-Attention
+        self.prompt_sa = PromptSelfAttention(dim=dim) if use_prompt_sa else None
+
         self.norm1 = nn.RMSNorm(dim)
         self.norm_q = nn.RMSNorm(dim)  # отдельная норма для Q промпта (без AdaLN)
         self.q_proj = nn.Linear(dim, dim, bias=False)
@@ -307,6 +376,13 @@ class CAPromptLayer(nn.Module):
         nn.init.zeros_(self.out_proj_sa.weight)
 
     def forward(self, A, Q, mask_Q=None, warmup_factor=1.0, t_emb=None):
+        if getattr(self, '_disable', False):
+            return A
+
+        # --- Prompt Contextualization (RoPE SA) ---
+        if self.prompt_sa is not None:
+            Q = self.prompt_sa(Q, mask_Q=mask_Q)
+
         # --- Cross-Attention ---
         # Q из промпта: статическая нормализация (вопрос не зависит от t)
         Q_norm = self.norm_q(Q)
@@ -335,6 +411,8 @@ class CAPromptLayer(nn.Module):
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
+        with torch.no_grad():
+            self.last_ca_ratio = ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)
         A = A + ca_out
 
         # --- Self-Attention ---
@@ -426,10 +504,11 @@ class BEBLaDIIPhase6(nn.Module):
 
         for p in self.parameters(): p.requires_grad = False
 
+        use_prompt_sa = getattr(config, "use_prompt_sa", True)
         self.ca_layers = nn.ModuleDict({
-            "12": CAPromptLayer(1024, t_emb_dim=256),
-            "24": CAPromptLayer(1024, t_emb_dim=256),
-            "36": CAPromptLayer(1024, t_emb_dim=256),
+            "12": CAPromptLayer(1024, t_emb_dim=256, use_prompt_sa=use_prompt_sa),
+            "24": CAPromptLayer(1024, t_emb_dim=256, use_prompt_sa=use_prompt_sa),
+            "36": CAPromptLayer(1024, t_emb_dim=256, use_prompt_sa=use_prompt_sa),
         })
         for i in [11, 23, 35]:
             self.dus.layers[i] = Phase6BlockWrapper(self.dus.layers[i], self.ca_layers[str(i+1)])
@@ -453,7 +532,7 @@ class BEBLaDIIPhase6(nn.Module):
         if hasattr(self, "qwen_embeddings"): self.qwen_embeddings.eval()
         if hasattr(self, "encoder"): self.encoder.eval()
 
-    def forward(self, input_ids_q, attention_mask_q, input_ids_a, attention_mask_a, warmup_factor=1.0):
+    def forward(self, input_ids_q, attention_mask_q, input_ids_a, attention_mask_a, warmup_factor=1.0, t_global=None):
         B, T_a = input_ids_a.shape
         with torch.no_grad():
             qwen_embeds_a = self.qwen_embeddings(input_ids_a)
@@ -507,7 +586,10 @@ class BEBLaDIIPhase6(nn.Module):
 
             # === XLA SAFE SAMPLING (CPU) ===
             cpu_dev = torch.device('cpu')
-            t_global_cpu = torch.randint(1, 26, (B,), device=cpu_dev).float() / 25.0
+            if t_global is None:
+                t_global_cpu = torch.randint(1, 26, (B,), device=cpu_dev).float() / 25.0
+            else:
+                t_global_cpu = t_global.detach().to(cpu_dev).float()
             t_actual_cpu = sample_token_noise_levels(t_global_cpu, T_a)
             t_global = t_global_cpu.to(Z_A_clean.device)
             t_actual = t_actual_cpu.to(Z_A_clean.device)
@@ -574,7 +656,7 @@ class BEBLaDIIPhase6(nn.Module):
             "void_embed": void_embed
         }
 
-def compute_phase6_loss(outputs, void_margin=0.0):
+def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     z_clean = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
     t_actual = outputs["t_actual"].float()
@@ -598,7 +680,11 @@ def compute_phase6_loss(outputs, void_margin=0.0):
     loss_el = loss_el + 0.5 * void_penalty
     # -------------------------
 
-    w_weighted = (1.0 - t_actual).pow(2.0)
+    # loss_t_power > 0 -> (1 - t_actual)^power, иначе равномерный вес 1.0
+    if loss_t_power > 0.0:
+        w_weighted = (1.0 - t_actual).pow(loss_t_power)
+    else:
+        w_weighted = torch.ones_like(t_actual)
     loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
 
     avg_cos_sim = cos_sim.mean()
@@ -609,6 +695,88 @@ def compute_phase6_loss(outputs, void_margin=0.0):
     content_to_void_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
 
     return loss, avg_cos_sim, true_void_sim, content_to_void_sim
+
+def _ca_inner(ca):
+    """Возвращает исходный CAPromptLayer (снимает FSDP-обёртку, если есть)."""
+    return getattr(ca, "module", ca)
+
+def _set_seed(seed: int):
+    torch.manual_seed(seed)
+    xm.set_rng_state(seed)
+
+def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step):
+    ema_tracker.apply_shadow(model)
+    model.eval()
+    val_limit_batches = max(1, math.ceil(getattr(args, "val_num_samples", 200) / args.batch_size))
+
+    def to_dev(v_batch):
+        ids_q = v_batch['input_ids_q'].to(device)
+        m_q = v_batch['attention_mask_q'].to(device)
+        ids_a = v_batch['input_ids_a'].to(device)
+        m_a = v_batch['attention_mask_a'].to(device)
+        for t in (ids_q, m_q, ids_a, m_a):
+            xs.mark_sharding(t, mesh, ("fsdp", None))
+        return ids_q, m_q, ids_a, m_a
+
+    val_loss = val_cos = val_void_cos = val_content_cos = 0.0
+    val_batches = 0
+    with torch.no_grad():
+        for v_batch in val_dataloader:
+            ids_q, m_q, ids_a, m_a = to_dev(v_batch)
+            v_out = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0)
+            v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out, void_margin=0.5, loss_t_power=args.loss_t_power)
+            val_loss += v_loss.item(); val_cos += v_cos.item()
+            val_void_cos += v_v_cos.item(); val_content_cos += v_c_cos.item()
+            val_batches += 1
+            if val_batches >= val_limit_batches: break
+    n = max(1, val_batches)
+    log = {
+        "val_loss_ema": val_loss / n,
+        "val_cos_ema": val_cos / n,
+        "val_void_cos_ema": val_void_cos / n,
+        "val_content_to_void_ema": val_content_cos / n,
+    }
+
+    # --- fixed-t валидация: baseline (копия входа), с CA, без CA (абляция), чистый вклад CA ---
+    with torch.no_grad():
+        for tg_val in (0.2, 0.5, 0.8, 1.0):
+            cp_sum = cp_no_ca_sum = cb_sum = n_tok = 0.0
+            vb = 0
+            for v_batch in val_dataloader:
+                ids_q, m_q, ids_a, m_a = to_dev(v_batch)
+                tg_t = torch.full((ids_a.shape[0],), tg_val)  # CPU: шум сэмплируется на CPU, sync не нужен
+                seed = 42 + vb * 100 + int(tg_val * 10)
+
+                _set_seed(seed)
+                v_o = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0, t_global=tg_t)
+                cp, cb, cm = content_cos_stats(v_o)
+                cp_s = (cp * cm).sum().item(); cb_s = (cb * cm).sum().item(); cm_s = cm.sum().item()
+
+                for ca in model.ca_layers.values(): _ca_inner(ca)._disable = True
+                _set_seed(seed)
+                v_o_no = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0, t_global=tg_t)
+                cp_no, _, _ = content_cos_stats(v_o_no)
+                cp_no_s = (cp_no * cm).sum().item()
+                for ca in model.ca_layers.values(): _ca_inner(ca)._disable = False
+
+                cp_sum += cp_s; cp_no_ca_sum += cp_no_s; cb_sum += cb_s; n_tok += cm_s
+                vb += 1
+                if vb >= val_limit_batches: break
+            n_tok = max(1.0, n_tok)
+            with_ca, without_ca, base = cp_sum / n_tok, cp_no_ca_sum / n_tok, cb_sum / n_tok
+            log[f"val_content_cos_tg{tg_val}"] = with_ca
+            log[f"val_content_cos_noCA_tg{tg_val}"] = without_ca
+            log[f"val_content_baseline_tg{tg_val}"] = base
+            log[f"val_content_gain_tg{tg_val}"] = with_ca - base
+            log[f"val_content_gain_CA_tg{tg_val}"] = with_ca - without_ca
+
+    wandb.log(log, step=global_step)
+    print(f"Step {global_step} | Val Loss (EMA): {log['val_loss_ema']:.4f} | Val Cos (EMA): {log['val_cos_ema']:.4f}")
+    print(f"Step {global_step} | Val gain (Total / CA only): " + ", ".join(
+        f"tg{tg}: {log[f'val_content_gain_tg{tg}']:+.3f} (CA: {log[f'val_content_gain_CA_tg{tg}']:+.3f})"
+        for tg in (0.2, 0.5, 0.8, 1.0)))
+    model.train()
+    ema_tracker.restore(model)
 
 def main():
     mesh = setup_spmd_mesh()
@@ -629,9 +797,15 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path)
     if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
 
+    val_dataloader = None
     try:
         dataset = QADataset(args.dataset_path, tokenizer, args.max_length_q, args.max_length_a)
         dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=2)
+        if os.path.exists(args.val_dataset_path):
+            val_dataset = QADataset(args.val_dataset_path, tokenizer, args.max_length_q, args.max_length_a)
+            val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True, num_workers=2)
+        else:
+            print(f"Validation dataset not found at {args.val_dataset_path}. Validation will be skipped.")
     except Exception as e:
         print(f"Failed to load dataset: {e}")
         return
@@ -658,14 +832,24 @@ def main():
             model.dus.layers[i] = wrapped
 
     ema_tracker = EMATracker(model, decay=args.ema_decay)
-    ca_params = list(filter(lambda p: p.requires_grad, model.ca_layers.parameters()))
+    ca_out_params, ca_qkv_params, ca_other_params = [], [], []
+    for name, p in model.ca_layers.named_parameters():
+        if p.requires_grad:
+            if "out_proj" in name:
+                ca_out_params.append(p)
+            elif "q_proj" in name or "k_proj" in name or "v_proj" in name or "qkv_proj" in name:
+                ca_qkv_params.append(p)
+            else:
+                ca_other_params.append(p)
     dus_params = []
     for name, p in model.dus.named_parameters():
         if p.requires_grad and "ca_layer" not in name:
             dus_params.append(p)
 
     optimizer = torch.optim.AdamW([
-        {'params': ca_params, 'lr': 2e-5},
+        {'params': ca_out_params, 'lr': 5e-4},     # x10 boost для out_proj (CA + Prompt-SA)
+        {'params': ca_qkv_params, 'lr': 2e-4},     # q_proj / kv_proj / qkv_proj
+        {'params': ca_other_params, 'lr': 5e-5},   # AdaLN, нормы
         {'params': dus_params, 'lr': 5e-5}
     ])
 
@@ -707,7 +891,7 @@ def main():
 
             optimizer.zero_grad()
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
-            loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(outputs, void_margin=0.5)
+            loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(outputs, void_margin=0.5, loss_t_power=args.loss_t_power)
 
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -730,17 +914,25 @@ def main():
                 op36 = model.ca_layers["36"].module.out_proj.weight.detach().abs().mean()
                 qp36 = model.ca_layers["36"].module.q_proj.weight.detach().abs().mean()
 
+            # ca_ratio_* = ||ca_out|| / ||A|| (тензоры, без .item() в графе XLA)
+            ratio12 = _ca_inner(model.ca_layers["12"]).last_ca_ratio
+            ratio24 = _ca_inner(model.ca_layers["24"]).last_ca_ratio
+            ratio36 = _ca_inner(model.ca_layers["36"]).last_ca_ratio
+
             if global_step % args.log_steps == 0:
-                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t):
+                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36):
                     log_dict = {
                         "loss": l.item(),
                         "cos_sim": c.item(),
                         "void_cos_sim": vc.item(),
-                        "content_cos_sim": cc.item(),
+                        "content_to_void_sim": cc.item(),
                         "warmup_factor": w.item(),
                         "out_proj_12_amp": o12.item(),
                         "out_proj_36_amp": o36.item(),
                         "q_proj_36_amp": q36.item(),
+                        "ca_ratio_12": float(r12.item()) if torch.is_tensor(r12) else float(r12),
+                        "ca_ratio_24": float(r24.item()) if torch.is_tensor(r24) else float(r24),
+                        "ca_ratio_36": float(r36.item()) if torch.is_tensor(r36) else float(r36),
                     }
                     cp_cpu = cp_t.cpu()
                     cm_cpu = cm_t.cpu()
@@ -756,7 +948,10 @@ def main():
 
                     wandb.log(log_dict, step=s)
 
-                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp, cm, outputs["t_global"]))
+                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp, cm, outputs["t_global"], ratio12, ratio24, ratio36))
+
+            if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
+                run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step)
 
             if global_step % args.save_steps == 0 and global_step > 0:
                 ema_tracker.apply_shadow(model)
