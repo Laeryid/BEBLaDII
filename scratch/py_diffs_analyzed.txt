@@ -1,0 +1,2104 @@
+
+=======================================================
+COMMIT_HEADER
+f2a645b5a3f6faa588439619ab4827b4d487d726
+fix TPU error
+=======================================================
+diff --git a/experiments/phase 6/kaggle/train_phase6_notebook.py b/experiments/phase 6/kaggle/train_phase6_notebook.py
+--- a/experiments/phase 6/kaggle/train_phase6_notebook.py	
++++ b/experiments/phase 6/kaggle/train_phase6_notebook.py	
++        is_tuple = isinstance(out, (tuple, list))
++        hidden = out[0] if is_tuple else out
++
+-                sep = out[0][:, 0:1, :]
+-                ans = out[0][:, 1:, :]
++                sep = hidden[:, 0:1, :]
++                ans = hidden[:, 1:, :]
+-                out = (torch.cat([sep, ans], dim=1),) + out[1:]
+-        return out
++                hidden = torch.cat([sep, ans], dim=1)
++
++        if is_tuple:
++            return (hidden,) + tuple(out[1:])
++        return hidden
+diff --git a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py
+--- a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++++ b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++        is_tuple = isinstance(out, (tuple, list))
++        hidden = out[0] if is_tuple else out
++
+-                sep = out[0][:, 0:1, :]
+-                ans = out[0][:, 1:, :]
++                sep = hidden[:, 0:1, :]
++                ans = hidden[:, 1:, :]
+-                out = (torch.cat([sep, ans], dim=1),) + out[1:]
+-        return out
++                hidden = torch.cat([sep, ans], dim=1)
++
++        if is_tuple:
++            return (hidden,) + tuple(out[1:])
++        return hidden
+
+=======================================================
+COMMIT_HEADER
+3e73b8b593b78165da2a68f2508507a8aed04d34
+fix 2
+=======================================================
+diff --git a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py
+--- a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++++ b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
+-    use_gradient_checkpointing = True
++    use_gradient_checkpointing = False
+-        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
+-        dus_input_extended.requires_grad_(True)
+-
+
+=======================================================
+COMMIT_HEADER
+7caab118316e2b544a911fcd6faa83523c8096a6
+Additional LR for CA Q matrix
+=======================================================
+diff --git a/experiments/phase 6/kaggle/train_phase6_notebook.py b/experiments/phase 6/kaggle/train_phase6_notebook.py
+--- a/experiments/phase 6/kaggle/train_phase6_notebook.py	
++++ b/experiments/phase 6/kaggle/train_phase6_notebook.py	
+-    ema_decay     = 0.999
++    ema_decay     = 0.998
+-    void_cos_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
+-    content_cos_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
++    true_void_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
++    content_to_void_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
+-    return loss, avg_cos_sim, void_cos_sim, content_cos_sim
++    return loss, avg_cos_sim, true_void_sim, content_to_void_sim
+-    ca_params = list(filter(lambda p: p.requires_grad, model.ca_layers.parameters()))
++    ca_qkv_params = []
++    ca_other_params = []
++    for name, p in model.ca_layers.named_parameters():
++        if p.requires_grad:
++            if "q_proj" in name or "k_proj" in name or "v_proj" in name or "qkv_proj" in name:
++                ca_qkv_params.append(p)
++            else:
++                ca_other_params.append(p)
++
+-        {'params': ca_params, 'lr': 2e-5},
++        {'params': ca_qkv_params, 'lr': 2e-4},     # x10 boost для разморозки Attention (Claude's fix)
++        {'params': ca_other_params, 'lr': 5e-5},   # Базовый CA LR
+-            loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs, void_margin=0.5)
++            loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(outputs, void_margin=0.5)
+-                    "void_cos_sim": void_cos_sim.item(),
+-                    "content_cos_sim": content_cos_sim.item(),
++                    "true_void_sim": true_void_sim.item(),
++                    "content_to_void_sim": content_to_void_sim.item(),
+diff --git a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py
+--- a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++++ b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
+-    
++
+-    
++
+-    batch_size    = 64 * 4
++    batch_size    = 64 * 2
+-    learning_rate = 2e-4
++    learning_rate = 1e-4
+-    ema_decay     = 0.999
++    ema_decay     = 0.998
+-    void_cos_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
+-    content_cos_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
++    true_void_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
++    content_to_void_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
+-    return loss, avg_cos_sim, void_cos_sim, content_cos_sim
++    return loss, avg_cos_sim, true_void_sim, content_to_void_sim
+-            loss, avg_cos_sim, void_cos_sim, content_cos_sim = compute_phase6_loss(outputs, void_margin=0.5)
++            loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(outputs, void_margin=0.5)
+-            
++
+-                    
++
+-                            
++
+-                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, void_cos_sim, content_cos_sim, warmup_factor, op12, op36, qp36, cp, cm, outputs["t_global"]))
++                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp, cm, outputs["t_global"]))
+diff --git a/fix.py b/fix.py
+--- /dev/null
++++ b/fix.py
++import sys
++with open('experiments/phase 6/kaggle/train_phase6_notebook.py', 'r', encoding='utf-8') as f:
++    text = f.read()
++text = text.replace('"void_cos_sim": void_cos_sim.item()', '"true_void_sim": true_void_sim.item()')
++text = text.replace('"content_cos_sim": content_cos_sim.item()', '"content_to_void_sim": content_to_void_sim.item()')
++with open('experiments/phase 6/kaggle/train_phase6_notebook.py', 'w', encoding='utf-8') as f:
++    f.write(text)
++
++with open('experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py', 'r', encoding='utf-8') as f:
++    text = f.read()
++text = text.replace('void_cos_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)', 'true_void_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)')
++text = text.replace('content_cos_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)', 'content_to_void_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)')
++text = text.replace('loss, avg_cos_sim, void_cos_sim, content_cos_sim', 'loss, avg_cos_sim, true_void_sim, content_to_void_sim')
++text = text.replace('"void_cos_sim": void_cos_sim.item()', '"true_void_sim": true_void_sim.item()')
++text = text.replace('"content_cos_sim": content_cos_sim.item()', '"content_to_void_sim": content_to_void_sim.item()')
++text = text.replace('void_cos_sim, content_cos_sim = compute_phase6_loss', 'true_void_sim, content_to_void_sim = compute_phase6_loss')
++text = text.replace('"void_cos_sim": void_cos_sim,', '"true_void_sim": true_void_sim,')
++text = text.replace('"content_cos_sim": content_cos_sim,', '"content_to_void_sim": content_to_void_sim,')
++with open('experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py', 'w', encoding='utf-8') as f:
++    f.write(text)
+
+=======================================================
+COMMIT_HEADER
+84777efe5377cb1a91c28a24e6f2caf4a9259559
+Fix parameter grouping collision between ca_layers and dus_unfrozen
+=======================================================
+diff --git a/experiments/phase 6/kaggle/train_phase6_notebook.py b/experiments/phase 6/kaggle/train_phase6_notebook.py
+--- a/experiments/phase 6/kaggle/train_phase6_notebook.py	
++++ b/experiments/phase 6/kaggle/train_phase6_notebook.py	
+-        if p.requires_grad:
++        if p.requires_grad and "ca_layer" not in name:
+diff --git a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py
+--- a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++++ b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
+-        if p.requires_grad:
++        if p.requires_grad and "ca_layer" not in name:
+
+=======================================================
+COMMIT_HEADER
+c1a335fd0afc102a56c63efd7e983fe3153b58c2
+fix 2
+=======================================================
+diff --git a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py
+--- a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++++ b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
+-    model.ca_layers = SpmdFullyShardedDataParallel(model.ca_layers, mesh=mesh, shard_output=shard_output)
++    for key in list(model.ca_layers.keys()):
++        wrapped = SpmdFullyShardedDataParallel(model.ca_layers[key], mesh=mesh, shard_output=shard_output)
++        model.ca_layers[key] = wrapped
++        layer_idx = int(key) - 1
++        model.dus.layers[layer_idx].ca_layer = wrapped
+
+=======================================================
+COMMIT_HEADER
+ebf7f0ff32d6ad59d303889a2e2d0aca28d0bb74
+fix 1
+=======================================================
+diff --git a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py
+--- a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++++ b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++
++# Install Kaggle TPU dependencies (equivalent to: !pip install -q -U --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage)
++try:
++    import wandb
++    import einops
++except ImportError:
++    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "--no-cache-dir", 
++                    "einops", "wandb", "indexed_parquet_dataset", "google-cloud-storage"])
++
+
+=======================================================
+COMMIT_HEADER
+3c7bebfb94c20509e488a9e86ce57742f24637a0
+Fix 2
+=======================================================
+diff --git a/experiments/phase 6/kaggle/train_phase6_notebook.py b/experiments/phase 6/kaggle/train_phase6_notebook.py
+--- a/experiments/phase 6/kaggle/train_phase6_notebook.py	
++++ b/experiments/phase 6/kaggle/train_phase6_notebook.py	
+-    batch_size    = 32
++    batch_size    = 8
++    gradient_accumulation_steps = 4
++        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
++        dus_input_extended.requires_grad_(True)
++
++    optimizer.zero_grad()
+-        for batch in dataloader:
++        for step_idx, batch in enumerate(dataloader):
+-            optimizer.zero_grad()
++            loss = loss / args.gradient_accumulation_steps
+-            grad_norm = 0.0
+-            for p in model.parameters():
+-                if p.grad is not None:
+-                    grad_norm += p.grad.data.norm(2).item() ** 2
+-            grad_norm = grad_norm ** 0.5
+-
+-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+-            optimizer.step()
+-
+-            ema_tracker.update(model.ca_layers)
+-            ema_tracker.pace_pullback(model.ca_layers, alpha=args.pace_alpha)
+-
+-            wandb.log({
+-                "loss": loss.item(),
+-                "cos_sim": avg_cos_sim.item(),
+-                "void_cos_sim": void_cos_sim.item(),
+-                "content_cos_sim": content_cos_sim.item(),
+-                "grad_norm": grad_norm,
+-                "warmup_factor": warmup_factor,
+-                "gate_12": model.ca_layers["12"].gate.item(),
+-                "gate_24": model.ca_layers["24"].gate.item(),
+-                "gate_36": model.ca_layers["36"].gate.item(),
+-            }, step=global_step)
+-
+-            if global_step % args.log_steps == 0:
+-                print(f"Step {global_step} | Loss: {loss.item():.4f} | Gate_12: {model.ca_layers['12'].gate.item():.4f}")
+-
+-            if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
+-                ema_tracker.apply_shadow(model.ca_layers)
+-                model.eval()
+-                val_loss = 0.0
+-                val_cos = 0.0
+-                val_void_cos = 0.0
+-                val_content_cos = 0.0
+-                val_batches = 0
+-                with torch.no_grad():
+-                    for v_batch in val_dataloader:
+-                        v_input_ids_q = v_batch['input_ids_q'].to(device)
+-                        v_mask_q = v_batch['attention_mask_q'].to(device)
+-                        v_input_ids_a = v_batch['input_ids_a'].to(device)
+-                        v_mask_a = v_batch['attention_mask_a'].to(device)
+-
+-                        v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
+-                        v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out)
+-                        val_loss += v_loss.item()
+-                        val_cos += v_cos.item()
+-                        val_void_cos += v_v_cos.item()
+-                        val_content_cos += v_c_cos.item()
+-                        val_batches += 1
+-                        if val_batches >= 20: # limit validation for speed
+-                            break
+-                val_loss /= max(1, val_batches)
+-                val_cos /= max(1, val_batches)
+-                val_void_cos /= max(1, val_batches)
+-                val_content_cos /= max(1, val_batches)
+-                wandb.log({
+-                    "val_loss_ema": val_loss, 
+-                    "val_cos_ema": val_cos,
+-                    "val_void_cos_ema": val_void_cos,
+-                    "val_content_cos_ema": val_content_cos
+-                }, step=global_step)
+-                print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
+-                model.train()
+-                ema_tracker.restore(model.ca_layers)
++            if (step_idx + 1) % args.gradient_accumulation_steps == 0 or (step_idx + 1) == len(dataloader):
++                grad_norm = 0.0
++                for p in model.parameters():
++                    if p.grad is not None:
++                        grad_norm += p.grad.data.norm(2).item() ** 2
++                grad_norm = grad_norm ** 0.5
+-            if global_step % args.save_steps == 0 and global_step > 0:
+-                ema_tracker.apply_shadow(model.ca_layers)
+-                ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
+-                torch.save(model.ca_layers.state_dict(), ckpt_path)
+-                ema_tracker.restore(model.ca_layers)
++                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
++                optimizer.step()
++                optimizer.zero_grad()
+-                if getattr(args, "gcs_checkpoint_dir", None):
+-                    sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir)
++                ema_tracker.update(model.ca_layers)
++                ema_tracker.pace_pullback(model.ca_layers, alpha=args.pace_alpha)
++
++                wandb.log({
++                    "loss": loss.item() * args.gradient_accumulation_steps,
++                    "cos_sim": avg_cos_sim.item(),
++                    "void_cos_sim": void_cos_sim.item(),
++                    "content_cos_sim": content_cos_sim.item(),
++                    "grad_norm": grad_norm,
++                    "warmup_factor": warmup_factor,
++                    "gate_12": model.ca_layers["12"].gate.item(),
++                    "gate_24": model.ca_layers["24"].gate.item(),
++                    "gate_36": model.ca_layers["36"].gate.item(),
++                }, step=global_step)
+-            global_step += 1
++                if global_step % args.log_steps == 0:
++                    print(f"Step {global_step} | Loss: {loss.item() * args.gradient_accumulation_steps:.4f} | Gate_12: {model.ca_layers['12'].gate.item():.4f}")
++
++                if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
++                    ema_tracker.apply_shadow(model.ca_layers)
++                    model.eval()
++                    val_loss = 0.0
++                    val_cos = 0.0
++                    val_void_cos = 0.0
++                    val_content_cos = 0.0
++                    val_batches = 0
++                    with torch.no_grad():
++                        for v_batch in val_dataloader:
++                            v_input_ids_q = v_batch['input_ids_q'].to(device)
++                            v_mask_q = v_batch['attention_mask_q'].to(device)
++                            v_input_ids_a = v_batch['input_ids_a'].to(device)
++                            v_mask_a = v_batch['attention_mask_a'].to(device)
++
++                            v_out = model(v_input_ids_q, v_mask_q, v_input_ids_a, v_mask_a, warmup_factor=1.0)
++                            v_loss, v_cos, v_v_cos, v_c_cos = compute_phase6_loss(v_out)
++                            val_loss += v_loss.item()
++                            val_cos += v_cos.item()
++                            val_void_cos += v_v_cos.item()
++                            val_content_cos += v_c_cos.item()
++                            val_batches += 1
++                            if val_batches >= 20: # limit validation for speed
++                                break
++                    val_loss /= max(1, val_batches)
++                    val_cos /= max(1, val_batches)
++                    val_void_cos /= max(1, val_batches)
++                    val_content_cos /= max(1, val_batches)
++                    wandb.log({
++                        "val_loss_ema": val_loss, 
++                        "val_cos_ema": val_cos,
++                        "val_void_cos_ema": val_void_cos,
++                        "val_content_cos_ema": val_content_cos
++                    }, step=global_step)
++                    print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
++                    model.train()
++                    ema_tracker.restore(model.ca_layers)
++
++                if global_step % args.save_steps == 0 and global_step > 0:
++                    ema_tracker.apply_shadow(model.ca_layers)
++                    ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
++                    torch.save(model.ca_layers.state_dict(), ckpt_path)
++                    ema_tracker.restore(model.ca_layers)
++
++                    if getattr(args, "gcs_checkpoint_dir", None):
++                        sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir)
++
++                global_step += 1
+diff --git a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py
+--- a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++++ b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
+-                self.shadow[name] = param.data.clone().detach().float()
++                self.shadow[name] = param.detach().clone().float()
+-                    self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.data.float())
++                    self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.float())
+-                    param.data.sub_(alpha * (param.data - ema_casted))
++                    param.sub_(alpha * (param - ema_casted))
+-        for name, param in model.named_parameters():
+-            if param.requires_grad:
+-                self.backup[name] = param.data.clone()
+-                param.data.copy_(self.shadow[name].to(param.dtype))
++        with torch.no_grad():
++            for name, param in model.named_parameters():
++                if param.requires_grad:
++                    self.backup[name] = param.detach().clone()
++                    param.copy_(self.shadow[name].to(param.dtype))
+-        for name, param in model.named_parameters():
+-            if param.requires_grad:
+-                param.data.copy_(self.backup[name])
++        with torch.no_grad():
++            for name, param in model.named_parameters():
++                if param.requires_grad:
++                    param.copy_(self.backup[name])
++        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
++        dus_input_extended.requires_grad_(True)
++        
++            
++            
++            xm.mark_step()
+
+=======================================================
+COMMIT_HEADER
+31d7a1da70945a2870524f2fb829e43401877171
+fix 1
+=======================================================
+diff --git a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py
+--- a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++++ b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
+-            content_indices = torch.cumsum(~is_void, dim=1) - 1
++            content_indices = torch.cumsum((~is_void).long(), dim=1) - 1
+-            content_indices = torch.cumsum(~is_void, dim=1) - 1
++            content_indices = torch.cumsum((~is_void).long(), dim=1) - 1
+-            void_mask_expanded = void_mask.unsqueeze(-1)
++            void_mask_expanded = void_mask.unsqueeze(-1).expand(-1, -1, Z_A_clean.shape[-1])
+
+=======================================================
+COMMIT_HEADER
+eb3a9e4358fed26ef03ab2ae012d34cfda27623b
+Fix Adaln
+=======================================================
+diff --git a/experiments/phase 6/kaggle/train_phase6_notebook.py b/experiments/phase 6/kaggle/train_phase6_notebook.py
+--- a/experiments/phase 6/kaggle/train_phase6_notebook.py	
++++ b/experiments/phase 6/kaggle/train_phase6_notebook.py	
+-    def __init__(self, dim=1024):
++    def __init__(self, dim=1024, t_emb_dim=256):
++        self.norm_q = nn.RMSNorm(dim)  # отдельная норма для Q промпта (без AdaLN)
++        self.adaln_ca = AdaLNModulation(t_emb_dim, dim)  # AdaLN для CA (модулирует A перед Q-проекцией)
++        self.adaln_sa = AdaLNModulation(t_emb_dim, dim)  # AdaLN для SA (модулирует холст перед Self-Attention)
+-    def forward(self, A, Q, mask_Q=None, warmup_factor=1.0):
++    def forward(self, A, Q, mask_Q=None, warmup_factor=1.0, t_emb=None):
++        # Q из промпта: статическая нормализация (вопрос не зависит от t)
++        Q_norm = self.norm_q(Q)
++        # A (холст): AdaLN — модулируем, что именно ищем в вопросе, в зависимости от t
+-        Q_norm = self.norm1(Q)
++        if t_emb is not None:
++            shift_ca, scale_ca = self.adaln_ca(t_emb)
++            A_norm = A_norm * scale_ca + shift_ca
++        # AdaLN — модулируем пропорции смешивания токенов холста в зависимости от t
++        if t_emb is not None:
++            shift_sa, scale_sa = self.adaln_sa(t_emb)
++            A_norm2 = A_norm2 * scale_sa + shift_sa
++
++            t_emb = getattr(self.ca_layer, '_current_t_emb', None)
+-                ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor)
++                ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor, t_emb=t_emb)
+-            "12": CAPromptLayer(1024),
+-            "24": CAPromptLayer(1024),
+-            "36": CAPromptLayer(1024),
++            "12": CAPromptLayer(1024, t_emb_dim=256),
++            "24": CAPromptLayer(1024, t_emb_dim=256),
++            "36": CAPromptLayer(1024, t_emb_dim=256),
++            ca._current_t_emb = t_emb  # [B, T_a, 256] — per-token time embedding для AdaLN в CA/SA
+diff --git a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py
+--- a/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
++++ b/experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py	
+-    def __init__(self, dim=1024):
++    def __init__(self, dim=1024, t_emb_dim=256):
++        self.norm_q = nn.RMSNorm(dim)  # отдельная норма для Q промпта (без AdaLN)
++        self.adaln_ca = AdaLNModulation(t_emb_dim, dim)  # AdaLN для CA (модулирует A перед Q-проекцией)
++
++        self.adaln_sa = AdaLNModulation(t_emb_dim, dim)  # AdaLN для SA (модулирует холст перед Self-Attention)
++
+-    def forward(self, A, Q, mask_Q=None, warmup_factor=1.0):
++    def forward(self, A, Q, mask_Q=None, warmup_factor=1.0, t_emb=None):
++        # --- Cross-Attention ---
++        # Q из промпта: статическая нормализация (вопрос не зависит от t)
++        Q_norm = self.norm_q(Q)
++        # A (холст): AdaLN — модулируем, что именно ищем в вопросе, в зависимости от t
+-        Q_norm = self.norm1(Q)
++        if t_emb is not None:
++            shift_ca, scale_ca = self.adaln_ca(t_emb)
++            A_norm = A_norm * scale_ca + shift_ca
++
++        # --- Self-Attention ---
++        # AdaLN — модулируем пропорции смешивания токенов холста в зависимости от t
++        if t_emb is not None:
++            shift_sa, scale_sa = self.adaln_sa(t_emb)
++            A_norm2 = A_norm2 * scale_sa + shift_sa
++
++            t_emb = getattr(self.ca_layer, '_current_t_emb', None)
+-                ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor)
++                ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor, t_emb=t_emb)
+-            "12": CAPromptLayer(1024),
+-            "24": CAPromptLayer(1024),
+-            "36": CAPromptLayer(1024),
++            "12": CAPromptLayer(1024, t_emb_dim=256),
++            "24": CAPromptLayer(1024, t_emb_dim=256),
++            "36": CAPromptLayer(1024, t_emb_dim=256),
++            ca._current_t_emb = t_emb  # [B, T_a, 256] — per-token time embedding для AdaLN в CA/SA
+
+=======================================================
+COMMIT_HEADER
+d28d4c43f28dc26f0a1b44b7231eb1db837469e6
+fix 4 nan checks
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-    Disabled to prevent XLA graph accumulation and memory leaks.
++    Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.
+-    pass
++    if tensor is None or not isinstance(tensor, torch.Tensor):
++        return
++    if GLOBAL_CURRENT_STEP > GLOBAL_START_STEP + step_limit and not print_always:
++        return
++
++    is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()
++    GLOBAL_NAN_NAMES.append(name)
++    GLOBAL_NAN_CHECKS.append(is_bad)
+-    Disabled to prevent XLA graph breaks (xm.mark_step) before backward pass,
+-    which was causing RESOURCE_EXHAUSTED OOM errors.
++    Disabled in the middle of the step to prevent XLA graph breaks.
++    Evaluation is now deferred to the end of the step after torch_xla.sync().
++
++            
++            # --- Delayed NaN Evaluation (XLA Safe) ---
++            if GLOBAL_NAN_CHECKS:
++                stacked = torch.stack(GLOBAL_NAN_CHECKS)
++                results = stacked.cpu().tolist()
++                found_nan = False
++                for name, is_bad in zip(GLOBAL_NAN_NAMES, results):
++                    if is_bad:
++                        print(f"[NAN_ALERT] '{name}' contains NaN/Inf!", flush=True)
++                        found_nan = True
++                
++                GLOBAL_NAN_CHECKS.clear()
++                GLOBAL_NAN_NAMES.clear()
++                
++                if found_nan:
++                    GLOBAL_NAN_TRIGGERED = True
++
+
+=======================================================
+COMMIT_HEADER
+5d6191f30b93824e7a1e7191148a8df9cb902a28
+fix 3 OOM
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-    Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.
+-    This avoids breaking XLA graph into tiny pieces and causing OOM.
++    Disabled to prevent XLA graph accumulation and memory leaks.
+-    if tensor is None or not isinstance(tensor, torch.Tensor):
+-        return
+-    if GLOBAL_CURRENT_STEP > GLOBAL_START_STEP + step_limit and not print_always:
+-        return
+-    
+-    # We use bitwise OR to create a single boolean condition
+-    is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()
+-    GLOBAL_NAN_NAMES.append(name)
+-    GLOBAL_NAN_CHECKS.append(is_bad)
++    pass
+-    Executes all aggregated NaN checks in a single XLA sync.
++    Disabled to prevent XLA graph breaks (xm.mark_step) before backward pass,
++    which was causing RESOURCE_EXHAUSTED OOM errors.
+-    global GLOBAL_NAN_TRIGGERED, GLOBAL_NAN_NAMES, GLOBAL_NAN_CHECKS
+-    if not GLOBAL_NAN_CHECKS:
+-        return False
+-    
+-    # Execute all at once
+-    stacked = torch.stack(GLOBAL_NAN_CHECKS)
+-    import torch_xla.core.xla_model as xm
+-    xm.mark_step()
+-    
+-    results = stacked.cpu().tolist()
+-    found = False
+-    for name, is_bad in zip(GLOBAL_NAN_NAMES, results):
+-        if is_bad:
+-            print(f"[NAN_ALERT] {context} -> '{name}' contains NaN/Inf!", flush=True)
+-            found = True
+-            GLOBAL_NAN_TRIGGERED = True
+-            
+-    GLOBAL_NAN_NAMES.clear()
+-    GLOBAL_NAN_CHECKS.clear()
+-    return found
++    return False
++
+-    batch_size    = 32
++    batch_size    = 64
+-    max_steps            = 40000
++    max_steps            = 400000
+-    
++
+-    
++
+-                
++
+-                
++
+-                
++
+-    
++
+-    
++
+-    
++
+-    
++
+-    is_false_confident_mask = ((t_actual - t_reported) > 0.2).float() 
++    is_false_confident_mask = ((t_actual - t_reported) > 0.2).float()
+-    
++
+-                fwd_outputs, 
+-                w_prior=args.w_prior, 
++                fwd_outputs,
++                w_prior=args.w_prior,
+-            
++
+-                
++
+-            
++
+
+=======================================================
+COMMIT_HEADER
+6375b03ef6832a67bb2150bae9dced8eb2f93fe9
+fix 2
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-                u = torch.rand(B, device=z_clean.device)
++                cpu_dev = torch.device('cpu')
++                u = torch.rand(B, device=cpu_dev)
+-                t_actual = torch.zeros(B, T, device=z_clean.device)
++                t_actual = torch.zeros(B, T, device=cpu_dev)
+-                        t_actual[i] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
+-                        num_anchors = torch.randint(1, 4, (1,)).item()
+-                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
+-                        t_actual[i, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.15
++                        t_actual[i] = torch.rand(T, device=cpu_dev) * 0.3 + 0.7
++                        num_anchors = torch.randint(1, 4, (1,), device=cpu_dev).item()
++                        anchors = torch.randperm(T, device=cpu_dev)[:num_anchors]
++                        t_actual[i, anchors] = torch.rand(num_anchors, device=cpu_dev) * 0.15
+-                        t_actual[i] = torch.rand(T, device=z_clean.device) * 0.3 + 0.7
+-                        num_anchors = torch.randint(1, 4, (1,)).item()
+-                        anchors = torch.randperm(T, device=z_clean.device)[:num_anchors]
+-                        t_actual[i, anchors] = torch.rand(num_anchors, device=z_clean.device) * 0.2 + 0.3
++                        t_actual[i] = torch.rand(T, device=cpu_dev) * 0.3 + 0.7
++                        num_anchors = torch.randint(1, 4, (1,), device=cpu_dev).item()
++                        anchors = torch.randperm(T, device=cpu_dev)[:num_anchors]
++                        t_actual[i, anchors] = torch.rand(num_anchors, device=cpu_dev) * 0.2 + 0.3
+-                        t_actual[i] = torch.rand(T, device=z_clean.device) * 0.2
+-                        num_noisy = torch.randint(1, 4, (1,)).item()
+-                        noisy = torch.randperm(T, device=z_clean.device)[:num_noisy]
+-                        t_actual[i, noisy] = torch.rand(num_noisy, device=z_clean.device) * 0.3 + 0.7
++                        t_actual[i] = torch.rand(T, device=cpu_dev) * 0.2
++                        num_noisy = torch.randint(1, 4, (1,), device=cpu_dev).item()
++                        noisy = torch.randperm(T, device=cpu_dev)[:num_noisy]
++                        t_actual[i, noisy] = torch.rand(num_noisy, device=cpu_dev) * 0.3 + 0.7
+-                        t_actual[i] = torch.rand(T, device=z_clean.device) * (t_max_true - t_min_true) + t_min_true
++                        t_actual[i] = torch.rand(T, device=cpu_dev) * (t_max_true - t_min_true) + t_min_true
+-                is_true_anchor = torch.rand(B, T, device=z_clean.device) < 0.10
+-                t_actual_anchor = torch.rand(B, T, device=z_clean.device) * 0.05
++                is_true_anchor = torch.rand(B, T, device=cpu_dev) < 0.10
++                t_actual_anchor = torch.rand(B, T, device=cpu_dev) * 0.05
+-                is_false_confident = torch.rand(B, T, device=z_clean.device) < p_false.unsqueeze(-1)
++                is_false_confident = torch.rand(B, T, device=cpu_dev) < p_false.unsqueeze(-1)
+-                t_actual_false = torch.rand(B, T, device=z_clean.device) * (t_global.unsqueeze(-1) - t_global.unsqueeze(-1) * 0.6) + (t_global.unsqueeze(-1) * 0.6)
+-                t_reported_false = torch.rand(B, T, device=z_clean.device) * (0.15 - 0.02) + 0.02
++                t_actual_false = torch.rand(B, T, device=cpu_dev) * (t_global.unsqueeze(-1) - t_global.unsqueeze(-1) * 0.6) + (t_global.unsqueeze(-1) * 0.6)
++                t_reported_false = torch.rand(B, T, device=cpu_dev) * (0.15 - 0.02) + 0.02
++                # Move generated tensors to target device
++                t_global = t_global.to(z_clean.device)
++                t_actual = t_actual.to(z_clean.device)
++                t_reported = t_reported.to(z_clean.device)
++
+
+=======================================================
+COMMIT_HEADER
+83e1cd4663a13f14f459dc0e3d8d96f53eff8b2e
+looking for NaN
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++# --- Global NaN Debugging System ---
++GLOBAL_CURRENT_STEP = 0
++GLOBAL_START_STEP = 0
++GLOBAL_NAN_TRIGGERED = False
++
++def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):
++    """
++    Checks tensor for NaN or Inf. If step <= GLOBAL_START_STEP + step_limit,
++    logs the finding and updates GLOBAL_NAN_TRIGGERED.
++    """
++    global GLOBAL_NAN_TRIGGERED
++    if tensor is None or not isinstance(tensor, torch.Tensor):
++        return False
++    if GLOBAL_CURRENT_STEP > GLOBAL_START_STEP + step_limit and not print_always:
++        return False
++    try:
++        has_nan = bool(torch.isnan(tensor).any().item())
++        has_inf = bool(torch.isinf(tensor).any().item())
++        if has_nan or has_inf:
++            GLOBAL_NAN_TRIGGERED = True
++            msg = f"[NAN_ALERT][Step {GLOBAL_CURRENT_STEP}] {name} -> NaN: {has_nan}, Inf: {has_inf}, dtype: {tensor.dtype}, shape: {list(tensor.shape)}"
++            print(msg, flush=True)
++            return True
++    except Exception as e:
++        print(f"[NAN_ALERT_ERROR] Error checking {name}: {e}", flush=True)
++    return False
++
+-    dus_learning_rate    = 2e-5   # Возвращено к проверенному GPU-значению
+-    new_layers_lr        = 1e-4   # Возвращено к проверенному GPU-значению
++    dus_learning_rate = 2e-5   # GPU LR по ADR 082
++    new_layers_lr     = 1e-4   # GPU LR по ADR 082
+-            self.dus._maybe_set_compile = lambda *a, **kw: None
++            self.dus._maybe_set_compile = lambda *args, **kwargs: None
++        # ЯВНЫЙ КАСТ К FLOAT32 (защита от bfloat16 NaN - ADR 057, 082)
++        self.dus.to(torch.float32)
+-        self.t_joint_proj = nn.Linear(t_emb_dim * 2, t_emb_dim)
++        self.t_joint_proj = nn.Linear(t_emb_dim * 2, t_emb_dim).to(torch.float32)
++
++            check_tensor_nan("forward.qwen_embeds", qwen_embeds)
++            check_tensor_nan("forward.z_clean", z_clean)
++            check_tensor_nan("forward.z_clean_f", z_clean_f)
++
++            check_tensor_nan("forward.z_noisy", z_noisy)
++
++        check_tensor_nan("forward.t_emb_global", t_emb_global)
++        check_tensor_nan("forward.t_emb_token", t_emb_token)
++
++        check_tensor_nan("forward.t_emb", t_emb)
+-            x_in = x_in + self.self_cond_proj(self_cond.float().to(x_in.device))
++            check_tensor_nan("forward.self_cond_in", self_cond)
++            sc_proj_out = self.self_cond_proj(self_cond.float().to(x_in.device))
++            check_tensor_nan("forward.sc_proj_out", sc_proj_out)
++            x_in = x_in + sc_proj_out
++        check_tensor_nan("forward.x_in", x_in)
++        check_tensor_nan("forward.dus_input_extended", dus_input_extended)
++        check_tensor_nan("forward.dus_last_hidden_state", dus_outputs.last_hidden_state)
++        check_tensor_nan("forward.pre_norm", pre_norm)
++
++        check_tensor_nan("forward.dus_final_raw", dus_final_raw)
++
++        check_tensor_nan("forward.h_39", h_39)
++    check_tensor_nan("loss.target", target)
++    check_tensor_nan("loss.cos_sim", cos_sim)
++    check_tensor_nan("loss.main_loss", main_loss)
++        check_tensor_nan("loss.h_39_norm", h_39_norm)
++        check_tensor_nan("loss.cos_h39", cos_h39)
++    check_tensor_nan("loss.m_state", m_state)
++    check_tensor_nan("loss.v_state", v_state)
++    check_tensor_nan("loss.var_loss", var_loss)
++    check_tensor_nan("loss.cov_loss", cov_loss)
++    check_tensor_nan("loss.prior_loss", prior_loss)
++        check_tensor_nan("loss.seq_rkd_loss", seq_rkd_loss)
++    check_tensor_nan("loss.total_loss", total_loss)
++                if torch.isnan(v).any() or torch.isinf(v).any():
++                    raise ValueError(f"CRITICAL: NaN/Inf detected in checkpoint weight '{k}'!")
++                if torch.isnan(v).any() or torch.isinf(v).any():
++                    raise ValueError(f"CRITICAL: NaN/Inf detected in EMA shadow '{prefix}.{k}'!")
++    # --- Comprehensive Post-Load Quality Audit ---
++    print("\n[Audit] Checking loaded model weights and optimizer buffers for NaN/Inf...")
++    bad_params = 0
++    for name, param in actual_model.named_parameters():
++        if param is not None:
++            if torch.isnan(param.data).any() or torch.isinf(param.data).any():
++                print(f"[AUDIT_FAIL] Model parameter '{name}' contains NaN/Inf!")
++                bad_params += 1
++    bad_opt_states = 0
++    for p_id, p_state in optimizer.state.items():
++        for s_key, s_val in p_state.items():
++            if isinstance(s_val, torch.Tensor):
++                if torch.isnan(s_val).any() or torch.isinf(s_val).any():
++                    print(f"[AUDIT_FAIL] Optimizer state '{s_key}' for param_id {p_id} contains NaN/Inf!")
++                    bad_opt_states += 1
++    if bad_params == 0 and bad_opt_states == 0:
++        print(f"[Audit] Model & Optimizer integrity VERIFIED (No NaN/Inf found).")
++    else:
++        print(f"[Audit] Found {bad_params} bad model params and {bad_opt_states} bad optimizer states!")
++        global GLOBAL_NAN_TRIGGERED
++        GLOBAL_NAN_TRIGGERED = True
++
++            global GLOBAL_CURRENT_STEP, GLOBAL_START_STEP
++            GLOBAL_CURRENT_STEP = step
++            GLOBAL_START_STEP = start_step
++
++                check_tensor_nan("sc_pass.dus_final", self_cond_est)
++            check_tensor_nan("sc_pass.masked_self_cond_est", self_cond_est)
++            check_tensor_nan("step.loss", loss)
++
++
++            # Check gradients across trainable parameters (first 10 steps)
++            if step <= start_step + 10:
++                bad_grads = 0
++                for name, param in actual_model.named_parameters():
++                    if param.requires_grad and param.grad is not None:
++                        if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
++                            print(f"[NAN_ALERT][Step {step}] Gradient for '{name}' contains NaN/Inf!", flush=True)
++                            bad_grads += 1
++                if bad_grads > 0:
++                    global GLOBAL_NAN_TRIGGERED
++                    GLOBAL_NAN_TRIGGERED = True
++
++            check_tensor_nan("step.grad_norm", grad_norm_tensor)
++            # --- Graceful Early Exit on NaN/Inf Detection ---
++            if GLOBAL_NAN_TRIGGERED:
++                print(f"\n{'='*70}", flush=True)
++                print(f"[CRITICAL STOP] NaN/Inf was detected during Step {step}!", flush=True)
++                print(f"All diagnostic logs for Step {step} have been printed above.", flush=True)
++                print(f"Terminating execution to prevent wasting TPU compute resources.", flush=True)
++                print(f"{'='*70}\n", flush=True)
++                sys.exit(1)
++
+
+=======================================================
+COMMIT_HEADER
+eda47c885b5597fbd2f171edc0f1169e7529d52e
+fix NaN
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-    batch_size    = 64
++    batch_size    = 32
+-            # --- OOM FIX: Принудительный барьер XLA для разделения графов первого и второго прохода ---
+-            torch_xla.sync()
+-
+
+=======================================================
+COMMIT_HEADER
+cebafc84d8a611e8ca5b0bebd31720ae7685a14e
+fix 1
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++            # --- OOM FIX: Принудительный барьер XLA для разделения графов первого и второго прохода ---
++            torch_xla.sync()
++
+
+=======================================================
+COMMIT_HEADER
+ddcfee9cb80a6f36262599c409d24c1022d77ac1
+OOM fix 3
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-    batch_size    = 128
++    batch_size    = 64
+-                    # lerp_ is strictly equivalent to mul_(decay).add_(param, alpha=1-decay)
+-                    # but avoids intermediate temporary tensors and fuses perfectly in XLA
+-                    ema_dtype = self.shadow[name].dtype
+-                    self.shadow[name].lerp_(param.data.to(ema_dtype), weight=1.0 - self.decay)
++                    # PyTorch XLA has a bug where lerp_ with a scalar weight boxes the scalar into a CPU tensor, causing a crash.
++                    # We revert to mul_().add_() but remove the explicit .float() cast to avoid allocating 2.5GB of temporary memory.
++                    self.shadow[name].mul_(self.decay).add_(param.data, alpha=1.0 - self.decay)
+-                        # param = param - alpha * (param - ema) => param = lerp(param, ema, alpha)
+-                        param.data.lerp_(ema_casted, weight=self.pullback_alpha)
++                        param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
+-                        
++
+-                        
++
+
+=======================================================
+COMMIT_HEADER
+c9afcdb5aabcad3f4819f681bcfee61f1d17f49a
+fix OOM
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++import torch_xla
+-                    self.shadow[name].mul_(self.decay).add_(param.data.float(), alpha=1.0 - self.decay)
++                    # lerp_ is strictly equivalent to mul_(decay).add_(param, alpha=1-decay)
++                    # but avoids intermediate temporary tensors and fuses perfectly in XLA
++                    ema_dtype = self.shadow[name].dtype
++                    self.shadow[name].lerp_(param.data.to(ema_dtype), weight=1.0 - self.decay)
++                    
++                        # param = param - alpha * (param - ema) => param = lerp(param, ema, alpha)
+-                        param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
++                        param.data.lerp_(ema_casted, weight=self.pullback_alpha)
+-            xm.mark_step()
++            torch_xla.sync()
+-                        xm.mark_step()
++                        torch_xla.sync()
+
+=======================================================
+COMMIT_HEADER
+5c278c16f318c012afacdc13b8953fd9f7578ddf
+Fix something else
+=======================================================
+diff --git a/experiments/phase 4/kaggle/train_phase4_notebook.py b/experiments/phase 4/kaggle/train_phase4_notebook.py
+--- a/experiments/phase 4/kaggle/train_phase4_notebook.py	
++++ b/experiments/phase 4/kaggle/train_phase4_notebook.py	
+-    # Гиперпараметры Phase 4a (~0.1x Phase 3 LR)
++    # Гиперпараметры Phase 4a
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-    # Гиперпараметры Phase 4a (~0.1x Phase 3 LR)
+-    batch_size    = 32
++    # Гиперпараметры Phase 4a
++    batch_size    = 128
+-            layer_params[idx][suffix] = param.data
++            layer_params[idx][suffix] = param.data.cpu()
+-        
++
++        t_sin_global.requires_grad_(True)                   # Fix FSDP backward hook warning
++        t_sin_token.requires_grad_(True)                    # Fix FSDP backward hook warning
++        dus_input_extended.requires_grad_(True)  # Fix FSDP backward hook warning
+-    
++
++                        
++                        # Очистка локальных ссылок на тензоры внутри батча, чтобы сборщик мусора Python мог их удалить
++                        del v_out, v_loss, v_metrics, v_adaln_diag
++                        # КРИТИЧЕСКИ ВАЖНО ДЛЯ XLA: Принудительный сброс графа после каждого валидационного батча, иначе память течет
++                        xm.mark_step()
++                        
+-
+-                # --- Очистка памяти после валидации (OOM Fix) ---
+-                if 'v_out' in locals():
+-                    del v_out, v_loss, v_metrics
+-                torch.cuda.empty_cache()
+
+=======================================================
+COMMIT_HEADER
+fe3437d34adc2cf939cce5adf4a3509d874eadf9
+fix checkpoint loader
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++        def load_flexible(mod, sdict, strict=True):
++            expected = mod.state_dict().keys()
++            new_dict = {}
++            for k, v in sdict.items():
++                k_clean = k.replace("_orig_module.", "")
++                if k_clean in expected:
++                    new_dict[k_clean] = v
++                elif f"_orig_module.{k_clean}" in expected:
++                    new_dict[f"_orig_module.{k_clean}"] = v
++                else:
++                    new_dict[k] = v
++            return mod.load_state_dict(new_dict, strict=strict)
++
+-            clean_dus = {k.replace("_orig_module.", ""): v for k, v in ckpt["dus"].items()}
+-            missing, unexpected = actual_model.dus.load_state_dict(clean_dus, strict=False)
++            missing, unexpected = load_flexible(actual_model.dus, ckpt["dus"], strict=False)
+-            actual_model.adaLN_attn.load_state_dict(ckpt["adaLN_attn"], strict=True)
++            load_flexible(actual_model.adaLN_attn, ckpt["adaLN_attn"], strict=True)
+-            actual_model.adaLN_mlp.load_state_dict(ckpt["adaLN_mlp"], strict=True)
++            load_flexible(actual_model.adaLN_mlp, ckpt["adaLN_mlp"], strict=True)
+-            actual_model.t_proj_global.load_state_dict(ckpt["t_proj_global"], strict=True)
++            load_flexible(actual_model.t_proj_global, ckpt["t_proj_global"], strict=True)
+-            actual_model.t_proj_global.load_state_dict(ckpt["t_proj"], strict=True)
++            load_flexible(actual_model.t_proj_global, ckpt["t_proj"], strict=True)
+-            actual_model.t_proj_token.load_state_dict(ckpt["t_proj_token"], strict=True)
++            load_flexible(actual_model.t_proj_token, ckpt["t_proj_token"], strict=True)
+-            actual_model.t_joint_proj.load_state_dict(ckpt["t_joint_proj"], strict=True)
++            load_flexible(actual_model.t_joint_proj, ckpt["t_joint_proj"], strict=True)
+-            actual_model.self_cond_proj.load_state_dict(ckpt["self_cond_proj"], strict=True)
++            load_flexible(actual_model.self_cond_proj, ckpt["self_cond_proj"], strict=True)
+
+=======================================================
+COMMIT_HEADER
+4c1f0030e9b403637645f757e8e587b574d2ab9f
+fix XLA version
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-import torch_xla.experimental.xla_sharding as xs
++
++# Handle torch_xla versions (Kaggle often updates to >=2.5 where experimental is moved)
++try:
++    import torch_xla.experimental.xla_sharding as xs
++    print("[Init] Loaded xs from torch_xla.experimental.xla_sharding")
++except ImportError:
++    import torch_xla.distributed.spmd as xs
++    if not hasattr(xs, 'mark_sharding'):
++        import torch_xla.distributed.spmd.xla_sharding as xs
++        print("[Init] Loaded xs from torch_xla.distributed.spmd.xla_sharding")
++    else:
++        print("[Init] Loaded xs from torch_xla.distributed.spmd")
++
+-from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel
++
++try:
++    from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel
++    print("[Init] Loaded SpmdFullyShardedDataParallel from experimental")
++except ImportError:
++    # In newer versions it might be in distributed.spmd or distributed.fsdp
++    try:
++        from torch_xla.distributed.spmd import SpmdFullyShardedDataParallel
++        print("[Init] Loaded SpmdFullyShardedDataParallel from distributed.spmd")
++    except ImportError:
++        from torch_xla.distributed.fsdp import XlaFullyShardedDataParallel as SpmdFullyShardedDataParallel
++        print("[Init] Loaded SpmdFullyShardedDataParallel from distributed.fsdp (XlaFullyShardedDataParallel)")
+
+=======================================================
+COMMIT_HEADER
+850ed628d432c1a42898b26f25a85516fca700f1
+fix OOM on TPU
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-    use_gradient_checkpointing = True
++    use_gradient_checkpointing = False
+
+=======================================================
+COMMIT_HEADER
+f26e089bb5959efb32d98a0dbd65b190ac0d847c
+Fix PACE LR override and enable first 20 steps XLA metrics
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-                    # PACE: Постоянный LR с первичным warmup
++                    # PACE: Постоянный LR с первичным warmup (Fix: берем константы из args, игнорируем checkpoint)
++                    _pace_lrs = [args.dus_learning_rate, args.new_layers_lr]
+-                            param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
++                            param_group["lr"] = _pace_lrs[idx_p] * lr_warmup_factor
+-                            param_group["lr"] = scheduler.base_lrs[idx_p]
++                            param_group["lr"] = _pace_lrs[idx_p]
+-            _profile_steps = {start_step + 1, start_step + 2, start_step + 3}
++            _profile_steps = set(range(start_step + 1, start_step + 21))
+
+=======================================================
+COMMIT_HEADER
+f8825ec4fc1af37fa258380f3439391020c3de69
+fix LR graph recompilation
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-            if is_pace:
+-                # PACE: Постоянный LR с первичным warmup
+-                if current_optim_step <= warmup_steps:
+-                    lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+-                    for idx_p, param_group in enumerate(optimizer.param_groups):
+-                        param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+-                else:
+-                    for idx_p, param_group in enumerate(optimizer.param_groups):
+-                        param_group["lr"] = scheduler.base_lrs[idx_p]
+-            else:
+-                # Cyclic: CosineAnnealingWarmRestarts
+-                scheduler.step()
+-                if current_optim_step <= warmup_steps:
+-                    # Основной warmup в начале обучения
+-                    lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+-                    for idx_p, param_group in enumerate(optimizer.param_groups):
+-                        param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
++            # [XLA FIX] Обновляем LR только раз в 50 шагов.
++            # Если LR (Python float) меняется каждый шаг, XLA вшивает его в граф 
++            # и вынужден перекомпилировать всю модель на КАЖДОМ шаге (4 мин/шаг).
++            if current_optim_step % 50 == 1 or current_optim_step == 1:
++                if is_pace:
++                    # PACE: Постоянный LR с первичным warmup
++                    if current_optim_step <= warmup_steps:
++                        lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
++                        for idx_p, param_group in enumerate(optimizer.param_groups):
++                            param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
++                    else:
++                        for idx_p, param_group in enumerate(optimizer.param_groups):
++                            param_group["lr"] = scheduler.base_lrs[idx_p]
+-                    # Warmup внутри каждого цикла CosineAnnealingWarmRestarts
+-                    rel_step = current_optim_step % cosine_T0
+-                    if rel_step < restart_warmup_steps:
+-                        lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
++                    # Cyclic: CosineAnnealingWarmRestarts
++                    # Передаем абсолютный шаг, чтобы косинус посчитался правильно для текущего момента
++                    scheduler.step(current_optim_step)
++                    if current_optim_step <= warmup_steps:
++                        # Основной warmup в начале обучения
++                        lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+-                            param_group["lr"] = param_group["lr"] * lr_warmup_factor
++                            param_group["lr"] = scheduler.base_lrs[idx_p] * lr_warmup_factor
++                    else:
++                        # Warmup внутри каждого цикла CosineAnnealingWarmRestarts
++                        rel_step = current_optim_step % cosine_T0
++                        if rel_step < restart_warmup_steps:
++                            lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)
++                            for idx_p, param_group in enumerate(optimizer.param_groups):
++                                param_group["lr"] = param_group["lr"] * lr_warmup_factor
+-            # --- XLA Performance Profiling ---
+-            _profile_steps = {start_step + 5, start_step + 6}
+-            if (step in _profile_steps) or (step > start_step + 10 and step % 200 == 0):
++            _profile_steps = {start_step + 1, start_step + 2, start_step + 3}
++            if (step in _profile_steps):
+-                    _keywords = [
+-                        "CompileTime", "ExecuteTime", "TransferToDeviceTime",
+-                        "TransferFromDeviceTime", "CreateComputation",
+-                        "AllReduceTime", "AllGatherTime", "ReduceScatterTime",
+-                        "DeviceLockWaitTime",
+-                        "Cached", "Compiled", "Executed",
+-                    ]
+-                    for line in report.split("\n"):
+-                        if any(kw.lower() in line.lower() for kw in _keywords):
+-                            print(line)
++                    print(report)
+
+=======================================================
+COMMIT_HEADER
+975b6105b309f2315b3688d05b2da57dede50372
+fix error
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-            xm.mark_step()
++            torch_xla.sync()
+-            # Шаг 5: после прогрева JIT-компиляции, чтобы увидеть реальную картину.
+-            # Далее каждые 200 шагов для диагностики без значительных накладных расходов.
+-                print(f"\n{'='*60}")
+-                print(f"[XLA METRICS REPORT] Step {step}")
+-                print(f"{'='*60}")
+-                report = xm.metrics_report()
+-                # Фильтруем только строки, релевантные для диагностики производительности
+-                _keywords = [
+-                    "CompileTime", "ExecuteTime", "TransferToDeviceTime",
+-                    "TransferFromDeviceTime", "CreateComputation",
+-                    "AllReduceTime", "AllGatherTime", "ReduceScatterTime",
+-                    "DeviceLockWaitTime", "XrtComputationClient",
+-                    "aten::", "Cached", "Compiled", "Executed",
+-                ]
+-                for line in report.split("\n"):
+-                    if any(kw.lower() in line.lower() for kw in _keywords):
+-                        print(line)
+-                print(f"{'='*60}\n")
++                try:
++                    import torch_xla.debug.metrics as xla_met
++                    print(f"\n{'='*60}")
++                    print(f"[XLA METRICS REPORT] Step {step}")
++                    print(f"{'='*60}")
++                    report = xla_met.metrics_report()
++                    _keywords = [
++                        "CompileTime", "ExecuteTime", "TransferToDeviceTime",
++                        "TransferFromDeviceTime", "CreateComputation",
++                        "AllReduceTime", "AllGatherTime", "ReduceScatterTime",
++                        "DeviceLockWaitTime",
++                        "Cached", "Compiled", "Executed",
++                    ]
++                    for line in report.split("\n"):
++                        if any(kw.lower() in line.lower() for kw in _keywords):
++                            print(line)
++                    print(f"{'='*60}\n")
++                except Exception as e_prof:
++                    print(f"[XLA METRICS] Skipped (error: {e_prof})")
+
+=======================================================
+COMMIT_HEADER
+95e941135c3c82c3377a81c248177d9eb32b16ab
+dataloader optimalization
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/step_durations.py b/experiments/phase 4/tpu kaggle/step_durations.py
+--- a/experiments/phase 4/tpu kaggle/step_durations.py	
++++ b/experiments/phase 4/tpu kaggle/step_durations.py	
+-import sys
+-        elif 'Percentiles:' in line and data.get('last_metric') == 'TensorsGraphSize':
+-            data['TensorsGraphSize_99'] = line.split('99%=')[-1].strip()
++        elif 'Percentiles:' in line and data.get('last_metric') == 'ExecuteReplicatedTime':
++            data['ExecRepTime_99'] = line.split('99%=')[-1].strip()
+-    print(f"{'Step':>6} | {'Timestamp (s)':>15} | {'Duration (s)':>15} | {'Uncached':>10} | {'TensorsGraphSize':>20}")
++    print(f"{'Step':>6} | {'Timestamp (s)':>15} | {'Duration (s)':>15} | {'Uncached':>10} | {'local_scalar_dense':>20}")
+-        graph_size = s.get('TensorsGraphSize_99', '-')
+-        print(f"{step:>6} | {t:>15.2f} | {dur:>15} | {uncached:>10} | {graph_size:>20}")
++        scalar = s.get('aten::_local_scalar_dense', 0)
++        print(f"{step:>6} | {t:>15.2f} | {dur:>15} | {uncached:>10} | {scalar:>20}")
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-    max_steps            = 400000
++    max_steps            = 9050
+-    warmup_steps_ratio = 0.05
++    warmup_steps_ratio = 0.0
+-    optimizer_mode = "cyclic"  # "cyclic" or "pace"
+-    pullback_alpha = 0.002       # Для режима pace
++    optimizer_mode = "pace"  # "cyclic" or "pace"
++    pullback_alpha = 0.016       # Для режима pace
+-                    
++
+-            # 50% батча использует SC, 50% не использует. 
++            # 50% батча использует SC, 50% не использует.
+-                
++
+-                
++
+-                    
++
+-                
++
+-                
++
+-                        
++
+-                        
++
+-                            
++
+diff --git a/src/beb_la_dii/utils/data.py b/src/beb_la_dii/utils/data.py
+--- a/src/beb_la_dii/utils/data.py
++++ b/src/beb_la_dii/utils/data.py
+-        pin_memory=False
++        pin_memory=False,
++        prefetch_factor=8,
++        persistent_workers=True
+
+=======================================================
+COMMIT_HEADER
+e5f932e2cf713077979ada624e61d159cfef5899
+print package versions for control
+=======================================================
+diff --git a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py
+--- a/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
++++ b/experiments/phase 4/tpu kaggle/train_phase4_tpu_notebook.py	
+-# !pip install -q einops wandb indexed_parquet_dataset google-cloud-storage
++# !pip install -q -U --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage
++    import torch
++    import torch_xla
++    import transformers
++    import pyarrow
++    import numpy
++    import indexed_parquet_dataset
++    print("\n" + "="*50)
++    print("[PACKAGE VERSIONS]")
++    print(f"torch: {torch.__version__}")
++    print(f"torch_xla: {torch_xla.__version__}")
++    print(f"transformers: {transformers.__version__}")
++    print(f"pyarrow: {pyarrow.__version__}")
++    print(f"numpy: {numpy.__version__}")
++    print(f"indexed_parquet_dataset: {indexed_parquet_dataset.__version__}")
++    print("="*50 + "\n")
++
+
+=======================================================
+COMMIT_HEADER
+2f62fb2ab153783d0fef66e6333ed9f5ba17ae6a
+fix Exceeded sflag capacity by 684B
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
+-            # 2. Объединяем в один большой батч (4*B, T) для XLA-эффективности
+-            v_input_ids = torch.cat([v["input_ids"] for v in variants], dim=0)
+-            v_attn_mask = torch.cat([v["attention_mask"] for v in variants], dim=0)
++            # 2. Объединяем в один большой батч (4*B, T)
++            B_orig = batch['input_ids'].shape[0]
++            T = batch['input_ids'].shape[1]
+-            # SPMD Sharding для объединенного батча
+-            xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))
+-            xs.mark_sharding(v_attn_mask, mesh, ('fsdp', None))
++            # Interleaving: [S0V0, S0V1, S0V2, S0V3, S1V0...]
++            # Это гарантирует, что все маски одного семпла попадут на одно XLA-устройство при шардинге
++            v_input_ids = torch.stack([v["input_ids"] for v in variants], dim=1).view(-1, T)
++            v_attn_mask = torch.stack([v["attention_mask"] for v in variants], dim=1).view(-1, T)
++            
++            # SPMD Sharding для объединенного батча
++            xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))
++            xs.mark_sharding(v_attn_mask, mesh, ('fsdp', None))
+-            # 4. Разрезаем выходы обратно на 4 варианта
+-            B_orig = batch['input_ids'].shape[0]
++            # 4. Разделяем выходы обратно на 4 варианта с помощью view
++            # Поскольку батч interleaved, h[:, idx] оставляет вычисления локальными на TPU ядрах
+-                s_variants.append({l: h[idx*B_orig : (idx+1)*B_orig] for l, h in v_student_states.items()})
+-                t_variants.append({l: h[idx*B_orig : (idx+1)*B_orig] for l, h in v_teacher_targets.items()})
++                s_variants.append({l: h.view(B_orig, 4, T, -1)[:, idx] for l, h in v_student_states.items()})
++                t_variants.append({l: h.view(B_orig, 4, T, -1)[:, idx] for l, h in v_teacher_targets.items()})
+-                v_mu_p = v_mu[idx*B_orig : (idx+1)*B_orig] if v_mu is not None else None
+-                v_logvar_p = v_logvar[idx*B_orig : (idx+1)*B_orig] if v_logvar is not None else None
+-                v_raw_p = {l: h[idx*B_orig : (idx+1)*B_orig] for l, h in v_raw_st.items()} if v_raw_st is not None else None
++                v_mu_p = v_mu.view(B_orig, 4, -1)[:, idx] if v_mu is not None else None
++                v_logvar_p = v_logvar.view(B_orig, 4, -1)[:, idx] if v_logvar is not None else None
++                v_raw_p = {l: h.view(B_orig, 4, T, -1)[:, idx] for l, h in v_raw_st.items()} if v_raw_st is not None else None
+diff --git a/src/beb_la_dii/model/distiller.py b/src/beb_la_dii/model/distiller.py
+--- a/src/beb_la_dii/model/distiller.py
++++ b/src/beb_la_dii/model/distiller.py
+-            # Повторяем по первому измерению (батч): [A, B] -> [A, B, A, B]
+-            teacher_embeddings = teacher_embeddings.repeat(repeats, 1, 1)
++            # Повторяем по первому измерению: [A, B] -> [A, A, B, B] (interleave!)
++            teacher_embeddings = teacher_embeddings.repeat_interleave(repeats, dim=0)
+-                teacher_targets[idx] = teacher_targets[idx].repeat(repeats, 1, 1)
++                teacher_targets[idx] = teacher_targets[idx].repeat_interleave(repeats, dim=0)
+
+=======================================================
+COMMIT_HEADER
+d2e37d232d9e68d2d64f706073e88817eff71771
+fix OOM 97Gb
+=======================================================
+diff --git a/experiments/train_phase1_TPU.py b/experiments/train_phase1_TPU.py
+--- a/experiments/train_phase1_TPU.py
++++ b/experiments/train_phase1_TPU.py
++# ХАК: monkey-patch torch.xla для починки gradient checkpointing
++if not hasattr(torch, "xla"):
++    class DummyXLA:
++        @staticmethod
++        def get_rng_state(*args, **kwargs): return torch.tensor(0)
++        @staticmethod
++        def set_rng_state(*args, **kwargs): pass
++    torch.xla = DummyXLA()
++
+-    # Данные
+-    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
++    # Данные (УМЕНЬШЕН BATCH SIZE ДО 1)
++    # На TPU v6e граф для batch_size=4 seq_len=4096 требует 93GB HBM. Снижаем до 1 (глобальный батч 4)
++    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
+diff --git a/src/beb_la_dii/utils/loss.py b/src/beb_la_dii/utils/loss.py
+--- a/src/beb_la_dii/utils/loss.py
++++ b/src/beb_la_dii/utils/loss.py
+-                metrics[f"l{layer_idx}_mse"] = mse_l.item()
+-                metrics[f"l{layer_idx}_cos"] = cos_l.item()
++                metrics[f"l{layer_idx}_mse"] = mse_l.detach()
++                metrics[f"l{layer_idx}_cos"] = cos_l.detach()
+-        metrics["mse"] = mse_total.item() if torch.is_tensor(mse_total) else mse_total
+-        metrics["cosine"] = cos_total.item() if torch.is_tensor(cos_total) else cos_total
++        metrics["mse"] = mse_total.detach() if torch.is_tensor(mse_total) else mse_total
++        metrics["cosine"] = cos_total.detach() if torch.is_tensor(cos_total) else cos_total
+-            metrics["kl"] = kl_loss.item()
++            metrics["kl"] = kl_loss.detach()
+
+=======================================================
+COMMIT_HEADER
+dc7cfd4be9a9c0398e3fcda5bc5bf634d58dd0b8
+fix
+=======================================================
+diff --git a/experiments/train_phase1_TPU.py b/experiments/train_phase1_TPU.py
+--- a/experiments/train_phase1_TPU.py
++++ b/experiments/train_phase1_TPU.py
+-        distiller.student.model.gradient_checkpointing_enable()
++        # Для XLA критически важно отключить preserve_rng_state, так как torch.utils.checkpoint
++        # пытается вызвать getattr(torch, "xla"), что приводит к AttributeError.
++        distiller.student.model.gradient_checkpointing_enable(
++            gradient_checkpointing_kwargs={'preserve_rng_state': False}
++        )
+-            print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН ---")
++            print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
+
+=======================================================
+COMMIT_HEADER
+1634e88a3db52883ce20756b13b3e7ec77144ddd
+fix
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
+-        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
++        
++        # Очищаем префикс _orig_module. и исключаем веса учителя из загрузки
++        cleaned_sd = {}
++        for k, v in ckpt['model_state_dict'].items():
++            new_k = k.replace("_orig_module.", "")
++            if "teacher" not in new_k:
++                cleaned_sd[new_k] = v
++                
++        incompatible_keys = distiller.load_state_dict(cleaned_sd, strict=False)
+-            print(f"--- [RESUME] Чекпоинт загружен ---")
++            print(f"--- [RESUME] Чекпоинт загружен (только веса студента) ---")
+-    # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
++    # Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)
+-        # Загружаем на CPU, чтобы не забивать HBM
++        # Используем уже загруженный в память ckpt (или загружаем заново, если он был удален)
+-        # 1. Веса
+-        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+-        if rank == 0: 
+-            print(f"--- [RESUME] Веса загружены ---")
+-            if incompatible_keys.missing_keys: print(f"Missing: {len(incompatible_keys.missing_keys)}")
++        # Веса загружать здесь НЕЛЬЗЯ, так как модель уже обернута в FSDP, 
++        # и это сломает шардирование (xs.mark_sharding), что приведет к OOM!
+-    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+-    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+-    accumulation_steps = 1
++    train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
++    val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='val')
++    accumulation_steps = 4
+
+=======================================================
+COMMIT_HEADER
+c32a92816951c9ea32844bef30e50f41e3e3a054
+fix OOM
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
+-            # Ручной перенос на устройство (без MpDeviceLoader)
+-            batch = {k: v.to(device) for k, v in batch.items()}
++            # Ручной перенос на устройство и SPMD Data Parallel шардинг
++            for k, v in batch.items():
++                v = v.to(device)
++                # Критично: сообщаем XLA, что батч нужно разрезать по ядрам ('fsdp')
++                xs.mark_sharding(v, mesh, ('fsdp', None))
++                batch[k] = v
+-                        v_batch = {k: v.to(device) for k, v in v_batch.items()}
++                        for k, v in v_batch.items():
++                            v = v.to(device)
++                            xs.mark_sharding(v, mesh, ('fsdp', None))
++                            v_batch[k] = v
++                            
+
+=======================================================
+COMMIT_HEADER
+cf1a64430295d5198dc7a78bc83289572c843fc5
+fixes
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
++        # Загружаем на CPU, чтобы не забивать HBM
++        if rank == 0:
++            print(f"--- [DEBUG] Ключи в чекпоинте: {list(ckpt.keys())} ---")
+-        # 1. Веса (уже загружены выше, но для надежности проверим еще раз)
+-        # distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
++        # 1. Веса
++        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
++        if rank == 0: 
++            print(f"--- [RESUME] Веса загружены ---")
++            if incompatible_keys.missing_keys: print(f"Missing: {len(incompatible_keys.missing_keys)}")
+-                if rank == 0: print(f"--- [RESUME WARNING] Не удалось загрузить оптимизатор: {e} ---")
++                if rank == 0: print(f"--- [RESUME WARNING] Ошибка оптимизатора: {e} ---")
+-                if rank == 0: print(f"--- [RESUME WARNING] Не удалось загрузить планировщик: {e} ---")
++                if rank == 0: print(f"--- [RESUME WARNING] Ошибка планировщика: {e} ---")
++        else:
++            # Если ключа нет (бывает в Kaggle-снапшотах), ставим 5400 вручную
++            global_step = 5400
++            if rank == 0: print(f"--- [RESUME WARNING] 'global_step' не найден, форсируем 5400 ---")
+-                    wandb.log(log_dict)
++                    wandb.log(log_dict, step=global_step)
++                
++            # Сохранение (раз в 500 шагов, так как модель тяжелая)
++            if global_step % 500 == 0:
++                xm.mark_step() # Синхронизация перед сохранением
++                if rank == 0: print(f"--- [RANK 0] Подготовка чекпоинта на шаге {global_step}... ---")
+-            # Сохранение и валидация
+-            if global_step % 100 == 0:
+-                xm.save(save_data, "latest_checkpoint.pt", master_only=True)
++                xm.save(save_data, "latest_checkpoint.pt") # master_only=True внутри xm.save по умолчанию для файлов
+-                    print(f"--- [SAVE] Чекпоинт сохранен на шаге {global_step} ---")
+-                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"])
++                    print(f"--- [SAVE] Чекпоинт сохранен. Отправка в GCS... ---")
++                    # Отправляем в фоновом режиме
++                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", f"gs://bebladii-weigths/checkpoints/ckpt_{global_step}.pt"])
++                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/latest_checkpoint.pt"])
+
+=======================================================
+COMMIT_HEADER
+e3fa6daa424eb502b75fc1ed24ad7e54cf91f2a2
+fixes
+=======================================================
+diff --git a/experiments/train_phase1_TPU.py b/experiments/train_phase1_TPU.py
+--- a/experiments/train_phase1_TPU.py
++++ b/experiments/train_phase1_TPU.py
+-import os, sys, shutil, subprocess, re, torch, json, wandb
+-from pathlib import Path
+-from torch.optim import AdamW
+-from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
++import os, sys
++import torch._dynamo
++
++# Отключаем Dynamo/Inductor, так как он конфликтует с XLA (особенно в ModernBERT)
++torch._dynamo.disable()
++
++# 1. УСТАНОВКА ПЕРЕМЕННЫХ
++os.environ["PJRT_DEVICE"] = "TPU"
++os.environ["XLA_USE_BF16"] = "1"
++os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
++
++import torch
++import wandb
++import torch_xla.core.xla_model as xm
++import torch_xla.distributed.parallel_loader as pl
++import subprocess, re
+-try:
+-    import torch_xla.core.xla_model as xm
+-    import torch_xla.distributed.xla_multiprocessing as xmp
+-    import torch_xla.distributed.parallel_loader as pl
+-    XLA_AVAILABLE = True
+-except ImportError:
+-    XLA_AVAILABLE = False
+-
+-# Модули проекта
+-try:
++# Добавляем путь к src
++sys.path.append(os.getcwd())
++
++def train():
++    # Импорты модулей проекта
+-    from src.beb_la_dii.utils.experiment_tracker import ExperimentTracker
+-    from src.beb_la_dii.utils.tokenizer import get_tokenizer
+-except ImportError:
+-    print("Ошибка: Модули проекта не найдены. Убедитесь, что вы в корне репозитория.")
+-
+-# --- КОНФИГУРАЦИЯ ---
+-VERSION = "v1.0"
+-GCS_DATA_BUCKET = "gs://bebladii-datasets"
+-GCS_WEIGHTS_BUCKET = "gs://bebladii-weigths"
+-GCS_CHECKPOINT_BUCKET = "gs://bebladii-weigths"
+-RESOURCES_PATH = "./storage"
+-DATA_PATH = "./data"
+-TEACHER_NAME = "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+-BASE_MODEL_NAME = "answerdotai/ModernBERT-large"
+-
+-# Гиперпараметры
+-MAX_LENGTH = 4096
+-BATCH_SIZE = 4
+-GRAD_ACCUM_STEPS = 1
+-STAGE = 'reasoning'
+-VAL_EVERY_STEPS = 200
+-VAL_MAX_SAMPLES = 100
+-LEARNING_RATE = 5e-5
+-EPOCHS = 1
+-WARMUP_STEPS = 50
+-SPOT_SAVE_EVERY = 200
+-BETA_MAX = 0.0001
+-
+-def get_secret_safe(key_name):
+-    if key_name in os.environ: return os.environ[key_name]
+-    # Для TPU VM обычно используются переменные окружения или gcloud secrets
+-    return None
+-
+-def smart_load_weights(model, path, strict=False):
+-    if not os.path.exists(path): return False
+-    print(f"--- [LOADER] Загрузка весов из {path} ---")
+-    ckpt = torch.load(path, map_location='cpu')
+-    flat_ckpt = {}
+-    if isinstance(ckpt, dict) and any(k in ckpt for k in ["latentBERT_state_dict", "state_dict", "model_state_dict"]):
+-        if "model_state_dict" in ckpt: flat_ckpt = ckpt["model_state_dict"]
+-        else:
+-            model_sd = ckpt.get("latentBERT_state_dict", ckpt.get("state_dict", {}))
+-            for k, v in model_sd.items(): flat_ckpt[f"student.{k}"] = v
+-        for p_name in ["input_projector", "feature_projectors"]:
+-            if p_name in ckpt:
+-                p_sd = ckpt[p_name]
+-                if isinstance(p_sd, dict):
+-                    for k, v in p_sd.items():
+-                        if isinstance(v, dict):
+-                            for inner_k, inner_v in v.items(): flat_ckpt[f"{p_name}.{k}.{inner_k}"] = inner_v
+-                        else: flat_ckpt[f"{p_name}.{k}"] = v
+-    else: flat_ckpt = ckpt
+-    
+-    model_state = model.state_dict()
+-    target_keys = {k: v for k, v in model_state.items() if not k.startswith("teacher.")}
+-    new_state = {}
+-    
+-    def clean_prefix(key):
+-        k = key
+-        for p in ["student.", "model.", "distiller.", "input_projector.", "feature_projectors."]:
+-            while k.startswith(p): k = k[len(p):]
+-        return k
+-
+-    for k, v in flat_ckpt.items():
+-        if k in target_keys: new_state[k] = v
+-        else:
+-            ck = clean_prefix(k)
+-            if len(ck) <= 5: continue
+-            for tk in target_keys.keys():
+-                if tk.endswith(ck):
+-                    new_state[tk] = v
+-                    break
+-    model.load_state_dict(new_state, strict=strict)
+-    return True
+-
+-def _mp_fn(index, flags):
+-    resume_run = flags.get('resume_run', False)
+-    resume_path = flags.get('resume_path', None)
+-    custom_student_weights_path = flags.get('custom_student_weights_path', None)
+-    
+-    best_val_loss = float('inf')
+-    global_step = 0
+-    device = xm.xla_device() if XLA_AVAILABLE else "cpu"
+-    print(f"[{index}] Инициализация на {device}...")
++    # Определяем наше ядро (0, 1, 2 или 3)
++    device = xm.xla_device()
++    rank = xm.get_local_ordinal()
++    print(f"[{rank}] Запущено на ядре: {device}")
+-        teacher_id=TEACHER_NAME, 
+-        student_base_id=BASE_MODEL_NAME, # Для TPU v6e лучше начинать с базы или пребилта
+-        version=VERSION,
+-        weights_map={}, # На TPU v6e веса грузим через smart_load_weights ниже
+-        device_map={"": device},
+-        student_device=device
++        teacher_id="deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
++        student_base_id="answerdotai/ModernBERT-large",
++        version="v1.0", weights_map={}, device_map={"": device}, student_device=device
++    # Отключаем градиентный чекпоинтинг для совместимости с XLA
++    if hasattr(distiller.student.model, 'gradient_checkpointing_disable'):
++        distiller.student.model.gradient_checkpointing_disable()
+-    if hasattr(distiller.student.model, 'gradient_checkpointing_enable'):
+-        distiller.student.model.gradient_checkpointing_enable()
+-
+-    # Загрузка весов
+-    if resume_run and resume_path:
+-        ckpt = torch.load(resume_path, map_location='cpu')
++    # Загрузка последнего чекпоинта (если есть)
++    if os.path.exists("latest_checkpoint.pt"):
++        ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
+-        best_val_loss = ckpt.get('best_val_loss', float('inf'))
+-        global_step = ckpt.get('step', -1) + 1
+-        print(f"[{index}] Восстановлено с шага {global_step}")
+-    elif custom_student_weights_path:
+-        smart_load_weights(distiller, custom_student_weights_path)
+-
+-    # Обучаемые параметры
+-    for p in distiller.parameters(): p.requires_grad = False
+-    for p in distiller.student.parameters(): p.requires_grad = True
+-    for p in distiller.input_projector.parameters(): p.requires_grad = True
+-    for proj in distiller.feature_projectors.values():
+-        for p in proj.parameters(): p.requires_grad = True
+-
+-    train_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='train')
+-    val_loader = get_dataloader(stage=STAGE, batch_size=BATCH_SIZE, max_length=MAX_LENGTH, split='val')
+-    
+-    if XLA_AVAILABLE:
+-        train_loader = pl.MpDeviceLoader(train_loader, device)
+-        val_loader = pl.MpDeviceLoader(val_loader, device)
++        if rank == 0: print(f"--- [RESUME] Чекпоинт загружен ---")
+-    optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=LEARNING_RATE)
+-    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
++    # Настройка
++    from torch.optim import AdamW
++    optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=5e-5)
+-    tracker = ExperimentTracker(project_root=".", stage=STAGE)
+-    if xm.is_master_ordinal():
+-        wandb_key = get_secret_safe("WANDB_API_KEY")
+-        if wandb_key: wandb.init(project="BEBLaDII", name=f"tpu-phase1-{STAGE}")
++    # Данные
++    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
++    train_loader = pl.MpDeviceLoader(train_loader, device)
++
++    if rank == 0:
++        wandb.init(project="BEBLaDII", name="tpu-v6e-torchrun")
+-    # Цикл обучения
++    # Обучение
+-    for epoch in range(EPOCHS):
+-        progress_bar = tqdm(train_loader, disable=not xm.is_master_ordinal())
++    global_step = 0
++    for epoch in range(1):
++        progress_bar = tqdm(train_loader, disable=(rank != 0), desc=f"Epoch {epoch}")
+-            input_ids = batch['input_ids']
+-            mask = batch['attention_mask']
+-            
+-            # Linear beta warmup
+-            current_beta = min(BETA_MAX, BETA_MAX * (global_step / (WARMUP_STEPS or 1)))
+-            
+-            student_states, teacher_targets, mu, logvar = distiller(input_ids, mask)
+-            loss, metrics = criterion(student_states, teacher_targets, mask, mu, logvar, beta=current_beta)
+-            
++            student_states, teacher_targets, mu, logvar = distiller(batch['input_ids'], batch['attention_mask'])
++            loss, _ = criterion(student_states, teacher_targets, batch['attention_mask'], mu, logvar, beta=0.0001)
+-            scheduler.step()
+-            
+-            if xm.is_master_ordinal():
++            if rank == 0:
+-                if wandb.run: wandb.log({"train/loss": loss.item(), "step": global_step, "beta": current_beta})
+-
+-            # Сохранение
+-            if global_step % SPOT_SAVE_EVERY == 0 and xm.is_master_ordinal():
+-                print(f"\n[SAVE] Шаг {global_step}...")
+-                ckpt = {'step': global_step, 'model_state_dict': distiller.state_dict(), 'best_val_loss': best_val_loss}
+-                torch.save(ckpt, f"RESUME_TPU_STEP_{global_step}.pt")
+-                subprocess.run(["gsutil", "cp", f"RESUME_TPU_STEP_{global_step}.pt", f"{GCS_CHECKPOINT_BUCKET}/checkpoints/"])
++                if global_step % 200 == 0:
++                    torch.save({'model_state_dict': distiller.state_dict()}, "latest_checkpoint.pt")
++                    subprocess.run(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"])
+-    print("--- [TPU STARTUP] Подготовка ресурсов ---")
+-    
+-    # 1. Синхронизация данных
+-    os.makedirs(DATA_PATH, exist_ok=True)
+-    subprocess.run(["gsutil", "-m", "rsync", "-r", f"{GCS_DATA_BUCKET}/", DATA_PATH], check=True)
+-    
+-    # 2. Поиск чекпоинта
+-    flags = {'resume_run': False, 'resume_path': None}
+-    try:
+-        res = subprocess.run(["gsutil", "ls", f"{GCS_CHECKPOINT_BUCKET}/checkpoints/RESUME_TPU_STEP_*.pt"], capture_output=True, text=True)
+-        if res.returncode == 0 and res.stdout.strip():
+-            latest = sorted(res.stdout.strip().split('\n'))[-1]
+-            local = os.path.basename(latest)
+-            subprocess.run(["gsutil", "cp", latest, local], check=True)
+-            flags['resume_run'] = True
+-            flags['resume_path'] = local
+-    except: pass
+-
+-    # 3. Запуск
+-    if XLA_AVAILABLE:
+-        os.environ["PJRT_DEVICE"] = "TPU"
+-        xmp.spawn(_mp_fn, args=(flags,), nprocs=None, start_method="spawn")
++    import time
++    rank = int(os.environ.get("LOCAL_RANK", 0))
++
++    if rank == 0:
++        print("--- [RANK 0] Подготовка ресурсов ---")
++        if not os.path.exists("src"):
++            subprocess.run(["git", "init"], check=True)
++            subprocess.run(["git", "remote", "add", "origin", "https://github.com/Laeryid/BEBLaDII"], check=True)
++            subprocess.run(["git", "pull", "origin", "main"], check=True)
++        
++        os.makedirs("./data", exist_ok=True)
++        subprocess.run(["gsutil", "-m", "rsync", "-r", "gs://bebladii-datasets/data/", "./data"], check=True)
++
++        # Скачиваем чекпоинт
++        try:
++            res = subprocess.run(["gsutil", "ls", "gs://bebladii-weigths/checkpoints/RESUME_TPU_STEP_*.pt"], capture_output=True, text=True)
++            if res.returncode == 0 and res.stdout.strip():
++                latest = sorted(res.stdout.strip().split('\n'))[-1]
++                subprocess.run(["gsutil", "cp", latest, "latest_checkpoint.pt"], check=True)
++        except: pass
++        
++        # Сигнализируем, что загрузка завершена
++        with open("/tmp/resources_prepared.flag", "w") as f: f.write("ok")
+-        _mp_fn(0, flags)
++        # Процессы 1-3 ждут, пока процесс 0 скачает файлы, ПЕРЕД инициализацией XLA
++        print(f"--- [RANK {rank}] Ожидание загрузки ресурсов... ---")
++        while not os.path.exists("/tmp/resources_prepared.flag"):
++            time.sleep(2)
++
++    # Инициализируем распределенное окружение для torchrun (привязка PJRT к топологии torchrun)
++    import torch.distributed as dist
++    import torch_xla.distributed.xla_backend
++    dist.init_process_group("xla", init_method="xla://")
++
++    # Инициализируем XLA только после скачивания, чтобы избежать проблем с fork() и gsutil
++    import torch_xla.core.xla_model as xm
++    device = xm.xla_device()
++    
++    # Синхронизация на уровне XLA (на всякий случай)
++    xm.rendezvous("init_done")
++
++    # Запускаем само обучение
++    train()
+diff --git a/src/beb_la_dii/model/dus.py b/src/beb_la_dii/model/dus.py
+--- a/src/beb_la_dii/model/dus.py
++++ b/src/beb_la_dii/model/dus.py
+-from transformers import AutoConfig, AutoModelForMaskedLM
++from transformers import AutoConfig, AutoModel
++    import torch
+-    base_model = AutoModelForMaskedLM.from_pretrained(model_id, trust_remote_code=True)
++    base_model = AutoModel.from_pretrained(model_id, trust_remote_code=True)
+-    current_layers = len(base_model.model.layers)
++    current_layers = len(base_model.layers)
+-    layers = base_model.model.layers
++    layers = base_model.layers
+-    base_model.model.layers = new_layers
++    base_model.layers = new_layers
+
+=======================================================
+COMMIT_HEADER
+ee3c769d7549ccf233621c5600af86be5f84a78e
+fix oom
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
++            # ВАЖНО: Удаляем огромные тензоры до градиентного шага и компиляции графа!
++            del student_states, teacher_targets, mu, logvar
++            
++            
++            # Извлекаем скаляры, чтобы не держать тензоры в HBM как выходы графа
++            if rank == 0 and (global_step + 1) % 10 == 0:
++                loss_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_metrics.items()}
++                loss_val = loss.item()
++            else:
++                loss_scalars = {}
++                loss_val = loss.item() if rank == 0 else 0.0
++                
++            del loss_metrics, loss
++            
+-                progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "step": global_step, "lr": f"{lr:.1e}"})
++                progress_bar.set_postfix({"loss": f"{loss_val:.4f}", "step": global_step, "lr": f"{lr:.1e}"})
+-                        "train/loss": loss.item(),
++                        "train/loss": loss_val,
+-                    for k, v in loss_metrics.items():
+-                        val = v.item() if torch.is_tensor(v) else v
++                    for k, val in loss_scalars.items():
++                        
++                        v_loss_scalar = v_loss.item()
++                        v_metrics_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in v_metrics.items()}
++                        
++                        # Удаляем тензоры до компиляции
++                        del v_st, v_tgt, v_mu, v_logvar, v_loss, v_metrics
++                        
+-                        val_loss_sum += v_loss.item()
+-                        for k, v in v_metrics.items():
+-                            val = v.item() if torch.is_tensor(v) else v
++                        val_loss_sum += v_loss_scalar
++                        for k, val in v_metrics_scalars.items():
+
+=======================================================
+COMMIT_HEADER
+7a12310fc75d941cf8212cc1747bc4a9a4e2bf24
+fix OOM
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
+-    val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=2048, split='val', val_ratio=0.0)
++    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val', val_ratio=0.0)
++            # Учителю нужен только 1 (полный) вариант, чтобы избежать OOM
++            t_input_ids = variants[3]["input_ids"]
++            t_attn_mask = variants[3]["attention_mask"]
++            xs.mark_sharding(t_input_ids, mesh, ('fsdp', None))
++            xs.mark_sharding(t_attn_mask, mesh, ('fsdp', None))
++            
+-            v_student_states, v_teacher_targets, v_mu, v_logvar, v_raw_st = distiller(v_input_ids, v_attn_mask)
++            v_student_states, v_teacher_targets, v_mu, v_logvar, v_raw_st = distiller(
++                input_ids=v_input_ids, 
++                attention_mask=v_attn_mask,
++                teacher_input_ids=t_input_ids,
++                teacher_attention_mask=t_attn_mask
++            )
+diff --git a/src/beb_la_dii/model/distiller.py b/src/beb_la_dii/model/distiller.py
+--- a/src/beb_la_dii/model/distiller.py
++++ b/src/beb_la_dii/model/distiller.py
+-    def forward(self, input_ids, attention_mask=None):
++    def forward(self, input_ids, attention_mask=None, teacher_input_ids=None, teacher_attention_mask=None):
+-        Прямой проход для дистилляции с отладкой.
++        Прямой проход для дистилляции.
++        Если teacher_input_ids передан, учитель (каузальная модель) обрабатывает только их (например, полные тексты).
++        Затем его выходы размножаются (repeat) под размер батча студента (input_ids).
++        Это решает проблему OOM при использовании Growing Masks (когда у студента батч 4x).
+-        # Определяем устройство учителя (обычно первая видеокарта в device_map)
+-            # XLA FSDP может скрывать параметры под FlatParameter wrapper'ами
+-        t_input_ids = input_ids.to(teacher_device)
+-        t_attention_mask = attention_mask.to(teacher_device) if attention_mask is not None else None
++        t_input_ids = teacher_input_ids if teacher_input_ids is not None else input_ids
++        t_attention_mask = teacher_attention_mask if teacher_attention_mask is not None else attention_mask
++        
++        t_input_ids = t_input_ids.to(teacher_device)
++        t_attention_mask = t_attention_mask.to(teacher_device) if t_attention_mask is not None else None
+-            # self._check_nan(teacher_embeddings, "Teacher Embeddings")
+-            for idx, t in teacher_targets.items():
+-                pass # self._check_nan(t, f"Teacher Target Layer {idx}")
++            
++        # Размножение (Repeat) выходов учителя, если батч студента больше (Growing Masks)
++        s_batch_size = input_ids.shape[0]
++        t_batch_size = t_input_ids.shape[0]
++        if s_batch_size > t_batch_size and s_batch_size % t_batch_size == 0:
++            repeats = s_batch_size // t_batch_size
++            # Повторяем по первому измерению (батч): [A, B] -> [A, B, A, B]
++            teacher_embeddings = teacher_embeddings.repeat(repeats, 1, 1)
++            for idx in teacher_targets:
++                teacher_targets[idx] = teacher_targets[idx].repeat(repeats, 1, 1)
+
+=======================================================
+COMMIT_HEADER
+baba728c320096fe77cebd41633f48fefbc8107d
+fix lr
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
+-    # Настройка
++    # Настройка оптимизатора и планировщика (согласно ADR 002)
++    from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
++    
++    scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=500, T_mult=2, eta_min=1e-7)
++    global_step = 0
++    # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
++    if os.path.exists("latest_checkpoint.pt"):
++        ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
++        
++        # 1. Веса (уже загружены выше, но для надежности проверим еще раз)
++        # distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
++        
++        # 2. Оптимизатор
++        if 'optimizer_state_dict' in ckpt:
++            try:
++                optimizer.load_state_dict(ckpt['optimizer_state_dict'])
++                if rank == 0: print("--- [RESUME] Состояние оптимизатора восстановлено ---")
++            except Exception as e:
++                if rank == 0: print(f"--- [RESUME WARNING] Не удалось загрузить оптимизатор: {e} ---")
++        
++        # 3. Планировщик
++        if 'scheduler_state_dict' in ckpt:
++            try:
++                scheduler.load_state_dict(ckpt['scheduler_state_dict'])
++                if rank == 0: print("--- [RESUME] Состояние планировщика восстановлено ---")
++            except Exception as e:
++                if rank == 0: print(f"--- [RESUME WARNING] Не удалось загрузить планировщик: {e} ---")
++        
++        # 4. Глобальный шаг
++        if 'global_step' in ckpt:
++            global_step = ckpt['global_step']
++            if rank == 0: print(f"--- [RESUME] Продолжаем с шага {global_step} ---")
++
+-    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+-    val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
++    train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
++    val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='val')
+-            wandb.init(project="BEBLaDII", name="tpu-v6e-torchrun")
++            wandb.init(project="BEBLaDII", name="tpu-v6e-spmd", resume="allow")
+-            wandb.init(project="BEBLaDII", name="tpu-v6e-torchrun", mode="offline")
++            wandb.init(project="BEBLaDII", name="tpu-v6e-spmd", mode="offline", resume="allow")
+-    global_step = 0
+-    gradient_accumulation_steps = 8 # Глобальный батч будет 2 * 4 (ядра) * 8 = 64
+-            print(f"--- [RANK 0] Начинаем итерации. Градиенты обновляются каждые {gradient_accumulation_steps} шагов. ---")
++            print(f"--- [RANK 0] Начинаем итерации. ---")
+-            if rank == 0 and global_step < 3: print(f"\n--- [RANK 0] Шаг {global_step+1}: Forward pass... ---")
+-            
+-            # FSDP в XLA может падать при накоплении градиентов без no_sync(). 
+-            # Отключаем gradient_accumulation_steps для стабильности.
++            scheduler.step()
+-
++            
+-                # Метрика лосса 
+-                final_loss = loss.item()
+-                progress_bar.set_postfix({"loss": f"{final_loss:.4f}", "step": global_step})
++                lr = optimizer.param_groups[0]['lr']
++                progress_bar.set_postfix({"loss": f"{loss.item():.4f}", "step": global_step, "lr": f"{lr:.1e}"})
+-                log_dict = {
+-                    "train/loss": final_loss,
+-                    "global_step": global_step,
+-                    "tech/beta": 0.0001,
+-                    "tech/lr": 5e-5
++                if global_step % 10 == 0:
++                    log_dict = {
++                        "train/loss": loss.item(),
++                        "train/lr": lr,
++                        "global_step": global_step,
++                    }
++                    for k, v in loss_metrics.items():
++                        val = v.item() if torch.is_tensor(v) else v
++                        if k.startswith("l") and ("_mse" in k or "_cos" in k):
++                            log_dict[f"train/layers/{k}"] = val
++                        else:
++                            log_dict[f"train/{k}"] = val
++                    wandb.log(log_dict)
++                
++            # Сохранение и валидация
++            if global_step % 100 == 0:
++                # Сохраняем веса, оптимизатор и планировщик
++                save_data = {
++                    'model_state_dict': distiller.state_dict(),
++                    'optimizer_state_dict': optimizer.state_dict(),
++                    'scheduler_state_dict': scheduler.state_dict(),
++                    'global_step': global_step
+-                for k, v in loss_metrics.items():
+-                    val = v.item() if torch.is_tensor(v) else v
+-                    if k.startswith("l") and ("_mse" in k or "_cos" in k):
+-                        log_dict[f"train/layers/{k}"] = val
+-                    else:
+-                        log_dict[f"train/{k}"] = val
+-                        
+-                wandb.log(log_dict)
++                xm.save(save_data, "latest_checkpoint.pt", master_only=True)
++                if rank == 0:
++                    print(f"--- [SAVE] Чекпоинт сохранен на шаге {global_step} ---")
++                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"])
++
+-                val_mse_sum = 0.0
+-                val_cos_sum = 0.0
+-                val_kl_sum = 0.0
+-                val_layers_sums = {}
+-                max_val_steps = 100 // 2
++                max_val_steps = 50
+-                        v_loss, v_metrics = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
++                        v_loss, _ = criterion(v_st, v_tgt, v_batch['attention_mask'], v_mu, v_logvar, beta=0.0001)
+-                        
+-                        val_mse_sum += v_metrics.get("mse", 0.0).item() if torch.is_tensor(v_metrics.get("mse", 0.0)) else v_metrics.get("mse", 0.0)
+-                        val_cos_sum += v_metrics.get("cosine", 0.0).item() if torch.is_tensor(v_metrics.get("cosine", 0.0)) else v_metrics.get("cosine", 0.0)
+-                        val_kl_sum += v_metrics.get("kl", 0.0).item() if torch.is_tensor(v_metrics.get("kl", 0.0)) else v_metrics.get("kl", 0.0)
+-                        
+-                        for k, v in v_metrics.items():
+-                            if k.startswith("l") and ("_mse" in k or "_cos" in k):
+-                                val = v.item() if torch.is_tensor(v) else v
+-                                val_layers_sums[k] = val_layers_sums.get(k, 0.0) + val
+-                    avg_val_mse = val_mse_sum / val_steps if val_steps > 0 else 0
+-                    avg_val_cos = val_cos_sum / val_steps if val_steps > 0 else 0
+-                    avg_val_kl = val_kl_sum / val_steps if val_steps > 0 else 0
+-                    
+-                    print(f"[{global_step}] Validation - Loss: {avg_val_loss:.4f}, MSE: {avg_val_mse:.4f}, Cosine: {avg_val_cos:.4f}, KL: {avg_val_kl:.6f}")
+-                    
+-                    val_log = {
+-                        "val/loss": avg_val_loss,
+-                        "val/mse": avg_val_mse,
+-                        "val/cosine": avg_val_cos,
+-                        "val/kl": avg_val_kl,
+-                        "global_step": global_step
+-                    }
+-                    for k, v in val_layers_sums.items():
+-                        val_log[f"val/layers/{k}"] = v / val_steps
+-                    wandb.log(val_log)
+-                    
+-                # Сохраняем веса корректно для XLA (вызывается на всех ядрах для синхронизации, пишет только rank 0)
+-                xm.save({'model_state_dict': distiller.state_dict()}, "latest_checkpoint.pt", master_only=True)
++                    print(f"[{global_step}] Validation - Loss: {avg_val_loss:.4f}")
++                    wandb.log({"val/loss": avg_val_loss, "global_step": global_step})
+-                if rank == 0:
+-                    # Отправляем в фон (Popen), чтобы rank 0 не отставал от остальных ядер
+-                    subprocess.Popen(["gsutil", "cp", "latest_checkpoint.pt", "gs://bebladii-weigths/checkpoints/"])
+-                    
+
+=======================================================
+COMMIT_HEADER
+3a0c053f2d85d5fad690f1439e81a0c7ba3528c2
+Fix lost snapshop
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
++    # Загрузка последнего чекпоинта (если есть) ДО обертки FSDP
++    if os.path.exists("latest_checkpoint.pt"):
++        ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
++        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
++        if rank == 0: 
++            print(f"--- [RESUME] Чекпоинт загружен ---")
++            if len(incompatible_keys.missing_keys) > 0:
++                print(f"--- [RESUME WARNING] Missing keys (first 10): {incompatible_keys.missing_keys[:10]}")
++            if len(incompatible_keys.unexpected_keys) > 0:
++                print(f"--- [RESUME WARNING] Unexpected keys (first 10): {incompatible_keys.unexpected_keys[:10]}")
++
+-    # Загрузка последнего чекпоинта (если есть)
+-    if os.path.exists("latest_checkpoint.pt"):
+-        ckpt = torch.load("latest_checkpoint.pt", map_location='cpu')
+-        # Для FSDP load_state_dict работает прозрачно, если стейт был сохранен так же (консолидирован)
+-        distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+-        if rank == 0: print(f"--- [RESUME] Чекпоинт загружен ---")
+-
+-            if global_step % 200 == 0:
++            if global_step % 500 == 0:
+
+=======================================================
+COMMIT_HEADER
+0c930ddb55a8cdb3a9bfa6e8735ef3f40afa68a9
+fix
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
++def custom_shard_output(output, mesh):
++    import torch_xla.experimental.xla_sharding as xs
++    # выход имеет вид: (student_states, teacher_targets, mu, logvar)
++    student_states, teacher_targets, mu, logvar = output
++    
++    # Шардируем выходные состояния ученика (batch_size находится на 0-й оси)
++    if isinstance(student_states, dict):
++        for v in student_states.values():
++            if v is not None:
++                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
++                
++    # Шардируем целевые состояния учителя
++    if isinstance(teacher_targets, dict):
++        for v in teacher_targets.values():
++            if v is not None:
++                xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
++                
++    if mu is not None:
++        xs.mark_sharding(mu, mesh, ('fsdp',) + (None,) * (mu.dim() - 1))
++    if logvar is not None:
++        xs.mark_sharding(logvar, mesh, ('fsdp',) + (None,) * (logvar.dim() - 1))
++    return None
++
++        shard_output=custom_shard_output
+
+=======================================================
+COMMIT_HEADER
+a94d9c9448121293144b2767d3631ad10f287e71
+fix
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
+-    import torch.distributed as dist
+-    import torch_xla.distributed.xla_backend
+-    dist.init_process_group("xla", init_method="xla://")
++    # Для SPMD FSDPv2 инициализация process_group с xla backend больше не нужна!
++    # import torch.distributed as dist
++    # import torch_xla.distributed.xla_backend
++    # dist.init_process_group("xla", init_method="xla://")
+
+=======================================================
+COMMIT_HEADER
+5c0da01c4cd793a8c098a0708228473a23479c8f
+fix
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
++# Включаем SPMD режим до любых операций XLA
++xr.use_spmd()
++
+
+=======================================================
+COMMIT_HEADER
+6a0fa028c75227f2f5fedd2f9e72f649980beeb8
+fix
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
+-            # Делим лосс на количество шагов накопления
+-            loss = loss / gradient_accumulation_steps
++            # FSDP в XLA может падать при накоплении градиентов без no_sync(). 
++            # Отключаем gradient_accumulation_steps для стабильности.
+-            if (global_step + 1) % gradient_accumulation_steps == 0:
+-                xm.optimizer_step(optimizer)
+-                optimizer.zero_grad()
+-            else:
+-                # ОЧЕНЬ ВАЖНО ДЛЯ XLA: заставляем выполнить микро-батч, чтобы он не сливал
+-                # 16 шагов в один гигантский граф (что вызвало бы 93GB * 16 OOM).
+-                xm.mark_step()
++            xm.optimizer_step(optimizer)
++            optimizer.zero_grad()
++
+-                # Метрика лосса после всех шагов накопления
+-                final_loss = loss.item() * gradient_accumulation_steps
++                # Метрика лосса 
++                final_loss = loss.item()
+
+=======================================================
+COMMIT_HEADER
+adc86a6e53ca5cb7e4dd9cb29af7cda6061dda0f
+fix
+=======================================================
+diff --git a/experiments/train_phase1_TPU_fsdp.py b/experiments/train_phase1_TPU_fsdp.py
+--- a/experiments/train_phase1_TPU_fsdp.py
++++ b/experiments/train_phase1_TPU_fsdp.py
++    # ВАЖНО: XlaFullyShardedDataParallel требует, чтобы параметры были в FP32.
++    # Мы переводим модель в FP32 и временно на CPU, чтобы избежать OOM на одном ядре.
++    distiller.cpu().float()
++

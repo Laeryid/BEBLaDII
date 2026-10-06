@@ -1,0 +1,1 @@
+from ..experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel as XlaFullyShardedDataParallel

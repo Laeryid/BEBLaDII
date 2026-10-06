@@ -1,16 +1,56 @@
 {
   "coverage_settings": {
     "tracked_modules": [
-      ["src/beb_la_dii/model", "Model Core", 10],
-      ["src/beb_la_dii/rag", "RAG Engine", 10],
-      ["ideas", "Architecture & Training Phases", 10],
-      ["src/beb_la_dii/utils", "Utilities", 5],
-      ["src/beb_la_dii", "Core Package", 2],
-      ["tests", "Tests", 4],
-      ["experiments", "Experiments", 4],
-      [".know", "Knowledge Infrastructure", 8],
-      ["scripts", "Data & Ops Scripts", 3],
-      ["hugging face", "Hugging Face Ecosystem", 4]
+      [
+        "src/beb_la_dii/model",
+        "Model Core",
+        10
+      ],
+      [
+        "src/beb_la_dii/rag",
+        "RAG Engine",
+        10
+      ],
+      [
+        "ideas",
+        "Architecture & Training Phases",
+        10
+      ],
+      [
+        "src/beb_la_dii/utils",
+        "Utilities",
+        5
+      ],
+      [
+        "src/beb_la_dii",
+        "Core Package",
+        2
+      ],
+      [
+        "tests",
+        "Tests",
+        4
+      ],
+      [
+        "experiments",
+        "Experiments",
+        4
+      ],
+      [
+        ".know",
+        "Knowledge Infrastructure",
+        8
+      ],
+      [
+        "scripts",
+        "Data & Ops Scripts",
+        3
+      ],
+      [
+        "hugging face",
+        "Hugging Face Ecosystem",
+        4
+      ]
     ],
     "thresholds": {
       "density": 50.0,
@@ -20,17 +60,26 @@
   "artifacts": {
     "README.md": {
       "description": "General documentation and project overview.",
-      "depends_on": ["src/", "tests/", "pyproject.toml"]
+      "depends_on": [
+        "src/",
+        "tests/",
+        "pyproject.toml"
+      ]
     },
     "AGENTS.md": {
       "description": "Instructions and context for AI agents.",
-      "depends_on": [".know/knowledge/", ".know/doc_config.json"]
+      "depends_on": [
+        ".know/knowledge/",
+        ".know/doc_config.json"
+      ]
     }
   },
   "knowledge_items": {
     "KI_model_core.md": {
       "description": "Model logic, Depth Up-Scaling (DUS), projectors, and inference.",
-      "covers": ["Model Core"],
+      "covers": [
+        "Model Core"
+      ],
       "depends_on": [
         "src/beb_la_dii/model/base.py",
         "src/beb_la_dii/model/component_registry.py",
@@ -42,7 +91,9 @@
     },
     "KI_architecture.md": {
       "description": "Central description of architecture (System 1/2) and training phases.",
-      "covers": ["Architecture & Training Phases"],
+      "covers": [
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         "ideas/Architecture.md",
         "ideas/Training phases.md",
@@ -52,12 +103,19 @@
     },
     "KI_rag_engine.md": {
       "description": "RAG system, indexing, and knowledge search.",
-      "covers": ["RAG Engine"],
-      "depends_on": ["src/beb_la_dii/rag/", "ideas/Architecture.md"]
+      "covers": [
+        "RAG Engine"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/rag/",
+        "ideas/Architecture.md"
+      ]
     },
     "KI_utilities.md": {
       "description": "Tokenizer integration, training optimization, and loss calculation.",
-      "covers": ["Utilities"],
+      "covers": [
+        "Utilities"
+      ],
       "depends_on": [
         "src/beb_la_dii/utils/data.py",
         "src/beb_la_dii/utils/experiment_manager.py",
@@ -69,7 +127,9 @@
     },
     "KI_tests.md": {
       "description": "Testing strategy for DUS, alignment, and gradient stability.",
-      "covers": ["Tests"],
+      "covers": [
+        "Tests"
+      ],
       "depends_on": [
         "tests/test_constructor_logic.py",
         "tests/test_dus_stability.py",
@@ -81,7 +141,9 @@
     },
     "KI_experiments.md": {
       "description": "Experiments with DUS Mapping, hyperparameters, and language data.",
-      "covers": ["Experiments"],
+      "covers": [
+        "Experiments"
+      ],
       "depends_on": [
         "experiments/train_phase1_kaggle.py",
         "experiments/train_phase1_kaggle.ipynb"
@@ -89,7 +151,9 @@
     },
     "KI_knowledge_infrastructure.md": {
       "description": "Technical implementation: SHA-256 hashing, state tracking, and MCP tools logic.",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": [
         ".know/scripts/knowledge_mcp.py",
         ".know/scripts/knowledge_engine.py",
@@ -103,12 +167,16 @@
     },
     "KI_knowledge_management.md": {
       "description": "Knowledge management methodology: standards, metrics, and quality control.",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": []
     },
     "KI_architectural_decisions.md": {
       "description": "Archive of architectural decisions (ADRs) and retrospectives.",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": [
         ".know/decisions/001_kaggle_phase1_retrospective.md",
         ".know/decisions/033_spherical_latent_space_and_slerp.md",
@@ -118,7 +186,9 @@
     },
     "KI_training_optimization.md": {
       "description": "ADR Group: Stability, LR strategies, scales, and isotropization.",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": [
         ".know/decisions/002_phase1_training_optimization.md",
         ".know/decisions/009_phase1_lr_aggressive_strategy.md",
@@ -128,7 +198,9 @@
     },
     "KI_tpu_infrastructure.md": {
       "description": "ADR Group: TPU v6e, XLA constraints, SPMD, and FSDP logic.",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": [
         ".know/decisions/003_fsdp_tpu_transition.md",
         ".know/decisions/004_spmd_fsdp_tpu_constraints.md",
@@ -141,7 +213,9 @@
     },
     "KI_knowledge_testing.md": {
       "description": "Integration and security tests for the knowledge infrastructure.",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": [
         ".know/tests/conftest.py",
         ".know/tests/test_audit_coverage.py",
@@ -156,7 +230,9 @@
     },
     "KI_knowledge_workflows.md": {
       "description": "Executable instructions (Workflows) for agents and maintenance procedures.",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": [
         ".know/workflows/create-adr.md",
         ".know/workflows/expand-knowledge.md",
@@ -166,7 +242,9 @@
     },
     "KI_datasets.md": {
       "description": "Описание источников данных, используемых для обучения и инференса в проекте BEBLaDII.",
-      "covers": ["Data & Ops Scripts"],
+      "covers": [
+        "Data & Ops Scripts"
+      ],
       "depends_on": [
         "scripts/prepare_phase1_data_v2.py",
         "scripts/prepare_kaggle_data.py",
@@ -176,7 +254,9 @@
     },
     "KI_kaggle.md": {
       "description": "Инструкции по интеграции с Kaggle API, команды загрузки датасетов и аварийного сохранения.",
-      "covers": ["Data & Ops Scripts"],
+      "covers": [
+        "Data & Ops Scripts"
+      ],
       "depends_on": [
         "scripts/prepare_kaggle_data.py",
         "scripts/sync_to_kaggle.ps1",
@@ -185,12 +265,16 @@
     },
     "KI_model_storage.md": {
       "description": "Рекомендации и правила локального и облачного хранения весов моделей, кэша HuggingFace и версионирования.",
-      "covers": ["Data & Ops Scripts"],
+      "covers": [
+        "Data & Ops Scripts"
+      ],
       "depends_on": []
     },
     "KI_data_preparation.md": {
       "description": "Dataset engineering: tokenization, downsampling, and infrastructure initialization.",
-      "covers": ["Data & Ops Scripts"],
+      "covers": [
+        "Data & Ops Scripts"
+      ],
       "depends_on": [
         "scripts/prepare_phase1_data_v2.py",
         "scripts/prepare_kaggle_data.py",
@@ -202,7 +286,9 @@
     },
     "KI_kaggle_ops.md": {
       "description": "Kaggle-specific operations: synchronization, emergency saves, and TPU validation.",
-      "covers": ["Data & Ops Scripts"],
+      "covers": [
+        "Data & Ops Scripts"
+      ],
       "depends_on": [
         "scripts/sync_to_kaggle.ps1",
         "scripts/kaggle_emergency_save.py",
@@ -212,7 +298,9 @@
     },
     "KI_model_inspection.md": {
       "description": "Deep weight inspection, key matching, and loading validation.",
-      "covers": ["Data & Ops Scripts"],
+      "covers": [
+        "Data & Ops Scripts"
+      ],
       "depends_on": [
         "scripts/deep_inspect_weights.py",
         "scripts/check_model_keys.py",
@@ -223,7 +311,9 @@
     },
     "KI_operations.md": {
       "description": "General operations: smoke tests, system diagnostics, and length evaluation.",
-      "covers": ["Data & Ops Scripts"],
+      "covers": [
+        "Data & Ops Scripts"
+      ],
       "depends_on": [
         "scripts/smoke_test_forward.py",
         "scripts/verify_new_tpu.py",
@@ -233,22 +323,30 @@
     },
     "decisions/001_kaggle_phase1_retrospective.md": {
       "description": "ADR: Kaggle Phase 1 deployment retrospective (reasons for choosing FP32, Mirror-Load, Arrow_Schema).",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": []
     },
     "decisions/059_phase3_residual_stream_norm_explosion.md": {
       "description": "ADR: Решение проблемы 'глухоты' DUS к c_embed из-за взрыва нормы (Phase 3) через Layer Hooks и unified loss в float32.",
-      "covers": ["Architecture & Training Phases"],
+      "covers": [
+        "Architecture & Training Phases"
+      ],
       "depends_on": []
     },
     "decisions/060_phase3_canonical_diffusion_redesign.md": {
       "description": "ADR: Переход к канонической диффузии на сфере (Phase 3): полный диапазон t, косинусное расписание κ(t), зашумление всех токенов, AdaLN вместо c_embed. Переопределение Phase 3/4 в плане обучения.",
-      "covers": ["Architecture & Training Phases"],
+      "covers": [
+        "Architecture & Training Phases"
+      ],
       "depends_on": []
     },
     "decisions/061_phase3_clean_text_diffusion_transition.md": {
       "description": "ADR: Переход на диффузию чистых текстов без ChatML-тегов (Phase 3), выбор чекпоинта step_9995 как фундамента и сопряжение с ModernLatentDecoder.",
-      "covers": ["Architecture & Training Phases"],
+      "covers": [
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         ".know/decisions/060_phase3_canonical_diffusion_redesign.md",
         "experiments/phase3/train_phase3_notebook.py"
@@ -256,7 +354,9 @@
     },
     "decisions/062_phase3_adaln_residual_stream_bug.md": {
       "description": "ADR: Фиксация бага интеграции AdaLN (умножение residual stream) и конфликта с Pre-LN, приведших к деградации Phase 3. Внедрение паттерна DiT.",
-      "covers": ["Architecture & Training Phases"],
+      "covers": [
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         ".know/decisions/060_phase3_canonical_diffusion_redesign.md",
         "experiments/phase3/train_phase3_notebook.py"
@@ -264,14 +364,19 @@
     },
     "decisions/063_phase3_advanced_diffusion_techniques.md": {
       "description": "ADR: Integration of advanced continuous diffusion techniques (Self-Conditioning preparation, Shifted Noise Schedule) to improve model stability and convergence speed.",
-      "covers": ["Architecture & Training Phases"],
+      "covers": [
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         "experiments/phase3/kaggle/train_phase3_notebook.py"
       ]
     },
     "decisions/064_adaln_zero_init_symmetry_break_and_diversity_loss.md": {
       "description": "ADR: Нарушение нулевой симметрии AdaLN (Micro-Noise Init) и введение Diversity Loss для предотвращения Rank-1 коллапса в Phase 3.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "experiments/phase3/kaggle/train_phase3_notebook.py",
         ".know/decisions/062_phase3_adaln_residual_stream_bug.md"
@@ -279,7 +384,10 @@
     },
     "decisions/065_unet_skip_connections_and_identity_gate.md": {
       "description": "ADR: UNet-style skip-connection (проброс x_t) и внешний gate(t) на выходе DUS для структурной гарантии тождественного преобразования при t=0 без модификации ModernBERT.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "src/beb_la_dii/model/dus.py",
         ".know/decisions/060_phase3_canonical_diffusion_redesign.md",
@@ -289,7 +397,11 @@
     },
     "decisions/066_variance_matching_loss_anti_collapse.md": {
       "description": "ADR: Variance Matching Loss (anti-collapse) - штраф за коллапс дисперсии h_39 относительно дисперсии целевых векторов z_clean по батчу.",
-      "covers": ["Architecture & Training Phases", "Model Core", "Utilities"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core",
+        "Utilities"
+      ],
       "depends_on": [
         "experiments/phase3/kaggle/train_phase3_notebook.py",
         ".know/decisions/065_unet_skip_connections_and_identity_gate.md"
@@ -297,7 +409,11 @@
     },
     "decisions/067_adaln_l2_penalty_and_token_rkd.md": {
       "description": "ADR: AdaLN Output L2 Penalty & Token-to-Token RKD Loss against Gradient Collapse (Phase 3).",
-      "covers": ["Architecture & Training Phases", "Model Core", "Utilities"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core",
+        "Utilities"
+      ],
       "depends_on": [
         "experiments/phase3/kaggle/train_phase3_notebook.py",
         "experiments/phase3/Lightning/train_phase3_lightning.py",
@@ -307,7 +423,10 @@
     },
     "KI_training_infrastructure.md": {
       "description": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler.",
-      "covers": ["Experiments", "Data & Ops Scripts"],
+      "covers": [
+        "Experiments",
+        "Data & Ops Scripts"
+      ],
       "depends_on": [
         "experiments/train_phase1_TPU_fsdp.py",
         "src/beb_la_dii/utils/experiment_manager.py"
@@ -315,12 +434,19 @@
     },
     "KI_phase4_training.md": {
       "description": "Alignment & Confidence training, Phase 4.1/4.2 separation, and Orchestrator logic.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
-      "depends_on": ["ideas/Phase 4 разделение.md"]
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
+      "depends_on": [
+        "ideas/Phase 4 разделение.md"
+      ]
     },
     "decisions/014_metrics_fix_and_delta_recovery.md": {
       "description": "ADR: Исправление метрик (паддинг) и штраф за магнитуду дельты для предотвращения Collapse of Delta.",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": [
         "experiments/train_phase1_TPU_fsdp.py",
         "src/beb_la_dii/utils/loss.py"
@@ -328,7 +454,9 @@
     },
     "decisions/015_centered_cosine_similarity.md": {
       "description": "ADR: Внедрение центрированного косинусного сходства (Pearson Correlation) для устранения Rank-1 коллапса в слое 40.",
-      "covers": ["Knowledge Infrastructure"],
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
       "depends_on": [
         "experiments/train_phase1_TPU_fsdp.py",
         "src/beb_la_dii/utils/loss.py"
@@ -336,17 +464,28 @@
     },
     "decisions/016_decoupling_absolute_space.md": {
       "description": "ADR: Полный отказ от MSE на промежуточных слоях в пользу Centered Cosine для всей цепочки latentBERT.",
-      "covers": ["Knowledge Infrastructure"],
-      "depends_on": ["src/beb_la_dii/utils/loss.py"]
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/utils/loss.py"
+      ]
     },
     "decisions/017_new_loss_terms_and_metrics.md": {
       "description": "ADR: Внедрение новых слагаемых потерь (RKD и Norm Correlation) для топологического выравнивания латентных пространств.",
-      "covers": ["Knowledge Infrastructure"],
-      "depends_on": ["src/beb_la_dii/utils/loss.py", "tests/test_loss.py"]
+      "covers": [
+        "Knowledge Infrastructure"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/utils/loss.py",
+        "tests/test_loss.py"
+      ]
     },
     "decisions/019_decoupling_intermediate_layers.md": {
       "description": "ADR: Полный отказ от привязки промежуточных слоев DUS (l20, l30) к учителю. Удаление feat_proj_20/30, саморегуляризация через cov_loss на сырых BERT-векторах.",
-      "covers": ["Architecture & Training Phases"],
+      "covers": [
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         "src/beb_la_dii/model/distiller.py",
         "src/beb_la_dii/model/assembler.py",
@@ -355,42 +494,74 @@
     },
     "decisions/021_semantic_metrics_and_denoising_strategy.md": {
       "description": "ADR: Добавление метрик контроля (rank-1, mu/var drift) для свободных слоев и стратегия семантического зашумления с защитой от катастрофического забывания.",
-      "covers": ["Architecture & Training Phases", "Knowledge Infrastructure"],
-      "depends_on": ["experiments/train_phase1_TPU_fsdp.py"]
+      "covers": [
+        "Architecture & Training Phases",
+        "Knowledge Infrastructure"
+      ],
+      "depends_on": [
+        "experiments/train_phase1_TPU_fsdp.py"
+      ]
     },
     "decisions/022_intermediate_layers_hybrid_regularization.md": {
       "description": "ADR: Гибридная регуляризация (центрирование + усиленный cov_loss) для промежуточных слоев без ограничения дисперсии.",
-      "covers": ["Architecture & Training Phases"],
-      "depends_on": ["src/beb_la_dii/utils/loss.py"]
+      "covers": [
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/utils/loss.py"
+      ]
     },
     "decisions/023_layer40_raw_topology_and_variance.md": {
       "description": "ADR: Формирование топологии сырого 40-го слоя (RKD, Norm Correlation) и введение мягкого штрафа дисперсии для промежуточных слоев.",
-      "covers": ["Architecture & Training Phases"],
-      "depends_on": ["src/beb_la_dii/utils/loss.py"]
+      "covers": [
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/utils/loss.py"
+      ]
     },
     "decisions/024_spherical_manifold_distillation.md": {
       "description": "ADR: Формирование сферической топологии (Zen Solution) без Norm Correlation для стабильности перед диффузионной фазой.",
-      "covers": ["Architecture & Training Phases"],
-      "depends_on": ["src/beb_la_dii/utils/loss.py"]
+      "covers": [
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/utils/loss.py"
+      ]
     },
     "decisions/025_centered_rkd.md": {
       "description": "ADR: Центрирование векторов перед вычислением RKD для устранения конфликта с prior_loss и предотвращения Rank-1 коллапса.",
-      "covers": ["Architecture & Training Phases"],
-      "depends_on": ["src/beb_la_dii/utils/loss.py"]
+      "covers": [
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/utils/loss.py"
+      ]
     },
     "decisions/026_gradient_stabilization_rkd_cosine.md": {
       "description": "ADR: Стабилизация градиентов в RKD и косинусном сходстве через добавление эпсилона под квадратный корень для предотвращения коллапса латентного пространства Студента.",
-      "covers": ["Architecture & Training Phases"],
-      "depends_on": ["src/beb_la_dii/utils/loss.py"]
+      "covers": [
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/utils/loss.py"
+      ]
     },
     "decisions/027_huber_loss_variance_covariance.md": {
       "description": "ADR: Замена MSE на Huber Loss для регуляризации дисперсии и ковариации (устранение градиентного взрыва O(S^3)).",
-      "covers": ["Architecture & Training Phases"],
-      "depends_on": ["src/beb_la_dii/utils/loss.py"]
+      "covers": [
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/utils/loss.py"
+      ]
     },
     "decisions/028_manual_huber_and_norm_cv_metric.md": {
       "description": "ADR: Ручная реализация Huber Loss через torch.where (устранение лишних аллокаций D×D, XLA-фьюзинг) и добавление метрики Norm CV для диагностики сферичности латентного пространства перед Phase 8.",
-      "covers": ["Architecture & Training Phases", "Utilities"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Utilities"
+      ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py",
         ".know/decisions/027_huber_loss_variance_covariance.md"
@@ -398,17 +569,23 @@
     },
     "decisions/029_variance_floor_and_scale_invariant_covariance.md": {
       "description": "ADR: Добавление нижней границы дисперсии и масштабно-инвариантной ковариации для устранения Shortcut Learning на промежуточных слоях.",
-      "covers": ["Architecture & Training Phases", "Utilities"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Utilities"
+      ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py",
         ".know/decisions/022_intermediate_layers_hybrid_regularization.md",
         ".know/decisions/027_huber_loss_variance_covariance.md"
       ]
     },
-
     "decisions/030_cov_loss_weight_increase_and_gcs_migration.md": {
       "description": "ADR: Увеличение коэффициента cov_loss в prior_loss с 0.1 до 0.3 для ускорения снижения rank1_ratio. Миграция GCS bucket'ов в us-central2 для устранения межконтинентального трафика.",
-      "covers": ["Architecture & Training Phases", "Utilities", "Experiments"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Utilities",
+        "Experiments"
+      ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py",
         "experiments/train_phase1_TPU_fsdp.py",
@@ -417,39 +594,53 @@
     },
     "decisions/033_spherical_latent_space_and_slerp.md": {
       "description": "ADR: Переход на Spherical Latent Space, LayerNorm на выходе OP и Slerp для диффузии.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "src/beb_la_dii/model/projectors.py",
         "experiments/train_phase3.py"
       ]
     },
-
     "decisions/034_angular_loss_for_output_projector.md": {
       "description": "ADR: Замена Huber-loss на угловую (cosine+norm) для обучения OP. Диагностика ложного плато cos≈0.81 при loss=0.009. Добавлен --loss-mode для аблации.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "experiments/phase 3/train_phase3.py",
         "src/beb_la_dii/model/projectors.py"
       ]
     },
-
     "decisions/035_centered_cosine_and_contrastive_neighbor_loss.md": {
       "description": "ADR: Внедрение центрированного косинуса, динамических якорей и контрастивного лосса ближайших соседей (RKD/InfoNCE) для стабилизации рекурсии OutputProjector.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "experiments/phase 3/train_phase3.py",
         "experiments/phase 3/test_phase3.py"
       ]
     },
-
     "decisions/036_replacing_infonce_with_rkd.md": {
       "description": "ADR: Отказ от InfoNCE в пользу Angle-wise RKD для решения Hubness Problem и устранения False Negative Repulsion.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
-      "depends_on": ["experiments/phase 3/train_phase3.py"]
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
+      "depends_on": [
+        "experiments/phase 3/train_phase3.py"
+      ]
     },
     "decisions/037_phase3_failure_and_plan_b_skip_connections.md": {
       "description": "ADR: Фиксация неудачи OutputProjector (Phase 3) из-за Garbage Collapse и переход к Plan B (Skip Connections).",
-      "covers": ["Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "experiments/phase 3/train_phase3.py",
         "experiments/phase 3/test_phase3.py"
@@ -457,12 +648,20 @@
     },
     "decisions/038_plan_b_phase1_vae_spmd_training.md": {
       "description": "ADR: Plan B Phase 1 VAE FSDP training optimization, SPMD sharding, and on-the-fly tokenization.",
-      "covers": ["Knowledge Infrastructure", "Experiments"],
-      "depends_on": ["experiments/phase 1/train_phase1_vae_fsdp.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Experiments"
+      ],
+      "depends_on": [
+        "experiments/phase 1/train_phase1_vae_fsdp.py"
+      ]
     },
     "decisions/039_phase1_vae_spherical_topology_fix.md": {
       "description": "ADR: Phase 1 VAE spherical topology fix (F.normalize), variance-only KL, and uniformity loss.",
-      "covers": ["Knowledge Infrastructure", "Experiments"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Experiments"
+      ],
       "depends_on": [
         "src/beb_la_dii/model/vae.py",
         "experiments/phase 1/train_phase1_vae_fsdp.py"
@@ -470,7 +669,10 @@
     },
     "decisions/040_phase3_pearson_rkd_whitening.md": {
       "description": "ADR: Отказ от Anchor Loss в пользу Pearson RKD на выбеленных матрицах и возврат var_loss/cov_loss для предотвращения коллапса.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py",
         "experiments/phase3/compute_whitening.py"
@@ -478,12 +680,20 @@
     },
     "decisions/041_phase3_angular_loss_and_spherical_dus.md": {
       "description": "ADR: Переход на Angular Loss, фикс bfloat16, F.normalize для DUS и variance floor для сферической топологии.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
-      "depends_on": ["experiments/phase3/train_phase3_logic.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "experiments/phase3/train_phase3_logic.py"
+      ]
     },
     "decisions/042_phase3_decoupling_denoising_and_logic.md": {
       "description": "ADR: Разделение задач денойзинга и логической топологии по глубине, внедрение Macro-Residual для DUS Phase 3.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py",
         "experiments/phase3/compute_whitening.py"
@@ -491,27 +701,50 @@
     },
     "decisions/043_activation_l2_penalty_bfloat16.md": {
       "description": "ADR: Внедрение Activation L2 Penalty для предотвращения loss плато и потери точности bfloat16 из-за сферических функций потерь.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
-      "depends_on": ["experiments/phase3/train_phase3_logic.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "experiments/phase3/train_phase3_logic.py"
+      ]
     },
     "decisions/044_confidence_embed_and_residual_fix.md": {
       "description": "ADR: Внедрение Confidence Embedding и устранение двойного Residual (превращение DUS в Conditional Diffusion).",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
-      "depends_on": ["experiments/phase3/train_phase3_logic.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "experiments/phase3/train_phase3_logic.py"
+      ]
     },
     "decisions/045_ema_for_diffusion_stability.md": {
       "description": "ADR: Внедрение EMA (Exponential Moving Average) для стабилизации диффузионного обучения и валидации.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
-      "depends_on": ["experiments/phase3/train_phase3_logic.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "experiments/phase3/train_phase3_logic.py"
+      ]
     },
     "decisions/046_c_embed_targets_and_ema_fix.md": {
       "description": "ADR: Интеграция Confidence Embedding в Identity и Denoise Loss, исправление EMA.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
-      "depends_on": ["experiments/phase3/train_phase3_logic.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "experiments/phase3/train_phase3_logic.py"
+      ]
     },
     "decisions/047_shortcut_collapse_and_pure_targets.md": {
       "description": "ADR: Опровержение ADR 046 и решение проблемы Shortcut Collapse (Bounded c_embed & Pure Targets).",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py",
         "experiments/phase3/eval_phase3_logic_local.py"
@@ -519,7 +752,10 @@
     },
     "decisions/048_analytical_c_embed_subtraction.md": {
       "description": "ADR: Аналитическое вычитание c_embed из pre-norm (Negative Skip Connection).",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py",
         "experiments/phase3/eval_phase3_logic_local.py"
@@ -527,27 +763,51 @@
     },
     "decisions/049_removing_teacher_and_logic_loss.md": {
       "description": "ADR: Удаление дистилляции учителя (logic_loss) из Phase 3 для разрешения конфликта градиентов и экономии ресурсов.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
-      "depends_on": ["experiments/phase3/train_phase3_logic.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "experiments/phase3/train_phase3_logic.py"
+      ]
     },
     "decisions/050_gradient_analysis_sparsity_and_llrd.md": {
       "description": "ADR: Математика градиентов DUS: Мертвый Logic Loss, L1 Sparsity для c_embed и перевернутый LLRD.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
-      "depends_on": ["experiments/phase3/train_phase3_logic.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "experiments/phase3/train_phase3_logic.py"
+      ]
     },
     "decisions/051_llrd_c_embed_catastrophe.md": {
       "description": "ADR: Отказ от LLRD, усиленного c_embed и sparsity_loss (Анализ катастрофы с переобучением верхних слоев).",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
-      "depends_on": ["experiments/phase3/train_phase3_logic.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "experiments/phase3/train_phase3_logic.py"
+      ]
     },
     "decisions/052_frozen_encoder_eval_mode.md": {
       "description": "ADR: Изоляция замороженных генераторов таргетов в режиме eval() для устранения сдвига валидации из-за Dropout.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
-      "depends_on": ["experiments/phase3/train_phase3_logic.py"]
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
+      "depends_on": [
+        "experiments/phase3/train_phase3_logic.py"
+      ]
     },
     "decisions/054_modernbert_dataparallel_rope_masking.md": {
       "description": "ADR: Совместимость ModernBERT с DataParallel и влияние RoPE на PAD-токены.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "src/beb_la_dii/model/modern_decoder.py",
         "experiments/phase 2/train_phase2_decoder.py"
@@ -555,7 +815,10 @@
     },
     "decisions/055_pretrained_modernbert_large_decoder_transition.md": {
       "description": "ADR: Предобученные веса ModernBERT-large для декодера Фазы 2 с целью устранения плато сжатия.",
-      "covers": ["Knowledge Infrastructure", "Model Core"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Model Core"
+      ],
       "depends_on": [
         "src/beb_la_dii/model/modern_decoder.py",
         "experiments/phase 2/train_phase2_decoder.py"
@@ -563,7 +826,11 @@
     },
     "decisions/056_decoder_learning_rate_plateau.md": {
       "description": "ADR: Опровержение ADR 055 (отсутствие Encoder Bias) и обоснование необходимости высокого LR для случайно инициализированного слоя проекции декодера.",
-      "covers": ["Knowledge Infrastructure", "Model Core", "Utilities"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Model Core",
+        "Utilities"
+      ],
       "depends_on": [
         "src/beb_la_dii/model/modern_decoder.py",
         "experiments/phase 2/train_phase2_decoder.py",
@@ -572,7 +839,11 @@
     },
     "decisions/057_phase3_bfloat16_gradient_collapse.md": {
       "description": "ADR: Описание коллапса градиентов bfloat16 в Phase 3 из-за множителя gamma=20 и округления.",
-      "covers": ["Knowledge Infrastructure", "Model Core", "Utilities"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Model Core",
+        "Utilities"
+      ],
       "depends_on": [
         "experiments/phase3/train_phase3_notebook.py",
         "experiments/phase3/eval_phase3_logic_local.py"
@@ -580,7 +851,10 @@
     },
     "decisions/058_phase4_canvas_format_and_sep_token.md": {
       "description": "ADR: Формат холста Фазы 4, шумовой токен и детерминированная генерация якоря <|thoughts|> через LatentEncoder.",
-      "covers": ["Knowledge Infrastructure", "Architecture & Training Phases"],
+      "covers": [
+        "Knowledge Infrastructure",
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         "experiments/phase3/Lightning/test_thoughts.py",
         "storage/components/sep_token.pt"
@@ -588,7 +862,10 @@
     },
     "KI_metrics_reference.md": {
       "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
-      "covers": ["Utilities", "Experiments"],
+      "covers": [
+        "Utilities",
+        "Experiments"
+      ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py",
         "experiments/train_phase1_TPU_fsdp.py",
@@ -604,14 +881,21 @@
     },
     "decisions/073_data_preparation_bug_stringified_tokens.md": {
       "description": "ADR: Переход к сырым текстам после обнаружения бага токенизации словарей (bulletproof fallback).",
-      "covers": ["Data & Ops Scripts", "Architecture & Training Phases"],
+      "covers": [
+        "Data & Ops Scripts",
+        "Architecture & Training Phases"
+      ],
       "depends_on": [
         "src/beb_la_dii/utils/data.py"
       ]
     },
     "decisions/083_phase4_semantic_skepticism_scl_and_anchors.md": {
       "description": "ADR: Phase 4 семантический скептицизм, устранение Data Leak через Истинные Якоря и половинный Angular SCL.",
-      "covers": ["Architecture & Training Phases", "Utilities", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Utilities",
+        "Model Core"
+      ],
       "depends_on": [
         "experiments/phase 4/kaggle/train_phase4_notebook.py",
         "experiments/phase 4/ideas.md"
@@ -619,19 +903,26 @@
     },
     "KI_pace_optimizer.md": {
       "description": "PACE optimizer for iterate-averaged models: mechanism, benefits for diffusion, and usage.",
-      "covers": ["Architecture & Training Phases"],
+      "covers": [
+        "Architecture & Training Phases"
+      ],
       "depends_on": []
     },
     "KI_huggingface_ecosystem.md": {
       "description": "Description of Hugging Face scripts, weights upload rules, and file mappings.",
-      "covers": ["Hugging Face Ecosystem"],
+      "covers": [
+        "Hugging Face Ecosystem"
+      ],
       "depends_on": [
         "hugging face/upload_weights.py"
       ]
     },
     "decisions/091_global_scheduled_identity_gate.md": {
       "description": "ADR 091: Global Scheduled Identity Gate vs Per-Token Sensored Gate.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "experiments/phase 6/kaggle/train_phase6_notebook.py",
         ".know/decisions/065_unet_skip_connections_and_identity_gate.md"
@@ -639,7 +930,11 @@
     },
     "decisions/092_phase6_void_token_and_canvas_unmasking.md": {
       "description": "ADR 092: Phase 6 Void Token, Canvas Unmasking, and Elastic Mid-Sequence Injection.",
-      "covers": ["Architecture & Training Phases", "Model Core", "Utilities"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core",
+        "Utilities"
+      ],
       "depends_on": [
         "experiments/phase 6/kaggle/train_phase6_tpu_notebook.py",
         "experiments/phase 6/plan.md"
@@ -647,14 +942,20 @@
     },
     "decisions/093_phase6_self_identity_dataset_and_alignment_anchor.md": {
       "description": "ADR 093: Phase 6 Architectural Self-Identity Dataset and Alignment Anchor.",
-      "covers": ["Architecture & Training Phases", "Data & Ops Scripts"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Data & Ops Scripts"
+      ],
       "depends_on": [
         "experiments/phase 6/plan.md"
       ]
     },
     "decisions/094_orchestrator_canvas_expansion_vs_expand_token.md": {
       "description": "ADR 094: Rejection of Explicit Expand Token in Favor of Sensor-Driven Orchestrator Expansion.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "experiments/phase 6/plan.md",
         ".know/decisions/092_phase6_void_token_and_canvas_unmasking.md"
@@ -662,23 +963,40 @@
     },
     "decisions/095_phase6_progressive_unfreezing_buffer_layers.md": {
       "description": "ADR 095: Phase 6 Progressive Unfreezing (Buffer Layers) and DUS Manifold Alignment.",
-      "covers": ["Architecture & Training Phases"],
+      "covers": [
+        "Architecture & Training Phases"
+      ],
       "depends_on": []
     },
     "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md": {
       "description": "ADR 096: Phase 6 Gradient Collapse Fix and Dynamic Void Penalty.",
-      "covers": ["Architecture & Training Phases", "Model Core", "Utilities"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core",
+        "Utilities"
+      ],
       "depends_on": [
         "experiments/phase 6/kaggle/train_phase6_notebook.py"
       ]
     },
     "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md": {
       "description": "ADR 097: Phase 6 Global Scheduled Identity Gate, Beta Noise Sampling, and TPU Adaptation.",
-      "covers": ["Architecture & Training Phases", "Model Core"],
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core"
+      ],
       "depends_on": [
         "experiments/phase 6/kaggle/train_phase6_notebook.py",
         "experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py"
       ]
+    },
+    "decisions/099_phase6_layer12_prompt_cache.md": {
+      "description": "ADR 099: Phase 6 DUS Layer 12 as Universal Conditioning Prompt Cache (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 099: Phase 6 DUS Layer 12 as Universal Conditioning Prompt Cache"
     }
   },
   "knowledge_system": {

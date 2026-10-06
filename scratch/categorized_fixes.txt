@@ -1,0 +1,770 @@
+Total fixes recorded: 134
+
+
+==========================================
+CATEGORY: Graph recompilation / .item() / closures (30 commits)
+==========================================
+  [Phase 6] 355290d: ADR 98
+      -> t = torch.arange(max_seq_len, dtype=torch.float32)
+      -> """Возвращает исходный CAPromptLayer (снимает FSDP-обёртку, если есть)."""
+      -> xm.set_rng_state(seed)
+  [Phase 6] a97487d: ADR 97
+      -> # Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta
+      -> # XLA fallback safe approximation (хотя мы вызываем на CPU, это перестраховка)
+      -> # === XLA SAFE SAMPLING (CPU) ===
+  [Phase 6] 3c7bebf: Fix 2
+      -> self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.float())
+      -> param.sub_(alpha * (param - ema_casted))
+      -> param.copy_(self.shadow[name].to(param.dtype))
+  [Phase 6] f5abaca: ADR 91
+      -> grad_norm += p.grad.data.norm(2).item() ** 2
+      -> "cos_sim": avg_cos_sim.item(),
+      -> val_cos += v_cos.item()
+  [Phase 4] d28d4c4: fix 4 nan checks
+      -> Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.
+      -> is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()
+      -> GLOBAL_NAN_NAMES.append(name)
+  [Phase 4] 5d6191f: fix 3 OOM
+      -> Disabled to prevent XLA graph accumulation and memory leaks.
+      -> Disabled to prevent XLA graph breaks (xm.mark_step) before backward pass,
+      -> which was causing RESOURCE_EXHAUSTED OOM errors.
+  [Phase 4] 6375b03: fix 2
+      -> num_anchors = torch.randint(1, 4, (1,), device=cpu_dev).item()
+      -> num_anchors = torch.randint(1, 4, (1,), device=cpu_dev).item()
+      -> num_noisy = torch.randint(1, 4, (1,), device=cpu_dev).item()
+  [Phase 4] 23e66d8: TPU ADR 83-85
+      -> w_scl = 0.5           # ADR 083: Semantic Skepticism Angular SCL
+      -> num_anchors = torch.randint(1, 4, (1,)).item()
+      -> num_anchors = torch.randint(1, 4, (1,)).item()
+  [Phase 4] acd8c19: ADR 83
+      -> # --- Global NaN Debugging System (XLA Safe) ---
+      -> GLOBAL_NAN_NAMES = []
+      -> GLOBAL_NAN_CHECKS = []
+  [Phase 4] 83e1cd4: looking for NaN
+      -> # --- Global NaN Debugging System ---
+      -> GLOBAL_NAN_TRIGGERED = False
+      -> def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):
+  [Phase 4] 415250c: ADR 80
+      -> pullback_alpha = 0.001       # Для режима pace (согласно ADR 077, согласовано со скоростью обновления EMA)
+      -> import torch_xla.core.xla_model as xm
+      -> xm.mark_step()
+  [Phase 4] 6d83397: ADR 079
+      -> # Это гарантирует 1 фиксированный XLA-граф.
+      -> # Без XLA FIX. Если используется PACE с warmup_steps=0, LR будет константным,
+      -> # и XLA не будет перекомпилировать граф.
+  [Phase 4] f8825ec: fix LR graph recompilation
+      -> # [XLA FIX] Обновляем LR только раз в 50 шагов.
+      -> # Если LR (Python float) меняется каждый шаг, XLA вшивает его в граф
+      -> # PACE: Постоянный LR с первичным warmup
+  [Phase 4] 975b610: fix error
+      -> torch_xla.sync()
+      -> import torch_xla.debug.metrics as xla_met
+      -> print(f"[XLA METRICS REPORT] Step {step}")
+  [Phase 4] c9afcdb: fix OOM
+      -> import torch_xla
+      -> # but avoids intermediate temporary tensors and fuses perfectly in XLA
+      -> ema_dtype = self.shadow[name].dtype
+  [Phase 4] 5c278c1: Fix something else
+      -> batch_size    = 128
+      -> t_sin_global.requires_grad_(True)                   # Fix FSDP backward hook warning
+      -> t_sin_token.requires_grad_(True)                    # Fix FSDP backward hook warning
+  [Phase 4] ed2df7a: ADR 68
+      -> if torch.rand(1).item() < 0.5:
+      -> self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
+  [Plan A Phase 2] 389c694: Починка валидации
+      -> xm.mark_step()
+  [Plan A Phase 2] 1ef8359: fix
+      -> val_metrics_sums["l40_var_drift"] = (var_l40 - 1.0).pow(2).mean().item()
+      -> val_metrics_sums["l40_std_drift"] = (std_l40 - 1.0).pow(2).mean().item()
+  [Plan A Phase 2] 4c852b8: kl fix
+      -> # Максимум Beta (BETA_MAX) на середине цикла LR (1000-й шаг)
+      -> lr_warmup_factor = max(0.01, global_step / warmup_steps)
+      -> param_group['lr'] = param_group['lr'] * lr_warmup_factor
+  [Plan A Phase 2] 26b9bc3: fixes
+      -> xm.rendezvous("gcs_sync_done")
+      -> xm.rendezvous("validation_done")
+      -> "train/loss": loss.item() * accumulation_steps,
+  [Plan A Phase 2] 4fc8281: Пытаемся починить
+      -> xm.optimizer_step(optimizer, barrier=True)
+      -> if xm.is_master_ordinal() and global_step % 20 == 0:
+      -> lr = optimizer.param_groups[0]['lr']
+  [Plan A Phase 2] e129c59: fix
+      -> s_norm = student_states[idx].norm().item()
+      -> t_norm = teacher_targets[idx].norm().item()
+  [Plan A Phase 2] d5ad5f8: try fix
+      -> s_norm = student_states[idx].norm().item()
+      -> t_norm = teacher_targets[idx].norm().item()
+  [Plan A Phase 2] 0ec7c05: Fix 40 layer mce
+      -> lr_multiplier = (local_step + 1) / warmup_steps
+      -> # Умножаем LR, выданный шедулером, на коэффициент прогрева
+      -> param_group['lr'] *= lr_multiplier
+  [Plan A Phase 2] ee3c769: fix oom
+      -> loss_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_metrics.items()}
+      -> loss_val = loss.item()
+      -> loss_val = loss.item() if rank == 0 else 0.0
+  [Plan A Phase 2] cf1a644: fixes
+      -> xm.mark_step() # Синхронизация перед сохранением
+      -> xm.save(save_data, "latest_checkpoint.pt") # master_only=True внутри xm.save по умолчанию для файлов
+      -> print(f"--- [SAVE] Чекпоинт сохранен. Отправка в GCS... ---")
+  [Plan A Phase 2] baba728: fix lr
+      -> from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+      -> # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
+  [Plan A Phase 2] 977d406: fix
+      -> import torch_xla.distributed.xla_multiprocessing as xmp
+      -> import torch_xla.runtime as xr
+      -> import torch_xla.experimental.xla_sharding as xs
+  [Plan A Phase 2] 6a0fa02: fix
+      -> # FSDP в XLA может падать при накоплении градиентов без no_sync().
+      -> xm.optimizer_step(optimizer)
+      -> final_loss = loss.item()
+
+==========================================
+CATEGORY: OOM / Memory / Batch size (30 commits)
+==========================================
+  [Phase 6] 355290d: ADR 98
+      -> t = torch.arange(max_seq_len, dtype=torch.float32)
+      -> """Возвращает исходный CAPromptLayer (снимает FSDP-обёртку, если есть)."""
+      -> xm.set_rng_state(seed)
+  [Phase 4] 5d6191f: fix 3 OOM
+      -> Disabled to prevent XLA graph accumulation and memory leaks.
+      -> Disabled to prevent XLA graph breaks (xm.mark_step) before backward pass,
+      -> which was causing RESOURCE_EXHAUSTED OOM errors.
+  [Phase 4] acd8c19: ADR 83
+      -> # --- Global NaN Debugging System (XLA Safe) ---
+      -> GLOBAL_NAN_NAMES = []
+      -> GLOBAL_NAN_CHECKS = []
+  [Phase 4] eda47c8: fix NaN
+      -> batch_size    = 32
+      -> batch_size    = 64
+      -> # --- OOM FIX: Принудительный барьер XLA для разделения графов первого и второго прохода ---
+  [Phase 4] cebafc8: fix 1
+      -> # --- OOM FIX: Принудительный барьер XLA для разделения графов первого и второго прохода ---
+      -> torch_xla.sync()
+  [Phase 4] ddcfee9: OOM fix 3
+      -> batch_size    = 64
+      -> # PyTorch XLA has a bug where lerp_ with a scalar weight boxes the scalar into a CPU tensor, causing a crash.
+      -> param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
+  [Phase 4] c9afcdb: fix OOM
+      -> import torch_xla
+      -> # but avoids intermediate temporary tensors and fuses perfectly in XLA
+      -> ema_dtype = self.shadow[name].dtype
+  [Phase 4] 5c278c1: Fix something else
+      -> batch_size    = 128
+      -> t_sin_global.requires_grad_(True)                   # Fix FSDP backward hook warning
+      -> t_sin_token.requires_grad_(True)                    # Fix FSDP backward hook warning
+  [Phase 4] 9f7bd4a: fix GCP
+      -> batch_size    = 32
+      -> batch_size    = 8
+  [Phase 4] 850ed62: fix OOM on TPU
+  [Phase 4] a048950: fix 5 OOM
+  [Phase 4] 310fc84: fix
+      -> # --- Explicit memory cleanup (OOM Fix) ---
+      -> # --- Explicit memory cleanup (OOM Fix) ---
+  [Phase 4] 55cdd40: fix OOM 2
+  [Phase 4] 64c5c54: fix OOM
+      -> output_hidden_states=False,  # Отключено для экономии VRAM (OOM фикс)
+      -> # --- Explicit memory cleanup (OOM Fix) ---
+      -> # --- Очистка памяти после валидации (OOM Fix) ---
+  [Phase 4] ae7c44d: adr 60
+      -> batch_size    = 8
+      -> save_steps    = 1000
+      -> # 3. DUS Backbone (обучаемый, float32 — ADR 057)
+  [Phase 4] 011e778: Fix OOM by enabling Gradient Checkpointing and reducing batch_size to 8
+      -> batch_size = 8  # Уменьшено для защиты от OOM
+      -> batch_size = 16  # Можно увеличить для T4 x2 (по сравнению с 8 для TPU FSDP)
+  [Plan A Phase 2] 7a12310: fix OOM
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val', val_ratio=0.0)
+      -> # Учителю нужен только 1 (полный) вариант, чтобы избежать OOM
+      -> xs.mark_sharding(t_input_ids, mesh, ('fsdp', None))
+  [Plan A Phase 2] d13e134: fix
+      -> # Данные (Используем SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+  [Plan A Phase 2] 1634e88: fix
+      -> # Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)
+      -> # Веса загружать здесь НЕЛЬЗЯ, так как модель уже обернута в FSDP,
+      -> # и это сломает шардирование (xs.mark_sharding), что приведет к OOM!
+  [Plan A Phase 2] 3649ca5: fix
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
+  [Plan A Phase 2] ee3c769: fix oom
+      -> loss_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_metrics.items()}
+      -> loss_val = loss.item()
+      -> loss_val = loss.item() if rank == 0 else 0.0
+  [Plan A Phase 2] 17b8de8: fix oom 2
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
+  [Plan A Phase 2] c32a928: fix OOM
+      -> # Ручной перенос на устройство и SPMD Data Parallel шардинг
+      -> # Критично: сообщаем XLA, что батч нужно разрезать по ядрам ('fsdp')
+      -> xs.mark_sharding(v, mesh, ('fsdp', None))
+  [Plan A Phase 2] baba728: fix lr
+      -> from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+      -> # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
+  [Plan A Phase 2] 0c930dd: fix
+      -> def custom_shard_output(output, mesh):
+      -> import torch_xla.experimental.xla_sharding as xs
+      -> # Шардируем выходные состояния ученика (batch_size находится на 0-й оси)
+  [Plan A Phase 2] 977d406: fix
+      -> import torch_xla.distributed.xla_multiprocessing as xmp
+      -> import torch_xla.runtime as xr
+      -> import torch_xla.experimental.xla_sharding as xs
+  [Plan A Phase 2] 6a0fa02: fix
+      -> # FSDP в XLA может падать при накоплении градиентов без no_sync().
+      -> xm.optimizer_step(optimizer)
+      -> final_loss = loss.item()
+  [Plan A Phase 2] adc86a6: fix
+      -> # ВАЖНО: XlaFullyShardedDataParallel требует, чтобы параметры были в FP32.
+      -> # Мы переводим модель в FP32 и временно на CPU, чтобы избежать OOM на одном ядре.
+  [Plan A Phase 2] d2e37d2: fix OOM 97Gb
+      -> # ХАК: monkey-patch torch.xla для починки gradient checkpointing
+      -> if not hasattr(torch, "xla"):
+      -> class DummyXLA:
+  [Plan A Phase 2] e3fa6da: fixes
+      -> # Отключаем Dynamo/Inductor, так как он конфликтует с XLA (особенно в ModernBERT)
+      -> os.environ["XLA_USE_BF16"] = "1"
+      -> import torch_xla.core.xla_model as xm
+
+==========================================
+CATEGORY: NaN / Inf / Numerical stability (9 commits)
+==========================================
+  [Phase 4] 7555cfb: fix local const
+      -> global GLOBAL_NAN_TRIGGERED
+  [Phase 4] d28d4c4: fix 4 nan checks
+      -> Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.
+      -> is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()
+      -> GLOBAL_NAN_NAMES.append(name)
+  [Phase 4] 5d6191f: fix 3 OOM
+      -> Disabled to prevent XLA graph accumulation and memory leaks.
+      -> Disabled to prevent XLA graph breaks (xm.mark_step) before backward pass,
+      -> which was causing RESOURCE_EXHAUSTED OOM errors.
+  [Phase 4] 23e66d8: TPU ADR 83-85
+      -> w_scl = 0.5           # ADR 083: Semantic Skepticism Angular SCL
+      -> num_anchors = torch.randint(1, 4, (1,)).item()
+      -> num_anchors = torch.randint(1, 4, (1,)).item()
+  [Phase 4] acd8c19: ADR 83
+      -> # --- Global NaN Debugging System (XLA Safe) ---
+      -> GLOBAL_NAN_NAMES = []
+      -> GLOBAL_NAN_CHECKS = []
+  [Phase 4] 83e1cd4: looking for NaN
+      -> # --- Global NaN Debugging System ---
+      -> GLOBAL_NAN_TRIGGERED = False
+      -> def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):
+  [Phase 4] eda47c8: fix NaN
+      -> batch_size    = 32
+      -> batch_size    = 64
+      -> # --- OOM FIX: Принудительный барьер XLA для разделения графов первого и второго прохода ---
+  [Plan A Phase 2] 3975133: fix?
+      -> # clip_threshold=1.0 заменяет внешний clip_grad_norm_, разгружая компилятор XLA
+      -> lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False,
+      -> torch.nn.utils.clip_grad_norm_(explosive_params, 1.0)
+  [Plan A Phase 2] 500e33e: FIX
+      -> # Сохраняем начальный LR для корректного локального вармапа
+      -> param_group['initial_lr'] = 5e-5
+      -> # Для SPMD FSDP используется xm.optimizer_step с Gradient Clipping
+
+==========================================
+CATEGORY: Precision (bf16/float32) (17 commits)
+==========================================
+  [Phase 6] 419dcbb: ADR 99
+      -> t_global_prompt = torch.zeros((B,), device=Z_A_clean.device, dtype=torch.float32)
+      -> t = torch.arange(max_seq_len, dtype=torch.float32)
+      -> # t_global is already defined correctly above
+  [Phase 6] 355290d: ADR 98
+      -> t = torch.arange(max_seq_len, dtype=torch.float32)
+      -> """Возвращает исходный CAPromptLayer (снимает FSDP-обёртку, если есть)."""
+      -> xm.set_rng_state(seed)
+  [Phase 4] 83e1cd4: looking for NaN
+      -> # --- Global NaN Debugging System ---
+      -> GLOBAL_NAN_TRIGGERED = False
+      -> def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):
+  [Phase 4] 1135317: ADR 82
+      -> # Убрано: os.environ["XLA_USE_BF16"] = "1" (ADR 057 / Phase 4 Precision Fix)
+      -> new_layers_lr        = 1e-4   # Возвращено к проверенному GPU-значению
+      -> pullback_warmup_steps = 200 # Шагов прогрева pullback_alpha
+  [Phase 4] eec0676: ADR81
+      -> pullback_alpha = 0.001       # Базовое значение (согласно ADR 077)
+      -> pullback_warmup_steps = 1000 # Шагов прогрева pullback_alpha
+      -> pullback_warmup_start = 0.03 # Стартовое значение pullback_alpha при прогреве
+  [Phase 4] 978ed3e: ADR 72
+      -> with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+  [Phase 4] cd474c1: adr 69
+      -> self.decoder.to(torch.bfloat16)
+      -> with torch.amp.autocast('cuda', dtype=torch.bfloat16):
+  [Phase 4] 4603fd4: fix
+      -> z_noisy = spherical_noise(z_clean_f, t)  # [B, T, D], float32
+      -> z_noisy = spherical_noise(z_clean_f, t)  # [B, T, D], float32
+  [Phase 4] ed2df7a: ADR 68
+      -> if torch.rand(1).item() < 0.5:
+      -> self.register_buffer("sep_embed", torch.zeros(hidden_dim, dtype=torch.float32))
+  [Phase 4] ae7c44d: adr 60
+      -> batch_size    = 8
+      -> save_steps    = 1000
+      -> # 3. DUS Backbone (обучаемый, float32 — ADR 057)
+  [Phase 4] 0fbb48c: fix
+      -> type(self.dus).dtype = property(lambda self: torch.float32)
+  [Phase 4] d21db8b: fix
+      -> embedding_model_path, torch_dtype=torch.bfloat16, local_files_only=True
+      -> _qwen_base = AutoModel.from_pretrained(embedding_model_path, torch_dtype=torch.bfloat16)
+  [Phase 4] bdd4ec3: ADR 57
+      -> # Вычисляем таргеты строго в float32, чтобы избежать потери точности
+      -> denoise_target = safe_normalize(z_clean.float(), dim=-1).to(torch.bfloat16)
+      -> identity_target = safe_normalize(z_noisy.float(), dim=-1).to(torch.bfloat16)
+  [Phase 4] b1df3ef: Fix Phase 3 denoise loss collapse: fix noise scaling and dataset parser
+      -> safe_normalize(noise.float(), dim=-1).to(torch.bfloat16)
+      -> * z_clean_norm.to(torch.bfloat16)
+      -> safe_normalize(noise.float(), dim=-1).to(torch.bfloat16) * low_noise_amp
+  [Phase 4] ba72048: Patch ModernBERT dtype and fix val_ratio
+      -> type(self.dus).dtype = property(lambda self: torch.bfloat16)
+  [Plan A Phase 2] 500e33e: FIX
+      -> # Сохраняем начальный LR для корректного локального вармапа
+      -> param_group['initial_lr'] = 5e-5
+      -> # Для SPMD FSDP используется xm.optimizer_step с Gradient Clipping
+  [Plan A Phase 2] e3fa6da: fixes
+      -> # Отключаем Dynamo/Inductor, так как он конфликтует с XLA (особенно в ModernBERT)
+      -> os.environ["XLA_USE_BF16"] = "1"
+      -> import torch_xla.core.xla_model as xm
+
+==========================================
+CATEGORY: EMA / Checkpoint resume / State save (25 commits)
+==========================================
+  [Phase 6] 355290d: ADR 98
+      -> t = torch.arange(max_seq_len, dtype=torch.float32)
+      -> """Возвращает исходный CAPromptLayer (снимает FSDP-обёртку, если есть)."""
+      -> xm.set_rng_state(seed)
+  [Phase 6] 3c7bebf: Fix 2
+      -> self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.float())
+      -> param.sub_(alpha * (param - ema_casted))
+      -> param.copy_(self.shadow[name].to(param.dtype))
+  [Phase 6] f5abaca: ADR 91
+      -> grad_norm += p.grad.data.norm(2).item() ** 2
+      -> "cos_sim": avg_cos_sim.item(),
+      -> val_cos += v_cos.item()
+  [Phase 4] 23e66d8: TPU ADR 83-85
+      -> w_scl = 0.5           # ADR 083: Semantic Skepticism Angular SCL
+      -> num_anchors = torch.randint(1, 4, (1,)).item()
+      -> num_anchors = torch.randint(1, 4, (1,)).item()
+  [Phase 4] 1135317: ADR 82
+      -> # Убрано: os.environ["XLA_USE_BF16"] = "1" (ADR 057 / Phase 4 Precision Fix)
+      -> new_layers_lr        = 1e-4   # Возвращено к проверенному GPU-значению
+      -> pullback_warmup_steps = 200 # Шагов прогрева pullback_alpha
+  [Phase 4] eec0676: ADR81
+      -> pullback_alpha = 0.001       # Базовое значение (согласно ADR 077)
+      -> pullback_warmup_steps = 1000 # Шагов прогрева pullback_alpha
+      -> pullback_warmup_start = 0.03 # Стартовое значение pullback_alpha при прогреве
+  [Phase 4] 415250c: ADR 80
+      -> pullback_alpha = 0.001       # Для режима pace (согласно ADR 077, согласовано со скоростью обновления EMA)
+      -> import torch_xla.core.xla_model as xm
+      -> xm.mark_step()
+  [Phase 4] f26e089: Fix PACE LR override and enable first 20 steps XLA metrics
+      -> # PACE: Постоянный LR с первичным warmup (Fix: берем константы из args, игнорируем checkpoint)
+      -> _pace_lrs = [args.dus_learning_rate, args.new_layers_lr]
+      -> param_group["lr"] = _pace_lrs[idx_p] * lr_warmup_factor
+  [Phase 4] ddcfee9: OOM fix 3
+      -> batch_size    = 64
+      -> # PyTorch XLA has a bug where lerp_ with a scalar weight boxes the scalar into a CPU tensor, causing a crash.
+      -> param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
+  [Phase 4] c9afcdb: fix OOM
+      -> import torch_xla
+      -> # but avoids intermediate temporary tensors and fuses perfectly in XLA
+      -> ema_dtype = self.shadow[name].dtype
+  [Phase 4] fe3437d: fix checkpoint loader
+  [Phase 4] f73d16d: add PACE mode and fix
+      -> pullback_alpha = 0.1       # Для режима pace
+      -> def __init__(self, model, decay=0.998, pullback_alpha=0.0):
+      -> self.pullback_alpha = pullback_alpha
+  [Phase 4] f2aa06b: adr 63
+      -> dus_ema_state             = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
+      -> adaLN_attn_ema_state      = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
+      -> adaLN_mlp_ema_state       = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
+  [Phase 4] 4f5bf89: ADR 62
+      -> adaLN_attn_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
+      -> adaLN_mlp_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
+      -> "adaLN_attn_ema": adaLN_attn_ema_state,
+  [Phase 4] bb25f19: fix lr after resume
+  [Phase 4] c526795: fix ema
+      -> ema = EMA(actual_model, decay=0.998)
+      -> ema.step(actual_model)
+      -> ema = EMA(model, decay=0.998)
+  [Phase 4] ae7c44d: adr 60
+      -> batch_size    = 8
+      -> save_steps    = 1000
+      -> # 3. DUS Backbone (обучаемый, float32 — ADR 057)
+  [Phase 4] 011e778: Fix OOM by enabling Gradient Checkpointing and reducing batch_size to 8
+      -> batch_size = 8  # Уменьшено для защиты от OOM
+      -> batch_size = 16  # Можно увеличить для T4 x2 (по сравнению с 8 для TPU FSDP)
+  [Plan A Phase 2] 651a62d: fix
+      -> "name": f"tpu-v6e-spmd-resumed-{global_step}",
+      -> if xm.is_master_ordinal() and (global_step % 20 == 0 or 'first_log_done' not in locals()):
+      -> "name": "tpu-v6e-spmd",
+  [Plan A Phase 2] e78459d: fix
+      -> Если чекпоинт в плоском FSDP-формате (ключи с _orig_module.) — делегируем в smart_load_weights.
+      -> print(f"--- [INIT] Detected flat FSDP checkpoint, delegating to smart_load_weights ---")
+      -> shard_output=None # Изменено с callable на None, так как SPMD справится сам
+  [Plan A Phase 2] cf1a644: fixes
+      -> xm.mark_step() # Синхронизация перед сохранением
+      -> xm.save(save_data, "latest_checkpoint.pt") # master_only=True внутри xm.save по умолчанию для файлов
+      -> print(f"--- [SAVE] Чекпоинт сохранен. Отправка в GCS... ---")
+  [Plan A Phase 2] baba728: fix lr
+      -> from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+      -> # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
+  [Plan A Phase 2] d2e37d2: fix OOM 97Gb
+      -> # ХАК: monkey-patch torch.xla для починки gradient checkpointing
+      -> if not hasattr(torch, "xla"):
+      -> class DummyXLA:
+  [Plan A Phase 2] dc7cfd4: fix
+      -> # Для XLA критически важно отключить preserve_rng_state, так как torch.utils.checkpoint
+      -> # пытается вызвать getattr(torch, "xla"), что приводит к AttributeError.
+      -> print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
+  [Plan A Phase 2] e3fa6da: fixes
+      -> # Отключаем Dynamo/Inductor, так как он конфликтует с XLA (особенно в ModernBERT)
+      -> os.environ["XLA_USE_BF16"] = "1"
+      -> import torch_xla.core.xla_model as xm
+
+==========================================
+CATEGORY: FSDP / SPMD / Distributed / Rank sync (27 commits)
+==========================================
+  [Phase 6] 355290d: ADR 98
+      -> t = torch.arange(max_seq_len, dtype=torch.float32)
+      -> """Возвращает исходный CAPromptLayer (снимает FSDP-обёртку, если есть)."""
+      -> xm.set_rng_state(seed)
+  [Phase 6] c1a335f: fix 2
+      -> wrapped = SpmdFullyShardedDataParallel(model.ca_layers[key], mesh=mesh, shard_output=shard_output)
+      -> model.ca_layers = SpmdFullyShardedDataParallel(model.ca_layers, mesh=mesh, shard_output=shard_output)
+  [Phase 4] 5c278c1: Fix something else
+      -> batch_size    = 128
+      -> t_sin_global.requires_grad_(True)                   # Fix FSDP backward hook warning
+      -> t_sin_token.requires_grad_(True)                    # Fix FSDP backward hook warning
+  [Phase 4] 4c1f003: fix XLA version
+      -> # Handle torch_xla versions (Kaggle often updates to >=2.5 where experimental is moved)
+      -> import torch_xla.experimental.xla_sharding as xs
+      -> print("[Init] Loaded xs from torch_xla.experimental.xla_sharding")
+  [Phase 4] 011e778: Fix OOM by enabling Gradient Checkpointing and reducing batch_size to 8
+      -> batch_size = 8  # Уменьшено для защиты от OOM
+      -> batch_size = 16  # Можно увеличить для T4 x2 (по сравнению с 8 для TPU FSDP)
+  [Plan A Phase 2] 651a62d: fix
+      -> "name": f"tpu-v6e-spmd-resumed-{global_step}",
+      -> if xm.is_master_ordinal() and (global_step % 20 == 0 or 'first_log_done' not in locals()):
+      -> "name": "tpu-v6e-spmd",
+  [Plan A Phase 2] 2f62fb2: fix Exceeded sflag capacity by 684B
+      -> # Это гарантирует, что все маски одного семпла попадут на одно XLA-устройство при шардинге
+      -> # SPMD Sharding для объединенного батча
+      -> xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))
+  [Plan A Phase 2] 7a12310: fix OOM
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val', val_ratio=0.0)
+      -> # Учителю нужен только 1 (полный) вариант, чтобы избежать OOM
+      -> xs.mark_sharding(t_input_ids, mesh, ('fsdp', None))
+  [Plan A Phase 2] e78459d: fix
+      -> Если чекпоинт в плоском FSDP-формате (ключи с _orig_module.) — делегируем в smart_load_weights.
+      -> print(f"--- [INIT] Detected flat FSDP checkpoint, delegating to smart_load_weights ---")
+      -> shard_output=None # Изменено с callable на None, так как SPMD справится сам
+  [Plan A Phase 2] 133eb95: fix
+      -> mesh_shape = (num_devices, 1) # Это уже кортеж
+      -> shard_output=None # Изменено с callable на None, так как SPMD справится сам
+      -> mesh_shape = (num_devices, 1)
+  [Plan A Phase 2] 8909428: fix weigths load from Awakening
+      -> # Очищаем ключи в state_dict (от префиксов компиляции/fsdp)
+  [Plan A Phase 2] 26b9bc3: fixes
+      -> xm.rendezvous("gcs_sync_done")
+      -> xm.rendezvous("validation_done")
+      -> "train/loss": loss.item() * accumulation_steps,
+  [Plan A Phase 2] 4fc8281: Пытаемся починить
+      -> xm.optimizer_step(optimizer, barrier=True)
+      -> if xm.is_master_ordinal() and global_step % 20 == 0:
+      -> lr = optimizer.param_groups[0]['lr']
+  [Plan A Phase 2] 3975133: fix?
+      -> # clip_threshold=1.0 заменяет внешний clip_grad_norm_, разгружая компилятор XLA
+      -> lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False,
+      -> torch.nn.utils.clip_grad_norm_(explosive_params, 1.0)
+  [Plan A Phase 2] 500e33e: FIX
+      -> # Сохраняем начальный LR для корректного локального вармапа
+      -> param_group['initial_lr'] = 5e-5
+      -> # Для SPMD FSDP используется xm.optimizer_step с Gradient Clipping
+  [Plan A Phase 2] d13e134: fix
+      -> # Данные (Используем SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+  [Plan A Phase 2] 1634e88: fix
+      -> # Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)
+      -> # Веса загружать здесь НЕЛЬЗЯ, так как модель уже обернута в FSDP,
+      -> # и это сломает шардирование (xs.mark_sharding), что приведет к OOM!
+  [Plan A Phase 2] 40b0d5d: fix
+      -> xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
+      -> xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))
+      -> xs.mark_sharding(v, mesh, ('fsdp', None))
+  [Plan A Phase 2] cf1a644: fixes
+      -> xm.mark_step() # Синхронизация перед сохранением
+      -> xm.save(save_data, "latest_checkpoint.pt") # master_only=True внутри xm.save по умолчанию для файлов
+      -> print(f"--- [SAVE] Чекпоинт сохранен. Отправка в GCS... ---")
+  [Plan A Phase 2] c32a928: fix OOM
+      -> # Ручной перенос на устройство и SPMD Data Parallel шардинг
+      -> # Критично: сообщаем XLA, что батч нужно разрезать по ядрам ('fsdp')
+      -> xs.mark_sharding(v, mesh, ('fsdp', None))
+  [Plan A Phase 2] baba728: fix lr
+      -> from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+      -> # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
+  [Plan A Phase 2] 3a0c053: Fix lost snapshop
+      -> # Загрузка последнего чекпоинта (если есть) ДО обертки FSDP
+      -> # Для FSDP load_state_dict работает прозрачно, если стейт был сохранен так же (консолидирован)
+  [Plan A Phase 2] 0c930dd: fix
+      -> def custom_shard_output(output, mesh):
+      -> import torch_xla.experimental.xla_sharding as xs
+      -> # Шардируем выходные состояния ученика (batch_size находится на 0-й оси)
+  [Plan A Phase 2] a94d9c9: fix
+      -> # Для SPMD FSDPv2 инициализация process_group с xla backend больше не нужна!
+      -> # import torch_xla.distributed.xla_backend
+      -> # dist.init_process_group("xla", init_method="xla://")
+  [Plan A Phase 2] 5c0da01: fix
+      -> # Включаем SPMD режим до любых операций XLA
+      -> xr.use_spmd()
+  [Plan A Phase 2] 977d406: fix
+      -> import torch_xla.distributed.xla_multiprocessing as xmp
+      -> import torch_xla.runtime as xr
+      -> import torch_xla.experimental.xla_sharding as xs
+  [Plan A Phase 2] 6a0fa02: fix
+      -> # FSDP в XLA может падать при накоплении градиентов без no_sync().
+      -> xm.optimizer_step(optimizer)
+      -> final_loss = loss.item()
+
+==========================================
+CATEGORY: DataLoader / MpDeviceLoader / Shapes (12 commits)
+==========================================
+  [Phase 6] 355290d: ADR 98
+      -> t = torch.arange(max_seq_len, dtype=torch.float32)
+      -> """Возвращает исходный CAPromptLayer (снимает FSDP-обёртку, если есть)."""
+      -> xm.set_rng_state(seed)
+  [Phase 4] fe3437d: fix checkpoint loader
+  [Phase 4] b1df3ef: Fix Phase 3 denoise loss collapse: fix noise scaling and dataset parser
+      -> safe_normalize(noise.float(), dim=-1).to(torch.bfloat16)
+      -> * z_clean_norm.to(torch.bfloat16)
+      -> safe_normalize(noise.float(), dim=-1).to(torch.bfloat16) * low_noise_amp
+  [Plan A Phase 2] 7a12310: fix OOM
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val', val_ratio=0.0)
+      -> # Учителю нужен только 1 (полный) вариант, чтобы избежать OOM
+      -> xs.mark_sharding(t_input_ids, mesh, ('fsdp', None))
+  [Plan A Phase 2] d13e134: fix
+      -> # Данные (Используем SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+  [Plan A Phase 2] 1634e88: fix
+      -> # Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)
+      -> # Веса загружать здесь НЕЛЬЗЯ, так как модель уже обернута в FSDP,
+      -> # и это сломает шардирование (xs.mark_sharding), что приведет к OOM!
+  [Plan A Phase 2] 3649ca5: fix
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')
+  [Plan A Phase 2] 17b8de8: fix oom 2
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+      -> val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
+  [Plan A Phase 2] c32a928: fix OOM
+      -> # Ручной перенос на устройство и SPMD Data Parallel шардинг
+      -> # Критично: сообщаем XLA, что батч нужно разрезать по ядрам ('fsdp')
+      -> xs.mark_sharding(v, mesh, ('fsdp', None))
+  [Plan A Phase 2] baba728: fix lr
+      -> from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+      -> # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
+  [Plan A Phase 2] d2e37d2: fix OOM 97Gb
+      -> # ХАК: monkey-patch torch.xla для починки gradient checkpointing
+      -> if not hasattr(torch, "xla"):
+      -> class DummyXLA:
+  [Plan A Phase 2] e3fa6da: fixes
+      -> # Отключаем Dynamo/Inductor, так как он конфликтует с XLA (особенно в ModernBERT)
+      -> os.environ["XLA_USE_BF16"] = "1"
+      -> import torch_xla.core.xla_model as xm
+
+==========================================
+CATEGORY: Optimizer / LR / Pullback alpha (28 commits)
+==========================================
+  [Phase 6] 419dcbb: ADR 99
+      -> t_global_prompt = torch.zeros((B,), device=Z_A_clean.device, dtype=torch.float32)
+      -> t = torch.arange(max_seq_len, dtype=torch.float32)
+      -> # t_global is already defined correctly above
+  [Phase 6] a97487d: ADR 97
+      -> # Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta
+      -> # XLA fallback safe approximation (хотя мы вызываем на CPU, это перестраховка)
+      -> # === XLA SAFE SAMPLING (CPU) ===
+  [Phase 6] 3c7bebf: Fix 2
+      -> self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.float())
+      -> param.sub_(alpha * (param - ema_casted))
+      -> param.copy_(self.shadow[name].to(param.dtype))
+  [Phase 4] 83e1cd4: looking for NaN
+      -> # --- Global NaN Debugging System ---
+      -> GLOBAL_NAN_TRIGGERED = False
+      -> def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):
+  [Phase 4] 1135317: ADR 82
+      -> # Убрано: os.environ["XLA_USE_BF16"] = "1" (ADR 057 / Phase 4 Precision Fix)
+      -> new_layers_lr        = 1e-4   # Возвращено к проверенному GPU-значению
+      -> pullback_warmup_steps = 200 # Шагов прогрева pullback_alpha
+  [Phase 4] eec0676: ADR81
+      -> pullback_alpha = 0.001       # Базовое значение (согласно ADR 077)
+      -> pullback_warmup_steps = 1000 # Шагов прогрева pullback_alpha
+      -> pullback_warmup_start = 0.03 # Стартовое значение pullback_alpha при прогреве
+  [Phase 4] 415250c: ADR 80
+      -> pullback_alpha = 0.001       # Для режима pace (согласно ADR 077, согласовано со скоростью обновления EMA)
+      -> import torch_xla.core.xla_model as xm
+      -> xm.mark_step()
+  [Phase 4] 6d83397: ADR 079
+      -> # Это гарантирует 1 фиксированный XLA-граф.
+      -> # Без XLA FIX. Если используется PACE с warmup_steps=0, LR будет константным,
+      -> # и XLA не будет перекомпилировать граф.
+  [Phase 4] f26e089: Fix PACE LR override and enable first 20 steps XLA metrics
+      -> # PACE: Постоянный LR с первичным warmup (Fix: берем константы из args, игнорируем checkpoint)
+      -> _pace_lrs = [args.dus_learning_rate, args.new_layers_lr]
+      -> param_group["lr"] = _pace_lrs[idx_p] * lr_warmup_factor
+  [Phase 4] f8825ec: fix LR graph recompilation
+      -> # [XLA FIX] Обновляем LR только раз в 50 шагов.
+      -> # Если LR (Python float) меняется каждый шаг, XLA вшивает его в граф
+      -> # PACE: Постоянный LR с первичным warmup
+  [Phase 4] 975b610: fix error
+      -> torch_xla.sync()
+      -> import torch_xla.debug.metrics as xla_met
+      -> print(f"[XLA METRICS REPORT] Step {step}")
+  [Phase 4] ddcfee9: OOM fix 3
+      -> batch_size    = 64
+      -> # PyTorch XLA has a bug where lerp_ with a scalar weight boxes the scalar into a CPU tensor, causing a crash.
+      -> param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)
+  [Phase 4] c9afcdb: fix OOM
+      -> import torch_xla
+      -> # but avoids intermediate temporary tensors and fuses perfectly in XLA
+      -> ema_dtype = self.shadow[name].dtype
+  [Phase 4] 5c278c1: Fix something else
+      -> batch_size    = 128
+      -> t_sin_global.requires_grad_(True)                   # Fix FSDP backward hook warning
+      -> t_sin_token.requires_grad_(True)                    # Fix FSDP backward hook warning
+  [Phase 4] f73d16d: add PACE mode and fix
+      -> pullback_alpha = 0.1       # Для режима pace
+      -> def __init__(self, model, decay=0.998, pullback_alpha=0.0):
+      -> self.pullback_alpha = pullback_alpha
+  [Phase 4] 349d7cf: adr 75 fix
+      -> # Даже если AdaLN лежит внутри dus из-за Wrapper'а, он должен получать высокий LR
+  [Phase 4] 77954e4: adr 75 fix
+      -> # Даже если AdaLN лежит внутри dus из-за Wrapper'а, он должен получать высокий LR
+  [Phase 4] bb25f19: fix lr after resume
+  [Plan A Phase 2] 91e10f7: fix delta and optimization
+      -> lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)
+      -> # Корректно устанавливаем LR относительно начального значения
+      -> param_group['lr'] = scheduler.base_lrs[idx_p] * lr_warmup_factor
+  [Plan A Phase 2] 4c852b8: kl fix
+      -> # Максимум Beta (BETA_MAX) на середине цикла LR (1000-й шаг)
+      -> lr_warmup_factor = max(0.01, global_step / warmup_steps)
+      -> param_group['lr'] = param_group['lr'] * lr_warmup_factor
+  [Plan A Phase 2] 26b9bc3: fixes
+      -> xm.rendezvous("gcs_sync_done")
+      -> xm.rendezvous("validation_done")
+      -> "train/loss": loss.item() * accumulation_steps,
+  [Plan A Phase 2] 4fc8281: Пытаемся починить
+      -> xm.optimizer_step(optimizer, barrier=True)
+      -> if xm.is_master_ordinal() and global_step % 20 == 0:
+      -> lr = optimizer.param_groups[0]['lr']
+  [Plan A Phase 2] 3975133: fix?
+      -> # clip_threshold=1.0 заменяет внешний clip_grad_norm_, разгружая компилятор XLA
+      -> lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False,
+      -> torch.nn.utils.clip_grad_norm_(explosive_params, 1.0)
+  [Plan A Phase 2] 500e33e: FIX
+      -> # Сохраняем начальный LR для корректного локального вармапа
+      -> param_group['initial_lr'] = 5e-5
+      -> # Для SPMD FSDP используется xm.optimizer_step с Gradient Clipping
+  [Plan A Phase 2] 0ec7c05: Fix 40 layer mce
+      -> lr_multiplier = (local_step + 1) / warmup_steps
+      -> # Умножаем LR, выданный шедулером, на коэффициент прогрева
+      -> param_group['lr'] *= lr_multiplier
+  [Plan A Phase 2] ee3c769: fix oom
+      -> loss_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_metrics.items()}
+      -> loss_val = loss.item()
+      -> loss_val = loss.item() if rank == 0 else 0.0
+  [Plan A Phase 2] baba728: fix lr
+      -> from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+      -> # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
+      -> train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')
+  [Plan A Phase 2] e3fa6da: fixes
+      -> # Отключаем Dynamo/Inductor, так как он конфликтует с XLA (особенно в ModernBERT)
+      -> os.environ["XLA_USE_BF16"] = "1"
+      -> import torch_xla.core.xla_model as xm
+
+==========================================
+CATEGORY: Model architecture / Layer unfreezing / Param groups (10 commits)
+==========================================
+  [Phase 6] 84777ef: Fix parameter grouping collision between ca_layers and dus_unfrozen
+  [Phase 6] eb3a9e4: Fix Adaln
+  [Phase 6] c1a335f: fix 2
+      -> wrapped = SpmdFullyShardedDataParallel(model.ca_layers[key], mesh=mesh, shard_output=shard_output)
+      -> model.ca_layers = SpmdFullyShardedDataParallel(model.ca_layers, mesh=mesh, shard_output=shard_output)
+  [Phase 4] 415250c: ADR 80
+      -> pullback_alpha = 0.001       # Для режима pace (согласно ADR 077, согласовано со скоростью обновления EMA)
+      -> import torch_xla.core.xla_model as xm
+      -> xm.mark_step()
+  [Phase 4] e64b166: fix adaln
+  [Phase 4] 349d7cf: adr 75 fix
+      -> # Даже если AdaLN лежит внутри dus из-за Wrapper'а, он должен получать высокий LR
+  [Phase 4] 77954e4: adr 75 fix
+      -> # Даже если AdaLN лежит внутри dus из-за Wrapper'а, он должен получать высокий LR
+  [Phase 4] f2aa06b: adr 63
+      -> dus_ema_state             = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}
+      -> adaLN_attn_ema_state      = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
+      -> adaLN_mlp_ema_state       = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
+  [Phase 4] 4f5bf89: ADR 62
+      -> adaLN_attn_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}
+      -> adaLN_mlp_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}
+      -> "adaLN_attn_ema": adaLN_attn_ema_state,
+  [Phase 4] ae7c44d: adr 60
+      -> batch_size    = 8
+      -> save_steps    = 1000
+      -> # 3. DUS Backbone (обучаемый, float32 — ADR 057)
+
+==========================================
+CATEGORY: Other / Misc fixes (44 commits)
+==========================================
+  [Phase 6] f2a645b: fix TPU error
+  [Phase 6] 3e73b8b: fix 2
+  [Phase 6] 31d7a1d: fix 1
+  [Phase 6] ebf7f0f: fix 1
+  [Phase 6] 682e226: fix 6
+  [Phase 6] 355452e: fix 5
+  [Phase 6] 3419645: fix 4
+  [Phase 6] 1854198: fix 3
+  [Phase 6] dc1dd65: fix 2
+  [Phase 6] aa33588: fix 1
+  [Phase 4] c293f24: adr 86
+  [Phase 4] 249e8b0: fix 4
+  [Phase 4] 2877468: HF fix
+  [Phase 4] 4b53199: adr 75
+  [Phase 4] c321a0a: adr 73-74
+  [Phase 4] ec4830a: ADR 72 upd
+  [Phase 4] 925fa29: adr 71
+  [Phase 4] 7613ffb: ADR 70
+  [Phase 4] 16d7308: fix adr 69
+  [Phase 4] 0494a1d: adr 69 fix
+  [Phase 4] e098f0b: ADR 068 continue
+  [Phase 4] 3c7f34d: fix
+  [Phase 4] 12ba6d9: fix
+  [Phase 4] b98d591: ADR 67
+  [Phase 4] c5f8326: adr 66
+  [Phase 4] 75195a9: fix metrik
+  [Phase 4] 9891a34: ADR 65
+  [Phase 4] 55c07ab: adr 64 metrics
+  [Phase 4] db19346: ADR 64
+  [Phase 4] eb4efbc: Fix scatter dtype bug and add matched params log for encoder
+  [Plan A Phase 2] adcd3ad: adr 27
+  [Plan A Phase 2] a0f3fd9: ADR 24
+  [Plan A Phase 2] d36317f: Убираем привязку внутренни слоев к цчителю - ADR 19
+  [Plan A Phase 2] 9a8dee9: fix isotropy formula
+  [Plan A Phase 2] 0af2f26: fix AWAKENED WEIGHTS
+  [Plan A Phase 2] e4205c6: fix import
+  [Plan A Phase 2] e073f29: fix 8 wandb
+  [Plan A Phase 2] ecfb962: ошибка теперь равномерно распределена mse = cos
+  [Plan A Phase 2] d3391df: fix wandb
+  [Plan A Phase 2] d24d11f: fix
+  [Plan A Phase 2] c2283f6: fix
+  [Plan A Phase 2] 1777ff5: fix
+  [Plan A Phase 2] 69df016: fix
+  [Plan A Phase 2] ec12435: fix data.py
+      -> print("--- [RANK 0] Начинаем итерации. ПЕРВЫЙ ШАГ вызовет компиляцию XLA графа (это может занять 5-15 минут, подождите!)... ---")

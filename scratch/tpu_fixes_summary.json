@@ -1,0 +1,1590 @@
+[
+  {
+    "phase": "Phase 6",
+    "hash": "419dcbb",
+    "date": "Tue Oct 6 18:13:30 2026 +0200",
+    "subject": "ADR 99",
+    "notable_changes": [
+      "t_global_prompt = torch.zeros((B,), device=Z_A_clean.device, dtype=torch.float32)",
+      "t = torch.arange(max_seq_len, dtype=torch.float32)",
+      "# t_global is already defined correctly above"
+    ]
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "f2a645b",
+    "date": "Tue Oct 6 17:41:06 2026 +0200",
+    "subject": "fix TPU error",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "355290d",
+    "date": "Tue Oct 6 06:58:49 2026 +0200",
+    "subject": "ADR 98",
+    "notable_changes": [
+      "t = torch.arange(max_seq_len, dtype=torch.float32)",
+      "\"\"\"Возвращает исходный CAPromptLayer (снимает FSDP-обёртку, если есть).\"\"\"",
+      "xm.set_rng_state(seed)",
+      "def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step):",
+      "ema_tracker.apply_shadow(model)",
+      "val_limit_batches = max(1, math.ceil(getattr(args, \"val_num_samples\", 200) / args.batch_size))",
+      "xs.mark_sharding(t, mesh, (\"fsdp\", None))",
+      "val_loss += v_loss.item(); val_cos += v_cos.item()",
+      "val_void_cos += v_v_cos.item(); val_content_cos += v_c_cos.item()",
+      "\"val_loss_ema\": val_loss / n,",
+      "\"val_cos_ema\": val_cos / n,",
+      "\"val_void_cos_ema\": val_void_cos / n,",
+      "\"val_content_to_void_ema\": val_content_cos / n,",
+      "cp_s = (cp * cm).sum().item(); cb_s = (cb * cm).sum().item(); cm_s = cm.sum().item()",
+      "cp_no_s = (cp_no * cm).sum().item()"
+    ]
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "3e73b8b",
+    "date": "Mon Oct 5 06:41:12 2026 +0200",
+    "subject": "fix 2",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "a97487d",
+    "date": "Sun Oct 4 11:17:54 2026 +0200",
+    "subject": "ADR 97",
+    "notable_changes": [
+      "# Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta",
+      "# XLA fallback safe approximation (хотя мы вызываем на CPU, это перестраховка)",
+      "# === XLA SAFE SAMPLING (CPU) ===",
+      "# t_global is already defined correctly above",
+      "\"loss\": l.item(),",
+      "\"cos_sim\": c.item(),",
+      "\"void_cos_sim\": vc.item(),",
+      "\"content_cos_sim\": cc.item(),",
+      "\"warmup_factor\": w.item(),",
+      "\"out_proj_12_amp\": o12.item(),",
+      "\"out_proj_36_amp\": o36.item(),",
+      "\"q_proj_36_amp\": q36.item(),",
+      "log_dict[f\"train_content_cos_tg_{lo}_{min(hi, 1.0)}\"] = ((cp_cpu * sel).sum() / sel.sum()).item()",
+      "xm.add_step_closure(lambda s, l, c, vc, cc, w, o12, o36, q36: wandb.log({",
+      "\"loss\": l.item(),"
+    ]
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "84777ef",
+    "date": "Thu Oct 1 19:17:35 2026 +0200",
+    "subject": "Fix parameter grouping collision between ca_layers and dus_unfrozen",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "eb3a9e4",
+    "date": "Wed Sep 30 22:39:56 2026 +0200",
+    "subject": "Fix Adaln",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "3c7bebf",
+    "date": "Wed Sep 30 22:16:09 2026 +0200",
+    "subject": "Fix 2",
+    "notable_changes": [
+      "self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.float())",
+      "param.sub_(alpha * (param - ema_casted))",
+      "param.copy_(self.shadow[name].to(param.dtype))",
+      "param.copy_(self.backup[name])",
+      "xm.mark_step()",
+      "self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.data.float())",
+      "param.data.sub_(alpha * (param.data - ema_casted))",
+      "param.data.copy_(self.shadow[name].to(param.dtype))",
+      "param.data.copy_(self.backup[name])"
+    ]
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "31d7a1d",
+    "date": "Wed Sep 30 18:47:19 2026 +0200",
+    "subject": "fix 1",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "c1a335f",
+    "date": "Tue Sep 29 06:36:58 2026 +0200",
+    "subject": "fix 2",
+    "notable_changes": [
+      "wrapped = SpmdFullyShardedDataParallel(model.ca_layers[key], mesh=mesh, shard_output=shard_output)",
+      "model.ca_layers = SpmdFullyShardedDataParallel(model.ca_layers, mesh=mesh, shard_output=shard_output)"
+    ]
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "ebf7f0f",
+    "date": "Mon Sep 28 19:02:05 2026 +0200",
+    "subject": "fix 1",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "f5abaca",
+    "date": "Sun Sep 27 11:46:56 2026 +0200",
+    "subject": "ADR 91",
+    "notable_changes": [
+      "grad_norm += p.grad.data.norm(2).item() ** 2",
+      "\"cos_sim\": avg_cos_sim.item(),",
+      "val_cos += v_cos.item()",
+      "wandb.log({\"val_loss_ema\": val_loss, \"val_cos_ema\": val_cos}, step=global_step)",
+      "print(f\"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}\")",
+      "wandb.log({\"val_loss_ema\": val_loss}, step=global_step)",
+      "print(f\"Step {global_step} | Val Loss (EMA): {val_loss:.4f}\")"
+    ]
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "682e226",
+    "date": "Sat Sep 26 22:28:36 2026 +0200",
+    "subject": "fix 6",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "355452e",
+    "date": "Sat Sep 26 22:20:18 2026 +0200",
+    "subject": "fix 5",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "3419645",
+    "date": "Sat Sep 26 20:41:35 2026 +0200",
+    "subject": "fix 4",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "1854198",
+    "date": "Sat Sep 26 20:29:09 2026 +0200",
+    "subject": "fix 3",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "dc1dd65",
+    "date": "Sat Sep 26 18:11:45 2026 +0200",
+    "subject": "fix 2",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 6",
+    "hash": "aa33588",
+    "date": "Sat Sep 26 18:03:13 2026 +0200",
+    "subject": "fix 1",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "c293f24",
+    "date": "Thu Sep 17 20:24:17 2026 +0200",
+    "subject": "adr 86",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "7555cfb",
+    "date": "Wed Sep 16 17:22:56 2026 +0200",
+    "subject": "fix local const",
+    "notable_changes": [
+      "global GLOBAL_NAN_TRIGGERED"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "d28d4c4",
+    "date": "Wed Sep 16 06:58:10 2026 +0200",
+    "subject": "fix 4 nan checks",
+    "notable_changes": [
+      "Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.",
+      "is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()",
+      "GLOBAL_NAN_NAMES.append(name)",
+      "GLOBAL_NAN_CHECKS.append(is_bad)",
+      "Disabled in the middle of the step to prevent XLA graph breaks.",
+      "Evaluation is now deferred to the end of the step after torch_xla.sync().",
+      "# --- Delayed NaN Evaluation (XLA Safe) ---",
+      "if GLOBAL_NAN_CHECKS:",
+      "stacked = torch.stack(GLOBAL_NAN_CHECKS)",
+      "found_nan = False",
+      "for name, is_bad in zip(GLOBAL_NAN_NAMES, results):",
+      "print(f\"[NAN_ALERT] '{name}' contains NaN/Inf!\", flush=True)",
+      "found_nan = True",
+      "GLOBAL_NAN_CHECKS.clear()",
+      "GLOBAL_NAN_NAMES.clear()"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "5d6191f",
+    "date": "Wed Sep 16 06:41:25 2026 +0200",
+    "subject": "fix 3 OOM",
+    "notable_changes": [
+      "Disabled to prevent XLA graph accumulation and memory leaks.",
+      "Disabled to prevent XLA graph breaks (xm.mark_step) before backward pass,",
+      "which was causing RESOURCE_EXHAUSTED OOM errors.",
+      "batch_size    = 64",
+      "Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.",
+      "This avoids breaking XLA graph into tiny pieces and causing OOM.",
+      "is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()",
+      "GLOBAL_NAN_NAMES.append(name)",
+      "GLOBAL_NAN_CHECKS.append(is_bad)",
+      "Executes all aggregated NaN checks in a single XLA sync.",
+      "global GLOBAL_NAN_TRIGGERED, GLOBAL_NAN_NAMES, GLOBAL_NAN_CHECKS",
+      "if not GLOBAL_NAN_CHECKS:",
+      "stacked = torch.stack(GLOBAL_NAN_CHECKS)",
+      "import torch_xla.core.xla_model as xm",
+      "xm.mark_step()"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "6375b03",
+    "date": "Tue Sep 15 18:27:45 2026 +0200",
+    "subject": "fix 2",
+    "notable_changes": [
+      "num_anchors = torch.randint(1, 4, (1,), device=cpu_dev).item()",
+      "num_anchors = torch.randint(1, 4, (1,), device=cpu_dev).item()",
+      "num_noisy = torch.randint(1, 4, (1,), device=cpu_dev).item()",
+      "num_anchors = torch.randint(1, 4, (1,)).item()",
+      "num_anchors = torch.randint(1, 4, (1,)).item()",
+      "num_noisy = torch.randint(1, 4, (1,)).item()"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "23e66d8",
+    "date": "Mon Sep 14 19:59:49 2026 +0200",
+    "subject": "TPU ADR 83-85",
+    "notable_changes": [
+      "w_scl = 0.5           # ADR 083: Semantic Skepticism Angular SCL",
+      "num_anchors = torch.randint(1, 4, (1,)).item()",
+      "num_anchors = torch.randint(1, 4, (1,)).item()",
+      "num_noisy = torch.randint(1, 4, (1,)).item()",
+      "# Let model know false confident masks for logging (optional, maybe save inside outputs dict if needed later)",
+      "check_tensor_nan(\"loss.l_weighted\", l_weighted_val)",
+      "check_tensor_nan(\"loss.l_isolation\", l_isolation_val)",
+      "check_tensor_nan(\"loss.h_39_norm\", h_39_norm)",
+      "check_tensor_nan(\"loss.cos_h39\", cos_h39)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "acd8c19",
+    "date": "Wed Sep 9 18:55:58 2026 +0200",
+    "subject": "ADR 83",
+    "notable_changes": [
+      "# --- Global NaN Debugging System (XLA Safe) ---",
+      "GLOBAL_NAN_NAMES = []",
+      "GLOBAL_NAN_CHECKS = []",
+      "Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.",
+      "This avoids breaking XLA graph into tiny pieces and causing OOM.",
+      "is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()",
+      "GLOBAL_NAN_NAMES.append(name)",
+      "GLOBAL_NAN_CHECKS.append(is_bad)",
+      "def evaluate_nan_checks(context: str = \"\"):",
+      "Executes all aggregated NaN checks in a single XLA sync.",
+      "global GLOBAL_NAN_TRIGGERED, GLOBAL_NAN_NAMES, GLOBAL_NAN_CHECKS",
+      "if not GLOBAL_NAN_CHECKS:",
+      "stacked = torch.stack(GLOBAL_NAN_CHECKS)",
+      "import torch_xla.core.xla_model as xm",
+      "xm.mark_step()"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "83e1cd4",
+    "date": "Tue Sep 8 21:42:57 2026 +0200",
+    "subject": "looking for NaN",
+    "notable_changes": [
+      "# --- Global NaN Debugging System ---",
+      "GLOBAL_NAN_TRIGGERED = False",
+      "def check_tensor_nan(name: str, tensor: torch.Tensor, step_limit: int = 10, print_always: bool = False):",
+      "Checks tensor for NaN or Inf. If step <= GLOBAL_START_STEP + step_limit,",
+      "logs the finding and updates GLOBAL_NAN_TRIGGERED.",
+      "global GLOBAL_NAN_TRIGGERED",
+      "has_nan = bool(torch.isnan(tensor).any().item())",
+      "has_inf = bool(torch.isinf(tensor).any().item())",
+      "if has_nan or has_inf:",
+      "GLOBAL_NAN_TRIGGERED = True",
+      "msg = f\"[NAN_ALERT][Step {GLOBAL_CURRENT_STEP}] {name} -> NaN: {has_nan}, Inf: {has_inf}, dtype: {tensor.dtype}, shape: {list(tensor.shape)}\"",
+      "print(f\"[NAN_ALERT_ERROR] Error checking {name}: {e}\", flush=True)",
+      "dus_learning_rate = 2e-5   # GPU LR по ADR 082",
+      "new_layers_lr     = 1e-4   # GPU LR по ADR 082",
+      "# ЯВНЫЙ КАСТ К FLOAT32 (защита от bfloat16 NaN - ADR 057, 082)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "eda47c8",
+    "date": "Tue Sep 8 17:32:31 2026 +0200",
+    "subject": "fix NaN",
+    "notable_changes": [
+      "batch_size    = 32",
+      "batch_size    = 64",
+      "# --- OOM FIX: Принудительный барьер XLA для разделения графов первого и второго прохода ---",
+      "torch_xla.sync()"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "cebafc8",
+    "date": "Mon Sep 7 23:28:29 2026 +0200",
+    "subject": "fix 1",
+    "notable_changes": [
+      "# --- OOM FIX: Принудительный барьер XLA для разделения графов первого и второго прохода ---",
+      "torch_xla.sync()"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "1135317",
+    "date": "Mon Sep 7 20:30:58 2026 +0200",
+    "subject": "ADR 82",
+    "notable_changes": [
+      "# Убрано: os.environ[\"XLA_USE_BF16\"] = \"1\" (ADR 057 / Phase 4 Precision Fix)",
+      "new_layers_lr        = 1e-4   # Возвращено к проверенному GPU-значению",
+      "pullback_warmup_steps = 200 # Шагов прогрева pullback_alpha",
+      "pullback_max          = 0.003 # Максимальное значение в цикле",
+      "pullback_warmup_on_resume = False # Отключено, чтобы не затормаживать сеть при каждом возобновлении",
+      "os.environ[\"XLA_USE_BF16\"] = \"1\"",
+      "new_layers_lr        = 2.8e-4   # Scaled for batch=64 (from 1e-4)",
+      "pullback_warmup_steps = 1000 # Шагов прогрева pullback_alpha",
+      "pullback_max          = 0.01 # Максимальное значение в цикле",
+      "pullback_warmup_on_resume = True # Прогрев при каждом возобновлении сессии"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "eec0676",
+    "date": "Sat Sep 5 13:04:16 2026 +0200",
+    "subject": "ADR81",
+    "notable_changes": [
+      "pullback_alpha = 0.001       # Базовое значение (согласно ADR 077)",
+      "pullback_warmup_steps = 1000 # Шагов прогрева pullback_alpha",
+      "pullback_warmup_start = 0.03 # Стартовое значение pullback_alpha при прогреве",
+      "pullback_min          = 0.001# Минимальное значение (базовое)",
+      "pullback_max          = 0.01 # Максимальное значение в цикле",
+      "pullback_cycle_steps  = 2000 # Период цикла модуляции (в шагах)",
+      "pullback_warmup_on_resume = True # Прогрев при каждом возобновлении сессии",
+      "def __init__(self, model, decay=0.998, pullback_alpha=0.0, device=None):",
+      "self.use_pullback = (float(pullback_alpha) > 0.0)",
+      "# pullback_alpha хранится строго как обычный тензор (НЕ nn.Parameter)",
+      "self.pullback_alpha_tensor = torch.tensor(float(pullback_alpha), dtype=torch.float32, device=dev)",
+      "self.pullback_alpha_tensor.requires_grad_(False)",
+      "self.current_alpha_val = float(pullback_alpha)",
+      "def set_pullback_alpha(self, alpha_val: float):",
+      "self.use_pullback = (self.current_alpha_val > 0.0)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "415250c",
+    "date": "Sat Sep 5 09:58:45 2026 +0200",
+    "subject": "ADR 80",
+    "notable_changes": [
+      "pullback_alpha = 0.001       # Для режима pace (согласно ADR 077, согласовано со скоростью обновления EMA)",
+      "import torch_xla.core.xla_model as xm",
+      "xm.mark_step()",
+      "import torch_xla.core.xla_model as xm",
+      "xm.mark_step()",
+      "# EMA shadows (in-place copy into existing TPU sharded tensors)",
+      "ema_update_count = 0",
+      "ema_sources = [",
+      "(\"dus\", ckpt.get(\"dus_ema\", {})),",
+      "(\"adaLN_attn\", ckpt.get(\"adaLN_attn_ema\", {})),",
+      "(\"adaLN_mlp\", ckpt.get(\"adaLN_mlp_ema\", {})),",
+      "(\"t_proj_global\", ckpt.get(\"t_proj_global_ema\", ckpt.get(\"t_proj_ema\", {}))),",
+      "(\"t_proj_token\", ckpt.get(\"t_proj_token_ema\", {})),",
+      "(\"t_joint_proj\", ckpt.get(\"t_joint_proj_ema\", {})),",
+      "(\"self_cond_proj\", ckpt.get(\"self_cond_proj_ema\", {})),"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "6d83397",
+    "date": "Wed Sep 2 00:38:44 2026 +0200",
+    "subject": "ADR 079",
+    "notable_changes": [
+      "# Это гарантирует 1 фиксированный XLA-граф.",
+      "# Без XLA FIX. Если используется PACE с warmup_steps=0, LR будет константным,",
+      "# и XLA не будет перекомпилировать граф.",
+      "_pace_lrs = [args.dus_learning_rate, args.new_layers_lr]",
+      "lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)",
+      "param_group[\"lr\"] = _pace_lrs[idx_p] * lr_warmup_factor",
+      "param_group[\"lr\"] = _pace_lrs[idx_p]",
+      "lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)",
+      "param_group[\"lr\"] = scheduler.base_lrs[idx_p] * lr_warmup_factor",
+      "lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)",
+      "param_group[\"lr\"] = param_group[\"lr\"] * lr_warmup_factor",
+      "# Массовая оценка тензоров за один вызов .tolist(), чтобы избежать множественных .item()",
+      "metrics_dict[\"lr_dus\"]    = optimizer.param_groups[0][\"lr\"]  # DUS LR",
+      "metrics_dict[\"lr_new\"]    = optimizer.param_groups[1][\"lr\"]  # New layers LR",
+      "if torch.rand(1).item() < 0.5:"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "f26e089",
+    "date": "Tue Sep 1 23:28:45 2026 +0200",
+    "subject": "Fix PACE LR override and enable first 20 steps XLA metrics",
+    "notable_changes": [
+      "# PACE: Постоянный LR с первичным warmup (Fix: берем константы из args, игнорируем checkpoint)",
+      "_pace_lrs = [args.dus_learning_rate, args.new_layers_lr]",
+      "param_group[\"lr\"] = _pace_lrs[idx_p] * lr_warmup_factor",
+      "param_group[\"lr\"] = _pace_lrs[idx_p]",
+      "# PACE: Постоянный LR с первичным warmup",
+      "param_group[\"lr\"] = scheduler.base_lrs[idx_p] * lr_warmup_factor",
+      "param_group[\"lr\"] = scheduler.base_lrs[idx_p]"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "f8825ec",
+    "date": "Tue Sep 1 21:17:10 2026 +0200",
+    "subject": "fix LR graph recompilation",
+    "notable_changes": [
+      "# [XLA FIX] Обновляем LR только раз в 50 шагов.",
+      "# Если LR (Python float) меняется каждый шаг, XLA вшивает его в граф",
+      "# PACE: Постоянный LR с первичным warmup",
+      "lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)",
+      "param_group[\"lr\"] = scheduler.base_lrs[idx_p] * lr_warmup_factor",
+      "param_group[\"lr\"] = scheduler.base_lrs[idx_p]",
+      "lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)",
+      "param_group[\"lr\"] = scheduler.base_lrs[idx_p] * lr_warmup_factor",
+      "lr_warmup_factor = max(0.01, rel_step / restart_warmup_steps)",
+      "param_group[\"lr\"] = param_group[\"lr\"] * lr_warmup_factor",
+      "# PACE: Постоянный LR с первичным warmup",
+      "lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)",
+      "param_group[\"lr\"] = scheduler.base_lrs[idx_p] * lr_warmup_factor",
+      "param_group[\"lr\"] = scheduler.base_lrs[idx_p]",
+      "lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "975b610",
+    "date": "Tue Sep 1 20:41:44 2026 +0200",
+    "subject": "fix error",
+    "notable_changes": [
+      "torch_xla.sync()",
+      "import torch_xla.debug.metrics as xla_met",
+      "print(f\"[XLA METRICS REPORT] Step {step}\")",
+      "report = xla_met.metrics_report()",
+      "\"AllReduceTime\", \"AllGatherTime\", \"ReduceScatterTime\",",
+      "print(f\"[XLA METRICS] Skipped (error: {e_prof})\")",
+      "xm.mark_step()",
+      "print(f\"[XLA METRICS REPORT] Step {step}\")",
+      "report = xm.metrics_report()",
+      "\"AllReduceTime\", \"AllGatherTime\", \"ReduceScatterTime\","
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "ddcfee9",
+    "date": "Mon Aug 31 22:13:15 2026 +0200",
+    "subject": "OOM fix 3",
+    "notable_changes": [
+      "batch_size    = 64",
+      "# PyTorch XLA has a bug where lerp_ with a scalar weight boxes the scalar into a CPU tensor, causing a crash.",
+      "param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)",
+      "batch_size    = 128",
+      "# but avoids intermediate temporary tensors and fuses perfectly in XLA",
+      "ema_dtype = self.shadow[name].dtype",
+      "self.shadow[name].lerp_(param.data.to(ema_dtype), weight=1.0 - self.decay)",
+      "# param = param - alpha * (param - ema) => param = lerp(param, ema, alpha)",
+      "param.data.lerp_(ema_casted, weight=self.pullback_alpha)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "c9afcdb",
+    "date": "Mon Aug 31 21:42:50 2026 +0200",
+    "subject": "fix OOM",
+    "notable_changes": [
+      "import torch_xla",
+      "# but avoids intermediate temporary tensors and fuses perfectly in XLA",
+      "ema_dtype = self.shadow[name].dtype",
+      "self.shadow[name].lerp_(param.data.to(ema_dtype), weight=1.0 - self.decay)",
+      "# param = param - alpha * (param - ema) => param = lerp(param, ema, alpha)",
+      "param.data.lerp_(ema_casted, weight=self.pullback_alpha)",
+      "torch_xla.sync()",
+      "torch_xla.sync()",
+      "param.data.sub_(param.data - ema_casted, alpha=self.pullback_alpha)",
+      "xm.mark_step()",
+      "xm.mark_step()"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "5c278c1",
+    "date": "Mon Aug 31 21:23:10 2026 +0200",
+    "subject": "Fix something else",
+    "notable_changes": [
+      "batch_size    = 128",
+      "t_sin_global.requires_grad_(True)                   # Fix FSDP backward hook warning",
+      "t_sin_token.requires_grad_(True)                    # Fix FSDP backward hook warning",
+      "dus_input_extended.requires_grad_(True)  # Fix FSDP backward hook warning",
+      "# КРИТИЧЕСКИ ВАЖНО ДЛЯ XLA: Принудительный сброс графа после каждого валидационного батча, иначе память течет",
+      "xm.mark_step()",
+      "# Гиперпараметры Phase 4a (~0.1x Phase 3 LR)",
+      "batch_size    = 32",
+      "# --- Очистка памяти после валидации (OOM Fix) ---"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "fe3437d",
+    "date": "Mon Aug 31 20:57:13 2026 +0200",
+    "subject": "fix checkpoint loader",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "9f7bd4a",
+    "date": "Mon Aug 31 20:41:08 2026 +0200",
+    "subject": "fix GCP",
+    "notable_changes": [
+      "batch_size    = 32",
+      "batch_size    = 8"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "850ed62",
+    "date": "Mon Aug 31 19:59:24 2026 +0200",
+    "subject": "fix OOM on TPU",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "4c1f003",
+    "date": "Mon Aug 31 18:47:19 2026 +0200",
+    "subject": "fix XLA version",
+    "notable_changes": [
+      "# Handle torch_xla versions (Kaggle often updates to >=2.5 where experimental is moved)",
+      "import torch_xla.experimental.xla_sharding as xs",
+      "print(\"[Init] Loaded xs from torch_xla.experimental.xla_sharding\")",
+      "import torch_xla.distributed.spmd as xs",
+      "import torch_xla.distributed.spmd.xla_sharding as xs",
+      "print(\"[Init] Loaded xs from torch_xla.distributed.spmd.xla_sharding\")",
+      "print(\"[Init] Loaded xs from torch_xla.distributed.spmd\")",
+      "from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel",
+      "print(\"[Init] Loaded SpmdFullyShardedDataParallel from experimental\")",
+      "# In newer versions it might be in distributed.spmd or distributed.fsdp",
+      "from torch_xla.distributed.spmd import SpmdFullyShardedDataParallel",
+      "print(\"[Init] Loaded SpmdFullyShardedDataParallel from distributed.spmd\")",
+      "from torch_xla.distributed.fsdp import XlaFullyShardedDataParallel as SpmdFullyShardedDataParallel",
+      "print(\"[Init] Loaded SpmdFullyShardedDataParallel from distributed.fsdp (XlaFullyShardedDataParallel)\")",
+      "import torch_xla.experimental.xla_sharding as xs"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "a048950",
+    "date": "Sat Aug 29 11:22:06 2026 +0200",
+    "subject": "fix 5 OOM",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "249e8b0",
+    "date": "Sat Aug 29 11:08:59 2026 +0200",
+    "subject": "fix 4",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "f73d16d",
+    "date": "Sat Aug 29 10:58:29 2026 +0200",
+    "subject": "add PACE mode and fix",
+    "notable_changes": [
+      "pullback_alpha = 0.1       # Для режима pace",
+      "def __init__(self, model, decay=0.998, pullback_alpha=0.0):",
+      "self.pullback_alpha = pullback_alpha",
+      "if self.pullback_alpha > 0:",
+      "# Pullback: w_live = w_live - alpha * (w_live - w_ema)",
+      "ema_gpu = self.shadow[name].to(param.device, dtype=param.dtype)",
+      "param.data.sub_(param.data - ema_gpu, alpha=self.pullback_alpha)",
+      "# Инициализация EMA и PACE",
+      "ema = EMA(actual_model, decay=0.998, pullback_alpha=getattr(args, \"pullback_alpha\", 0.1))",
+      "print(f\"[Init] Optimizer mode: PACE (pullback_alpha={getattr(args, 'pullback_alpha', 0.1)})\", flush=True)",
+      "ema = EMA(actual_model, decay=0.998, pullback_alpha=0.0)",
+      "# Логика LR",
+      "# PACE: Постоянный LR с первичным warmup",
+      "lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)",
+      "param_group[\"lr\"] = scheduler.base_lrs[idx_p] * lr_warmup_factor"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "e64b166",
+    "date": "Sat Aug 29 10:30:35 2026 +0200",
+    "subject": "fix adaln",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "2877468",
+    "date": "Sat Aug 29 09:58:58 2026 +0200",
+    "subject": "HF fix",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "349d7cf",
+    "date": "Sat Aug 22 23:43:22 2026 +0200",
+    "subject": "adr 75 fix",
+    "notable_changes": [
+      "# Даже если AdaLN лежит внутри dus из-за Wrapper'а, он должен получать высокий LR"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "77954e4",
+    "date": "Sat Aug 22 23:29:45 2026 +0200",
+    "subject": "adr 75 fix",
+    "notable_changes": [
+      "# Даже если AdaLN лежит внутри dus из-за Wrapper'а, он должен получать высокий LR"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "4b53199",
+    "date": "Sat Aug 22 23:03:47 2026 +0200",
+    "subject": "adr 75",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "c321a0a",
+    "date": "Tue Aug 18 23:07:13 2026 +0200",
+    "subject": "adr 73-74",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "ec4830a",
+    "date": "Mon Aug 17 20:47:31 2026 +0200",
+    "subject": "ADR 72 upd",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "978ed3e",
+    "date": "Mon Aug 17 20:23:06 2026 +0200",
+    "subject": "ADR 72",
+    "notable_changes": [
+      "with torch.amp.autocast('cuda', dtype=torch.bfloat16):"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "925fa29",
+    "date": "Sun Aug 16 10:56:12 2026 +0200",
+    "subject": "adr 71",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "7613ffb",
+    "date": "Sat Aug 15 13:34:18 2026 +0200",
+    "subject": "ADR 70",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "16d7308",
+    "date": "Fri Aug 14 20:38:36 2026 +0200",
+    "subject": "fix adr 69",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "0494a1d",
+    "date": "Fri Aug 14 20:15:52 2026 +0200",
+    "subject": "adr 69 fix",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "cd474c1",
+    "date": "Fri Aug 14 19:57:20 2026 +0200",
+    "subject": "adr 69",
+    "notable_changes": [
+      "self.decoder.to(torch.bfloat16)",
+      "with torch.amp.autocast('cuda', dtype=torch.bfloat16):"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "e098f0b",
+    "date": "Fri Aug 14 16:01:52 2026 +0200",
+    "subject": "ADR 068 continue",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "4603fd4",
+    "date": "Wed Aug 12 10:38:13 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "z_noisy = spherical_noise(z_clean_f, t)  # [B, T, D], float32",
+      "z_noisy = spherical_noise(z_clean_f, t)  # [B, T, D], float32"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "ed2df7a",
+    "date": "Tue Aug 11 23:12:13 2026 +0200",
+    "subject": "ADR 68",
+    "notable_changes": [
+      "if torch.rand(1).item() < 0.5:",
+      "self.register_buffer(\"sep_embed\", torch.zeros(hidden_dim, dtype=torch.float32))"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "3c7f34d",
+    "date": "Tue Jul 28 20:28:26 2026 +0200",
+    "subject": "fix",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "12ba6d9",
+    "date": "Tue Jul 28 20:22:18 2026 +0200",
+    "subject": "fix",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "b98d591",
+    "date": "Tue Jul 28 20:10:11 2026 +0200",
+    "subject": "ADR 67",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "c5f8326",
+    "date": "Mon Jul 27 23:26:04 2026 +0200",
+    "subject": "adr 66",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "75195a9",
+    "date": "Mon Jul 27 23:03:53 2026 +0200",
+    "subject": "fix metrik",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "9891a34",
+    "date": "Mon Jul 27 20:34:09 2026 +0200",
+    "subject": "ADR 65",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "55c07ab",
+    "date": "Sun Jul 26 16:09:49 2026 +0200",
+    "subject": "adr 64 metrics",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "db19346",
+    "date": "Sun Jul 26 16:04:09 2026 +0200",
+    "subject": "ADR 64",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "310fc84",
+    "date": "Sat Jul 25 22:13:01 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "# --- Explicit memory cleanup (OOM Fix) ---",
+      "# --- Explicit memory cleanup (OOM Fix) ---"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "55cdd40",
+    "date": "Sat Jul 25 22:04:34 2026 +0200",
+    "subject": "fix OOM 2",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "64c5c54",
+    "date": "Sat Jul 25 21:50:20 2026 +0200",
+    "subject": "fix OOM",
+    "notable_changes": [
+      "output_hidden_states=False,  # Отключено для экономии VRAM (OOM фикс)",
+      "# --- Explicit memory cleanup (OOM Fix) ---",
+      "# --- Очистка памяти после валидации (OOM Fix) ---"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "f2aa06b",
+    "date": "Sat Jul 25 21:10:52 2026 +0200",
+    "subject": "adr 63",
+    "notable_changes": [
+      "dus_ema_state             = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}",
+      "adaLN_attn_ema_state      = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}",
+      "adaLN_mlp_ema_state       = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}",
+      "t_proj_ema_state          = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}",
+      "self_cond_proj_ema_state  = {k: v.cpu() for k, v in actual_model.self_cond_proj.state_dict().items()}",
+      "\"dus_ema\":              dus_ema_state,",
+      "\"adaLN_attn_ema\":       adaLN_attn_ema_state,",
+      "\"adaLN_mlp_ema\":        adaLN_mlp_ema_state,",
+      "\"t_proj_ema\":           t_proj_ema_state,",
+      "\"self_cond_proj_ema\":   self_cond_proj_ema_state,",
+      "if \"self_cond_proj_ema\" in ckpt:",
+      "for k, v in ckpt[\"self_cond_proj_ema\"].items():",
+      "ema_update[f\"self_cond_proj.{k}\" ] = v",
+      "dus_ema_state    = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}",
+      "adaLN_attn_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "4f5bf89",
+    "date": "Sat Jul 25 19:39:19 2026 +0200",
+    "subject": "ADR 62",
+    "notable_changes": [
+      "adaLN_attn_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_attn.state_dict().items()}",
+      "adaLN_mlp_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN_mlp.state_dict().items()}",
+      "\"adaLN_attn_ema\": adaLN_attn_ema_state,",
+      "\"adaLN_mlp_ema\":  adaLN_mlp_ema_state,",
+      "if \"adaLN_attn_ema\" in ckpt:",
+      "for k, v in ckpt[\"adaLN_attn_ema\"].items():",
+      "ema_update[f\"adaLN_attn.{k}\"] = v",
+      "if \"adaLN_mlp_ema\" in ckpt:",
+      "for k, v in ckpt[\"adaLN_mlp_ema\"].items():",
+      "ema_update[f\"adaLN_mlp.{k}\"] = v",
+      "adaLN_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN.state_dict().items()}",
+      "\"adaLN_ema\":      adaLN_ema_state,",
+      "if \"adaLN_ema\" in ckpt:",
+      "for k, v in ckpt[\"adaLN_ema\"].items():",
+      "ema_update[f\"adaLN.{k}\"] = v"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "bb25f19",
+    "date": "Mon Jul 20 23:28:26 2026 +0200",
+    "subject": "fix lr after resume",
+    "notable_changes": []
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "c526795",
+    "date": "Sun Jul 19 14:53:44 2026 +0200",
+    "subject": "fix ema",
+    "notable_changes": [
+      "ema = EMA(actual_model, decay=0.998)",
+      "ema.step(actual_model)",
+      "ema = EMA(model, decay=0.998)",
+      "ema.step(model)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "ae7c44d",
+    "date": "Sun Jul 19 11:55:21 2026 +0200",
+    "subject": "adr 60",
+    "notable_changes": [
+      "batch_size    = 8",
+      "save_steps    = 1000",
+      "# 3. DUS Backbone (обучаемый, float32 — ADR 057)",
+      "type(self.dus).dtype  = property(lambda self: torch.float32)",
+      "self.register_buffer(\"sep_embed\", torch.zeros(hidden_dim, dtype=torch.float32))",
+      "z_noisy = spherical_noise(z_clean_f, t)  # [B, T, D], float32",
+      "# --- DUS forward (float32, ADR 059) ---",
+      "def save_checkpoint_split(",
+      "ema,",
+      "- phase3_step_{step}.pth       (веса DUS + AdaLN + t_proj + EMA)",
+      "ema.apply(actual_model)",
+      "dus_ema_state    = {k: v.cpu() for k, v in actual_model.dus.state_dict().items()}",
+      "adaLN_ema_state  = {k: v.cpu() for k, v in actual_model.adaLN.state_dict().items()}",
+      "t_proj_ema_state = {k: v.cpu() for k, v in actual_model.t_proj.state_dict().items()}",
+      "ema.restore(actual_model)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "0fbb48c",
+    "date": "Sat Jul 18 21:23:36 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "type(self.dus).dtype = property(lambda self: torch.float32)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "d21db8b",
+    "date": "Sat Jul 18 16:31:08 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "embedding_model_path, torch_dtype=torch.bfloat16, local_files_only=True",
+      "_qwen_base = AutoModel.from_pretrained(embedding_model_path, torch_dtype=torch.bfloat16)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "bdd4ec3",
+    "date": "Mon Jul 13 22:59:40 2026 +0200",
+    "subject": "ADR 57",
+    "notable_changes": [
+      "# Вычисляем таргеты строго в float32, чтобы избежать потери точности",
+      "denoise_target = safe_normalize(z_clean.float(), dim=-1).to(torch.bfloat16)",
+      "identity_target = safe_normalize(z_noisy.float(), dim=-1).to(torch.bfloat16)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "b1df3ef",
+    "date": "Fri Jul 3 23:42:45 2026 +0200",
+    "subject": "Fix Phase 3 denoise loss collapse: fix noise scaling and dataset parser",
+    "notable_changes": [
+      "safe_normalize(noise.float(), dim=-1).to(torch.bfloat16)",
+      "* z_clean_norm.to(torch.bfloat16)",
+      "safe_normalize(noise.float(), dim=-1).to(torch.bfloat16) * low_noise_amp"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "011e778",
+    "date": "Fri Jul 3 23:30:46 2026 +0200",
+    "subject": "Fix OOM by enabling Gradient Checkpointing and reducing batch_size to 8",
+    "notable_changes": [
+      "batch_size = 8  # Уменьшено для защиты от OOM",
+      "batch_size = 16  # Можно увеличить для T4 x2 (по сравнению с 8 для TPU FSDP)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "ba72048",
+    "date": "Fri Jul 3 23:24:03 2026 +0200",
+    "subject": "Patch ModernBERT dtype and fix val_ratio",
+    "notable_changes": [
+      "type(self.dus).dtype = property(lambda self: torch.bfloat16)"
+    ]
+  },
+  {
+    "phase": "Phase 4",
+    "hash": "eb4efbc",
+    "date": "Fri Jul 3 23:12:16 2026 +0200",
+    "subject": "Fix scatter dtype bug and add matched params log for encoder",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "adcd3ad",
+    "date": "Wed May 27 23:31:58 2026 +0200",
+    "subject": "adr 27",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "a0f3fd9",
+    "date": "Tue May 26 22:48:29 2026 +0200",
+    "subject": "ADR 24",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "d36317f",
+    "date": "Sat May 23 23:22:43 2026 +0200",
+    "subject": "Убираем привязку внутренни слоев к цчителю - ADR 19",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "651a62d",
+    "date": "Sat May 16 14:22:34 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "\"name\": f\"tpu-v6e-spmd-resumed-{global_step}\",",
+      "if xm.is_master_ordinal() and (global_step % 20 == 0 or 'first_log_done' not in locals()):",
+      "\"name\": \"tpu-v6e-spmd\",",
+      "if xm.is_master_ordinal() and global_step % 20 == 0:"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "9a8dee9",
+    "date": "Fri May 15 14:03:19 2026 +0200",
+    "subject": "fix isotropy formula",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "91e10f7",
+    "date": "Wed May 13 18:03:14 2026 +0200",
+    "subject": "fix delta and optimization",
+    "notable_changes": [
+      "lr_warmup_factor = max(0.01, current_optim_step / warmup_steps)",
+      "# Корректно устанавливаем LR относительно начального значения",
+      "param_group['lr'] = scheduler.base_lrs[idx_p] * lr_warmup_factor",
+      "lr_warmup_factor = max(0.01, global_step / warmup_steps)",
+      "param_group['lr'] = param_group['lr'] * lr_warmup_factor"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "2f62fb2",
+    "date": "Tue May 12 21:38:40 2026 +0200",
+    "subject": "fix Exceeded sflag capacity by 684B",
+    "notable_changes": [
+      "# Это гарантирует, что все маски одного семпла попадут на одно XLA-устройство при шардинге",
+      "# SPMD Sharding для объединенного батча",
+      "xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))",
+      "xs.mark_sharding(v_attn_mask, mesh, ('fsdp', None))",
+      "# 2. Объединяем в один большой батч (4*B, T) для XLA-эффективности",
+      "# SPMD Sharding для объединенного батча",
+      "xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))",
+      "xs.mark_sharding(v_attn_mask, mesh, ('fsdp', None))"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "7a12310",
+    "date": "Tue May 12 21:29:40 2026 +0200",
+    "subject": "fix OOM",
+    "notable_changes": [
+      "val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=2048, split='val', val_ratio=0.0)",
+      "# Учителю нужен только 1 (полный) вариант, чтобы избежать OOM",
+      "xs.mark_sharding(t_input_ids, mesh, ('fsdp', None))",
+      "xs.mark_sharding(t_attn_mask, mesh, ('fsdp', None))",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=2048, split='val', val_ratio=0.0)"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "0af2f26",
+    "date": "Tue May 12 21:21:45 2026 +0200",
+    "subject": "fix AWAKENED WEIGHTS",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "389c694",
+    "date": "Mon May 11 18:35:53 2026 +0200",
+    "subject": "Починка валидации",
+    "notable_changes": [
+      "xm.mark_step()"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "1ef8359",
+    "date": "Mon May 11 06:44:22 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "val_metrics_sums[\"l40_var_drift\"] = (var_l40 - 1.0).pow(2).mean().item()",
+      "val_metrics_sums[\"l40_std_drift\"] = (std_l40 - 1.0).pow(2).mean().item()"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "e78459d",
+    "date": "Sun May 10 11:05:34 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "Если чекпоинт в плоском FSDP-формате (ключи с _orig_module.) — делегируем в smart_load_weights.",
+      "print(f\"--- [INIT] Detected flat FSDP checkpoint, delegating to smart_load_weights ---\")",
+      "shard_output=None # Изменено с callable на None, так как SPMD справится сам"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "133eb95",
+    "date": "Sun May 10 11:02:18 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "mesh_shape = (num_devices, 1) # Это уже кортеж",
+      "shard_output=None # Изменено с callable на None, так как SPMD справится сам",
+      "mesh_shape = (num_devices, 1)"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "4c852b8",
+    "date": "Sat May 9 00:30:11 2026 +0200",
+    "subject": "kl fix",
+    "notable_changes": [
+      "# Максимум Beta (BETA_MAX) на середине цикла LR (1000-й шаг)",
+      "lr_warmup_factor = max(0.01, global_step / warmup_steps)",
+      "param_group['lr'] = param_group['lr'] * lr_warmup_factor",
+      "xm.mark_step()",
+      "param_group['lr'] = param_group['lr'] * warmup_factor"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "e4205c6",
+    "date": "Fri May 8 20:03:40 2026 +0200",
+    "subject": "fix import",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "8909428",
+    "date": "Fri May 8 19:56:47 2026 +0200",
+    "subject": "fix weigths load from Awakening",
+    "notable_changes": [
+      "# Очищаем ключи в state_dict (от префиксов компиляции/fsdp)"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "26b9bc3",
+    "date": "Fri May 8 01:11:42 2026 +0200",
+    "subject": "fixes",
+    "notable_changes": [
+      "xm.rendezvous(\"gcs_sync_done\")",
+      "xm.rendezvous(\"validation_done\")",
+      "\"train/loss\": loss.item() * accumulation_steps,",
+      "\"train/lr\": optimizer.param_groups[0]['lr'],",
+      "log_dict[f\"train/{k}\"] = v.item() if torch.is_tensor(v) else v",
+      "log_dict = {\"train/loss\": loss.item() * accumulation_steps, \"global_step\": global_step}",
+      "log_dict[f\"train/{k}\"] = v.item() if torch.is_tensor(v) else v"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "e073f29",
+    "date": "Fri May 8 00:05:09 2026 +0200",
+    "subject": "fix 8 wandb",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "4fc8281",
+    "date": "Fri May 8 00:01:25 2026 +0200",
+    "subject": "Пытаемся починить",
+    "notable_changes": [
+      "xm.optimizer_step(optimizer, barrier=True)",
+      "if xm.is_master_ordinal() and global_step % 20 == 0:",
+      "lr = optimizer.param_groups[0]['lr']",
+      "log_dict = {\"train/loss\": loss.item() * accumulation_steps, \"train/lr\": lr, \"global_step\": global_step}",
+      "log_dict[f\"train/{k}\"] = v.item() if torch.is_tensor(v) else v",
+      "if xm.is_master_ordinal():",
+      "save_model_spmd(distiller, \"AWAKENED_WEIGHTS_FINAL.pt\")",
+      "xm.mark_step()",
+      "lr = optimizer.param_groups[0]['lr']",
+      "log_dict = {\"train/loss\": loss.item() * accumulation_steps, \"train/lr\": lr, \"global_step\": global_step}",
+      "log_dict[f\"train/{k}\"] = v.item() if torch.is_tensor(v) else v"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "ecfb962",
+    "date": "Thu May 7 21:27:05 2026 +0200",
+    "subject": "ошибка теперь равномерно распределена mse = cos",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "d3391df",
+    "date": "Wed May 6 21:22:56 2026 +0200",
+    "subject": "fix wandb",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "3975133",
+    "date": "Tue May 5 22:14:32 2026 +0200",
+    "subject": "fix?",
+    "notable_changes": [
+      "# clip_threshold=1.0 заменяет внешний clip_grad_norm_, разгружая компилятор XLA",
+      "lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False,",
+      "torch.nn.utils.clip_grad_norm_(explosive_params, 1.0)",
+      "lr=5e-5, scale_parameter=False, relative_step=False, warmup_init=False",
+      "# Для SPMD FSDP используется xm.optimizer_step.",
+      "torch.nn.utils.clip_grad_norm_(distiller.parameters(), 1.0)"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "500e33e",
+    "date": "Tue May 5 21:50:14 2026 +0200",
+    "subject": "FIX",
+    "notable_changes": [
+      "# Сохраняем начальный LR для корректного локального вармапа",
+      "param_group['initial_lr'] = 5e-5",
+      "# Для SPMD FSDP используется xm.optimizer_step с Gradient Clipping",
+      "# clip_norm=1.0 - критически важно для bfloat16",
+      "xm.optimizer_step(optimizer, barrier=True, clip_norm=1.0)",
+      "param_group['lr'] = param_group.get('initial_lr', 5e-5) * lr_multiplier",
+      "# Для SPMD FSDP используется стандартный optimizer.step()",
+      "# Умножаем LR, выданный шедулером, на коэффициент прогрева",
+      "param_group['lr'] *= lr_multiplier"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "d24d11f",
+    "date": "Tue May 5 20:16:42 2026 +0200",
+    "subject": "fix",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "e129c59",
+    "date": "Tue May 5 20:14:05 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "s_norm = student_states[idx].norm().item()",
+      "t_norm = teacher_targets[idx].norm().item()"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "d5ad5f8",
+    "date": "Tue May 5 19:55:02 2026 +0200",
+    "subject": "try fix",
+    "notable_changes": [
+      "s_norm = student_states[idx].norm().item()",
+      "t_norm = teacher_targets[idx].norm().item()"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "0ec7c05",
+    "date": "Tue May 5 19:38:13 2026 +0200",
+    "subject": "Fix 40 layer mce",
+    "notable_changes": [
+      "lr_multiplier = (local_step + 1) / warmup_steps",
+      "# Умножаем LR, выданный шедулером, на коэффициент прогрева",
+      "param_group['lr'] *= lr_multiplier",
+      "# Отправляем синхронно (без Popen), чтобы избежать зависаний XLA процессов",
+      "# Аккумулируем тензоры напрямую на TPU (без блокирующих .item())",
+      "avg_val_loss = (val_loss_sum.item() / val_steps) if val_steps > 0 and val_loss_sum is not None else 0",
+      "avg_val = (v_sum.item() / val_steps) if torch.is_tensor(v_sum) else (v_sum / val_steps)",
+      "v_loss_scalar = v_loss.item()",
+      "v_metrics_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in v_metrics.items()}"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "d13e134",
+    "date": "Tue May 5 00:41:21 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "# Данные (Используем SPMD: батч 4 будет разрезан на 4 ядра по 1 примеру)",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='val')"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "1634e88",
+    "date": "Tue May 5 00:14:29 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "# Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)",
+      "# Веса загружать здесь НЕЛЬЗЯ, так как модель уже обернута в FSDP,",
+      "# и это сломает шардирование (xs.mark_sharding), что приведет к OOM!",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='val')",
+      "# Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "3649ca5",
+    "date": "Tue May 5 00:02:28 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='val')"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "c2283f6",
+    "date": "Mon May 4 23:23:53 2026 +0200",
+    "subject": "fix",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "ee3c769",
+    "date": "Mon May 4 23:14:21 2026 +0200",
+    "subject": "fix oom",
+    "notable_changes": [
+      "loss_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in loss_metrics.items()}",
+      "loss_val = loss.item()",
+      "loss_val = loss.item() if rank == 0 else 0.0",
+      "progress_bar.set_postfix({\"loss\": f\"{loss_val:.4f}\", \"step\": global_step, \"lr\": f\"{lr:.1e}\"})",
+      "v_loss_scalar = v_loss.item()",
+      "v_metrics_scalars = {k: (v.item() if torch.is_tensor(v) else v) for k, v in v_metrics.items()}",
+      "progress_bar.set_postfix({\"loss\": f\"{loss.item():.4f}\", \"step\": global_step, \"lr\": f\"{lr:.1e}\"})",
+      "\"train/loss\": loss.item(),",
+      "val = v.item() if torch.is_tensor(v) else v",
+      "val_loss_sum += v_loss.item()",
+      "val = v.item() if torch.is_tensor(v) else v"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "40b0d5d",
+    "date": "Mon May 4 23:07:55 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))",
+      "xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))",
+      "xs.mark_sharding(v, mesh, ('fsdp', None))",
+      "xs.mark_sharding(v, mesh, ('fsdp', None))"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "cf1a644",
+    "date": "Mon May 4 22:19:11 2026 +0200",
+    "subject": "fixes",
+    "notable_changes": [
+      "xm.mark_step() # Синхронизация перед сохранением",
+      "xm.save(save_data, \"latest_checkpoint.pt\") # master_only=True внутри xm.save по умолчанию для файлов",
+      "print(f\"--- [SAVE] Чекпоинт сохранен. Отправка в GCS... ---\")",
+      "xm.save(save_data, \"latest_checkpoint.pt\", master_only=True)",
+      "print(f\"--- [SAVE] Чекпоинт сохранен на шаге {global_step} ---\")"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "17b8de8",
+    "date": "Mon May 4 22:09:46 2026 +0200",
+    "subject": "fix oom 2",
+    "notable_changes": [
+      "train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='val')",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='val')"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "c32a928",
+    "date": "Mon May 4 22:04:28 2026 +0200",
+    "subject": "fix OOM",
+    "notable_changes": [
+      "# Ручной перенос на устройство и SPMD Data Parallel шардинг",
+      "# Критично: сообщаем XLA, что батч нужно разрезать по ядрам ('fsdp')",
+      "xs.mark_sharding(v, mesh, ('fsdp', None))",
+      "xs.mark_sharding(v, mesh, ('fsdp', None))",
+      "# Ручной перенос на устройство (без MpDeviceLoader)"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "baba728",
+    "date": "Mon May 4 22:00:13 2026 +0200",
+    "subject": "fix lr",
+    "notable_changes": [
+      "from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts",
+      "# Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='train')",
+      "val_loader = get_dataloader(stage='reasoning', batch_size=16, max_length=4096, split='val')",
+      "wandb.init(project=\"BEBLaDII\", name=\"tpu-v6e-spmd\", resume=\"allow\")",
+      "wandb.init(project=\"BEBLaDII\", name=\"tpu-v6e-spmd\", mode=\"offline\", resume=\"allow\")",
+      "lr = optimizer.param_groups[0]['lr']",
+      "progress_bar.set_postfix({\"loss\": f\"{loss.item():.4f}\", \"step\": global_step, \"lr\": f\"{lr:.1e}\"})",
+      "\"train/loss\": loss.item(),",
+      "\"train/lr\": lr,",
+      "val = v.item() if torch.is_tensor(v) else v",
+      "save_data = {",
+      "xm.save(save_data, \"latest_checkpoint.pt\", master_only=True)",
+      "print(f\"--- [SAVE] Чекпоинт сохранен на шаге {global_step} ---\")",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "3a0c053",
+    "date": "Mon May 4 21:45:10 2026 +0200",
+    "subject": "Fix lost snapshop",
+    "notable_changes": [
+      "# Загрузка последнего чекпоинта (если есть) ДО обертки FSDP",
+      "# Для FSDP load_state_dict работает прозрачно, если стейт был сохранен так же (консолидирован)"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "0c930dd",
+    "date": "Mon May 4 21:35:37 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "def custom_shard_output(output, mesh):",
+      "import torch_xla.experimental.xla_sharding as xs",
+      "# Шардируем выходные состояния ученика (batch_size находится на 0-й оси)",
+      "xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))",
+      "xs.mark_sharding(v, mesh, ('fsdp',) + (None,) * (v.dim() - 1))",
+      "xs.mark_sharding(mu, mesh, ('fsdp',) + (None,) * (mu.dim() - 1))",
+      "xs.mark_sharding(logvar, mesh, ('fsdp',) + (None,) * (logvar.dim() - 1))"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "a94d9c9",
+    "date": "Mon May 4 21:31:21 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "# Для SPMD FSDPv2 инициализация process_group с xla backend больше не нужна!",
+      "# import torch_xla.distributed.xla_backend",
+      "# dist.init_process_group(\"xla\", init_method=\"xla://\")",
+      "import torch_xla.distributed.xla_backend",
+      "dist.init_process_group(\"xla\", init_method=\"xla://\")"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "5c0da01",
+    "date": "Mon May 4 21:26:26 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "# Включаем SPMD режим до любых операций XLA",
+      "xr.use_spmd()"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "977d406",
+    "date": "Mon May 4 21:17:35 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "import torch_xla.distributed.xla_multiprocessing as xmp",
+      "import torch_xla.runtime as xr",
+      "import torch_xla.experimental.xla_sharding as xs",
+      "from torch_xla.experimental.spmd_fully_sharded_data_parallel import SpmdFullyShardedDataParallel as FSDP",
+      "# Настройка SPMD Mesh",
+      "mesh_shape = (num_devices, 1)",
+      "mesh = xs.Mesh(device_ids, mesh_shape, ('fsdp', 'model'))",
+      "xs.set_global_mesh(mesh)",
+      "# Оборачиваем модель в SpmdFullyShardedDataParallel",
+      "mesh=mesh,",
+      "# Для SPMD FSDP используется стандартный optimizer.step()",
+      "xm.mark_step()",
+      "from torch_xla.distributed.fsdp import XlaFullyShardedDataParallel as FSDP",
+      "# ВАЖНО: XlaFullyShardedDataParallel требует, чтобы параметры были в FP32.",
+      "# Мы переводим модель в FP32 и временно на CPU, чтобы избежать OOM на одном ядре."
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "1777ff5",
+    "date": "Mon May 4 20:50:12 2026 +0200",
+    "subject": "fix",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "6a0fa02",
+    "date": "Mon May 4 20:44:10 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "# FSDP в XLA может падать при накоплении градиентов без no_sync().",
+      "xm.optimizer_step(optimizer)",
+      "final_loss = loss.item()",
+      "xm.optimizer_step(optimizer)",
+      "# ОЧЕНЬ ВАЖНО ДЛЯ XLA: заставляем выполнить микро-батч, чтобы он не сливал",
+      "# 16 шагов в один гигантский граф (что вызвало бы 93GB * 16 OOM).",
+      "xm.mark_step()",
+      "final_loss = loss.item() * gradient_accumulation_steps"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "adc86a6",
+    "date": "Mon May 4 20:35:26 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "# ВАЖНО: XlaFullyShardedDataParallel требует, чтобы параметры были в FP32.",
+      "# Мы переводим модель в FP32 и временно на CPU, чтобы избежать OOM на одном ядре."
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "69df016",
+    "date": "Mon May 4 20:30:01 2026 +0200",
+    "subject": "fix",
+    "notable_changes": []
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "d2e37d2",
+    "date": "Sun May 3 21:33:25 2026 +0200",
+    "subject": "fix OOM 97Gb",
+    "notable_changes": [
+      "# ХАК: monkey-patch torch.xla для починки gradient checkpointing",
+      "if not hasattr(torch, \"xla\"):",
+      "class DummyXLA:",
+      "torch.xla = DummyXLA()",
+      "# На TPU v6e граф для batch_size=4 seq_len=4096 требует 93GB HBM. Снижаем до 1 (глобальный батч 4)",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=1, max_length=4096, split='train')",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "dc7cfd4",
+    "date": "Sun May 3 19:20:35 2026 +0200",
+    "subject": "fix",
+    "notable_changes": [
+      "# Для XLA критически важно отключить preserve_rng_state, так как torch.utils.checkpoint",
+      "# пытается вызвать getattr(torch, \"xla\"), что приводит к AttributeError.",
+      "print(\"--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---\")"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "ec12435",
+    "date": "Sun May 3 19:06:34 2026 +0200",
+    "subject": "fix data.py",
+    "notable_changes": [
+      "print(\"--- [RANK 0] Начинаем итерации. ПЕРВЫЙ ШАГ вызовет компиляцию XLA графа (это может занять 5-15 минут, подождите!)... ---\")"
+    ]
+  },
+  {
+    "phase": "Plan A Phase 2",
+    "hash": "e3fa6da",
+    "date": "Sun May 3 18:54:59 2026 +0200",
+    "subject": "fixes",
+    "notable_changes": [
+      "# Отключаем Dynamo/Inductor, так как он конфликтует с XLA (особенно в ModernBERT)",
+      "os.environ[\"XLA_USE_BF16\"] = \"1\"",
+      "import torch_xla.core.xla_model as xm",
+      "import torch_xla.distributed.parallel_loader as pl",
+      "device = xm.xla_device()",
+      "rank = xm.get_local_ordinal()",
+      "# Отключаем градиентный чекпоинтинг для совместимости с XLA",
+      "optimizer = AdamW(filter(lambda p: p.requires_grad, distiller.parameters()), lr=5e-5)",
+      "train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')",
+      "train_loader = pl.MpDeviceLoader(train_loader, device)",
+      "torch.save({'model_state_dict': distiller.state_dict()}, \"latest_checkpoint.pt\")",
+      "# Процессы 1-3 ждут, пока процесс 0 скачает файлы, ПЕРЕД инициализацией XLA",
+      "import torch_xla.distributed.xla_backend",
+      "dist.init_process_group(\"xla\", init_method=\"xla://\")",
+      "# Инициализируем XLA только после скачивания, чтобы избежать проблем с fork() и gsutil"
+    ]
+  }
+]

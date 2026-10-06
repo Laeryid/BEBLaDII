@@ -1,0 +1,528 @@
+
+*** COMMIT f2a645b ***
+  f2a645b
+  =======================================================
+  Date:   Tue Oct 6 17:41:06 2026 +0200
+      fix TPU error
+  ---
+   .../train_phase6_notebook.cpython-313.pyc           | Bin 68555 -> 68720 bytes
+   .../phase 6/kaggle/train_phase6_notebook.ipynb      |  16 +++++++++++-----
+   experiments/phase 6/kaggle/train_phase6_notebook.py |  14 ++++++++++----
+   .../phase 6/screenshots/2026-10-06 173642 train.png | Bin 0 -> 383209 bytes
+   .../phase 6/screenshots/2026-10-06 173729 proj.png  | Bin 0 -> 31208 bytes
+   .../phase 6/screenshots/2026-10-06 173800 val.png   | Bin 0 -> 36512 bytes
+   .../screenshots/2026-10-06 173833 val ca.png        | Bin 0 -> 74643 bytes
+   .../screenshots/2026-10-06 173931 val gain.png      | Bin 0 -> 77029 bytes
+   .../train_phase6_tpu_notebook.cpython-313.pyc       | Bin 67977 -> 68141 bytes
+   .../tpu kaggle/train_phase6_tpu_notebook.ipynb      |  16 +++++++++++-----
+   .../phase 6/tpu kaggle/train_phase6_tpu_notebook.py |  14 ++++++++++----
+   11 files changed, 42 insertions(+), 18 deletions(-)
+  KEY CHANGES:
+    +    "        is_tuple = isinstance(out, (tuple, list))\n",
+    +    "        hidden = out[0] if is_tuple else out\n",
+    +    "\n",
+    -    "                sep = out[0][:, 0:1, :]\n",
+    -    "                ans = out[0][:, 1:, :]\n",
+    +    "                sep = hidden[:, 0:1, :]\n",
+    +    "                ans = hidden[:, 1:, :]\n",
+    -    "                out = (torch.cat([sep, ans], dim=1),) + out[1:]\n",
+    -    "        return out"
+    +    "                hidden = torch.cat([sep, ans], dim=1)\n",
+    +    "\n",
+    +    "        if is_tuple:\n",
+
+*** COMMIT 3e73b8b ***
+  3e73b8b
+  =======================================================
+  Date:   Mon Oct 5 06:41:12 2026 +0200
+      fix 2
+  ---
+   .../train_phase6_tpu_notebook.cpython-313.pyc      | Bin 54298 -> 54284 bytes
+   .../tpu kaggle/train_phase6_tpu_notebook.ipynb     |  71 ++++++++++-----------
+   .../tpu kaggle/train_phase6_tpu_notebook.py        |   5 +-
+   3 files changed, 35 insertions(+), 41 deletions(-)
+  KEY CHANGES:
+    -   "id": "9025de8b",
+    +   "id": "27f62730",
+    -   "id": "c2fef1a3",
+    +   "id": "cac955dd",
+    -   "id": "34cea840",
+    +   "id": "8ad7d1e1",
+    -   "id": "a597bdbf",
+    +   "id": "d83cb649",
+    -   "id": "057ec375",
+    +   "id": "10714a6d",
+    -   "id": "f88d13c5",
+    +   "id": "ed14be34",
+
+*** COMMIT 84777ef ***
+  84777ef
+  =======================================================
+  Date:   Thu Oct 1 19:17:35 2026 +0200
+      Fix parameter grouping collision between ca_layers and dus_unfrozen
+  ---
+   experiments/phase 6/kaggle/train_phase6_notebook.py         | 2 +-
+   experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py | 2 +-
+   2 files changed, 2 insertions(+), 2 deletions(-)
+  KEY CHANGES:
+    -        if p.requires_grad:
+    +        if p.requires_grad and "ca_layer" not in name:
+    -        if p.requires_grad:
+    +        if p.requires_grad and "ca_layer" not in name:
+
+*** COMMIT c1a335f ***
+  c1a335f
+  =======================================================
+  Date:   Tue Sep 29 06:36:58 2026 +0200
+      fix 2
+  ---
+   experiments/phase 6/plan.md                        |  13 ++++
+   .../train_phase6_tpu_notebook.cpython-313.pyc      | Bin 42367 -> 42699 bytes
+   .../tpu kaggle/train_phase6_tpu_notebook.ipynb     |  68 +++++++++++----------
+   .../tpu kaggle/train_phase6_tpu_notebook.py        |   6 +-
+   ...arse A Hybrid Sparse Attention Architecture.pdf | Bin 0 -> 411394 bytes
+   ... Sparse Attention with Two-Level KV Sharing.pdf | Bin 0 -> 492936 bytes
+   ideas/semantic_clm_compression.md                  |  20 ++++++
+   7 files changed, 74 insertions(+), 33 deletions(-)
+  KEY CHANGES:
+    +#### Базовые знания и идентичность (Identity & Architecture Alignment)
+    +Несмотря на общее правило «упор на логику, а не фактологию», в Phase 6 внедряется минимальный, но критически важный объем встроенных знаний
+    +**Обоснование:**
+    +Знание своей архитектуры (BEBLaDII, Latent Diffusion) — это не просто рядовые факты, а **базовая точка отсчета (anchor) для выстраивания ло
+    +Эти знания внедряются не как сухие факты, а через структурные рассуждения о принципах своей работы:
+    +- **Плохо:** «Я BEBLaDII.»
+    +- **Хорошо:** «Я BEBLaDII, модель на базе Latent Diffusion. В отличие от авторегрессионных моделей, я не предсказываю текст по словам, а фо
+    +Такие данные (в объеме небольшого сета высококачественных Q/A) обеспечат внутреннюю стабильность "личности" модели до подключения RAG.
+    -   "id": "b0388b21",
+    +   "id": "490ccf65",
+    -   "id": "b8304bdb",
+    +   "id": "3c9c64fb",
+
+*** COMMIT ebf7f0f ***
+  ebf7f0f
+  =======================================================
+  Date:   Mon Sep 28 19:02:05 2026 +0200
+      fix 1
+  ---
+   .../train_phase6_tpu_notebook.cpython-313.pyc      | Bin 41881 -> 42367 bytes
+   .../tpu kaggle/train_phase6_tpu_notebook.ipynb     |  85 +++++++++++++--------
+   .../tpu kaggle/train_phase6_tpu_notebook.py        |   9 +++
+   3 files changed, 64 insertions(+), 30 deletions(-)
+  KEY CHANGES:
+    -   "id": "0d480be3",
+    +   "id": "b0388b21",
+    -    "import sys\n",
+    +    "import sys"
+    +   ]
+    +  },
+    +  {
+    +   "cell_type": "code",
+    +   "execution_count": null,
+    +   "id": "b8304bdb",
+    +   "metadata": {},
+    +   "outputs": [],
+
+*** COMMIT d28d4c4 ***
+  d28d4c4
+  =======================================================
+  Date:   Wed Sep 16 06:58:10 2026 +0200
+      fix 4 nan checks
+  ---
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 101331 -> 102434 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     |  75 ++++++++++++++-------
+   .../tpu kaggle/train_phase4_tpu_notebook.py        |  33 +++++++--
+   3 files changed, 79 insertions(+), 29 deletions(-)
+  KEY CHANGES:
+    -   "id": "4eb43cfd",
+    +   "id": "377f071c",
+    -   "id": "b50de380",
+    +   "id": "4b09dfba",
+    -   "id": "d1cc0f9e",
+    +   "id": "01393dc2",
+    -   "id": "950d140c",
+    +   "id": "37336139",
+    -    "    Disabled to prevent XLA graph accumulation and memory leaks.\n",
+    +    "    Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.\n",
+    -    "    pass\n",
+    +    "    if tensor is None or not isinstance(tensor, torch.Tensor):\n",
+
+*** COMMIT 5d6191f ***
+  5d6191f
+  =======================================================
+  Date:   Wed Sep 16 06:41:25 2026 +0200
+      fix 3 OOM
+  ---
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 102587 -> 101331 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     | 116 ++++++++-------------
+   .../tpu kaggle/train_phase4_tpu_notebook.py        |  74 +++++--------
+   3 files changed, 69 insertions(+), 121 deletions(-)
+  KEY CHANGES:
+    -   "id": "ba304f37",
+    +   "id": "4eb43cfd",
+    -   "id": "d69dbf2b",
+    +   "id": "b50de380",
+    -   "id": "02ecfda2",
+    +   "id": "d1cc0f9e",
+    -   "id": "7ea4c4d3",
+    +   "id": "950d140c",
+    -    "    Builds the graph node for NaN/Inf checking but DOES NOT evaluate it yet.\n",
+    -    "    This avoids breaking XLA graph into tiny pieces and causing OOM.\n",
+    +    "    Disabled to prevent XLA graph accumulation and memory leaks.\n",
+    -    "    if tensor is None or not isinstance(tensor, torch.Tensor):\n",
+
+*** COMMIT 6375b03 ***
+  6375b03
+  =======================================================
+  Date:   Tue Sep 15 18:27:45 2026 +0200
+      fix 2
+  ---
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 102689 -> 102587 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     |  88 +++++++++++----------
+   .../tpu kaggle/train_phase4_tpu_notebook.py        |  46 ++++++-----
+   3 files changed, 73 insertions(+), 61 deletions(-)
+  KEY CHANGES:
+    -   "id": "94b5236c",
+    +   "id": "ba304f37",
+    -   "id": "5c9d8916",
+    +   "id": "d69dbf2b",
+    -   "id": "a0f49790",
+    +   "id": "02ecfda2",
+    -   "id": "562e4d54",
+    +   "id": "7ea4c4d3",
+    -   "id": "0bc7323c",
+    +   "id": "23659bbc",
+    -   "id": "24e6d755",
+    +   "id": "40132a4e",
+
+*** COMMIT 83e1cd4 ***
+  83e1cd4
+  =======================================================
+  Date:   Tue Sep 8 21:42:57 2026 +0200
+      looking for NaN
+  ---
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 89556 -> 96647 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     | 172 +++++++++++++++++----
+   .../tpu kaggle/train_phase4_tpu_notebook.py        | 130 +++++++++++++++-
+   3 files changed, 271 insertions(+), 31 deletions(-)
+  KEY CHANGES:
+    -   "id": "6d5e74b6",
+    +   "id": "dfbfaabe",
+    -   "id": "8e2bbf78",
+    +   "id": "94dd8ce6",
+    -   "id": "25d1abad",
+    +   "id": "09d49353",
+    -   "id": "7a7ce315",
+    +   "id": "e220c93e",
+    +    "# --- Global NaN Debugging System ---\n",
+    +    "GLOBAL_CURRENT_STEP = 0\n",
+    +    "GLOBAL_START_STEP = 0\n",
+    +    "GLOBAL_NAN_TRIGGERED = False\n",
+
+*** COMMIT eda47c8 ***
+  eda47c8
+  =======================================================
+  Date:   Tue Sep 8 17:32:31 2026 +0200
+      fix NaN
+  ---
+   .../phase 4/screenshots/2026-09-08 172353 tech.png | Bin 0 -> 61291 bytes
+   .../2026-09-08 172442 train cos sim.png            | Bin 0 -> 25583 bytes
+   .../screenshots/2026-09-08 172519 train losses.png | Bin 0 -> 46825 bytes
+   .../screenshots/2026-09-08 172552 val adaln.png    | Bin 0 -> 41348 bytes
+   .../phase 4/screenshots/2026-09-08 172719 tech.png | Bin 0 -> 61332 bytes
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 89602 -> 89556 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     |  47 ++++++++++-----------
+   .../tpu kaggle/train_phase4_tpu_notebook.py        |   5 +--
+   8 files changed, 23 insertions(+), 29 deletions(-)
+  KEY CHANGES:
+    -   "id": "5c49f03f",
+    +   "id": "6d5e74b6",
+    -   "id": "dee400cf",
+    +   "id": "8e2bbf78",
+    -   "id": "1858e13d",
+    +   "id": "25d1abad",
+    -   "id": "5ac3acb2",
+    +   "id": "7a7ce315",
+    -   "id": "d4057b06",
+    +   "id": "677b6659",
+    -   "id": "08128bdb",
+    +   "id": "7ee11065",
+
+*** COMMIT ddcfee9 ***
+  ddcfee9
+  =======================================================
+  Date:   Mon Aug 31 22:13:15 2026 +0200
+      OOM fix 3
+  ---
+   bebladii.architecture.json                         | 220 +++++++++++++++++++++
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 84151 -> 84144 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     |  58 +++---
+   .../tpu kaggle/train_phase4_tpu_notebook.py        |  16 +-
+   4 files changed, 255 insertions(+), 39 deletions(-)
+  KEY CHANGES:
+    +  "schema_version": 1,
+    +  "diagram_type": "architecture",
+    +  "meta": {
+    +    "title": "BEBLaDII Architecture",
+    +    "subtitle": "Reasoning Latent Diffusion Model",
+    +    "visual_preset": "signal-flow",
+    +    "animation": "trace",
+    +    "locale": "en",
+    +    "legend": {
+    +      "mode": "auto"
+    +    }
+    +  },
+
+*** COMMIT c9afcdb ***
+  c9afcdb
+  =======================================================
+  Date:   Mon Aug 31 21:42:50 2026 +0200
+      fix OOM
+  ---
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 84059 -> 84151 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     |  56 ++++++++++++---------
+   .../tpu kaggle/train_phase4_tpu_notebook.py        |  14 ++++--
+   3 files changed, 41 insertions(+), 29 deletions(-)
+  KEY CHANGES:
+    -   "id": "e38271e6",
+    +   "id": "071157f3",
+    -   "id": "b0112f3c",
+    +   "id": "3c4a78d4",
+    -   "id": "d56855bc",
+    +   "id": "775f2d42",
+    -   "id": "4dc79806",
+    +   "id": "712311e4",
+    +    "import torch_xla\n",
+    -   "id": "9da99b20",
+    +   "id": "3a1d4be6",
+    -   "id": "ff9a34bb",
+
+*** COMMIT 5c278c1 ***
+  5c278c1
+  =======================================================
+  Date:   Mon Aug 31 21:23:10 2026 +0200
+      Fix something else
+  ---
+   .../phase 4/kaggle/train_phase4_notebook.py        |   2 +-
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 84042 -> 84059 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     |  66 +++++++++++----------
+   .../tpu kaggle/train_phase4_tpu_notebook.py        |  24 ++++----
+   4 files changed, 50 insertions(+), 42 deletions(-)
+  KEY CHANGES:
+    -    # Гиперпараметры Phase 4a (~0.1x Phase 3 LR)
+    +    # Гиперпараметры Phase 4a
+    -   "id": "e39af513",
+    +   "id": "e38271e6",
+    -   "id": "a4c127ca",
+    +   "id": "b0112f3c",
+    -   "id": "d0a41d26",
+    +   "id": "d56855bc",
+    -   "id": "9e7dd63c",
+    +   "id": "4dc79806",
+    -   "id": "9e4f44b5",
+    +   "id": "9da99b20",
+
+*** COMMIT fe3437d ***
+  fe3437d
+  =======================================================
+  Date:   Mon Aug 31 20:57:13 2026 +0200
+      fix checkpoint loader
+  ---
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 83811 -> 84042 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     |  72 ++++++++++++---------
+   .../tpu kaggle/train_phase4_tpu_notebook.py        |  30 ++++++---
+   3 files changed, 63 insertions(+), 39 deletions(-)
+  KEY CHANGES:
+    -   "id": "8cb33fee",
+    +   "id": "e39af513",
+    -   "id": "998e947b",
+    +   "id": "a4c127ca",
+    -   "id": "666b302e",
+    +   "id": "d0a41d26",
+    -   "id": "19183fb8",
+    +   "id": "9e7dd63c",
+    -   "id": "08dfaf54",
+    +   "id": "9e4f44b5",
+    -   "id": "3a04690f",
+    +   "id": "4602c532",
+
+*** COMMIT 4c1f003 ***
+  4c1f003
+  =======================================================
+  Date:   Mon Aug 31 18:47:19 2026 +0200
+      fix XLA version
+  ---
+   .../train_phase4_tpu_notebook.cpython-313.pyc      | Bin 81613 -> 82659 bytes
+   .../tpu kaggle/train_phase4_tpu_notebook.ipynb     |  27 +++++++++++++++++++--
+   .../tpu kaggle/train_phase4_tpu_notebook.py        |  27 +++++++++++++++++++--
+   3 files changed, 50 insertions(+), 4 deletions(-)
+  KEY CHANGES:
+    -    "import torch_xla.experimental.xla_sharding as xs\n",
+    +    "\n",
+    +    "# Handle torch_xla versions (Kaggle often updates to >=2.5 where experimental is moved)\n",
+    +    "try:\n",
+    +    "    import torch_xla.experimental.xla_sharding as xs\n",
+    +    "    print(\"[Init] Loaded xs from torch_xla.experimental.xla_sharding\")\n",
+    +    "except ImportError:\n",
+    +    "    import torch_xla.distributed.spmd as xs\n",
+    +    "    if not hasattr(xs, 'mark_sharding'):\n",
+    +    "        import torch_xla.distributed.spmd.xla_sharding as xs\n",
+    +    "        print(\"[Init] Loaded xs from torch_xla.distributed.spmd.xla_sharding\")\n",
+    +    "    else:\n",
+
+*** COMMIT 2f62fb2 ***
+  2f62fb2
+  =======================================================
+  Date:   Tue May 12 21:38:40 2026 +0200
+      fix Exceeded sflag capacity by 684B
+  ---
+   experiments/train_phase1_TPU_fsdp.py | 31 ++++++++++++++++++-------------
+   src/beb_la_dii/model/distiller.py    |  6 +++---
+   2 files changed, 21 insertions(+), 16 deletions(-)
+  KEY CHANGES:
+    -            # 2. Объединяем в один большой батч (4*B, T) для XLA-эффективности
+    -            v_input_ids = torch.cat([v["input_ids"] for v in variants], dim=0)
+    -            v_attn_mask = torch.cat([v["attention_mask"] for v in variants], dim=0)
+    +            # 2. Объединяем в один большой батч (4*B, T)
+    +            B_orig = batch['input_ids'].shape[0]
+    +            T = batch['input_ids'].shape[1]
+    -            # SPMD Sharding для объединенного батча
+    -            xs.mark_sharding(v_input_ids, mesh, ('fsdp', None))
+    -            xs.mark_sharding(v_attn_mask, mesh, ('fsdp', None))
+    +            # Interleaving: [S0V0, S0V1, S0V2, S0V3, S1V0...]
+    +            # Это гарантирует, что все маски одного семпла попадут на одно XLA-устройство при шардинге
+    +            v_input_ids = torch.stack([v["input_ids"] for v in variants], dim=1).view(-1, T)
+
+*** COMMIT d2e37d2 ***
+  d2e37d2
+  =======================================================
+  Date:   Sun May 3 21:33:25 2026 +0200
+      fix OOM 97Gb
+  ---
+   experiments/train_phase1_TPU.py | 14 ++++++++++++--
+   src/beb_la_dii/utils/loss.py    | 10 +++++-----
+   2 files changed, 17 insertions(+), 7 deletions(-)
+  KEY CHANGES:
+    +# ХАК: monkey-patch torch.xla для починки gradient checkpointing
+    +if not hasattr(torch, "xla"):
+    +    class DummyXLA:
+    +        @staticmethod
+    +        def get_rng_state(*args, **kwargs): return torch.tensor(0)
+    +        @staticmethod
+    +        def set_rng_state(*args, **kwargs): pass
+    +    torch.xla = DummyXLA()
+    -    # Данные
+    -    train_loader = get_dataloader(stage='reasoning', batch_size=4, max_length=4096, split='train')
+    +    # Данные (УМЕНЬШЕН BATCH SIZE ДО 1)
+    +    # На TPU v6e граф для batch_size=4 seq_len=4096 требует 93GB HBM. Снижаем до 1 (глобальный батч 4)
+
+*** COMMIT dc7cfd4 ***
+  dc7cfd4
+  =======================================================
+  Date:   Sun May 3 19:20:35 2026 +0200
+      fix
+  ---
+   experiments/train_phase1_TPU.py | 8 ++++++--
+   1 file changed, 6 insertions(+), 2 deletions(-)
+  KEY CHANGES:
+    -        distiller.student.model.gradient_checkpointing_enable()
+    +        # Для XLA критически важно отключить preserve_rng_state, так как torch.utils.checkpoint
+    +        # пытается вызвать getattr(torch, "xla"), что приводит к AttributeError.
+    +        distiller.student.model.gradient_checkpointing_enable(
+    +            gradient_checkpointing_kwargs={'preserve_rng_state': False}
+    +        )
+    -            print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН ---")
+    +            print("--- [RANK 0] Gradient Checkpointing ВКЛЮЧЕН (XLA-safe) ---")
+
+*** COMMIT 1634e88 ***
+  1634e88
+  =======================================================
+  Date:   Tue May 5 00:14:29 2026 +0200
+      fix
+  ---
+   .../train_phase1_TPU_fsdp.cpython-313.pyc          | Bin 19932 -> 19417 bytes
+   experiments/train_phase1_TPU_fsdp.py               |  29 ++++++++++++---------
+   2 files changed, 17 insertions(+), 12 deletions(-)
+  KEY CHANGES:
+    -        incompatible_keys = distiller.load_state_dict(ckpt['model_state_dict'], strict=False)
+    +        # Очищаем префикс _orig_module. и исключаем веса учителя из загрузки
+    +        cleaned_sd = {}
+    +        for k, v in ckpt['model_state_dict'].items():
+    +            new_k = k.replace("_orig_module.", "")
+    +            if "teacher" not in new_k:
+    +                cleaned_sd[new_k] = v
+    +        incompatible_keys = distiller.load_state_dict(cleaned_sd, strict=False)
+    -            print(f"--- [RESUME] Чекпоинт загружен ---")
+    +            print(f"--- [RESUME] Чекпоинт загружен (только веса студента) ---")
+    -    # Загрузка полного состояния (если есть) ДО обертки FSDP (для весов) и ПОСЛЕ создания оптимизатора
+    +    # Загрузка состояния оптимизатора и планировщика (ПОСЛЕ обертки FSDP)
+
+*** COMMIT c32a928 ***
+  c32a928
+  =======================================================
+  Date:   Mon May 4 22:04:28 2026 +0200
+      fix OOM
+  ---
+   experiments/train_phase1_TPU_fsdp.py | 14 +++++++++++---
+   1 file changed, 11 insertions(+), 3 deletions(-)
+  KEY CHANGES:
+    -            # Ручной перенос на устройство (без MpDeviceLoader)
+    -            batch = {k: v.to(device) for k, v in batch.items()}
+    +            # Ручной перенос на устройство и SPMD Data Parallel шардинг
+    +            for k, v in batch.items():
+    +                v = v.to(device)
+    +                # Критично: сообщаем XLA, что батч нужно разрезать по ядрам ('fsdp')
+    +                xs.mark_sharding(v, mesh, ('fsdp', None))
+    +                batch[k] = v
+    -                        v_batch = {k: v.to(device) for k, v in v_batch.items()}
+    +                        for k, v in v_batch.items():
+    +                            v = v.to(device)
+    +                            xs.mark_sharding(v, mesh, ('fsdp', None))
+
+*** COMMIT cf1a644 ***
+  cf1a644
+  =======================================================
+  Date:   Mon May 4 22:19:11 2026 +0200
+      fixes
+  ---
+   .know/decisions/004_spmd_fsdp_tpu_constraints.md | 26 ++++++++++++++++++
+   .know/doc_config.json                            | 10 +++++++
+   experiments/train_phase1_TPU_fsdp.py             | 35 +++++++++++++++++-------
+   3 files changed, 61 insertions(+), 10 deletions(-)
+  KEY CHANGES:
+    +<!-- created: 2026-05-04 -->
+    +# ADR 004: Переход на SPMD FSDP на TPU v6e: Ограничения и уроки
+    +## Context and Problem
+    +В процессе миграции системы дистилляции BEBLaDII с устаревшего `XlaFullyShardedDataParallel` на современный `SpmdFullyShardedDataParallel` 
+    +1. **Mismatched Weights**: После обертки в FSDPv2 стандартные методы загрузки весов (`load_state_dict`) приводили к потере значений (Loss >
+    +2. **Replicated Computation OOM**: При попытке увеличить батч до 16 система требовала 93 ГБ HBM (при доступных 32 ГБ на ядро), так как XLA 
+    +3. **Attention Bottleneck (Teacher)**: Учитель (DeepSeek-7B) использует архитектуру GQA, которая при отсутствии поддержки FlashAttention в 
+    +## Decisions Made and Lessons Learned
+    +- **Порядок загрузки весов (Weight Loading Order):**
+    +  - **Урок:** В PyTorch XLA SPMD веса из стандартных (Kaggle/HF) чекпоинтов должны загружаться **ДО** того, как модель будет обернута в `FS
+    +  - **Решение:** Перенос `load_state_dict` перед вызовом `FSDP(...)`.
+    +- **Явный шардинг батча (Explicit Input Sharding):**
+
+*** COMMIT e3fa6da ***
+  e3fa6da
+  =======================================================
+  Date:   Sun May 3 18:54:59 2026 +0200
+      fixes
+  ---
+   .../__pycache__/train_phase1_TPU.cpython-313.pyc   | Bin 0 -> 6819 bytes
+   experiments/train_phase1_TPU.py                    | 277 +++++++--------------
+   .../model/__pycache__/dus.cpython-313.pyc          | Bin 5185 -> 5105 bytes
+   src/beb_la_dii/model/dus.py                        |  11 +-
+   4 files changed, 102 insertions(+), 186 deletions(-)
+  KEY CHANGES:
+    -import os, sys, shutil, subprocess, re, torch, json, wandb
+    -from pathlib import Path
+    -from torch.optim import AdamW
+    -from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
+    +import os, sys
+    +import torch._dynamo
+    +# Отключаем Dynamo/Inductor, так как он конфликтует с XLA (особенно в ModernBERT)
+    +torch._dynamo.disable()
+    +# 1. УСТАНОВКА ПЕРЕМЕННЫХ
+    +os.environ["PJRT_DEVICE"] = "TPU"
+    +os.environ["XLA_USE_BF16"] = "1"
+    +os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
