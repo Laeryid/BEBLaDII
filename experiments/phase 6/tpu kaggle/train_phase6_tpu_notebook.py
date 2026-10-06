@@ -445,17 +445,23 @@ class Phase6BlockWrapper(nn.Module):
     def attention_type(self): return self.original_layer.attention_type
     def forward(self, hidden_states, attention_mask=None, **kwargs):
         out = self.original_layer(hidden_states, attention_mask=attention_mask, **kwargs)
+        is_tuple = isinstance(out, (tuple, list))
+        hidden = out[0] if is_tuple else out
+
         if self.ca_layer is not None:
             Z_prompt = getattr(self.ca_layer, '_current_Z_prompt', None)
             mask_Q = getattr(self.ca_layer, '_current_mask_Q', None)
             warmup_factor = getattr(self.ca_layer, '_current_warmup_factor', 1.0)
             t_emb = getattr(self.ca_layer, '_current_t_emb', None)
             if Z_prompt is not None:
-                sep = out[0][:, 0:1, :]
-                ans = out[0][:, 1:, :]
+                sep = hidden[:, 0:1, :]
+                ans = hidden[:, 1:, :]
                 ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor, t_emb=t_emb)
-                out = (torch.cat([sep, ans], dim=1),) + out[1:]
-        return out
+                hidden = torch.cat([sep, ans], dim=1)
+
+        if is_tuple:
+            return (hidden,) + tuple(out[1:])
+        return hidden
 
 class BEBLaDIIPhase6(nn.Module):
     def __init__(self, config: Config):
