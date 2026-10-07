@@ -101,6 +101,14 @@ def resolve_file_path(filename: str, fallback_dir="/kaggle/input") -> str:
     if p.exists():
         for f in p.rglob(filename):
             return str(f)
+    if os.path.exists(filename):
+        return filename
+    p_root = pathlib.Path(PROJECT_ROOT)
+    for sub in ["BEBLaDII-planB-Phase6-Data", "BEBLaDII-planB-Phase5-Data", "BEBLaDII-planB-Phase4-Data", "BEBLaDII-planB-Phase3-Data", "experiments", "storage", "checkpoints"]:
+        s = p_root / sub
+        if s.exists():
+            for m in s.rglob(filename):
+                return str(m)
     return filename
 
 def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step_"):
@@ -646,7 +654,7 @@ class BEBLaDIIPhase6(nn.Module):
         t_sin_prompt_token = self.t_sin_embed(t_global_prompt) # t=0
         t_emb_prompt_token = self.t_proj_token(t_sin_prompt_token)
         
-        cond_prompt = torch.cat([t_emb_prompt_token, t_emb_prompt_global.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1)], dim=-1)
+        cond_prompt = torch.cat([t_emb_prompt_token.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1), t_emb_prompt_global.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1)], dim=-1)
         t_emb_prompt = self.t_joint_proj(cond_prompt)
         
         sep_t_emb_prompt = torch.zeros(B, 1, t_emb_prompt.shape[-1], device=t_emb_prompt.device, dtype=t_emb_prompt.dtype)

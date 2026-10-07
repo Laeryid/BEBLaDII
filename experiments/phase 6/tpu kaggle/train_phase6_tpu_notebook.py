@@ -88,6 +88,14 @@ def resolve_file_path(filename: str, fallback_dir="/kaggle/input") -> str:
     if p.exists():
         for f in p.rglob(filename):
             return str(f)
+    if os.path.exists(filename):
+        return filename
+    p_root = pathlib.Path(PROJECT_ROOT)
+    for sub in ["BEBLaDII-planB-Phase6-Data", "BEBLaDII-planB-Phase5-Data", "BEBLaDII-planB-Phase4-Data", "BEBLaDII-planB-Phase3-Data", "experiments", "storage", "checkpoints"]:
+        s = p_root / sub
+        if s.exists():
+            for m in s.rglob(filename):
+                return str(m)
     return filename
 
 def sync_to_gcs_and_delete(local_path: str, gcs_dir: str):
@@ -373,6 +381,12 @@ class CAPromptLayer(nn.Module):
         A = A + sa_out
         return A
 
+def _ca_inner(ca):
+    """Возвращает исходный CAPromptLayer (снимает FSDP/SPMD обёртку, если есть)."""
+    while hasattr(ca, "module") or hasattr(ca, "_orig_module"):
+        ca = getattr(ca, "module", None) or getattr(ca, "_orig_module", None)
+    return ca
+
 class Phase6BlockWrapper(nn.Module):
     def __init__(self, original_layer, ca_layer=None):
         super().__init__()
@@ -386,15 +400,23 @@ class Phase6BlockWrapper(nn.Module):
         hidden = out[0] if is_tuple else out
 
         if self.ca_layer is not None:
-            Z_prompt = getattr(self.ca_layer, '_current_Z_prompt', None)
-            mask_Q = getattr(self.ca_layer, '_current_mask_Q', None)
-            warmup_factor = getattr(self.ca_layer, '_current_warmup_factor', 1.0)
-            t_emb = getattr(self.ca_layer, '_current_t_emb', None)
-            if Z_prompt is not None:
-                sep = hidden[:, 0:1, :]
-                ans = hidden[:, 1:, :]
-                ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor, t_emb=t_emb)
-                hidden = torch.cat([sep, ans], dim=1)
+            ca_inner = _ca_inner(self.ca_layer)
+            if not getattr(ca_inner, '_disable', False):
+                Z_prompt = getattr(self.ca_layer, '_current_Z_prompt', None)
+                if Z_prompt is None:
+                    Z_prompt = getattr(ca_inner, '_current_Z_prompt', None)
+                mask_Q = getattr(self.ca_layer, '_current_mask_Q', None)
+                if mask_Q is None:
+                    mask_Q = getattr(ca_inner, '_current_mask_Q', None)
+                warmup_factor = getattr(self.ca_layer, '_current_warmup_factor', 1.0)
+                t_emb = getattr(self.ca_layer, '_current_t_emb', None)
+                if t_emb is None:
+                    t_emb = getattr(ca_inner, '_current_t_emb', None)
+                if Z_prompt is not None:
+                    sep = hidden[:, 0:1, :]
+                    ans = hidden[:, 1:, :]
+                    ans = self.ca_layer(ans, Z_prompt, mask_Q, warmup_factor, t_emb=t_emb)
+                    hidden = torch.cat([sep, ans], dim=1)
 
         if is_tuple:
             return (hidden,) + tuple(out[1:])
@@ -575,6 +597,7 @@ class BEBLaDIIPhase6(nn.Module):
         # Отключаем CA и прогоняем промпт
         with torch.no_grad():
             for ca in self.ca_layers.values():
+                _ca_inner(ca)._disable = True
                 ca._disable = True
 
             prompt_outputs = self.dus(
@@ -588,11 +611,13 @@ class BEBLaDIIPhase6(nn.Module):
             Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
 
             for ca in self.ca_layers.values():
+                _ca_inner(ca)._disable = False
                 ca._disable = False
 
         # Обновляем Q для CA-слоев
         for ca in self.ca_layers.values():
             ca._current_Z_prompt = Z_prompt_12
+            _ca_inner(ca)._current_Z_prompt = Z_prompt_12
 
         # ==========================================
         # ПРОГОН ХОЛСТА (Слои 0-39, реальный t)
@@ -619,6 +644,9 @@ class BEBLaDIIPhase6(nn.Module):
             ca._current_mask_Q = attention_mask_q
             ca._current_warmup_factor = warmup_factor
             ca._current_t_emb = t_emb  # [B, T_a, 256] — per-token time embedding для AdaLN в CA/SA
+            _ca_inner(ca)._current_mask_Q = attention_mask_q
+            _ca_inner(ca)._current_warmup_factor = warmup_factor
+            _ca_inner(ca)._current_t_emb = t_emb
 
         x_in = z_noisy.float()
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
@@ -694,10 +722,6 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     content_to_void_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
 
     return loss, avg_cos_sim, true_void_sim, content_to_void_sim
-
-def _ca_inner(ca):
-    """Возвращает исходный CAPromptLayer (снимает FSDP-обёртку, если есть)."""
-    return getattr(ca, "module", ca)
 
 def _set_seed(seed: int):
     torch.manual_seed(seed)
@@ -820,7 +844,7 @@ def main():
             print(f"Validation dataset not found at {args.val_dataset_path}. Validation will be skipped.")
     except Exception as e:
         print(f"Failed to load dataset: {e}")
-        return
+        sys.exit(1)
 
     model = BEBLaDIIPhase6(args).to(device)
 
