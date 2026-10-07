@@ -160,8 +160,8 @@ class Config:
     void_token      = os.path.join(PROJECT_ROOT, "storage/components/void_token.pt")
     latent_dict     = resolve_file_path("latent_dict.pt")
     output_dir      = "/kaggle/working/checkpoints/phase6_v2" if Path("/kaggle/input").exists() else os.path.join(PROJECT_ROOT, "checkpoints/phase6_v2")
-    resume_from_checkpoint = False
-    gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6_v2/checkpoints/"
+    resume_from_checkpoint = True
+    gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
     batch_size    = 64 * 2
     max_length_q  = 512
     max_length_a  = 512
@@ -178,7 +178,7 @@ class Config:
     use_gradient_checkpointing = False
     loss_t_power  = 0.0   # 0.0 = равномерный вес лосса по токенам (ADR 098)
     use_prompt_sa = True  # Prompt-SA + RoPE перед CA
-    val_num_samples = 200 # Размер валидационной выборки
+    val_num_samples = 80 # Размер валидационной выборки
     wandb_project = "BEBLaDII-Phase6-Kaggle"
 
 args = Config()
@@ -549,13 +549,13 @@ class BEBLaDIIPhase6(nn.Module):
         t_global_prompt = torch.zeros((B,), device=Z_A_clean.device, dtype=torch.float32)
         t_sin_prompt_global = self.t_sin_embed(t_global_prompt)
         t_emb_prompt_global = self.t_proj_global(t_sin_prompt_global)
-        
+
         t_sin_prompt_token = self.t_sin_embed(t_global_prompt) # t=0
         t_emb_prompt_token = self.t_proj_token(t_sin_prompt_token)
-        
-        cond_prompt = torch.cat([t_emb_prompt_token, t_emb_prompt_global.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1)], dim=-1)
+
+        cond_prompt = torch.cat([t_emb_prompt_token.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1), t_emb_prompt_global.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1)], dim=-1)
         t_emb_prompt = self.t_joint_proj(cond_prompt)
-        
+
         sep_t_emb_prompt = torch.zeros(B, 1, t_emb_prompt.shape[-1], device=t_emb_prompt.device, dtype=t_emb_prompt.dtype)
         t_emb_prompt_extended = torch.cat([sep_t_emb_prompt, t_emb_prompt], dim=1)
 
@@ -568,7 +568,7 @@ class BEBLaDIIPhase6(nn.Module):
         prompt_in = Z_prompt.float()
         sep_prefix_prompt = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(prompt_in.dtype)
         dus_prompt_extended = torch.cat([sep_prefix_prompt, prompt_in], dim=1)
-        
+
         ones_sep_prompt = torch.ones((B, 1), device=attention_mask_q.device, dtype=attention_mask_q.dtype)
         prompt_mask_extended = torch.cat([ones_sep_prompt, attention_mask_q], dim=1)
 
@@ -576,17 +576,17 @@ class BEBLaDIIPhase6(nn.Module):
         with torch.no_grad():
             for ca in self.ca_layers.values():
                 ca._disable = True
-            
+
             prompt_outputs = self.dus(
                 inputs_embeds=dus_prompt_extended,
                 attention_mask=prompt_mask_extended,
                 output_hidden_states=True,
             )
-            
+
             # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
             # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
             Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
-            
+
             for ca in self.ca_layers.values():
                 ca._disable = False
 
@@ -770,10 +770,10 @@ def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step
                 vb += 1
                 xm.mark_step()
                 if vb >= val_limit_batches: break
-            
+
             s_vals = torch.stack([cp_sum, cp_no_ca_sum, cb_sum, n_tok]).cpu().tolist() if vb > 0 else [0.0]*4
             cp_sum_v, cp_no_ca_sum_v, cb_sum_v, n_tok_v = s_vals
-            
+
             n_tok_v = max(1.0, n_tok_v)
             with_ca, without_ca, base = cp_sum_v / n_tok_v, cp_no_ca_sum_v / n_tok_v, cb_sum_v / n_tok_v
             log[f"val_content_cos_tg{tg_val}"] = with_ca
