@@ -75,6 +75,15 @@ def run_pipeline(target_script: Path, timeout_sec: int = 60, extra_args: list = 
         if proc.returncode == 0:
             print("-"*50)
             print(f"[SUCCESS] Level 3 Smoke Test passed! Script executed cleanly on CPU mock.")
+            
+            print(f"\n{'='*60}")
+            print(f"=== [Level 4] Memory Budget & OOM Risk Analysis")
+            print(f"{'='*60}")
+            mem_script = SCRIPTS_DIR / "estimate_tpu_memory.py"
+            res_mem = subprocess.run([sys.executable, str(mem_script), str(target_script)])
+            if res_mem.returncode != 0:
+                print("[WARNING] Level 4 detected critical OOM risk or memory limit exceed.", file=sys.stderr)
+                return res_mem.returncode
             return 0
         else:
             print(proc.stderr, file=sys.stderr)

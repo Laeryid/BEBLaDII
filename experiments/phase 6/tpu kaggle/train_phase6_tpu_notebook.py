@@ -170,7 +170,7 @@ class Config:
     output_dir      = "/kaggle/working/checkpoints/phase6_v2" if Path("/kaggle/input").exists() else os.path.join(PROJECT_ROOT, "checkpoints/phase6_v2")
     resume_from_checkpoint = True
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
-    batch_size    = 64 * 2
+    batch_size    = 64
     max_length_q  = 512
     max_length_a  = 512
     learning_rate = 1e-4
@@ -456,7 +456,7 @@ class BEBLaDIIPhase6(nn.Module):
 
         self.register_buffer("sep_embed", torch.load(config.sep_token).float())
         self.register_buffer("void_embed", torch.load(config.void_token).float())
-        self.register_buffer("latent_dict", torch.load(config.latent_dict).float())
+        self.register_buffer("latent_dict", torch.load(config.latent_dict).to(torch.bfloat16))
 
         if os.path.exists(config.dus_weights):
             state = torch.load(config.dus_weights, map_location="cpu", weights_only=False)
@@ -562,13 +562,14 @@ class BEBLaDIIPhase6(nn.Module):
 
             z_noisy = spherical_noise(Z_A_clean, t_actual)
 
-            # Чанкованное вычисление RawDProx: делим latent_dict на 4 чанка по ~38K векторов
-            # для снижения пикового тензора sims с 4.98 ГБ до 1.24 ГБ HBM
-            RawDProx = torch.full((B, T_a), -1.0, device=z_noisy.device, dtype=z_noisy.dtype)
-            for dict_chunk in self.latent_dict.chunk(4, dim=0):
-                sims_chunk = torch.matmul(z_noisy, dict_chunk.T)
+            # Чанкованное вычисление RawDProx: делим latent_dict на 16 чанков по ~9.5K векторов
+            # и считаем матричное умножение в bfloat16 для предотвращения OOM в HBM
+            z_noisy_bf16 = z_noisy.to(torch.bfloat16)
+            RawDProx = torch.full((B, T_a), -1.0, device=z_noisy.device, dtype=torch.bfloat16)
+            for dict_chunk in self.latent_dict.chunk(16, dim=0):
+                sims_chunk = torch.matmul(z_noisy_bf16, dict_chunk.T)
                 RawDProx = torch.maximum(RawDProx, sims_chunk.max(dim=-1).values)
-            t_reported = (1.0 - RawDProx).clamp(0.0, 1.0)
+            t_reported = (1.0 - RawDProx.float()).clamp(0.0, 1.0)
 
         # ==========================================
         # ПРОГОН ПРОМПТА (Слои 0-11, t=0, только если CA включен)

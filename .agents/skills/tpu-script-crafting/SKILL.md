@@ -10,15 +10,15 @@ description: >-
 
 ---
 
-## 1. Трехуровневая система проверки (Verification Pipeline)
+## 1. Четырехуровневая система проверки (Verification Pipeline)
 
-Перед отправкой любого скрипта на TPU запустите единый трехуровневый верификатор:
+Перед отправкой любого скрипта на TPU запустите единый четырехуровневый верификатор:
 
 ```powershell
 .venv\Scripts\python.exe .agents/skills/tpu-script-crafting/scripts/run_tpu_smoke_test.py <path_to_tpu_script.py>
 ```
 
-Команда автоматически выполняет 3 уровня проверок:
+Команда автоматически выполняет 4 уровня проверок:
 
 1. **Level 1 (Синтаксис & Байткод)**: [`verify_tpu_syntax.py`](./scripts/verify_tpu_syntax.py)
    Проверяет скрипт на `SyntaxError`, `IndentationError`, `TabError` через `py_compile`.
@@ -26,6 +26,8 @@ description: >-
    Парсит AST-дерево Python, проверяет контекст циклов, аргументы DataLoader, условия ветвлений, корректность `torch.save`, блокировку `XLA_USE_BF16` и валидацию EMA.
 3. **Level 3 (CPU Dry-Run / Smoke Test)**: [`run_tpu_smoke_test.py`](./scripts/run_tpu_smoke_test.py)
    Запускает скрипт в изолированном CPU-моке XLA ([`fake_torch_xla`](./scripts/fake_torch_xla)) на 1–2 шага. Проверяет импорты, сборку графа autograd, forward/backward pass, расчет функций потерь, шаг оптимизатора, шаг EMA и сохранение чекпоинта без реального чипа TPU.
+4. **Level 4 (Бюджет памяти HBM & OOM Estimator)**: [`estimate_tpu_memory.py`](./scripts/estimate_tpu_memory.py)
+   Рассчитывает пиковую память HBM на чип: статические веса и буферы AdamW (16 байт/параметр), активации fwd/bwd, а также пиковые HLO-буферы проекций и умножений на словари ($B \times T \times \text{chunk\_vocab} \times \text{dtype\_bytes} \times 2$). Сравнивает с лимитом HBM целевого чипа (15.75 ГБ для Kaggle TPU v3-8/v5e, 31.2 ГБ для GCP v6e) и предупреждает о риске OOM.
 
 ---
 
@@ -58,6 +60,10 @@ description: >-
   - Вызывается в конце каждого шага обучения (`optimizer.step()`, затем `xm.mark_step()`).
   - Вызывается в конце каждого шага валидации внутри цикла, чтобы очистить временный граф батча.
   - **НЕ вызывается** между прямым и обратным проходами (`loss.backward()`), чтобы не дробить граф.
+- [ ] **Чанкование больших проекций и словарей (>10K векторов)**:
+  - Любое умножение на большой словарь (`matmul(hidden, dict.T)`) должно быть разбито на чанки (`.chunk(16)` или `.chunk(32)`).
+  - В XLA тензор результата и промежуточный буфер all-reduce дублируются в HBM ($2\times$). Без чанкования тензор $128 \times 512 \times 38\text{K}$ в FP32 весит $9.27\text{ ГБ} \times 2 = 18.54\text{ ГБ}$ и гарантированно вызывает OOM на Kaggle TPU (15.75 ГБ).
+  - Словари и промежуточные тензоры сходства хранятся в `bfloat16`.
 - [ ] **Очистка ссылок на тензоры**: Явный `del loss, out, metrics` в конце шага, чтобы сборщик мусора Python не удерживал графы autograd.
 - [ ] **НЕТ `lerp_` со скаляром**: Не использовать `tensor.lerp_(..., weight=scalar)` из-за бага PyTorch/XLA, аллоцирующего CPU-тензор. Заменять на `tensor.sub_(diff * alpha_tensor)`.
 
@@ -146,4 +152,5 @@ xm.mark_step()
 - Детальный разбор исторических кейсов: [tpu_pitfalls_case_studies.md](./references/tpu_pitfalls_case_studies.md)
 - Скрипт синтаксической проверки (Level 1): [verify_tpu_syntax.py](./scripts/verify_tpu_syntax.py)
 - Скрипт семантического AST-анализа (Level 2): [verify_tpu_script.py](./scripts/verify_tpu_script.py)
-- Раннер полного 3-уровневого тестирования (Level 3): [run_tpu_smoke_test.py](./scripts/run_tpu_smoke_test.py)
+- Раннер CPU-тестирования (Level 3): [run_tpu_smoke_test.py](./scripts/run_tpu_smoke_test.py)
+- Скрипт оценки бюджета памяти HBM (Level 4): [estimate_tpu_memory.py](./scripts/estimate_tpu_memory.py)
