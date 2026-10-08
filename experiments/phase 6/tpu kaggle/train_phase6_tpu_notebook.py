@@ -496,16 +496,17 @@ class BEBLaDIIPhase6(nn.Module):
         if hasattr(self, "qwen_embeddings"): self.qwen_embeddings.eval()
         if hasattr(self, "encoder"): self.encoder.eval()
 
-    def forward(self, input_ids_q, attention_mask_q, input_ids_a, attention_mask_a, warmup_factor=1.0, t_global=None):
+    def forward(self, input_ids_q, attention_mask_q, input_ids_a, attention_mask_a, warmup_factor=1.0, t_global=None, disable_ca: bool = False):
         B, T_a = input_ids_a.shape
         with torch.no_grad():
             qwen_embeds_a = self.qwen_embeddings(input_ids_a)
             Z_A_clean, _, _ = self.encoder(qwen_embeds_a)
             Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
 
-            qwen_embeds_q = self.qwen_embeddings(input_ids_q)
-            Z_prompt, _, _ = self.encoder(qwen_embeds_q)
-            Z_prompt = safe_normalize(Z_prompt.float(), dim=-1)
+            if not disable_ca:
+                qwen_embeds_q = self.qwen_embeddings(input_ids_q)
+                Z_prompt, _, _ = self.encoder(qwen_embeds_q)
+                Z_prompt = safe_normalize(Z_prompt.float(), dim=-1)
 
             # --- VOID TOKEN INJECTION ---
             void_embed = self.void_embed.to(Z_A_clean.dtype)
@@ -561,63 +562,72 @@ class BEBLaDIIPhase6(nn.Module):
 
             z_noisy = spherical_noise(Z_A_clean, t_actual)
 
-            sims = torch.matmul(z_noisy, self.latent_dict.T)
-            RawDProx, _ = sims.max(dim=-1)
+            # Чанкованное вычисление RawDProx: делим latent_dict на 4 чанка по ~38K векторов
+            # для снижения пикового тензора sims с 4.98 ГБ до 1.24 ГБ HBM
+            RawDProx = torch.full((B, T_a), -1.0, device=z_noisy.device, dtype=z_noisy.dtype)
+            for dict_chunk in self.latent_dict.chunk(4, dim=0):
+                sims_chunk = torch.matmul(z_noisy, dict_chunk.T)
+                RawDProx = torch.maximum(RawDProx, sims_chunk.max(dim=-1).values)
             t_reported = (1.0 - RawDProx).clamp(0.0, 1.0)
 
         # ==========================================
-        # ПРОГОН ПРОМПТА (Слои 0-11, t=0)
+        # ПРОГОН ПРОМПТА (Слои 0-11, t=0, только если CA включен)
         # ==========================================
-        t_global_prompt = torch.zeros((B,), device=Z_A_clean.device, dtype=torch.float32)
-        t_sin_prompt_global = self.t_sin_embed(t_global_prompt)
-        t_emb_prompt_global = self.t_proj_global(t_sin_prompt_global)
+        if not disable_ca:
+            t_global_prompt = torch.zeros((B,), device=Z_A_clean.device, dtype=torch.float32)
+            t_sin_prompt_global = self.t_sin_embed(t_global_prompt)
+            t_emb_prompt_global = self.t_proj_global(t_sin_prompt_global)
 
-        t_sin_prompt_token = self.t_sin_embed(t_global_prompt) # t=0
-        t_emb_prompt_token = self.t_proj_token(t_sin_prompt_token)
+            t_sin_prompt_token = self.t_sin_embed(t_global_prompt) # t=0
+            t_emb_prompt_token = self.t_proj_token(t_sin_prompt_token)
 
-        cond_prompt = torch.cat([t_emb_prompt_token.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1), t_emb_prompt_global.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1)], dim=-1)
-        t_emb_prompt = self.t_joint_proj(cond_prompt)
+            cond_prompt = torch.cat([t_emb_prompt_token.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1), t_emb_prompt_global.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1)], dim=-1)
+            t_emb_prompt = self.t_joint_proj(cond_prompt)
 
-        sep_t_emb_prompt = torch.zeros(B, 1, t_emb_prompt.shape[-1], device=t_emb_prompt.device, dtype=t_emb_prompt.dtype)
-        t_emb_prompt_extended = torch.cat([sep_t_emb_prompt, t_emb_prompt], dim=1)
+            sep_t_emb_prompt = torch.zeros(B, 1, t_emb_prompt.shape[-1], device=t_emb_prompt.device, dtype=t_emb_prompt.dtype)
+            t_emb_prompt_extended = torch.cat([sep_t_emb_prompt, t_emb_prompt], dim=1)
 
-        for layer in self.dus.layers:
-            layer_to_check = layer.original_layer if isinstance(layer, Phase6BlockWrapper) else layer
-            if hasattr(layer_to_check, "attn_norm"): layer_to_check.attn_norm._current_t_emb = t_emb_prompt_extended
-            if hasattr(layer_to_check, "mlp_norm"): layer_to_check.mlp_norm._current_t_emb = t_emb_prompt_extended
+            for layer in self.dus.layers:
+                layer_to_check = layer.original_layer if isinstance(layer, Phase6BlockWrapper) else layer
+                if hasattr(layer_to_check, "attn_norm"): layer_to_check.attn_norm._current_t_emb = t_emb_prompt_extended
+                if hasattr(layer_to_check, "mlp_norm"): layer_to_check.mlp_norm._current_t_emb = t_emb_prompt_extended
 
-        # Подготовка входа для промпта
-        prompt_in = Z_prompt.float()
-        sep_prefix_prompt = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(prompt_in.dtype)
-        dus_prompt_extended = torch.cat([sep_prefix_prompt, prompt_in], dim=1)
+            # Подготовка входа для промпта
+            prompt_in = Z_prompt.float()
+            sep_prefix_prompt = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(prompt_in.dtype)
+            dus_prompt_extended = torch.cat([sep_prefix_prompt, prompt_in], dim=1)
 
-        ones_sep_prompt = torch.ones((B, 1), device=attention_mask_q.device, dtype=attention_mask_q.dtype)
-        prompt_mask_extended = torch.cat([ones_sep_prompt, attention_mask_q], dim=1)
+            ones_sep_prompt = torch.ones((B, 1), device=attention_mask_q.device, dtype=attention_mask_q.dtype)
+            prompt_mask_extended = torch.cat([ones_sep_prompt, attention_mask_q], dim=1)
 
-        # Отключаем CA и прогоняем промпт
-        with torch.no_grad():
+            # Отключаем CA и прогоняем промпт
+            with torch.no_grad():
+                for ca in self.ca_layers.values():
+                    _ca_inner(ca)._disable = True
+                    ca._disable = True
+
+                prompt_outputs = self.dus(
+                    inputs_embeds=dus_prompt_extended,
+                    attention_mask=prompt_mask_extended,
+                    output_hidden_states=True,
+                )
+
+                # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
+                # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
+                Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
+
+                for ca in self.ca_layers.values():
+                    _ca_inner(ca)._disable = False
+                    ca._disable = False
+
+            # Обновляем Q для CA-слоев
+            for ca in self.ca_layers.values():
+                ca._current_Z_prompt = Z_prompt_12
+                _ca_inner(ca)._current_Z_prompt = Z_prompt_12
+        else:
             for ca in self.ca_layers.values():
                 _ca_inner(ca)._disable = True
                 ca._disable = True
-
-            prompt_outputs = self.dus(
-                inputs_embeds=dus_prompt_extended,
-                attention_mask=prompt_mask_extended,
-                output_hidden_states=True,
-            )
-
-            # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
-            # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
-            Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
-
-            for ca in self.ca_layers.values():
-                _ca_inner(ca)._disable = False
-                ca._disable = False
-
-        # Обновляем Q для CA-слоев
-        for ca in self.ca_layers.values():
-            ca._current_Z_prompt = Z_prompt_12
-            _ca_inner(ca)._current_Z_prompt = Z_prompt_12
 
         # ==========================================
         # ПРОГОН ХОЛСТА (Слои 0-39, реальный t)
@@ -775,24 +785,27 @@ def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step
                 tg_t = torch.full((ids_a.shape[0],), tg_val)  # CPU: шум сэмплируется на CPU, sync не нужен
                 seed = 42 + vb * 100 + int(tg_val * 10)
 
+                # 1. Прогон с CA
                 _set_seed(seed)
-                v_o = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0, t_global=tg_t)
+                v_o = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0, t_global=tg_t, disable_ca=False)
                 cp, cb, cm = content_cos_stats(v_o)
                 cp_s = (cp * cm).sum(); cb_s = (cb * cm).sum(); cm_s = cm.sum()
+                del v_o, cp, cb
+                xm.mark_step()
 
-                for ca in model.ca_layers.values(): _ca_inner(ca)._disable = True
+                # 2. Прогон без CA (абляция)
                 _set_seed(seed)
-                v_o_no = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0, t_global=tg_t)
+                v_o_no = model(ids_q, m_q, ids_a, m_a, warmup_factor=1.0, t_global=tg_t, disable_ca=True)
                 cp_no, _, _ = content_cos_stats(v_o_no)
                 cp_no_s = (cp_no * cm).sum()
-                for ca in model.ca_layers.values(): _ca_inner(ca)._disable = False
+                del v_o_no, cp_no
+                xm.mark_step()
 
                 if vb == 0:
                     cp_sum, cp_no_ca_sum, cb_sum, n_tok = cp_s, cp_no_s, cb_s, cm_s
                 else:
                     cp_sum += cp_s; cp_no_ca_sum += cp_no_s; cb_sum += cb_s; n_tok += cm_s
                 vb += 1
-                xm.mark_step()
                 if vb >= val_limit_batches: break
 
             s_vals = torch.stack([cp_sum, cp_no_ca_sum, cb_sum, n_tok]).cpu().tolist() if vb > 0 else [0.0]*4
@@ -985,7 +998,7 @@ def main():
 
                     wandb.log(log_dict, step=s)
 
-                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp, cm, outputs["t_global"], ratio12, ratio24, ratio36))
+                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp.detach(), cm.detach(), outputs["t_global"].detach(), ratio12, ratio24, ratio36))
 
             if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
                 run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step)
