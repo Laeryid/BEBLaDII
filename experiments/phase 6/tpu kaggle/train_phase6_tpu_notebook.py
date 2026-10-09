@@ -240,18 +240,26 @@ class EMATracker:
             if param.requires_grad:
                 self.shadow[name] = param.detach().clone().float()
 
-    def update(self, model):
+    def update(self, model, is_safe=None):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
-                    self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.float())
+                    if is_safe is not None:
+                        eff_decay = torch.where(is_safe, torch.tensor(self.decay, device=param.device), torch.tensor(1.0, device=param.device))
+                        self.shadow[name].copy_(eff_decay * self.shadow[name] + (1.0 - eff_decay) * param.float())
+                    else:
+                        self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.float())
 
-    def pace_pullback(self, model, alpha):
+    def pace_pullback(self, model, alpha, is_safe=None):
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     ema_casted = self.shadow[name].to(param.dtype)
-                    param.sub_(alpha * (param - ema_casted))
+                    if is_safe is not None:
+                        eff_alpha = torch.where(is_safe, torch.tensor(alpha, device=param.device), torch.tensor(0.0, device=param.device)).to(param.dtype)
+                        param.sub_(eff_alpha * (param - ema_casted))
+                    else:
+                        param.sub_(alpha * (param - ema_casted))
 
     def apply_shadow(self, model):
         self.backup = {}
@@ -941,11 +949,13 @@ def main():
         if p.requires_grad and "ca_layer" not in name:
             dus_params.append(p)
 
+    trainable_params = ca_out_params + ca_qkv_params + ca_other_params + dus_params
+
     optimizer = torch.optim.AdamW([
-        {'params': ca_out_params, 'lr': 5e-4},     # x10 boost для out_proj (CA + Prompt-SA)
-        {'params': ca_qkv_params, 'lr': 2e-4},     # q_proj / kv_proj / qkv_proj
-        {'params': ca_other_params, 'lr': 5e-5},   # AdaLN, нормы
-        {'params': dus_params, 'lr': 5e-5}
+        {'params': ca_out_params, 'lr': 2e-4},     # снижен с 5e-4 для стабильности после warmup
+        {'params': ca_qkv_params, 'lr': 8e-5},     # снижен с 2e-4
+        {'params': ca_other_params, 'lr': 2.5e-5}, # снижен с 5e-5
+        {'params': dus_params, 'lr': 2.5e-5}       # снижен с 5e-5
     ])
 
     model.train()
@@ -975,7 +985,8 @@ def main():
                     subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
 
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
-                model.load_state_dict(ckpt_state, strict=False)
+                clean_state = {k.replace("._orig_module.", ".").replace("_orig_module.", ""): v for k, v in ckpt_state.items()}
+                model.load_state_dict(clean_state, strict=False)
                 ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
                 print(f"Успешно возобновлено обучение с чекпоинта {latest_ckpt} (шаг {global_step})")
@@ -1006,12 +1017,22 @@ def main():
             loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(outputs, void_margin=0.5, loss_t_power=args.loss_t_power)
 
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+
+            # In-Graph NaN/Inf Guard & Anomaly Protection (Zero Graph Breaks, ADR 079)
+            grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
+            is_finite = torch.isfinite(grad_norm)
+            is_safe = is_finite & (grad_norm <= 5.0)
+
+            # При возникновении NaN/Inf градиенты принудительно обнуляются прямо на TPU
+            for p in trainable_params:
+                if p.grad is not None:
+                    p.grad.mul_(is_finite.to(p.grad.dtype))
 
             xm.optimizer_step(optimizer)
 
-            ema_tracker.update(model)
-            ema_tracker.pace_pullback(model, alpha=args.pace_alpha)
+            # Обновление EMA и PACE защищено от NaN и аномальных всплесков (> 5.0)
+            ema_tracker.update(model, is_safe=is_safe)
+            ema_tracker.pace_pullback(model, alpha=args.pace_alpha, is_safe=is_safe)
 
             xm.mark_step()
 
@@ -1032,12 +1053,13 @@ def main():
             ratio36 = _ca_inner(model.ca_layers["36"]).last_ca_ratio
 
             if global_step % args.log_steps == 0:
-                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36):
+                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36, gn_t):
                     log_dict = {
                         "loss": l.item(),
                         "cos_sim": c.item(),
                         "void_cos_sim": vc.item(),
                         "content_to_void_sim": cc.item(),
+                        "grad_norm": gn_t.item(),
                         "warmup_factor": w.item(),
                         "out_proj_12_amp": o12.item(),
                         "out_proj_36_amp": o36.item(),
@@ -1061,7 +1083,7 @@ def main():
 
                     wandb.log(log_dict, step=s)
 
-                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp.detach(), cm.detach(), outputs["t_global"].detach(), ratio12, ratio24, ratio36))
+                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp.detach(), cm.detach(), outputs["t_global"].detach(), ratio12, ratio24, ratio36, grad_norm.detach()))
 
             if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
                 run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step)

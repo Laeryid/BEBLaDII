@@ -997,6 +997,16 @@
       ],
       "depends_on": [],
       "summary": "ADR 099: Phase 6 DUS Layer 12 as Universal Conditioning Prompt Cache"
+    },
+    "decisions/100_phase6_nan_guard_ema_isolation_and_fsdp_checkpoint_fix.md": {
+      "description": "ADR 100: Phase 6 In-Graph NaN Guard, EMA Anomaly Isolation, and FSDP Checkpoint Key Normalization (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 100: Phase 6 In-Graph NaN Guard, EMA Anomaly Isolation, and FSDP Checkpoint Key Normalization"
     }
   },
   "knowledge_system": {
