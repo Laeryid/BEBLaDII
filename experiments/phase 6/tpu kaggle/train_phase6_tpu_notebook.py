@@ -98,25 +98,47 @@ def resolve_file_path(filename: str, fallback_dir="/kaggle/input") -> str:
                 return str(m)
     return filename
 
-def sync_to_gcs_and_delete(local_path: str, gcs_dir: str):
+def sync_to_gcs_and_delete(local_path: str, gcs_dir: str, keep_local: bool = False):
     if not gcs_dir.endswith("/"): gcs_dir += "/"
     gcs_path = gcs_dir + os.path.basename(local_path)
+    synced = False
     try:
-        subprocess.run(["gsutil", "-q", "cp", local_path, gcs_path], check=True)
-        os.remove(local_path)
+        from google.cloud import storage
+        bucket_name = gcs_path.replace("gs://", "").split("/")[0]
+        blob_name = gcs_path.replace(f"gs://{bucket_name}/", "")
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blob = bucket.blob(blob_name)
+        blob.upload_from_filename(local_path)
+        synced = True
+        print(f"[GCS] Synced: {local_path} → {gcs_path}")
     except Exception as e:
-        print(f"[GCS] Error syncing {local_path}: {e}")
+        try:
+            subprocess.run(["gsutil", "-q", "cp", local_path, gcs_path], check=True)
+            synced = True
+            print(f"[GCS-gsutil] Synced: {local_path} → {gcs_path}")
+        except Exception as e2:
+            print(f"[GCS] Error syncing {local_path}: {e} / gsutil: {e2}")
+
+    if synced and not keep_local and os.path.exists(local_path):
+        try:
+            os.remove(local_path)
+        except OSError:
+            pass
 
 def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step_"):
     try:
         if not gcs_dir.startswith("gs://"):
             return None, 0
-        result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True)
-        if result.returncode != 0: return None, 0
-
-        files = result.stdout.strip().split("\n")
-        ckpt_files = [f for f in files if prefix in f and f.endswith(".pth")]
-        if not ckpt_files: return None, 0
+        from google.cloud import storage
+        bucket_name = gcs_dir.replace("gs://", "").split("/")[0]
+        pfx = gcs_dir.replace(f"gs://{bucket_name}/", "")
+        client = storage.Client()
+        bucket = client.bucket(bucket_name)
+        blobs = bucket.list_blobs(prefix=pfx)
+        ckpt_files = [f"gs://{bucket_name}/{b.name}" for b in blobs if prefix in b.name and b.name.endswith(".pth")]
+        if not ckpt_files:
+            return None, 0
 
         def extract_step(filename):
             try: return int(filename.split("_step_")[-1].replace(".pth", ""))
@@ -126,26 +148,45 @@ def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step
         latest_file = ckpt_files[-1]
         return latest_file, extract_step(latest_file)
     except Exception:
-        return None, 0
+        try:
+            result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True)
+            if result.returncode != 0: return None, 0
+
+            files = result.stdout.strip().split("\n")
+            ckpt_files = [f for f in files if prefix in f and f.endswith(".pth")]
+            if not ckpt_files: return None, 0
+
+            def extract_step(filename):
+                try: return int(filename.split("_step_")[-1].replace(".pth", ""))
+                except ValueError: return -1
+
+            ckpt_files.sort(key=extract_step)
+            latest_file = ckpt_files[-1]
+            return latest_file, extract_step(latest_file)
+        except Exception:
+            return None, 0
 
 def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0, kappa_max: float = 8.0) -> torch.Tensor:
     # Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta
     dev = t_global.device
     B = t_global.shape[0]
+
+    # Режим полного шума (инференс t=1): все токены строго t=1.0 (константа)
+    is_full_noise = (t_global >= 0.999)
+
+    t_clamped = t_global.clamp(1e-4, 0.99)
     u = torch.rand(B, device=dev)
     kappa = torch.exp(math.log(kappa_min) + u * (math.log(kappa_max) - math.log(kappa_min)))
-    a = (t_global * kappa).unsqueeze(1).expand(B, T)
-    b = ((1.0 - t_global) * kappa).unsqueeze(1).expand(B, T)
+    a = (t_clamped * kappa).unsqueeze(1).expand(B, T)
+    b = ((1.0 - t_clamped) * kappa).unsqueeze(1).expand(B, T)
 
     try:
         from torch.distributions import Beta
         t_actual = Beta(a, b).sample()
     except Exception:
-        # XLA fallback safe approximation (хотя мы вызываем на CPU, это перестраховка)
-        t_actual = torch.rand((B, T), device=dev)
-        # linear blend between uniform and extreme as a fallback
-        pass
+        t_actual = t_clamped.unsqueeze(1).expand(B, T)
 
+    t_actual = torch.where(is_full_noise.unsqueeze(1), torch.ones_like(t_actual), t_actual)
     t_actual = t_actual.clamp(1e-4, 1.0)
     return t_actual
 
@@ -358,7 +399,7 @@ class CAPromptLayer(nn.Module):
         ca_out = self.out_proj(ca_out)
         with torch.no_grad():
             self.last_ca_ratio = ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)
-        A = A + ca_out
+        A = A + warmup_factor * ca_out
 
         # --- Self-Attention ---
         # AdaLN — модулируем пропорции смешивания токенов холста в зависимости от t
@@ -378,14 +419,18 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
-        A = A + sa_out
+        A = A + warmup_factor * sa_out
         return A
+
+def _unwrap_module(m):
+    """Снимает обёртки SpmdFullyShardedDataParallel / DDP / DataParallel / torch._dynamo."""
+    while hasattr(m, "module") or hasattr(m, "_orig_module"):
+        m = getattr(m, "module", None) or getattr(m, "_orig_module", None)
+    return m
 
 def _ca_inner(ca):
     """Возвращает исходный CAPromptLayer (снимает FSDP/SPMD обёртку, если есть)."""
-    while hasattr(ca, "module") or hasattr(ca, "_orig_module"):
-        ca = getattr(ca, "module", None) or getattr(ca, "_orig_module", None)
-    return ca
+    return _unwrap_module(ca)
 
 class Phase6BlockWrapper(nn.Module):
     def __init__(self, original_layer, ca_layer=None):
@@ -590,6 +635,7 @@ class BEBLaDIIPhase6(nn.Module):
 
             for layer in self.dus.layers:
                 layer_to_check = layer.original_layer if isinstance(layer, Phase6BlockWrapper) else layer
+                layer_to_check = _unwrap_module(layer_to_check)
                 if hasattr(layer_to_check, "attn_norm"): layer_to_check.attn_norm._current_t_emb = t_emb_prompt_extended
                 if hasattr(layer_to_check, "mlp_norm"): layer_to_check.mlp_norm._current_t_emb = t_emb_prompt_extended
 
@@ -648,6 +694,7 @@ class BEBLaDIIPhase6(nn.Module):
         # Инъекция t_emb и контекста CA
         for layer in self.dus.layers:
             layer_to_check = layer.original_layer if isinstance(layer, Phase6BlockWrapper) else layer
+            layer_to_check = _unwrap_module(layer_to_check)
             if hasattr(layer_to_check, "attn_norm"): layer_to_check.attn_norm._current_t_emb = t_emb_extended
             if hasattr(layer_to_check, "mlp_norm"): layer_to_check.mlp_norm._current_t_emb = t_emb_extended
 
@@ -864,10 +911,8 @@ def main():
 
     def shard_output(output, mesh): return None
     for key in list(model.ca_layers.keys()):
-        wrapped = SpmdFullyShardedDataParallel(model.ca_layers[key], mesh=mesh, shard_output=shard_output)
-        model.ca_layers[key] = wrapped
         layer_idx = int(key) - 1
-        model.dus.layers[layer_idx].ca_layer = wrapped
+        model.dus.layers[layer_idx].ca_layer = model.ca_layers[key]
 
     unfreeze_k = getattr(args, "unfreeze_k_after_ca", 0)
     if unfreeze_k > 0:
@@ -912,15 +957,32 @@ def main():
     if args.resume_from_checkpoint and args.gcs_checkpoint_dir:
         latest_ckpt, step = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir)
         if latest_ckpt:
-            local_ckpt = os.path.join(args.output_dir, "resume_ca_layers.pth")
+            local_ckpt = os.path.join(args.output_dir, "resume_checkpoint.pth")
             try:
-                subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
+                client = _get_gcs_client()
+                downloaded = False
+                if client is not None:
+                    try:
+                        clean_path = latest_ckpt.replace("gs://", "")
+                        bucket_name, blob_name = clean_path.split("/", 1)
+                        bucket = client.bucket(bucket_name)
+                        blob = bucket.blob(blob_name)
+                        blob.download_to_filename(local_ckpt)
+                        downloaded = True
+                    except Exception as e_gcs:
+                        print(f"GCS client download error: {e_gcs}, falling back to gsutil...")
+                if not downloaded:
+                    subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
+
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
-                model.ca_layers.load_state_dict(ckpt_state)
+                model.load_state_dict(ckpt_state, strict=False)
                 ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
-                os.remove(local_ckpt)
-            except Exception as e: print(f"Resume failed: {e}")
+                print(f"Успешно возобновлено обучение с чекпоинта {latest_ckpt} (шаг {global_step})")
+                if os.path.exists(local_ckpt):
+                    os.remove(local_ckpt)
+            except Exception as e:
+                print(f"Resume failed: {e}")
 
     for epoch in range(args.epochs):
         for batch in dataloader:
@@ -956,13 +1018,13 @@ def main():
             cp, cb, cm = content_cos_stats(outputs)
 
             try:
-                op12 = model.ca_layers["12"].out_proj.weight.detach().abs().mean()
-                op36 = model.ca_layers["36"].out_proj.weight.detach().abs().mean()
-                qp36 = model.ca_layers["36"].q_proj.weight.detach().abs().mean()
-            except AttributeError:
-                op12 = model.ca_layers["12"].module.out_proj.weight.detach().abs().mean()
-                op36 = model.ca_layers["36"].module.out_proj.weight.detach().abs().mean()
-                qp36 = model.ca_layers["36"].module.q_proj.weight.detach().abs().mean()
+                op12 = _ca_inner(model.ca_layers["12"]).out_proj.weight.detach().abs().mean()
+                op36 = _ca_inner(model.ca_layers["36"]).out_proj.weight.detach().abs().mean()
+                qp36 = _ca_inner(model.ca_layers["36"]).q_proj.weight.detach().abs().mean()
+            except Exception:
+                op12 = torch.tensor(0.0)
+                op36 = torch.tensor(0.0)
+                qp36 = torch.tensor(0.0)
 
             # ca_ratio_* = ||ca_out|| / ||A|| (тензоры, без .item() в графе XLA)
             ratio12 = _ca_inner(model.ca_layers["12"]).last_ca_ratio
@@ -1013,7 +1075,7 @@ def main():
                 xm.save(trainable_state, ckpt_path)
                 ema_tracker.restore(model)
                 if args.gcs_checkpoint_dir:
-                    xm.add_step_closure(lambda: sync_to_gcs_and_delete(ckpt_path, args.gcs_checkpoint_dir))
+                    xm.add_step_closure(sync_to_gcs_and_delete, args=(ckpt_path, args.gcs_checkpoint_dir, True))
 
                 checkpoints_saved += 1
                 elapsed = time.time() - start_time
