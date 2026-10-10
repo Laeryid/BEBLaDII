@@ -1007,6 +1007,16 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 100: Phase 6 In-Graph NaN Guard, EMA Anomaly Isolation, and FSDP Checkpoint Key Normalization"
+    },
+    "decisions/101_phase6_ieee754_nan_guard_and_resume_fix.md": {
+      "description": "ADR 101: Phase 6 IEEE 754 Safe NaN Guard, Checkpoint Finite Validation, and Optimizer Warmup (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 101: Phase 6 IEEE 754 Safe NaN Guard, Checkpoint Finite Validation, and Optimizer Warmup"
     }
   },
   "knowledge_system": {

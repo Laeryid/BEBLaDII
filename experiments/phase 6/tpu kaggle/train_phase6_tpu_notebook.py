@@ -98,20 +98,36 @@ def resolve_file_path(filename: str, fallback_dir="/kaggle/input") -> str:
                 return str(m)
     return filename
 
+def get_gcs_client():
+    try:
+        from google.cloud import storage
+        return storage.Client()
+    except Exception:
+        return None
+
+def is_state_dict_finite(state_dict):
+    for k, v in state_dict.items():
+        if torch.is_tensor(v):
+            if not torch.isfinite(v).all():
+                return False
+    return True
+
 def sync_to_gcs_and_delete(local_path: str, gcs_dir: str, keep_local: bool = False):
     if not gcs_dir.endswith("/"): gcs_dir += "/"
     gcs_path = gcs_dir + os.path.basename(local_path)
     synced = False
     try:
-        from google.cloud import storage
-        bucket_name = gcs_path.replace("gs://", "").split("/")[0]
-        blob_name = gcs_path.replace(f"gs://{bucket_name}/", "")
-        client = storage.Client()
-        bucket = client.bucket(bucket_name)
-        blob = bucket.blob(blob_name)
-        blob.upload_from_filename(local_path)
-        synced = True
-        print(f"[GCS] Synced: {local_path} → {gcs_path}")
+        client = get_gcs_client()
+        if client is not None:
+            bucket_name = gcs_path.replace("gs://", "").split("/")[0]
+            blob_name = gcs_path.replace(f"gs://{bucket_name}/", "")
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            blob.upload_from_filename(local_path)
+            synced = True
+            print(f"[GCS] Synced: {local_path} → {gcs_path}")
+        else:
+            raise RuntimeError("GCS client unavailable")
     except Exception as e:
         try:
             subprocess.run(["gsutil", "-q", "cp", local_path, gcs_path], check=True)
@@ -126,45 +142,48 @@ def sync_to_gcs_and_delete(local_path: str, gcs_dir: str, keep_local: bool = Fal
         except OSError:
             pass
 
-def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step_"):
+def get_gcs_checkpoints(gcs_dir: str, prefix: str = "phase6_ca_layers_step_"):
     try:
         if not gcs_dir.startswith("gs://"):
-            return None, 0
-        from google.cloud import storage
+            return []
         bucket_name = gcs_dir.replace("gs://", "").split("/")[0]
         pfx = gcs_dir.replace(f"gs://{bucket_name}/", "")
-        client = storage.Client()
-        bucket = client.bucket(bucket_name)
-        blobs = bucket.list_blobs(prefix=pfx)
-        ckpt_files = [f"gs://{bucket_name}/{b.name}" for b in blobs if prefix in b.name and b.name.endswith(".pth")]
+        client = get_gcs_client()
+        ckpt_files = []
+        if client is not None:
+            try:
+                bucket = client.bucket(bucket_name)
+                blobs = bucket.list_blobs(prefix=pfx)
+                ckpt_files = [f"gs://{bucket_name}/{b.name}" for b in blobs if prefix in b.name and b.name.endswith(".pth")]
+            except Exception as e_client:
+                print(f"[GCS Checkpoints] Client list error: {e_client}, falling back to gsutil...")
+                client = None
         if not ckpt_files:
-            return None, 0
+            result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True)
+            if result.returncode == 0:
+                files = result.stdout.strip().split("\n")
+                ckpt_files = [f for f in files if prefix in f and f.endswith(".pth")]
 
         def extract_step(filename):
             try: return int(filename.split("_step_")[-1].replace(".pth", ""))
             except ValueError: return -1
 
-        ckpt_files.sort(key=extract_step)
-        latest_file = ckpt_files[-1]
-        return latest_file, extract_step(latest_file)
-    except Exception:
-        try:
-            result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True)
-            if result.returncode != 0: return None, 0
+        valid_ckpts = []
+        for f in ckpt_files:
+            s = extract_step(f)
+            if s >= 0:
+                valid_ckpts.append((f, s))
+        valid_ckpts.sort(key=lambda x: x[1], reverse=True)
+        return valid_ckpts
+    except Exception as e:
+        print(f"[GCS Checkpoints] Error listing checkpoints: {e}")
+        return []
 
-            files = result.stdout.strip().split("\n")
-            ckpt_files = [f for f in files if prefix in f and f.endswith(".pth")]
-            if not ckpt_files: return None, 0
-
-            def extract_step(filename):
-                try: return int(filename.split("_step_")[-1].replace(".pth", ""))
-                except ValueError: return -1
-
-            ckpt_files.sort(key=extract_step)
-            latest_file = ckpt_files[-1]
-            return latest_file, extract_step(latest_file)
-        except Exception:
-            return None, 0
+def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step_"):
+    ckpts = get_gcs_checkpoints(gcs_dir, prefix=prefix)
+    if ckpts:
+        return ckpts[0][0], ckpts[0][1]
+    return None, 0
 
 def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0, kappa_max: float = 8.0) -> torch.Tensor:
     # Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta
@@ -245,8 +264,8 @@ class EMATracker:
             for name, param in model.named_parameters():
                 if param.requires_grad:
                     if is_safe is not None:
-                        eff_decay = torch.where(is_safe, torch.tensor(self.decay, device=param.device), torch.tensor(1.0, device=param.device))
-                        self.shadow[name].copy_(eff_decay * self.shadow[name] + (1.0 - eff_decay) * param.float())
+                        new_shadow = self.decay * self.shadow[name] + (1.0 - self.decay) * param.float()
+                        self.shadow[name].copy_(torch.where(is_safe, new_shadow, self.shadow[name]))
                     else:
                         self.shadow[name].copy_(self.decay * self.shadow[name] + (1.0 - self.decay) * param.float())
 
@@ -256,8 +275,8 @@ class EMATracker:
                 if param.requires_grad:
                     ema_casted = self.shadow[name].to(param.dtype)
                     if is_safe is not None:
-                        eff_alpha = torch.where(is_safe, torch.tensor(alpha, device=param.device), torch.tensor(0.0, device=param.device)).to(param.dtype)
-                        param.sub_(eff_alpha * (param - ema_casted))
+                        new_param = param - alpha * (param - ema_casted)
+                        param.copy_(torch.where(is_safe, new_param, param))
                     else:
                         param.sub_(alpha * (param - ema_casted))
 
@@ -963,14 +982,17 @@ def main():
     start_time = time.time()
     checkpoints_saved = 0
     time_limit_seconds = 9.0 * 3600  # 9 часов для Kaggle TPU
+    base_lrs = [group['lr'] for group in optimizer.param_groups]
+    session_step = 0
 
     if args.resume_from_checkpoint and args.gcs_checkpoint_dir:
-        latest_ckpt, step = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir)
-        if latest_ckpt:
-            local_ckpt = os.path.join(args.output_dir, "resume_checkpoint.pth")
+        available_ckpts = get_gcs_checkpoints(args.gcs_checkpoint_dir)
+        resumed = False
+        for latest_ckpt, step in available_ckpts:
+            local_ckpt = os.path.join(args.output_dir, f"resume_step_{step}.pth")
             try:
-                client = _get_gcs_client()
                 downloaded = False
+                client = get_gcs_client()
                 if client is not None:
                     try:
                         clean_path = latest_ckpt.replace("gs://", "")
@@ -986,18 +1008,44 @@ def main():
 
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
                 clean_state = {k.replace("._orig_module.", ".").replace("_orig_module.", ""): v for k, v in ckpt_state.items()}
+
+                if not is_state_dict_finite(clean_state):
+                    print(f"[Resume WARN] Чекпоинт {latest_ckpt} (шаг {step}) содержит NaN/Inf! Отбрасываем поврежденный чекпоинт...")
+                    if os.path.exists(local_ckpt):
+                        os.remove(local_ckpt)
+                    continue
+
                 model.load_state_dict(clean_state, strict=False)
                 ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
-                print(f"Успешно возобновлено обучение с чекпоинта {latest_ckpt} (шаг {global_step})")
+                resumed = True
+                print(f"Успешно возобновлено обучение с валидного чекпоинта {latest_ckpt} (шаг {global_step})")
                 if os.path.exists(local_ckpt):
                     os.remove(local_ckpt)
+                break
             except Exception as e:
-                print(f"Resume failed: {e}")
+                print(f"Failed to check/load {latest_ckpt}: {e}")
+                if os.path.exists(local_ckpt):
+                    try: os.remove(local_ckpt)
+                    except OSError: pass
+
+        if not resumed and available_ckpts:
+            print("[Resume] Ни один из чекпоинтов на GCS не прошел проверку на валидность (все содержали NaN). Стартуем с шага 0.")
 
     for epoch in range(args.epochs):
         for batch in dataloader:
             if global_step >= args.max_steps: return
+
+            session_step += 1
+            # Прогрев LR ступеньками (каждые 20 шагов), чтобы исключить мутации графа/HLO на каждом шаге
+            if session_step == 1 or global_step % 20 == 0:
+                quantized_global = (global_step // 20) * 20
+                quantized_session = (session_step // 20) * 20
+                lr_warmup = min(1.0, max(0.05, quantized_global / args.warmup_steps))
+                session_warmup = min(1.0, max(0.05, quantized_session / 100.0))
+                eff_lr_factor = min(lr_warmup, session_warmup)
+                for group, base_lr in zip(optimizer.param_groups, base_lrs):
+                    group['lr'] = base_lr * eff_lr_factor
 
             warmup_factor_val = min(1.0, global_step / args.warmup_steps)
             warmup_factor = torch.tensor(warmup_factor_val, dtype=torch.float32, device=device)
@@ -1023,14 +1071,15 @@ def main():
             is_finite = torch.isfinite(grad_norm)
             is_safe = is_finite & (grad_norm <= 5.0)
 
-            # При возникновении NaN/Inf градиенты принудительно обнуляются прямо на TPU
+            # КРИТИЧЕСКИЙ ФИКС (IEEE 754): mul_(0.0) сохраняет NaN!
+            # При аварии градиенты гарантированно заменяются на чистые нули через torch.where
             for p in trainable_params:
                 if p.grad is not None:
-                    p.grad.mul_(is_finite.to(p.grad.dtype))
+                    p.grad.copy_(torch.where(is_safe, p.grad.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0), torch.zeros_like(p.grad)))
 
             xm.optimizer_step(optimizer)
 
-            # Обновление EMA и PACE защищено от NaN и аномальных всплесков (> 5.0)
+            # Обновление EMA и PACE надежно изолировано через torch.where
             ema_tracker.update(model, is_safe=is_safe)
             ema_tracker.pace_pullback(model, alpha=args.pace_alpha, is_safe=is_safe)
 
@@ -1053,7 +1102,7 @@ def main():
             ratio36 = _ca_inner(model.ca_layers["36"]).last_ca_ratio
 
             if global_step % args.log_steps == 0:
-                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36, gn_t):
+                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36, gn_t, lr_out, lr_qkv, lr_dus):
                     log_dict = {
                         "loss": l.item(),
                         "cos_sim": c.item(),
@@ -1061,6 +1110,9 @@ def main():
                         "content_to_void_sim": cc.item(),
                         "grad_norm": gn_t.item(),
                         "warmup_factor": w.item(),
+                        "lr_ca_out": float(lr_out),
+                        "lr_ca_qkv": float(lr_qkv),
+                        "lr_dus": float(lr_dus),
                         "out_proj_12_amp": o12.item(),
                         "out_proj_36_amp": o36.item(),
                         "q_proj_36_amp": q36.item(),
@@ -1083,7 +1135,10 @@ def main():
 
                     wandb.log(log_dict, step=s)
 
-                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp.detach(), cm.detach(), outputs["t_global"].detach(), ratio12, ratio24, ratio36, grad_norm.detach()))
+                lr_out_val = optimizer.param_groups[0]['lr']
+                lr_qkv_val = optimizer.param_groups[1]['lr']
+                lr_dus_val = optimizer.param_groups[3]['lr']
+                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp.detach(), cm.detach(), outputs["t_global"].detach(), ratio12, ratio24, ratio36, grad_norm.detach(), lr_out_val, lr_qkv_val, lr_dus_val))
 
             if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
                 run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step)
@@ -1094,10 +1149,18 @@ def main():
                 state_dict = model.state_dict()
                 named_params = dict(model.named_parameters())
                 trainable_state = {k: v for k, v in state_dict.items() if k in named_params and named_params[k].requires_grad}
+
+                is_finite = is_state_dict_finite(trainable_state) and torch.isfinite(loss)
+                # Сохраняем 1 аварийный чекпоинт для возможности диагностики:
                 xm.save(trainable_state, ckpt_path)
                 ema_tracker.restore(model)
                 if args.gcs_checkpoint_dir:
                     xm.add_step_closure(sync_to_gcs_and_delete, args=(ckpt_path, args.gcs_checkpoint_dir, True))
+
+                if not is_finite:
+                    print(f"\n[ABORT] На шаге {global_step} обнаружены NaN/Inf в весах или лоссе! "
+                          f"Аварийный чекпоинт сохранен для диагностики. Обучение прервано для сохранения квоты TPU.")
+                    return
 
                 checkpoints_saved += 1
                 elapsed = time.time() - start_time
