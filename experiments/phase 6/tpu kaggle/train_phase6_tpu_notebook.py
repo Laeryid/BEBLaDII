@@ -1007,8 +1007,22 @@ def main():
                     subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
 
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
-                # Убираем деструктивный strip _orig_module, так как загружаем в обернутую SPMD модель
-                clean_state = ckpt_state
+                
+                # ИНТЕЛЛЕКТУАЛЬНЫЙ МАППИНГ КЛЮЧЕЙ (FSDP / torch.compile proof)
+                model_keys = list(model.state_dict().keys())
+                
+                def normalize_key(k):
+                    return k.replace("._orig_module.", ".").replace("_orig_module.", "").replace(".module.", ".").replace("module.", "")
+                
+                norm_to_model = {normalize_key(k): k for k in model_keys}
+                clean_state = {}
+                
+                for ckpt_k, v in ckpt_state.items():
+                    norm_k = normalize_key(ckpt_k)
+                    if norm_k in norm_to_model:
+                        clean_state[norm_to_model[norm_k]] = v
+                    else:
+                        clean_state[ckpt_k] = v
 
                 if not is_state_dict_finite(clean_state):
                     print(f"[Resume WARN] Чекпоинт {latest_ckpt} (шаг {step}) содержит NaN/Inf! Отбрасываем поврежденный чекпоинт...")
@@ -1017,10 +1031,13 @@ def main():
                     continue
 
                 load_info = model.load_state_dict(clean_state, strict=False)
-                missing_trainable = [k for k in load_info.missing_keys if any(k == n for n, p in model.named_parameters() if p.requires_grad)]
+                
+                # Проверка: все ли обучаемые параметры загружены?
+                missing_trainable = [k for k in load_info.missing_keys if k in dict(model.named_parameters()) and dict(model.named_parameters())[k].requires_grad]
                 if missing_trainable:
                     print(f"[Resume ERROR] Не загружены обучаемые веса (FSDP mismatch?): {missing_trainable[:5]}...")
                     sys.exit(1)
+                    
                 ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
                 resumed = True
