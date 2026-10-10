@@ -1007,7 +1007,8 @@ def main():
                     subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
 
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
-                clean_state = {k.replace("._orig_module.", ".").replace("_orig_module.", ""): v for k, v in ckpt_state.items()}
+                # Убираем деструктивный strip _orig_module, так как загружаем в обернутую SPMD модель
+                clean_state = ckpt_state
 
                 if not is_state_dict_finite(clean_state):
                     print(f"[Resume WARN] Чекпоинт {latest_ckpt} (шаг {step}) содержит NaN/Inf! Отбрасываем поврежденный чекпоинт...")
@@ -1015,7 +1016,11 @@ def main():
                         os.remove(local_ckpt)
                     continue
 
-                model.load_state_dict(clean_state, strict=False)
+                load_info = model.load_state_dict(clean_state, strict=False)
+                missing_trainable = [k for k in load_info.missing_keys if any(k == n for n, p in model.named_parameters() if p.requires_grad)]
+                if missing_trainable:
+                    print(f"[Resume ERROR] Не загружены обучаемые веса (FSDP mismatch?): {missing_trainable[:5]}...")
+                    sys.exit(1)
                 ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
                 resumed = True
@@ -1037,18 +1042,26 @@ def main():
             if global_step >= args.max_steps: return
 
             session_step += 1
-            # Прогрев LR ступеньками (каждые 20 шагов), чтобы исключить мутации графа/HLO на каждом шаге
+            # Ступенчатый прогрев LR и архитектурного сигнала (шаг 20)
             if session_step == 1 or global_step % 20 == 0:
                 quantized_global = (global_step // 20) * 20
                 quantized_session = (session_step // 20) * 20
+                
+                # Глобальный прогрев (зависит от номера шага)
                 lr_warmup = min(1.0, max(0.05, quantized_global / args.warmup_steps))
-                session_warmup = min(1.0, max(0.05, quantized_session / 100.0))
+                
+                # Сессионный прогрев (ребилд AdamW-дисперсии после "амнезии" при resume)
+                # Увеличена длительность до 300 шагов, старт с 1%
+                session_warmup = min(1.0, max(0.01, quantized_session / 300.0))
+                
                 eff_lr_factor = min(lr_warmup, session_warmup)
                 for group, base_lr in zip(optimizer.param_groups, base_lrs):
                     group['lr'] = base_lr * eff_lr_factor
 
-            warmup_factor_val = min(1.0, global_step / args.warmup_steps)
-            warmup_factor = torch.tensor(warmup_factor_val, dtype=torch.float32, device=device)
+            # Демпфируем архитектурный сигнал (CA/SA) на время прогрева оптимизатора
+            global_warmup_factor = min(1.0, global_step / args.warmup_steps)
+            eff_warmup_factor = min(global_warmup_factor, session_warmup)
+            warmup_factor = torch.tensor(eff_warmup_factor, dtype=torch.float32, device=device)
 
             input_ids_q = batch['input_ids_q'].to(device)
             mask_q = batch['attention_mask_q'].to(device)
