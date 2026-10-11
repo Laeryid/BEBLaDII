@@ -20,42 +20,47 @@
 BEBLaDII is an advanced AI model designed to use **Complementary Latent Memory (CLM) directly as its own external memory**. Unlike standard auto-regressive models that predict the next discrete token, BEBLaDII separates logical reasoning from linguistic generation. It continuously "thinks", doubts its own representations, and iteratively crystallizes meaning inside a continuous latent space. When the model detects high uncertainty in its thoughts, it directly queries external CLM memory to stabilize its latent representations before finally translating them into human-readable text via a full text decoder.
 
 ## 💾 Model Weights
-Foundation checkpoints for Phases 1-3 are available on Hugging Face:
+Foundation checkpoints for Phases 1-4 are available on Hugging Face:
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Foundation%20Weights-blue)](https://huggingface.co/bulyakovbr/bebladii-foundation-weights)
 
 ## Architecture
-BEBLaDII is a discrete diffusion model with soft latent anchoring. The architecture is modular and processes data through its key stages. 
+BEBLaDII is a latent diffusion model with soft latent anchoring. The architecture is modular and processes data through its key stages. 
 
 ```mermaid
-graph TD
+flowchart TD
     classDef verbal fill:#2d3436,stroke:#74b9ff,stroke-width:2px,color:#fff
     classDef latent fill:#6c5ce7,stroke:#a29bfe,stroke-width:2px,color:#fff
     classDef clm fill:#27ae60,stroke:#2ecc71,stroke-width:2px,color:#fff
 
-    subgraph "Discrete Verbal Space (System 1)"
+    subgraph S1_IN ["1. Encoder (System 1)"]
         A["Input Text"] --> B["Tokenizer"]
         B --> C["Latent Encoder"]
+    end
+
+    subgraph S2 ["2. Diffusion Core (System 2)"]
+        E["Diffusion Backbone (latentBERT)"]
+        F["Sensor Ensemble"]
+        G{"Orchestrator"}
+
+        E --> F
+        F -->|"Confidence Maps"| G
+        G -->|"High Confidence / Next Timestep"| E
+    end
+
+    subgraph S1_OUT ["3. Decoder (System 1)"]
         P["Latent Decoder"] --> J["Text Decoder"]
         J --> M["Final Output Text"]
     end
 
-    subgraph "Continuous Latent Space (System 2)"
-        C -->|"Base Diffusion Space"| E{"Diffusion Backbone (latentBERT)"}
-        
-        E --> F["Sensor Ensemble"]
-        
-        F -->|"Confidence Maps"| G{"Orchestrator"}
-        G -->|"High Confidence / Next Timestep"| E
-        G -->|"Final State"| P
-    end
-
-    subgraph "External Memory & Tools (CLM Space)"
-        TC[("Context Register")] -.-|"CA_Context"| E
+    subgraph MEM ["4. Auxiliary Components (CLM Space)"]
+        TC[("Context Register")] -.->|"CA_Context"| E
         G -->|"Low Confidence / Retrieve"| H["CLM"]
-        H -.-|"Query"| I[("FAISS Index (Latent Chunks)")]
-        I -.-|"Retrieved + Relevance Gate eval"| H
+        H <-->|"Query / Retrieved"| I[("FAISS Index (Latent Chunks)")]
         H -->|"Inject via CA_Memory"| E
     end
+
+    C -->|"Base Diffusion Space"| E
+    G -->|"Final State (Crystallized)"| P
 
     class A,B,J,M verbal
     class C,E,F,G,P latent
