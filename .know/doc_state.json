@@ -19,6 +19,10 @@
         "hash": "08371a59a59937564e8e0bfd13ad1c8e03c4c8315a6a1914db35f3759ee55b33",
         "mtime": 1776097878.7105637
     },
+    "src\\beb_la_dii\\model\\confidence_head.py": {
+        "hash": "57b3d5503ae0c4e86c3995eb94624d193ed26fe22a9c4a5fd937aeac55f9a21b",
+        "mtime": 1789849982.3595695
+    },
     "src\\beb_la_dii\\model\\distiller.py": {
         "hash": "986b1e8d1913e74a12497695226b3ed6e1a95c6dbef78f701f0fda36d832a9a0",
         "mtime": 1779571652.843149
@@ -31,9 +35,17 @@
         "hash": "175ac1964858600329810c334ffdeb9d111a17d60266ce2842d48bacef77b8d7",
         "mtime": 1784218239.725797
     },
+    "src\\beb_la_dii\\model\\orchestrator.py": {
+        "hash": "8ef92cad0abb2b33b3c0813e3a43a3a65dbb531891e1ca6b89e51d12dd3b2599",
+        "mtime": 1790017468.3262105
+    },
     "src\\beb_la_dii\\model\\projectors.py": {
         "hash": "1ec2232e6310c238c9f9ce00df366b5d9051f05100b77310520b53c64719a96b",
         "mtime": 1781556345.9893935
+    },
+    "src\\beb_la_dii\\model\\sensor_ensemble.py": {
+        "hash": "9ec4ab1e12bedd56f7b704d438f87b776dd855dcc8538d4a8a087988de72a8da",
+        "mtime": 1790017470.3784773
     },
     "src\\beb_la_dii\\model\\vae.py": {
         "hash": "d94282042f5c2709882f26b605b0b42668d7e05c6e56d03e22ca7288d8692c7e",
@@ -60,8 +72,8 @@
         "mtime": 1775853520.1690574
     },
     "src\\beb_la_dii\\utils\\loss.py": {
-        "hash": "e0e782b0a1402b6bc52c4b0b62f3bfac0d696d5f9f68f15689ae374ccd0f2647",
-        "mtime": 1780679166.4019878
+        "hash": "dde4743d1b386507e00169ead3a997cab1b697319feed662602feb8dea054848",
+        "mtime": 1791132923.812661
     },
     "src\\beb_la_dii\\utils\\loss.py.bak": {
         "hash": "571e57d30cb7fb23795ce9e89a5c7d66ccad4a8d3e1389900ac88963842ec079",
@@ -136,12 +148,12 @@
         "mtime": 1776536520.7468991
     },
     ".know\\knowledge\\KI_architectural_decisions.md": {
-        "hash": "e64f7db17ba4e90fc250522d15b011aa4b79c3bedda7b8bd0fc896d0bafd3795",
-        "mtime": 1788972871.1219933
+        "hash": "50a3b30234cd451160520bf9ca63094f63456554daec29280572c4e42607a208",
+        "mtime": 1790709980.2864044
     },
     ".know\\knowledge\\KI_architecture.md": {
-        "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        "mtime": 1787593423.4843407
+        "hash": "77caf0fd9b6d3e107d7791c0c9928ea7002b9c0dc2655092dc67a61e37e39e07",
+        "mtime": 1790018483.0009265
     },
     ".know\\knowledge\\KI_datasets.md": {
         "hash": "0b3caba5f70a4ed7a34f02aed2a8b34153e3a84e22630882ca7fab01a65b3eb6",
@@ -156,8 +168,8 @@
         "mtime": 1785406215.9084618
     },
     ".know\\knowledge\\KI_huggingface_ecosystem.md": {
-        "hash": "7704fe020a9a2e490fd83149f7edb40e4c46f8d0bf4524b8e1e912caa500905c",
-        "mtime": 1787686825.568286
+        "hash": "7d7237393ca80cfde3be765658058a3ffc7f99c40bbf434f7e940395b2389408",
+        "mtime": 1789750808.9076006
     },
     ".know\\knowledge\\KI_kaggle.md": {
         "hash": "64c53f7f7e29a236b7d38a2c98ee7731316e2a54b8dfca32ba48860364d3f00a",
@@ -186,6 +198,10 @@
     ".know\\knowledge\\KI_metrics_reference.md": {
         "hash": "4eafafc903d4975d1cfc2d1c10a96672353aa98ddd358df948e18748febd7432",
         "mtime": 1785406217.622855
+    },
+    ".know\\knowledge\\KI_model_assembly.md": {
+        "hash": "5660362418c65b5b5b99da2c6da4169c45dd4cb40102af9a419a0f668bad3068",
+        "mtime": 1790018231.6139789
     },
     ".know\\knowledge\\KI_model_core.md": {
         "hash": "e774081e09b29e40d218dff14ca0e34df2b86500d6c3fa329f6e8ac74dc01a22",
@@ -236,8 +252,8 @@
         "mtime": 1785406215.8853543
     },
     ".know\\doc_config.json": {
-        "hash": "13e2949a4245651df1e0b8c142a392dad10213dd2d5745fc89be0b1f400e56a9",
-        "mtime": 1788972831.3763447
+        "hash": "4b46cabf23def331ed240ce9c87a068bc5eacb141effc5dd68e360a30fc151c3",
+        "mtime": 1791728468.0277612
     },
     "ideas\\Architecture.md": {
         "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
@@ -254,34 +270,6 @@
     "scripts\\download_datasets.py": {
         "hash": "77eeac797c94bbb818bfbcd09b636fc594b7554444cd03ca12a9a232ff2646ed",
         "mtime": 1775679533.8094792
-    },
-    ".know\\scripts\\knowledge_mcp.py": {
-        "hash": "01c3f3ee623896c12188ba1149d8946ddce01e32bcaff1276dbea22c35321aa5",
-        "mtime": 1777409495.7502277
-    },
-    ".know\\scripts\\knowledge_engine.py": {
-        "hash": "abed8e7676967d84ebeb5e4829134ea0cadaf4e8f91f9d7f8abb2483fd3ecaeb",
-        "mtime": 1776893621.2801137
-    },
-    ".know\\scripts\\audit_coverage.py": {
-        "hash": "6deb30015fe6e9d6fb70f82dcf3480d9a8fa5f6ed63a62561d56fbe564757168",
-        "mtime": 1777047831.1713042
-    },
-    ".know\\scripts\\ki_dependency_analyzer.py": {
-        "hash": "d41956525c62e39891cdef90fd0a60c5ed7c5b7a65a3593cb99e88d9bf45bdf9",
-        "mtime": 1777143115.096689
-    },
-    ".know\\scripts\\ki_utils.py": {
-        "hash": "86aff216078375500ad7f3548d1042400d72d637636de40134eef442d7d6dcda",
-        "mtime": 1777407812.288941
-    },
-    ".know\\scripts\\generate_dir_index.py": {
-        "hash": "fe43646e5bcfed52a172a85122cc5ef8d4948e82ecf72aa59b883fb73d54ba88",
-        "mtime": 1776709650.3669827
-    },
-    ".know\\scripts\\sync_agents_md.py": {
-        "hash": "0c20e262031438fc9d44ddbc36005bbdf1c59c004ba8b3a0a3681e792abea689",
-        "mtime": 1776892927.9436555
     },
     ".know\\decisions\\001_kaggle_phase1_retrospective.md": {
         "hash": "257cc97cef07695fa60f0b050b2f0dd79c957d2b01ef62b3912d2851e423a44a",
@@ -334,58 +322,6 @@
     ".know\\decisions\\010_spmd_fsdp_reasoning_restart.md": {
         "hash": "7dc0442cb7685de2faa7d54354fd0efe3242f0c03d8d87ff53b05f4c25806dc3",
         "mtime": 1778180180.1934986
-    },
-    ".know\\tests\\conftest.py": {
-        "hash": "b6faa12748cff212bf453d49454dad97c08ac84a4be13efe8abe3dc4b21cad32",
-        "mtime": 1776710895.2355573
-    },
-    ".know\\tests\\test_audit_coverage.py": {
-        "hash": "dfeed025c466bad88e9d3deddcc576be36460c318cd93e4cfee126e0725cc44e",
-        "mtime": 1776709717.7274463
-    },
-    ".know\\tests\\test_generate_dir_index.py": {
-        "hash": "d9f4eb6356849da28317b9971505ef8797ce8cb2737f2c1dfa5c0cfc7bb7bc52",
-        "mtime": 1776709730.0859509
-    },
-    ".know\\tests\\test_init_ki_system.py": {
-        "hash": "f75a2ff3bf10a17a525675d7fcfae5ba1cb93fb0544df89929d18392ad8ae47e",
-        "mtime": 1777408477.0129893
-    },
-    ".know\\tests\\test_ki_utils.py": {
-        "hash": "537849cf3ee2a1c15303733068b5918f87b793794ab9f3fa4663977d4f63cc44",
-        "mtime": 1776710997.3071342
-    },
-    ".know\\tests\\test_knowledge_engine.py": {
-        "hash": "292c3090561a632a3186e70df973cde58a9b239b7a10a28d1b0cd9e4288f9d86",
-        "mtime": 1776709834.1037657
-    },
-    ".know\\tests\\test_knowledge_engine_extra.py": {
-        "hash": "7dedb62be158f6ae58e04225e3d7bfa5fe074eb3f4785f19137ad923c3765b5b",
-        "mtime": 1776456136.2376366
-    },
-    ".know\\tests\\test_mcp_security.py": {
-        "hash": "512bef4f4478852f495986bbad5c9fa1a3b243dd557b82dbe4b9d8fbb812e9bf",
-        "mtime": 1776709757.3778346
-    },
-    ".know\\tests\\test_sync_and_add_ki.py": {
-        "hash": "c7371fec3c7227a725640e8c056d98c18ca0461f037105e918d372bbb843cfe7",
-        "mtime": 1776709825.332481
-    },
-    ".know\\workflows\\create-adr.md": {
-        "hash": "9e73db4a3c8ef91e98e77cb8342d65732d6b13b5f15e1f0f3353e83c1806e923",
-        "mtime": 1776713107.2614276
-    },
-    ".know\\workflows\\expand-knowledge.md": {
-        "hash": "39a61e5831e74bb27c29a038f03537ab1cfdc09e35e7f1123089d1a12de7c335",
-        "mtime": 1776967737.16768
-    },
-    ".know\\workflows\\sync-knowledge.md": {
-        "hash": "14065732e5de2072b16d41d27afa5bdabb3dc4b5bb6d1b2b37f6a7075d5d9117",
-        "mtime": 1777143060.51597
-    },
-    ".know\\workflows\\update-knowledge.md": {
-        "hash": "b3cdc56ae6a9c79f62a609eea6f1123e42a79fd59f44f75d477cbacb60d98a41",
-        "mtime": 1777048525.3706932
     },
     "scripts\\prepare_phase1_data_v2.py": {
         "hash": "7df4b7af31c80e7a4e6c3b5f7d1c1ec2b7414b7149749d1541f29b3f2b6b817b",
@@ -536,15 +472,31 @@
         "mtime": 1779900329.8353047
     },
     "experiments\\phase 4\\kaggle\\train_phase4_notebook.py": {
-        "hash": "d2aacf69202f8680e16224f8d11f7e8f5dbbf903332ef0c06d37ea473248c6e1",
-        "mtime": 1788972085.742258
+        "hash": "2da0df78e2c68c066e6cce6f299387908f25fd9935700991715eeabc35dfb2f7",
+        "mtime": 1789303304.4972217
     },
     "experiments\\phase 4\\ideas.md": {
         "hash": "429fbe4e156d918ddd068ce37675af4c1164de740650a3cb49b9c45d222d0038",
         "mtime": 1788902397.5075426
     },
     "hugging face\\upload_weights.py": {
-        "hash": "8f1e7231e0a1e9f2d189ced97c62cf05544602f92b29a0b4fdc12dcb921c1e4f",
-        "mtime": 1787683856.5382526
+        "hash": "53525a6827b2c9e4b6a518f54acbb9812b9061cf9daa3540fad3d7f4c8eab0a7",
+        "mtime": 1790018229.7123277
+    },
+    "experiments\\phase 6\\kaggle\\train_phase6_notebook.py": {
+        "hash": "4329e2da8a610356114c901e8f117c5295bc29aa1ec1965bf835d88ced25beed",
+        "mtime": 1791379542.4558635
+    },
+    "experiments\\phase 6\\plan.md": {
+        "hash": "4bc26f9a5f03f8ccb6d7c4e15d755a00ca1881732e14ccbb3d8b66ce5bd20e8b",
+        "mtime": 1790712010.4094634
+    },
+    ".know\\decisions\\092_phase6_void_token_and_canvas_unmasking.md": {
+        "hash": "eb6f998814bd3d0c14bad54a202bb67190166392a4304c5172d263863ae6f384",
+        "mtime": 1790709807.0369856
+    },
+    "experiments\\phase 6\\tpu kaggle\\train_phase6_tpu_notebook.py": {
+        "hash": "b0f893b0103a5d454cf0c2c784e09b4b3e522f1836d9277e65e4b2b0ca57b9e5",
+        "mtime": 1791728118.6654322
     }
 }

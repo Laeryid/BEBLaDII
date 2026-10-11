@@ -129,12 +129,16 @@ def sync_to_gcs_and_delete(local_path: str, gcs_dir: str, keep_local: bool = Fal
         else:
             raise RuntimeError("GCS client unavailable")
     except Exception as e:
-        try:
-            subprocess.run(["gsutil", "-q", "cp", local_path, gcs_path], check=True)
-            synced = True
-            print(f"[GCS-gsutil] Synced: {local_path} → {gcs_path}")
-        except Exception as e2:
-            print(f"[GCS] Error syncing {local_path}: {e} / gsutil: {e2}")
+        import shutil
+        if shutil.which("gsutil"):
+            try:
+                subprocess.run(["gsutil", "-q", "cp", local_path, gcs_path], check=True)
+                synced = True
+                print(f"[GCS-gsutil] Synced: {local_path} → {gcs_path}")
+            except Exception as e2:
+                print(f"[GCS] Error syncing {local_path}: {e} / gsutil: {e2}")
+        else:
+            print(f"[GCS] Error syncing {local_path}: {e} (gsutil unavailable)")
 
     if synced and not keep_local and os.path.exists(local_path):
         try:
@@ -159,10 +163,12 @@ def get_gcs_checkpoints(gcs_dir: str, prefix: str = "phase6_ca_layers_step_"):
                 print(f"[GCS Checkpoints] Client list error: {e_client}, falling back to gsutil...")
                 client = None
         if not ckpt_files:
-            result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True)
-            if result.returncode == 0:
-                files = result.stdout.strip().split("\n")
-                ckpt_files = [f for f in files if prefix in f and f.endswith(".pth")]
+            import shutil
+            if shutil.which("gsutil"):
+                result = subprocess.run(["gsutil", "ls", gcs_dir], capture_output=True, text=True)
+                if result.returncode == 0:
+                    files = result.stdout.strip().split("\n")
+                    ckpt_files = [f for f in files if prefix in f and f.endswith(".pth")]
 
         def extract_step(filename):
             try: return int(filename.split("_step_")[-1].replace(".pth", ""))
@@ -532,12 +538,31 @@ class BEBLaDIIPhase6(nn.Module):
 
         if os.path.exists(config.dus_weights):
             state = torch.load(config.dus_weights, map_location="cpu", weights_only=False)
-            if "dus_ema" in state: state = state["dus_ema"]
-            elif "dus" in state: state = state["dus"]
-            elif "model_state_dict" in state: state = state["model_state_dict"]
-            elif "model" in state: state = state["model"]
-            clean_state = {k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", ""): v for k, v in state.items()}
-            self.load_state_dict(clean_state, strict=False)
+            dus_state = state.get("dus_ema", state.get("dus", state.get("model_state_dict", state.get("model", state))))
+            clean_dus_state = {k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", ""): v for k, v in dus_state.items()}
+            self.dus.load_state_dict(clean_dus_state, strict=False)
+
+            if "adaLN_attn_ema" in state or "adaLN_attn" in state:
+                ada_attn_st = state.get("adaLN_attn_ema", state.get("adaLN_attn"))
+                clean_ada_attn = {k.replace("_orig_module.", ""): v for k, v in ada_attn_st.items()}
+                self.adaLN_attn.load_state_dict(clean_ada_attn, strict=False)
+
+            if "adaLN_mlp_ema" in state or "adaLN_mlp" in state:
+                ada_mlp_st = state.get("adaLN_mlp_ema", state.get("adaLN_mlp"))
+                clean_ada_mlp = {k.replace("_orig_module.", ""): v for k, v in ada_mlp_st.items()}
+                self.adaLN_mlp.load_state_dict(clean_ada_mlp, strict=False)
+
+            if "t_proj_global_ema" in state or "t_proj_global" in state:
+                st_glob = state.get("t_proj_global_ema", state.get("t_proj_global"))
+                self.t_proj_global.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st_glob.items()}, strict=False)
+
+            if "t_proj_token_ema" in state or "t_proj_token" in state:
+                st_tok = state.get("t_proj_token_ema", state.get("t_proj_token"))
+                self.t_proj_token.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st_tok.items()}, strict=False)
+
+            if "t_joint_proj_ema" in state or "t_joint_proj" in state:
+                st_joint = state.get("t_joint_proj_ema", state.get("t_joint_proj"))
+                self.t_joint_proj.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st_joint.items()}, strict=False)
 
         for p in self.parameters(): p.requires_grad = False
 
@@ -907,14 +932,20 @@ def main():
     device = xm.xla_device()
     os.makedirs(args.output_dir, exist_ok=True)
 
+    try:
+        from kaggle_secrets import UserSecretsClient
+        user_secrets = UserSecretsClient()
+        gcp_sa = user_secrets.get_secret("GCP_SA_JSON")
+        if gcp_sa:
+            with open("gcp_sa.json", "w") as f: f.write(gcp_sa)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath("gcp_sa.json")
+    except Exception: pass
+
     if args.wandb_project:
         try:
             from kaggle_secrets import UserSecretsClient
             user_secrets = UserSecretsClient()
             wandb.login(key=user_secrets.get_secret("WANDB_API_KEY"))
-            gcp_sa = user_secrets.get_secret("GCP_SA_JSON")
-            with open("gcp_sa.json", "w") as f: f.write(gcp_sa)
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath("gcp_sa.json")
         except Exception: pass
         wandb.init(project=args.wandb_project, config=vars(args))
 
@@ -1004,7 +1035,11 @@ def main():
                     except Exception as e_gcs:
                         print(f"GCS client download error: {e_gcs}, falling back to gsutil...")
                 if not downloaded:
-                    subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
+                    import shutil
+                    if shutil.which("gsutil"):
+                        subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
+                    else:
+                        raise RuntimeError(f"GCS client failed and gsutil unavailable to download {latest_ckpt}")
 
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
                 
@@ -1099,17 +1134,17 @@ def main():
             # In-Graph NaN/Inf Guard & Anomaly Protection (Zero Graph Breaks, ADR 079)
             grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             is_finite = torch.isfinite(grad_norm)
-            is_safe = is_finite & (grad_norm <= 5.0)
+            is_safe = is_finite & (grad_norm <= 50.0)
 
-            # КРИТИЧЕСКИЙ ФИКС (IEEE 754): mul_(0.0) сохраняет NaN!
-            # При аварии градиенты гарантированно заменяются на чистые нули через torch.where
+            # КРИТИЧЕСКИЙ ФИКС: градиенты модели защищены от NaN/Inf (is_finite).
+            # Норма уже отнормирована до <= 1.0 клиппингом, поэтому конечные градиенты всегда применяются.
             for p in trainable_params:
                 if p.grad is not None:
-                    p.grad.copy_(torch.where(is_safe, p.grad.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0), torch.zeros_like(p.grad)))
+                    p.grad.copy_(torch.where(is_finite, p.grad.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0), torch.zeros_like(p.grad)))
 
             xm.optimizer_step(optimizer)
 
-            # Обновление EMA и PACE надежно изолировано через torch.where
+            # Обновление EMA и PACE надежно изолировано через torch.where от NaN и аномальных спайков (> 50.0)
             ema_tracker.update(model, is_safe=is_safe)
             ema_tracker.pace_pullback(model, alpha=args.pace_alpha, is_safe=is_safe)
 

@@ -1017,6 +1017,16 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 101: Phase 6 IEEE 754 Safe NaN Guard, Checkpoint Finite Validation, and Optimizer Warmup"
+    },
+    "decisions/102_phase6_guard_decoupling_and_phase4_weights_fix.md": {
+      "description": "ADR 102: Phase 6 In-Graph Guard Decoupling, Full Phase 4 Backbone & Diffusion Modules Loading, and GCS Resiliency (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 102: Phase 6 In-Graph Guard Decoupling, Full Phase 4 Backbone & Diffusion Modules Loading, and GCS Resiliency"
     }
   },
   "knowledge_system": {
