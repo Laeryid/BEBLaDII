@@ -375,8 +375,6 @@ class CAPromptLayer(nn.Module):
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
         self.adaln_sa = AdaLNModulation(t_emb_dim, dim)  # AdaLN для SA (модулирует холст перед Self-Attention)
 
-        self.gate = nn.Parameter(torch.zeros(1))
-
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
         nn.init.zeros_(self.out_proj.weight)
@@ -420,7 +418,7 @@ class CAPromptLayer(nn.Module):
         with torch.no_grad():
             self.last_ca_ratio = (ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)).item()
 
-        A = A + ca_out
+        A = A + warmup_factor * ca_out
 
         # --- Self-Attention ---
         # AdaLN — модулируем пропорции смешивания токенов холста в зависимости от t
@@ -440,7 +438,7 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
-        A = A + sa_out
+        A = A + warmup_factor * sa_out
         return A
 
 class Phase6BlockWrapper(nn.Module):
@@ -527,12 +525,31 @@ class BEBLaDIIPhase6(nn.Module):
         # --- ЗАГРУЗКА ВЕСОВ PHASE 4 ---
         if os.path.exists(config.dus_weights):
             state = torch.load(config.dus_weights, map_location="cpu", weights_only=False)
-            if "dus_ema" in state: state = state["dus_ema"]
-            elif "dus" in state: state = state["dus"]
-            elif "model_state_dict" in state: state = state["model_state_dict"]
-            elif "model" in state: state = state["model"]
-            clean_state = {k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", ""): v for k, v in state.items()}
-            self.load_state_dict(clean_state, strict=False)
+            dus_state = state.get("dus_ema", state.get("dus", state.get("model_state_dict", state.get("model", state))))
+            clean_dus_state = {k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", ""): v for k, v in dus_state.items()}
+            self.dus.load_state_dict(clean_dus_state, strict=False)
+
+            if "adaLN_attn_ema" in state or "adaLN_attn" in state:
+                ada_attn_st = state.get("adaLN_attn_ema", state.get("adaLN_attn"))
+                clean_ada_attn = {k.replace("_orig_module.", ""): v for k, v in ada_attn_st.items()}
+                self.adaLN_attn.load_state_dict(clean_ada_attn, strict=False)
+
+            if "adaLN_mlp_ema" in state or "adaLN_mlp" in state:
+                ada_mlp_st = state.get("adaLN_mlp_ema", state.get("adaLN_mlp"))
+                clean_ada_mlp = {k.replace("_orig_module.", ""): v for k, v in ada_mlp_st.items()}
+                self.adaLN_mlp.load_state_dict(clean_ada_mlp, strict=False)
+
+            if "t_proj_global_ema" in state or "t_proj_global" in state:
+                st_glob = state.get("t_proj_global_ema", state.get("t_proj_global"))
+                self.t_proj_global.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st_glob.items()}, strict=False)
+
+            if "t_proj_token_ema" in state or "t_proj_token" in state:
+                st_tok = state.get("t_proj_token_ema", state.get("t_proj_token"))
+                self.t_proj_token.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st_tok.items()}, strict=False)
+
+            if "t_joint_proj_ema" in state or "t_joint_proj" in state:
+                st_joint = state.get("t_joint_proj_ema", state.get("t_joint_proj"))
+                self.t_joint_proj.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st_joint.items()}, strict=False)
             print(f"[Init] Phase 4 weights loaded from {config.dus_weights}")
         else:
             raise FileNotFoundError(f"Phase 4 weights not found at {config.dus_weights}")
@@ -983,7 +1000,7 @@ def main():
 
 
                 if global_step % args.log_steps == 0:
-                    print(f"Step {global_step} | Loss: {loss.item() * args.gradient_accumulation_steps:.4f} | Gate_12: {model.ca_layers['12'].gate.item():.4f}")
+                    print(f"Step {global_step} | Loss: {loss.item() * args.gradient_accumulation_steps:.4f} | CA_Ratio_12: {model.ca_layers['12'].last_ca_ratio:.4f}")
 
                 if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
                     ema_tracker.apply_shadow(model)
