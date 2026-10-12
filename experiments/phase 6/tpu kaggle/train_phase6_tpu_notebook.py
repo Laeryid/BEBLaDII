@@ -51,6 +51,18 @@ def setup_spmd_mesh():
     xs.set_global_mesh(mesh)
     return mesh
 
+GLOBAL_NAN_NAMES = []
+GLOBAL_NAN_CHECKS = []
+
+def check_tensor_nan(name: str, tensor: torch.Tensor, step: int = 0, step_limit: int = 10):
+    if tensor is None or not isinstance(tensor, torch.Tensor):
+        return
+    if step > step_limit:
+        return
+    is_bad = torch.isnan(tensor).any() | torch.isinf(tensor).any()
+    GLOBAL_NAN_NAMES.append(name)
+    GLOBAL_NAN_CHECKS.append(is_bad)
+
 from pathlib import Path
 if Path("/kaggle/input").exists():
     PROJECT_ROOT = "/kaggle/working/BEBLaDII"
@@ -391,7 +403,6 @@ class CAPromptLayer(nn.Module):
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
         self.adaln_sa = AdaLNModulation(t_emb_dim, dim)  # AdaLN для SA (модулирует холст перед Self-Attention)
 
-        self.gate = nn.Parameter(torch.zeros(1))
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
         nn.init.zeros_(self.out_proj.weight)
@@ -1129,22 +1140,35 @@ def main():
             outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
             loss, avg_cos_sim, true_void_sim, content_to_void_sim = compute_phase6_loss(outputs, void_margin=0.5, loss_t_power=args.loss_t_power)
 
+            check_tensor_nan("dus_final", outputs["dus_final"], global_step)
+            check_tensor_nan("loss", loss, global_step)
+
             loss.backward()
 
-            # In-Graph NaN/Inf Guard & Anomaly Protection (Zero Graph Breaks, ADR 079)
+            # SPMD All-Reduce для реплицированных и шардированных градиентов по мешу TPU
+            xm.reduce_gradients(optimizer)
+
+            # Проверка исходных градиентов на первых шагах (до санитизации)
+            if global_step <= 10:
+                for name, p in model.named_parameters():
+                    if p.requires_grad and p.grad is not None:
+                        check_tensor_nan(f"grad.{name}", p.grad, global_step)
+
+            # In-Place поэлементная санитизация: изолирует единичные стохастические выбросы
+            # и гарантирует, что остальные слои модели продолжают обучение
+            for p in trainable_params:
+                if p.grad is not None:
+                    p.grad.nan_to_num_(nan=0.0, posinf=1.0, neginf=-1.0)
+
+            # Клиппинг градиентов после редукции и санитизации
             grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
             is_finite = torch.isfinite(grad_norm)
             is_safe = is_finite & (grad_norm <= 50.0)
 
-            # КРИТИЧЕСКИЙ ФИКС: градиенты модели защищены от NaN/Inf (is_finite).
-            # Норма уже отнормирована до <= 1.0 клиппингом, поэтому конечные градиенты всегда применяются.
-            for p in trainable_params:
-                if p.grad is not None:
-                    p.grad.copy_(torch.where(is_finite, p.grad.nan_to_num(nan=0.0, posinf=0.0, neginf=0.0), torch.zeros_like(p.grad)))
+            # Шаг оптимизатора (градиенты уже редуцированы через xm.reduce_gradients)
+            optimizer.step()
 
-            xm.optimizer_step(optimizer)
-
-            # Обновление EMA и PACE надежно изолировано через torch.where от NaN и аномальных спайков (> 50.0)
+            # Обновление EMA и PACE надежно изолировано через torch.where от аномальных спайков (> 50.0)
             ema_tracker.update(model, is_safe=is_safe)
             ema_tracker.pace_pullback(model, alpha=args.pace_alpha, is_safe=is_safe)
 
@@ -1204,6 +1228,22 @@ def main():
                 lr_qkv_val = optimizer.param_groups[1]['lr']
                 lr_dus_val = optimizer.param_groups[3]['lr']
                 xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp.detach(), cm.detach(), outputs["t_global"].detach(), ratio12, ratio24, ratio36, grad_norm.detach(), lr_out_val, lr_qkv_val, lr_dus_val))
+
+            if global_step <= 10 and GLOBAL_NAN_CHECKS:
+                stacked_nan = torch.stack(GLOBAL_NAN_CHECKS)
+                names_to_log = list(GLOBAL_NAN_NAMES)
+                def print_nan_alerts(s, nan_tensor, names):
+                    results = nan_tensor.cpu().tolist()
+                    found_bad = False
+                    for n, is_bad in zip(names, results):
+                        if is_bad:
+                            print(f"[NAN_ALERT] Step {s}: '{n}' contains NaN/Inf!", flush=True)
+                            found_bad = True
+                    if not found_bad:
+                        print(f"[NAN_CHECK_OK] Step {s}: all checked tensors are finite.", flush=True)
+                xm.add_step_closure(print_nan_alerts, args=(global_step, stacked_nan, names_to_log))
+                GLOBAL_NAN_CHECKS.clear()
+                GLOBAL_NAN_NAMES.clear()
 
             if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
                 run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step)
