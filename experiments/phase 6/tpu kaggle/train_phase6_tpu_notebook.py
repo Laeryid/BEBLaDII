@@ -4,6 +4,12 @@ import subprocess
 import sys
 import time
 
+if sys.platform == "win32":
+    try:
+        if hasattr(sys.stdout, "reconfigure"): sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"): sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception: pass
+
 # Install Kaggle TPU dependencies (equivalent to: !pip install -q -U --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage)
 try:
     import wandb
@@ -246,14 +252,14 @@ class Config:
     void_token      = os.path.join(PROJECT_ROOT, "storage/components/void_token.pt")
     latent_dict     = resolve_file_path("latent_dict.pt")
     output_dir      = "/kaggle/working/checkpoints/phase6_v2" if Path("/kaggle/input").exists() else os.path.join(PROJECT_ROOT, "checkpoints/phase6_v2")
-    resume_from_checkpoint = True
+    resume_from_checkpoint = False if os.environ.get("SMOKE_TEST") else True
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
-    batch_size    = 64
-    max_length_q  = 512
-    max_length_a  = 512
+    batch_size    = 2 if os.environ.get("SMOKE_TEST") else 64
+    max_length_q  = 64 if os.environ.get("SMOKE_TEST") else 512
+    max_length_a  = 64 if os.environ.get("SMOKE_TEST") else 512
     learning_rate = 1e-4
     epochs        = 50
-    max_steps     = 200000
+    max_steps     = int(os.environ.get("MAX_STEPS", 200000))
     log_steps     = 10
     val_steps     = 200
     save_steps    = 1000
@@ -266,6 +272,8 @@ class Config:
     use_prompt_sa = True  # Prompt-SA + RoPE перед CA
     val_num_samples = 80 # Размер валидационной выборки
     wandb_project = "BEBLaDII-Phase6-Kaggle"
+    run_diagnosis_first  = True  # Запуск 1-шаговой изоляционной диагностики NaN перед обучением
+    stop_after_diagnosis = True  # Прерывание сразу после диагностики для экономии TPU-квоты
 
 args = Config()
 
@@ -938,6 +946,137 @@ def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step
     model.train()
     ema_tracker.restore(model)
 
+def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=None):
+    print("\n" + "="*70)
+    print("           [DIAGNOSIS] FULL NaN GRADIENT AUDIT (TPU/CPU)          ")
+    print("="*70)
+
+    input_ids_q = batch['input_ids_q'].to(device)
+    mask_q = batch['attention_mask_q'].to(device)
+    input_ids_a = batch['input_ids_a'].to(device)
+    mask_a = batch['attention_mask_a'].to(device)
+
+    xs.mark_sharding(input_ids_q, mesh, ("fsdp", None))
+    xs.mark_sharding(mask_q, mesh, ("fsdp", None))
+    xs.mark_sharding(input_ids_a, mesh, ("fsdp", None))
+    xs.mark_sharding(mask_a, mesh, ("fsdp", None))
+
+    named_params = dict(model.named_parameters())
+    trainable_named = {n: p for n, p in named_params.items() if p.requires_grad}
+    print(f"Total trainable parameters: {len(trainable_named)}")
+
+    # -------------------------------------------------------------
+    # TEST 0: Input Attention Mask Audit
+    # -------------------------------------------------------------
+    print("\n[TEST 0] Input Attention Mask Audit:")
+    q_act = mask_q.sum(dim=-1).tolist()
+    a_act = mask_a.sum(dim=-1).tolist()
+    print(f"  Active tokens Q (Question): min={min(q_act)}, max={max(q_act)}, zero_count={(mask_q.sum(dim=-1) == 0).sum().item()}")
+    print(f"  Active tokens A (Answer):   min={min(a_act)}, max={max(a_act)}, zero_count={(mask_a.sum(dim=-1) == 0).sum().item()}")
+    if any(c == 0 for c in q_act):
+        print("  [ALERT] Samples with all-zero attention_mask_q detected! In SDPA this causes NaN in backward!")
+
+    # -------------------------------------------------------------
+    # TEST 1: Raw Backward (current architecture, unsanitized)
+    # -------------------------------------------------------------
+    print("\n[TEST 1] Raw Backward (Current architecture, unsanitized)...")
+    model.zero_grad(set_to_none=True)
+    warmup_factor = torch.tensor(0.05, dtype=torch.float32, device=device)
+    outputs = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
+    loss, avg_cos, _, _ = compute_phase6_loss(outputs, void_margin=0.5, loss_t_power=args.loss_t_power)
+
+    loss_is_finite = torch.isfinite(loss).item()
+    print(f"  Forward: loss={loss.item():.4f} (finite: {loss_is_finite}), avg_cos={avg_cos.item():.4f}")
+    for k in ["z_clean", "z_noisy", "dus_final"]:
+        v = outputs[k]
+        print(f"    outputs['{k}']: finite={torch.isfinite(v).all().item()}, min={v.min().item():.3f}, max={v.max().item():.3f}")
+
+    loss.backward()
+    xm.mark_step()
+
+    nan_before = []
+    finite_before = []
+    for name, p in trainable_named.items():
+        if p.grad is None: continue
+        if not torch.isfinite(p.grad).all():
+            nan_before.append(name)
+        else:
+            finite_before.append(name)
+
+    print(f"\n  [Results BEFORE xm.reduce_gradients]:")
+    print(f"    Finite gradients:  {len(finite_before)}")
+    print(f"    NaN/Inf gradients: {len(nan_before)}")
+    if nan_before:
+        print("    Examples of parameters with NaN BEFORE reduction:")
+        for n in nan_before[:6]:
+            print(f"      - {n}")
+
+    dummy_opt = torch.optim.AdamW(list(trainable_named.values()), lr=1e-4)
+    xm.reduce_gradients(dummy_opt)
+    xm.mark_step()
+
+    nan_after = []
+    for name, p in trainable_named.items():
+        if p.grad is not None and not torch.isfinite(p.grad).all():
+            nan_after.append(name)
+
+    print(f"\n  [Results AFTER xm.reduce_gradients]:")
+    print(f"    NaN/Inf gradients: {len(nan_after)}")
+    if not nan_before and nan_after:
+        print("  [ALERT] CONCLUSION: NaNs generated INSIDE xm.reduce_gradients!")
+        print("     (Reduction conflict between SPMD-FSDP sharded and unsharded weights).")
+    elif nan_before:
+        print("  [ALERT] CONCLUSION: NaNs generated INSIDE backward graph BEFORE all-reduce!")
+
+    # -------------------------------------------------------------
+    # TEST 2: CA Isolation (disable_ca=True)
+    # -------------------------------------------------------------
+    print("\n[TEST 2] Bisection: Forward + Backward with disable_ca=True (DUS backbone isolated)...")
+    model.zero_grad(set_to_none=True)
+    outputs_no_ca = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor, disable_ca=True)
+    loss_no_ca, _, _, _ = compute_phase6_loss(outputs_no_ca, void_margin=0.5, loss_t_power=args.loss_t_power)
+    loss_no_ca.backward()
+    xm.mark_step()
+
+    nan_no_ca = [n for n, p in trainable_named.items() if p.grad is not None and not torch.isfinite(p.grad).all()]
+    print(f"  NaN gradients without CA: {len(nan_no_ca)} of {len(trainable_named)}")
+    if len(nan_before) > 0 and len(nan_no_ca) == 0:
+        print("  [CONCLUSION] Without CA, gradients are 100% FINITE! Root cause is strictly in CAPromptLayer or Prompt-Pass!")
+    elif len(nan_no_ca) > 0:
+        print("  [CONCLUSION] Even without CA, gradients contain NaN! Root cause is in DUS backbone / FSDP / Loss!")
+        for n in nan_no_ca[:5]:
+            print(f"      - {n}")
+
+    # -------------------------------------------------------------
+    # TEST 3: DUS Isolation (Train ONLY CA, freeze DUS)
+    # -------------------------------------------------------------
+    if dus_params and ca_params:
+        print("\n[TEST 3] Bisection: Freeze DUS, backward only for CA layers...")
+        model.zero_grad(set_to_none=True)
+        for p in dus_params: p.requires_grad = False
+        outputs_ca_only = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
+        loss_ca_only, _, _, _ = compute_phase6_loss(outputs_ca_only, void_margin=0.5, loss_t_power=args.loss_t_power)
+        loss_ca_only.backward()
+        xm.mark_step()
+
+        ca_named = {n: p for n, p in model.ca_layers.named_parameters() if p.requires_grad}
+        nan_ca_only = [n for n, p in ca_named.items() if p.grad is not None and not torch.isfinite(p.grad).all()]
+        print(f"  NaN gradients in CA (with frozen DUS): {len(nan_ca_only)} of {len(ca_named)}")
+        if len(nan_ca_only) == 0:
+            print("  [CONCLUSION] With frozen DUS, CA gradients are 100% FINITE!")
+            print("     This proves that NaNs are caused by DUS unfreezing or FSDP wrapping on DUS layers!")
+        else:
+            print("  [CONCLUSION] Even in isolation, CA gradients contain NaN:")
+            for n in nan_ca_only[:5]:
+                print(f"      - {n}")
+        for p in dus_params: p.requires_grad = True
+
+    model.zero_grad(set_to_none=True)
+    xm.mark_step()
+    print("\n" + "="*70)
+    print("                    [FINISH] DIAGNOSIS COMPLETED                    ")
+    print("="*70 + "\n")
+
 def main():
     mesh = setup_spmd_mesh()
     device = xm.xla_device()
@@ -966,10 +1105,11 @@ def main():
     val_dataloader = None
     try:
         dataset = QADataset(args.dataset_path, tokenizer, args.max_length_q, args.max_length_a)
-        dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=2)
+        num_workers = 0 if os.name == "nt" or os.environ.get("SMOKE_TEST") else 2
+        dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=num_workers)
         if os.path.exists(args.val_dataset_path):
             val_dataset = QADataset(args.val_dataset_path, tokenizer, args.max_length_q, args.max_length_a)
-            val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True, num_workers=2)
+            val_dataloader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, drop_last=True, num_workers=num_workers)
         else:
             print(f"Validation dataset not found at {args.val_dataset_path}. Validation will be skipped.")
     except Exception as e:
@@ -1018,6 +1158,22 @@ def main():
         {'params': ca_other_params, 'lr': 2.5e-5}, # снижен с 5e-5
         {'params': dus_params, 'lr': 2.5e-5}       # снижен с 5e-5
     ])
+
+    if getattr(args, "run_diagnosis_first", False):
+        diag_batch = next(iter(dataloader))
+        run_nan_diagnosis(
+            model,
+            diag_batch,
+            device,
+            mesh,
+            ca_params=ca_out_params + ca_qkv_params + ca_other_params,
+            dus_params=dus_params
+        )
+        if getattr(args, "stop_after_diagnosis", False):
+            print("[Diagnosis] stop_after_diagnosis=True: работа завершена для анализа логов.")
+            return
+        optimizer.zero_grad(set_to_none=True)
+        xm.mark_step()
 
     model.train()
     global_step = 0

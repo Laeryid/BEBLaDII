@@ -34,12 +34,26 @@ if c29_start == -1 or c29_end == -1:
     raise ValueError("Could not find cell 29 bounds in .py")
 code_c29 = py_text[c29_start:c29_end].rstrip()
 
+# 2.7 Извлечение Config (Cell 20)
+c20_start = py_text.find("class Config:")
+c20_end = py_text.find("args = Config()")
+if c20_start == -1 or c20_end == -1:
+    raise ValueError("Could not find Config bounds in .py")
+code_c20 = py_text[c20_start:c20_end].rstrip()
+
 # 3. Извлечение BEBLaDIIPhase6
 c33_start = py_text.find("class BEBLaDIIPhase6(nn.Module):")
 c33_end = py_text.find("def compute_phase6_loss(")
 if c33_start == -1 or c33_end == -1:
     raise ValueError("Could not find BEBLaDIIPhase6 bounds in .py")
 code_c33 = py_text[c33_start:c33_end].rstrip()
+
+# 3.5 Извлечение run_validation + run_nan_diagnosis (Cell 36)
+c36_start = py_text.find("def run_validation(")
+c36_end = py_text.find("def main():")
+if c36_start == -1 or c36_end == -1:
+    raise ValueError("Could not find Cell 36 bounds in .py")
+code_c36 = py_text[c36_start:c36_end].rstrip()
 
 # 4. Извлечение main
 target_marker = "if __name__ == '__main__':"
@@ -68,18 +82,22 @@ def to_lines(code_str):
 assert "def setup_spmd_mesh" in nb["cells"][7]["source"][0], f"Cell 7 mismatch: {nb['cells'][7]['source'][:1]}"
 assert "def sync_to_gcs_and_delete" in nb["cells"][15]["source"][0], f"Cell 15 mismatch: {nb['cells'][15]['source'][:1]}"
 assert "def get_gcs_checkpoints" in nb["cells"][16]["source"][0], f"Cell 16 mismatch: {nb['cells'][16]['source'][:1]}"
+assert "class Config" in nb["cells"][20]["source"][0], f"Cell 20 mismatch: {nb['cells'][20]['source'][:1]}"
 assert "class CAPromptLayer" in nb["cells"][29]["source"][0], f"Cell 29 mismatch: {nb['cells'][29]['source'][:1]}"
 assert "class BEBLaDIIPhase6" in nb["cells"][33]["source"][0], f"Cell 33 mismatch: {nb['cells'][33]['source'][:1]}"
+assert "def run_validation" in nb["cells"][36]["source"][0], f"Cell 36 mismatch: {nb['cells'][36]['source'][:1]}"
 assert "def main" in nb["cells"][37]["source"][0], f"Cell 37 mismatch: {nb['cells'][37]['source'][:1]}"
 
 nb["cells"][7]["source"] = to_lines(code_c7)
 nb["cells"][15]["source"] = to_lines(code_c15)
 nb["cells"][16]["source"] = to_lines(code_c16)
+nb["cells"][20]["source"] = to_lines(code_c20)
 nb["cells"][29]["source"] = to_lines(code_c29)
 nb["cells"][33]["source"] = to_lines(code_c33)
+nb["cells"][36]["source"] = to_lines(code_c36)
 nb["cells"][37]["source"] = to_lines(code_main)
 
 with open(ipynb_path, "w", encoding="utf-8") as f:
     json.dump(nb, f, indent=1, ensure_ascii=False)
 
-print("Synchronized Cells 7, 15, 16, 29, 33, and 37 successfully into train_phase6_tpu_notebook.ipynb!")
+print("Synchronized Cells 7, 15, 16, 20, 29, 33, 36, and 37 successfully into train_phase6_tpu_notebook.ipynb!")

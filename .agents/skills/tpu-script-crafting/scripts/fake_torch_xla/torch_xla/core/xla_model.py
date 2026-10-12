@@ -20,6 +20,9 @@ def optimizer_step(optimizer, barrier=False, optimizer_args=None):
         optimizer_args = {}
     return optimizer.step(**optimizer_args)
 
+def reduce_gradients(optimizer=None, groups=None, pin_layout=True):
+    pass
+
 def mark_step():
     pass
 
