@@ -591,8 +591,10 @@ class BEBLaDIIPhase6(nn.Module):
         if hasattr(self, "qwen_embeddings"): self.qwen_embeddings.eval()
         if hasattr(self, "encoder"): self.encoder.eval()
 
-    def forward(self, input_ids_q, attention_mask_q, input_ids_a, attention_mask_a, warmup_factor=1.0, t_global=None):
+    def forward(self, input_ids_q, attention_mask_q, input_ids_a, attention_mask_a, warmup_factor=1.0, t_global=None, enable_ca: bool = True):
         B, T_a = input_ids_a.shape
+        initial_ca_states = {k: getattr(ca, '_disable', False) for k, ca in self.ca_layers.items()}
+        ca_is_active = enable_ca and not any(initial_ca_states.values())
 
         with torch.no_grad():
             # 1. Подготовка чистого латентного представления для Ответа (A)
@@ -706,7 +708,7 @@ class BEBLaDIIPhase6(nn.Module):
             Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
             
             for ca in self.ca_layers.values():
-                ca._disable = False
+                ca._disable = not ca_is_active
 
         # Обновляем Q для CA-слоев
         for ca in self.ca_layers.values():
@@ -761,6 +763,10 @@ class BEBLaDIIPhase6(nn.Module):
         gate = torch.sin(t_global * (math.pi / 2)).view(B, 1, 1).to(h_39.dtype)
         dus_gated = gate * h_39 + (1.0 - gate) * x_in
         dus_final = safe_normalize(dus_gated, dim=-1)
+
+        # Восстанавливаем исходные состояния _disable
+        for k, ca in self.ca_layers.items():
+            ca._disable = initial_ca_states[k]
 
         return {
             "z_clean": Z_A_clean,
@@ -1060,7 +1066,7 @@ def main():
                                 if torch.cuda.is_available():
                                     torch.cuda.manual_seed_all(seed)
 
-                                v_o = model(v_ids_q, v_m_q, v_ids_a, v_m_a, warmup_factor=1.0, t_global=tg_t)
+                                v_o = model(v_ids_q, v_m_q, v_ids_a, v_m_a, warmup_factor=1.0, t_global=tg_t, enable_ca=True)
                                 cp, cb, cm = content_cos_stats(v_o)
 
                                 # Прогон с отключенными CA-слоями (чистый DUS-бэкбон)
@@ -1071,7 +1077,7 @@ def main():
                                 if torch.cuda.is_available():
                                     torch.cuda.manual_seed_all(seed)
 
-                                v_o_no_ca = model(v_ids_q, v_m_q, v_ids_a, v_m_a, warmup_factor=1.0, t_global=tg_t)
+                                v_o_no_ca = model(v_ids_q, v_m_q, v_ids_a, v_m_a, warmup_factor=1.0, t_global=tg_t, enable_ca=False)
                                 cp_no_ca, _, _ = content_cos_stats(v_o_no_ca)
 
                                 for ca in model.ca_layers.values():
