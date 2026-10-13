@@ -179,7 +179,7 @@ class Config:
     output_dir = "/kaggle/working/checkpoints/phase6"
 
     # GCS (для сохранения чекпоинтов)
-    resume_from_checkpoint = False
+    resume_from_checkpoint = True
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
 
     # Гиперпараметры Phase 6
@@ -189,7 +189,7 @@ class Config:
     max_length_a  = 512
     learning_rate = 2e-4
     epochs        = 50
-    max_steps     = 1005
+    max_steps     = 10005
     log_steps     = 10
     val_steps     = 200
     save_steps    = 1000
@@ -669,13 +669,13 @@ class BEBLaDIIPhase6(nn.Module):
         t_global_prompt = torch.zeros((B,), device=Z_A_clean.device, dtype=torch.float32)
         t_sin_prompt_global = self.t_sin_embed(t_global_prompt)
         t_emb_prompt_global = self.t_proj_global(t_sin_prompt_global)
-        
+
         t_sin_prompt_token = self.t_sin_embed(t_global_prompt) # t=0
         t_emb_prompt_token = self.t_proj_token(t_sin_prompt_token)
-        
+
         cond_prompt = torch.cat([t_emb_prompt_token.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1), t_emb_prompt_global.unsqueeze(1).expand(-1, Z_prompt.shape[1], -1)], dim=-1)
         t_emb_prompt = self.t_joint_proj(cond_prompt)
-        
+
         sep_t_emb_prompt = torch.zeros(B, 1, t_emb_prompt.shape[-1], device=t_emb_prompt.device, dtype=t_emb_prompt.dtype)
         t_emb_prompt_extended = torch.cat([sep_t_emb_prompt, t_emb_prompt], dim=1)
 
@@ -688,7 +688,7 @@ class BEBLaDIIPhase6(nn.Module):
         prompt_in = Z_prompt.float()
         sep_prefix_prompt = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(prompt_in.dtype)
         dus_prompt_extended = torch.cat([sep_prefix_prompt, prompt_in], dim=1)
-        
+
         ones_sep_prompt = torch.ones((B, 1), device=attention_mask_q.device, dtype=attention_mask_q.dtype)
         prompt_mask_extended = torch.cat([ones_sep_prompt, attention_mask_q], dim=1)
 
@@ -696,17 +696,17 @@ class BEBLaDIIPhase6(nn.Module):
         with torch.no_grad():
             for ca in self.ca_layers.values():
                 ca._disable = True
-            
+
             prompt_outputs = self.dus(
                 inputs_embeds=dus_prompt_extended,
                 attention_mask=prompt_mask_extended,
                 output_hidden_states=True,
             )
-            
+
             # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
             # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
             Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
-            
+
             for ca in self.ca_layers.values():
                 ca._disable = not ca_is_active
 
@@ -915,6 +915,7 @@ def main():
     global_step = 0
     base_lrs = [group['lr'] for group in optimizer.param_groups]
     session_step = 0
+    metrics_history = []
 
     if getattr(args, "resume_from_checkpoint", False) and getattr(args, "gcs_checkpoint_dir", None):
         latest_ckpt, step = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir)
@@ -924,7 +925,22 @@ def main():
             try:
                 subprocess.run(["gsutil", "-q", "cp", latest_ckpt, local_ckpt], check=True)
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
-                model.load_state_dict(ckpt_state, strict=False)
+
+                if isinstance(ckpt_state, dict) and "trainable_state" in ckpt_state:
+                    weights_to_load = ckpt_state["trainable_state"]
+                elif isinstance(ckpt_state, dict) and "model" in ckpt_state:
+                    weights_to_load = ckpt_state["model"]
+                elif isinstance(ckpt_state, dict):
+                    weights_to_load = {k: v for k, v in ckpt_state.items() if torch.is_tensor(v)}
+                else:
+                    weights_to_load = ckpt_state
+
+                model.load_state_dict(weights_to_load, strict=False)
+
+                if isinstance(ckpt_state, dict) and "metrics_history" in ckpt_state:
+                    metrics_history = ckpt_state["metrics_history"]
+                    print(f"[Resume] Restored {len(metrics_history)} metric records from checkpoint.")
+
                 # Re-initialize EMA tracker to mirror loaded weights
                 ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
@@ -988,7 +1004,8 @@ def main():
                         if sel.sum() > 0:
                             train_bin_log[f"train_content_cos_tg_{lo}_{min(hi, 1.0)}"] = ((cp_t * sel).sum() / sel.sum()).item()
 
-                wandb.log({
+                step_metrics = {
+                    "step": global_step,
                     "loss": loss.item() * args.gradient_accumulation_steps,
                     "cos_sim": avg_cos_sim.item(),
                     "true_void_sim": true_void_sim.item(),
@@ -1002,7 +1019,10 @@ def main():
                     "ca_ratio_24": model.ca_layers["24"].last_ca_ratio,
                     "ca_ratio_36": model.ca_layers["36"].last_ca_ratio,
                     **train_bin_log,
-                }, step=global_step)
+                }
+                if global_step % args.log_steps == 0:
+                    metrics_history.append(step_metrics)
+                wandb.log(step_metrics, step=global_step)
 
 
                 if global_step % args.log_steps == 0:
@@ -1039,12 +1059,15 @@ def main():
                     val_cos /= max(1, val_batches)
                     val_void_cos /= max(1, val_batches)
                     val_content_cos /= max(1, val_batches)
-                    wandb.log({
+                    val_summary = {
+                        "step": global_step,
+                        "is_val": True,
                         "val_loss_ema": val_loss,
                         "val_cos_ema": val_cos,
                         "val_void_cos_ema": val_void_cos,
                         "val_content_to_void_ema": val_content_cos
-                    }, step=global_step)
+                    }
+                    wandb.log(val_summary, step=global_step)
                     print(f"Step {global_step} | Val Loss (EMA): {val_loss:.4f} | Val Cos (EMA): {val_cos:.4f}")
 
                     # --- Валидация на фиксированных t_global: cos на контенте, baseline (копия входа), ablation без CA, gain ---
@@ -1102,6 +1125,7 @@ def main():
                             fixed_log[f"val_content_gain_CA_tg{tg_val}"] = cos_with_ca - cos_without_ca
 
                     wandb.log(fixed_log, step=global_step)
+                    metrics_history.append({**val_summary, **fixed_log})
                     print(f"Step {global_step} | Val gain by t_global (Total / CA only): " + ", ".join(
                         f"tg{tg}: total={fixed_log[f'val_content_gain_tg{tg}']:+.3f} (CA: {fixed_log[f'val_content_gain_CA_tg{tg}']:+.3f})"
                         for tg in (0.2, 0.5, 0.8, 1.0)
@@ -1116,7 +1140,14 @@ def main():
                     state_dict = model.state_dict()
                     named_params = dict(model.named_parameters())
                     trainable_state = {k: v for k, v in state_dict.items() if k in named_params and named_params[k].requires_grad}
-                    torch.save(trainable_state, ckpt_path)
+
+                    save_payload = {
+                        "trainable_state": trainable_state,
+                        **trainable_state,
+                        "step": global_step,
+                        "metrics_history": metrics_history,
+                    }
+                    torch.save(save_payload, ckpt_path)
                     ema_tracker.restore(model)
 
                     if getattr(args, "gcs_checkpoint_dir", None):
