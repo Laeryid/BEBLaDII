@@ -856,7 +856,7 @@ def _set_seed(seed: int):
     torch.manual_seed(seed)
     xm.set_rng_state(seed)
 
-def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step):
+def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step, metrics_history=None):
     ema_tracker.apply_shadow(model)
     model.eval()
     val_limit_batches = max(1, math.ceil(getattr(args, "val_num_samples", 200) / args.batch_size))
@@ -939,6 +939,8 @@ def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step
             log[f"val_content_gain_CA_tg{tg_val}"] = with_ca - without_ca
 
     wandb.log(log, step=global_step)
+    if metrics_history is not None:
+        metrics_history.append({"step": global_step, "is_val": True, **log})
     print(f"Step {global_step} | Val Loss (EMA): {log['val_loss_ema']:.4f} | Val Cos (EMA): {log['val_cos_ema']:.4f}")
     print(f"Step {global_step} | Val gain (Total / CA only): " + ", ".join(
         f"tg{tg}: {log[f'val_content_gain_tg{tg}']:+.3f} (CA: {log[f'val_content_gain_CA_tg{tg}']:+.3f})"
@@ -1177,6 +1179,7 @@ def main():
 
     model.train()
     global_step = 0
+    metrics_history = []
     start_time = time.time()
     checkpoints_saved = 0
     time_limit_seconds = 9.0 * 3600  # 9 часов для Kaggle TPU
@@ -1219,7 +1222,10 @@ def main():
                 norm_to_model = {normalize_key(k): k for k in model_keys}
                 clean_state = {}
                 
-                for ckpt_k, v in ckpt_state.items():
+                raw_weights = ckpt_state.get("trainable_state", ckpt_state.get("model", ckpt_state)) if isinstance(ckpt_state, dict) else ckpt_state
+                for ckpt_k, v in raw_weights.items():
+                    if not torch.is_tensor(v):
+                        continue
                     norm_k = normalize_key(ckpt_k)
                     if norm_k in norm_to_model:
                         clean_state[norm_to_model[norm_k]] = v
@@ -1242,6 +1248,9 @@ def main():
                     
                 ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
+                if isinstance(ckpt_state, dict) and "metrics_history" in ckpt_state:
+                    metrics_history = ckpt_state["metrics_history"]
+                    print(f"[Resume] Восстановлена история метрик ({len(metrics_history)} записей).")
                 resumed = True
                 print(f"Успешно возобновлено обучение с валидного чекпоинта {latest_ckpt} (шаг {global_step})")
                 if os.path.exists(local_ckpt):
@@ -1378,6 +1387,8 @@ def main():
                         if sel_sum > 0:
                             log_dict[f"train_content_cos_tg_{lo}_{min(hi, 1.0)}"] = float(((cp_cpu * sel).sum() / sel_sum))
 
+                    log_dict["step"] = s
+                    metrics_history.append(dict(log_dict))
                     wandb.log(log_dict, step=s)
 
                 lr_out_val = optimizer.param_groups[0]['lr']
@@ -1402,7 +1413,7 @@ def main():
                 GLOBAL_NAN_NAMES.clear()
 
             if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
-                run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step)
+                run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step, metrics_history=metrics_history)
 
             if global_step % args.save_steps == 0 and global_step > 0:
                 ema_tracker.apply_shadow(model)
@@ -1412,8 +1423,14 @@ def main():
                 trainable_state = {k: v for k, v in state_dict.items() if k in named_params and named_params[k].requires_grad}
 
                 is_finite = is_state_dict_finite(trainable_state) and torch.isfinite(loss)
+                save_payload = {
+                    "trainable_state": trainable_state,
+                    **trainable_state,
+                    "step": global_step,
+                    "metrics_history": metrics_history,
+                }
                 # Сохраняем 1 аварийный чекпоинт для возможности диагностики:
-                xm.save(trainable_state, ckpt_path)
+                xm.save(save_payload, ckpt_path)
                 ema_tracker.restore(model)
                 if args.gcs_checkpoint_dir:
                     xm.add_step_closure(sync_to_gcs_and_delete, args=(ckpt_path, args.gcs_checkpoint_dir, True))
