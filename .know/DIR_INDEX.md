@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~71180 (excluding excluded directories)
-**Updated:** 2026-10-11
+**Total files in project:** ~71172 (excluding excluded directories)
+**Updated:** 2026-10-14
 
 ```
 BEBLaDII/
 |-- .agent/  *(empty)*
-|-- .know/  *132 files*
-|   |-- decisions/  *101 files*
+|-- .know/  *133 files*
+|   |-- decisions/  *102 files*
 |   `-- knowledge/  *26 files*
 |-- BEBLaDII-planB-Phase3-Data/  *9 files*
 |   `-- phase 3/  *6 files*
@@ -48,7 +48,7 @@ BEBLaDII/
 |   |   |-- data/  *6 files*
 |   |   `-- metadata/  *12 files*
 |   `-- russian-reasoning/  *2 files*
-|-- experiments/  *475 files*
+|-- experiments/  *480 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -78,20 +78,20 @@ BEBLaDII/
 |   |   |-- local/  *6 files*
 |   |   |-- local_checkpoints/  *(empty)*
 |   |   `-- screenshots/  *(empty)*
-|   `-- phase 6/  *46 files*
+|   `-- phase 6/  *51 files*
 |       |-- checkpoints/  *2 files*
 |       |-- data/  *12 files*
 |       |-- kaggle/  *3 files*
-|       |-- screenshots/  *20 files*
+|       |-- screenshots/  *25 files*
 |       `-- tpu kaggle/  *2 files*
 |-- hugging face/  *2 files*
-|-- ideas/  *68 files*
+|-- ideas/  *69 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
 |-- kaggle_upload_1_2/  *2 files*
 |-- posts/  *12 files*
 |-- reports/  *11 files*
 |   `-- plan_A/  *6 files*
-|-- scratch/  *34 files*
+|-- scratch/  *35 files*
 |-- scripts/  *33 files*
 |-- src/  *27 files*
 |   |-- beb_la_dii/  *22 files*
@@ -115,23 +115,7 @@ BEBLaDII/
 |-- tmp/  *9 files*
 |   `-- test_tracker/  *3 files*
 |       `-- results/  *3 files*
-`-- wandb/  *20 files*
-    |-- offline-run-20261006_201730-mxm9rr03/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    |-- offline-run-20261006_202622-o5oesb78/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    |-- offline-run-20261009_082929-mwn9jy0o/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    `-- offline-run-20261010_094458-8bvv8ign/  *5 files*
-        |-- files/  *1 files*
-        |-- logs/  *2 files*
-        `-- tmp/  *(empty)*
+`-- wandb/  *(empty)*
 ```
 
 ## Key Directory Purposes

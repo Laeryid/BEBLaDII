@@ -1027,6 +1027,16 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 102: Phase 6 In-Graph Guard Decoupling, Full Phase 4 Backbone & Diffusion Modules Loading, and GCS Resiliency"
+    },
+    "decisions/103_phase6_tpu_xla_mask_underflow_and_diagnosis_cleanup.md": {
+      "description": "ADR 103: Phase 6 TPU XLA Attention Mask Stabilization (finfo.min Underflow Fix) and Multi-Stage Diagnosis Memory Cleanup (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 103: Phase 6 TPU XLA Attention Mask Stabilization (finfo.min Underflow Fix) and Multi-Stage Diagnosis Memory Cleanup"
     }
   },
   "knowledge_system": {

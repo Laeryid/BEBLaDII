@@ -273,7 +273,7 @@ class Config:
     val_num_samples = 80 # Размер валидационной выборки
     wandb_project = "BEBLaDII-Phase6-Kaggle"
     run_diagnosis_first  = True  # Запуск 1-шаговой изоляционной диагностики NaN перед обучением
-    stop_after_diagnosis = True  # Прерывание сразу после диагностики для экономии TPU-квоты
+    stop_after_diagnosis = False # Не прерывать после успешной диагностики, продолжать обучение
 
 args = Config()
 
@@ -434,10 +434,6 @@ class CAPromptLayer(nn.Module):
         kv = self.kv_proj(Q_norm)
         k, v = kv.chunk(2, dim=-1)
 
-        attn_mask = None
-        if mask_Q is not None:
-            attn_mask = mask_Q.view(A.shape[0], 1, 1, -1).expand(-1, 1, A.shape[1], -1).bool()
-
         B, T_a, D = A.shape
         heads = 16
         head_dim = D // heads
@@ -445,6 +441,17 @@ class CAPromptLayer(nn.Module):
         q = q.view(B, T_a, heads, head_dim).transpose(1, 2)
         k = k.view(B, -1, heads, head_dim).transpose(1, 2)
         v = v.view(B, -1, heads, head_dim).transpose(1, 2)
+
+        attn_mask = None
+        if mask_Q is not None:
+            # Безопасная аддитивная float-маска для TPU XLA (ADR 103):
+            # 0.0 для валидных токенов, -10000.0 для паддинга (устраняет underflow/NaN в backward)
+            mask_q_4d = mask_Q.view(B, 1, 1, -1).bool()
+            attn_mask = torch.where(
+                mask_q_4d,
+                torch.zeros(1, dtype=q.dtype, device=q.device),
+                torch.tensor(-10000.0, dtype=q.dtype, device=q.device)
+            )
 
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
@@ -519,6 +526,24 @@ class Phase6BlockWrapper(nn.Module):
             return (hidden,) + tuple(out[1:])
         return hidden
 
+def patch_modernbert_xla_safe_mask(modernbert_model):
+    """
+    Патчит _update_attention_mask в ModernBertModel для стабильности на TPU XLA (ADR 103).
+    Заменяет torch.finfo(dtype).min (-3.4e38) на безопасный сентинел -10000.0,
+    полностью предотвращая floating-point underflow/overflow и появление NaN в backward SDPA.
+    """
+    orig_update_mask = modernbert_model._update_attention_mask
+    def safe_update_attention_mask(attention_mask: torch.Tensor, output_attentions: bool = False):
+        global_mask, sliding_mask = orig_update_mask(attention_mask, output_attentions=output_attentions)
+        safe_min = torch.tensor(-10000.0, dtype=global_mask.dtype, device=global_mask.device)
+        threshold = -1e20
+        if global_mask is not None:
+            global_mask = torch.where(global_mask < threshold, safe_min, global_mask)
+        if sliding_mask is not None:
+            sliding_mask = torch.where(sliding_mask < threshold, safe_min, sliding_mask)
+        return global_mask, sliding_mask
+    modernbert_model._update_attention_mask = safe_update_attention_mask
+
 class BEBLaDIIPhase6(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
@@ -535,6 +560,7 @@ class BEBLaDIIPhase6(nn.Module):
 
         dus_wrapper = DUSModel.from_scratch(config={"base_model_id": config.modernbert_path}, weights_path=None, local_files_only=config.local_files_only)
         self.dus = dus_wrapper.model
+        patch_modernbert_xla_safe_mask(self.dus)
         if config.use_gradient_checkpointing and hasattr(self.dus, "gradient_checkpointing_enable"):
             self.dus.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True, "preserve_rng_state": False})
 
@@ -953,6 +979,17 @@ def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=Non
     print("           [DIAGNOSIS] FULL NaN GRADIENT AUDIT (TPU/CPU)          ")
     print("="*70)
 
+    def clear_tpu_memory():
+        import gc
+        gc.collect()
+        try:
+            torch_xla.sync(wait=True, reset_scope=True)
+        except Exception:
+            try:
+                xm.mark_step()
+            except Exception:
+                pass
+
     input_ids_q = batch['input_ids_q'].to(device)
     mask_q = batch['attention_mask_q'].to(device)
     input_ids_a = batch['input_ids_a'].to(device)
@@ -1030,6 +1067,12 @@ def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=Non
     elif nan_before:
         print("  [ALERT] CONCLUSION: NaNs generated INSIDE backward graph BEFORE all-reduce!")
 
+    # Очистка памяти TPU после TEST 1
+    dummy_opt.zero_grad(set_to_none=True)
+    model.zero_grad(set_to_none=True)
+    del dummy_opt, outputs, loss
+    clear_tpu_memory()
+
     # -------------------------------------------------------------
     # TEST 2: CA Isolation (disable_ca=True)
     # -------------------------------------------------------------
@@ -1048,6 +1091,11 @@ def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=Non
         print("  [CONCLUSION] Even without CA, gradients contain NaN! Root cause is in DUS backbone / FSDP / Loss!")
         for n in nan_no_ca[:5]:
             print(f"      - {n}")
+
+    # Очистка памяти TPU после TEST 2
+    model.zero_grad(set_to_none=True)
+    del outputs_no_ca, loss_no_ca
+    clear_tpu_memory()
 
     # -------------------------------------------------------------
     # TEST 3: DUS Isolation (Train ONLY CA, freeze DUS)
@@ -1073,8 +1121,13 @@ def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=Non
                 print(f"      - {n}")
         for p in dus_params: p.requires_grad = True
 
+        # Очистка памяти TPU после TEST 3
+        model.zero_grad(set_to_none=True)
+        del outputs_ca_only, loss_ca_only
+        clear_tpu_memory()
+
     model.zero_grad(set_to_none=True)
-    xm.mark_step()
+    clear_tpu_memory()
     print("\n" + "="*70)
     print("                    [FINISH] DIAGNOSIS COMPLETED                    ")
     print("="*70 + "\n")
