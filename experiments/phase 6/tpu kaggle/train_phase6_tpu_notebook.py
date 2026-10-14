@@ -209,29 +209,32 @@ def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step
         return ckpts[0][0], ckpts[0][1]
     return None, 0
 
-def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0, kappa_max: float = 8.0) -> torch.Tensor:
-    # Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta
-    dev = t_global.device
+def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0,
+                              kappa_max: float = 8.0, steps: int = 25) -> torch.Tensor:
+    """
+    Per-token t_i ~ Beta(t_g*kappa, (1-t_g)*kappa): E[t_i] = t_g.
+    Малое kappa -> бимодально (чистые vs сильно зашумлённые): при низком t_g в основном чистые токены,
+    при высоком - в основном зашумлённые. kappa выбирается на сэмпл (log-uniform [kappa_min, kappa_max]).
+    t_global >= 1.0 -> чистый шум (все t_i = 1). Результат квантуется до сетки k/steps.
+    Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta.
+    """
     B = t_global.shape[0]
-
-    # Режим полного шума (инференс t=1): все токены строго t=1.0 (константа)
-    is_full_noise = (t_global >= 0.999)
-
-    t_clamped = t_global.clamp(1e-4, 0.99)
+    dev = t_global.device
+    tg = t_global.float().clamp(0.02, 0.98)
     u = torch.rand(B, device=dev)
     kappa = torch.exp(math.log(kappa_min) + u * (math.log(kappa_max) - math.log(kappa_min)))
-    a = (t_clamped * kappa).unsqueeze(1).expand(B, T)
-    b = ((1.0 - t_clamped) * kappa).unsqueeze(1).expand(B, T)
+    a = (tg * kappa).view(B, 1).expand(B, T).contiguous()
+    b = ((1.0 - tg) * kappa).view(B, 1).expand(B, T).contiguous()
 
     try:
         from torch.distributions import Beta
-        t_actual = Beta(a, b).sample()
+        t = Beta(a, b).sample()
     except Exception:
-        t_actual = t_clamped.unsqueeze(1).expand(B, T)
+        t = tg.view(B, 1).expand(B, T).contiguous()
 
-    t_actual = torch.where(is_full_noise.unsqueeze(1), torch.ones_like(t_actual), t_actual)
-    t_actual = t_actual.clamp(1e-4, 1.0)
-    return t_actual
+    t = torch.round(t * steps) / steps
+    t = torch.where(t_global.view(B, 1) >= 1.0, torch.ones_like(t), t)
+    return t.clamp(0.0, 1.0)
 
 def content_cos_stats(outputs):
     target = safe_normalize(outputs["z_clean"], dim=-1)

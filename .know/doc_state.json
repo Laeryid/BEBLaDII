@@ -200,8 +200,8 @@
         "mtime": 1785406217.622855
     },
     ".know\\knowledge\\KI_model_assembly.md": {
-        "hash": "5660362418c65b5b5b99da2c6da4169c45dd4cb40102af9a419a0f668bad3068",
-        "mtime": 1790018231.6139789
+        "hash": "735589bee0c5026fed6b2a1e97d6d218abee35d8da790f6a575516943d8d9ba8",
+        "mtime": 1791999979.015589
     },
     ".know\\knowledge\\KI_model_core.md": {
         "hash": "e774081e09b29e40d218dff14ca0e34df2b86500d6c3fa329f6e8ac74dc01a22",
@@ -496,7 +496,7 @@
         "mtime": 1790709807.0369856
     },
     "experiments\\phase 6\\tpu kaggle\\train_phase6_tpu_notebook.py": {
-        "hash": "3cd6b531c71160d99c0288d91874efd7eaf41f19674623c5b6550c940a1ac390",
-        "mtime": 1791961193.396813
+        "hash": "3800879fdc649b6e7487e776d1248243351cead5e926fd686a63e4d2b9a81a0a",
+        "mtime": 1791999977.116287
     }
 }

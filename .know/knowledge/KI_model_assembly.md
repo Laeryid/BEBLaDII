@@ -6,24 +6,29 @@
 
 ## 1. Компоненты архитектуры и их происхождение
 
-Пайплайн инференса состоит из 6 независимых модулей, которые собираются из разных источников (HuggingFace + локальные чекпоинты разных фаз):
+Пайплайн инференса состоит из независимых модулей, которые собираются из разных источников (HuggingFace + локальные чекпоинты разных фаз):
 
 1. **Эмбеддинги (Qwen Embeddings)**: Переводят токены Qwen в начальные векторы.
    - *Архитектура*: `nn.Embedding` (размерность 1536).
    - *Источник*: HuggingFace `Qwen/Qwen2.5-1.5B`.
+   - *Нюанс*: В Qwen2.5 `tie_word_embeddings = True`, поэтому матрица эмбеддингов строго равна весам `lm_head.weight`.
 2. **Латентный энкодер (VAE Encoder - Phase 1)**: Сжимает эмбеддинги Qwen (1536) в латентное пространство (1024) на единичной сфере.
    - *Архитектура*: `LatentEncoder` (Свертки, SwiGLU, L2-нормализация).
-   - *Источник*: Чекпоинт Фазы 1.
+   - *Источник*: Чекпоинт Фазы 1 (`planB_phase1_checkpoints_phase1_vae_step_20000.pth`).
 3. **Главная диффузионная сеть (DUS Backbone - Phase 4)**: Обрабатывает контекст и предсказывает $x_0$.
    - *Архитектура*: `DUSModel` (40 слоев, собранных из 28 слоев `answerdotai/ModernBERT-large`).
-   - *Источник*: Инициализация из HuggingFace `ModernBERT-large` + веса из чекпоинта Фазы 4.
-4. **Обвязка диффузии (AdaLN, t_proj, self_cond - Phase 4)**: Инжектирует уровень шума $t$ в трансформер.
-   - *Архитектура*: Кастомные линейные слои и MLP, живущие *снаружи* DUS внутри класса `BEBLaDIIPhase4aEval`.
-   - *Источник*: Тот же чекпоинт Фазы 4. **Критически важно не забыть их загрузить!**
-5. **Декодер текстов (ModernLatentDecoder - Phase 2)**: Переводит чистые латентные векторы (1024) обратно в логиты Qwen (1536 -> Vocab).
-   - *Архитектура*: 3 последних слоя от `DUSModel` + Линейная проекция + `lm_head` от Qwen.
-   - *Источник*: Базовые веса слоев из `AWAKENED_WEIGHTS_FINAL.pt`, тренированные проекции из чекпоинта Фазы 2, голова из HuggingFace `Qwen/Qwen2.5-1.5B`.
-6. **Голова Уверенности (Confidence Head - Phase 5)**: Оценивает готовность токенов (опционально для инференса).
+   - *Источник*: Инициализация из HuggingFace `ModernBERT-large` + веса из чекпоинта Фазы 4 (`phase4_step_85995.pth`).
+4. **Обвязка диффузии (AdaLN, t_proj - Phase 4)**: Инжектирует уровень шума $t$ в трансформер.
+   - *Архитектура*: Кастомные линейные слои и MLP, живущие *снаружи* DUS (`adaLN_attn`, `adaLN_mlp`, `t_proj_global`, `t_proj_token`, `t_joint_proj`, `sep_embed`).
+   - *Источник*: Чекпоинт Фазы 4.
+5. **Слои управления промптом (CAPromptLayer - Phase 6)**: Инжектируют контекст вопроса в диффузионный холст.
+   - *Архитектура*: `CAPromptLayer` (Cross-Attention + Self-Attention + AdaLN времени) на слоях 12, 24, 36 (ModernBERT блоки 11, 23, 35) через `Phase6BlockWrapper`.
+   - *Размороженные блоки*: 4 слоя DUS после каждого CA (12–15, 24–27, 36–39) дообучаются вместе с CA.
+   - *Источник*: Чекпоинт Фазы 6 (`planB_phase6_checkpoints_phase6_ca_layers_step_*.pth`).
+6. **Декодер текстов (ModernLatentDecoder - Phase 2)**: Переводит чистые латентные векторы (1024) обратно в логиты Qwen (1536 -> Vocab).
+   - *Архитектура*: 3 последних слоя от `DUSModel` + Линейная проекция (1024 -> 1536) + `lm_head` от Qwen.
+   - *Источник*: Скелет инициализируется через DUS (`phase4_step_85995.pth`), веса декодера из чекпоинта Фазы 2 (`planB_phase2_checkpoints_decoder_step_9000.pth`), проекция в токены через `qwen_embeddings.weight`.
+7. **Голова Уверенности (Confidence Head - Phase 5)**: Оценивает готовность токенов (опционально для оркестрации).
    - *Архитектура*: `LocalSelfAttention` (window=32) + MLP.
    - *Источник*: Чекпоинт Фазы 5.
 
@@ -38,122 +43,124 @@ modernbert_id    = "answerdotai/ModernBERT-large"
 # Локальные чекпоинты:
 vae_ckpt         = "C:/Experiments/BEBLaDII/experiments/phase 1/planB_phase1_checkpoints_phase1_vae_step_20000.pth"
 dec_ckpt         = "C:/Experiments/BEBLaDII/experiments/phase 2/planB_phase2_checkpoints_decoder_step_9000.pth"
-dus_base_weights = "C:/Experiments/BEBLaDII/kaggle_upload_1_2/AWAKENED_WEIGHTS_FINAL.pt"
 phase4_ckpt      = "C:/Experiments/BEBLaDII/experiments/phase 4/local_checkpoints/phase4_step_85995.pth"
-conf_ckpt        = "C:/Experiments/BEBLaDII/experiments/phase 5/local/confidence_head_v2.pt"
+phase6_ckpt      = "C:/Experiments/BEBLaDII/experiments/phase 6/checkpoints/planB_phase6_checkpoints_phase6_ca_layers_step_6000.pth"
 latent_dict_ckpt = "C:/Experiments/BEBLaDII/experiments/phase 5/local/latent_dict.pt"
+sep_token_ckpt   = "C:/Experiments/BEBLaDII/storage/components/sep_token.pt"
 ```
 
 ---
 
 ## 3. Критические нюансы реализации (Ловушки)
 
-### Ловушка 1: Случайная инициализация Декодера
-Класс `ModernLatentDecoder` имеет аргумент `dus_weights_path`. Если передать туда `None`, он тихо инициализирует `nn.TransformerEncoder` **случайными весами**. Загрузка словаря `strict=False` проигнорирует несовпадение ключей, и декодер будет выдавать полный бред (например, слово `DataExchange` на любой вход).
-**Решение:** Обязательно передавать путь к предобученным весам `dus_weights_path=dus_base_weights`.
+### Ловушка 1: Неконтекстуализированный промпт в CA (Нарушение ADR 099)
+Если подавать сырой выход VAE-энкодера $Z_{prompt}$ напрямую в `ca_layers`, Cross-Attention получает векторы из чужого распределения (косинус между сырым латентом и выходом слоя 11 ModernBERT составляет всего **~0.088**).
+**Решение:** Строго следовать ADR 099: промпт $Q$ **обязательно** прогоняется через первые 12 слоев DUS (0–11) при $t=0$ с выключенным CA. Извлеченный кэш $Z_{prompt\_12} = \text{hidden\_states}[12][:, 1:, :]$ кэшируется один раз и устанавливается в `ca._current_Z_prompt`.
 
-### Ловушка 2: Потеря слоев обвязки диффузии (AdaLN)
-Словарь чекпоинта Фазы 4 содержит ключи `dus_ema` (веса трансформера) и ключи `adaLN_attn_ema`, `t_proj_global_ema` и т.д. Если загрузить только `dus_ema`, диффузионная модель останется с **рандомно инициализированными слоями времени**. Это приводит к полному уничтожению векторов (рост `TrueN`).
-**Решение:** Обязательно парсить и загружать компоненты `["adaLN_attn", "adaLN_mlp", "t_proj_global", "t_proj_token", "t_joint_proj", "sep_embed", "self_cond_proj"]` вручную.
+### Ловушка 2: Hubness Problem при декодировании через `latent_dict`
+Попытка декодировать текст через поиск ближайшего соседа по словарю $\arg\max (z \cdot D^T)$ приводит к "словесной каше" из редких иероглифов и служебных токенов (хабов).
+**Решение:** Для связного текста декодирование должно производиться через **Phase 2 `ModernLatentDecoder`** со снятием логитов через матрицу `qwen_embeddings.weight`:
+```python
+projected = decoder(z_canvas.float()) # [B, T, 1536]
+logits = F.linear(projected, qwen_embeddings.weight.float())
+text = tokenizer.decode(logits.argmax(dim=-1)[0], skip_special_tokens=True)
+```
+Словарь `latent_dict.pt` используется **исключительно** как сенсор для расчета $t_{reported} = 1.0 - RawDProx$.
 
-### Ловушка 3: Префиксы ключей (torch.compile и wrapper'ы)
+### Ловушка 3: Случайная инициализация Декодера
+Класс `ModernLatentDecoder` имеет аргумент `dus_weights_path`. Если передать туда `None`, он тихо инициализирует `nn.TransformerEncoder` **случайными весами**. Загрузка словаря `strict=False` проигнорирует несовпадение ключей, и декодер будет выдавать мусор.
+**Решение:** Обязательно передавать путь к весам DUS (например, `phase4_step_85995.pth`):
+```python
+decoder = ModernLatentDecoder(latent_dim=1024, qwen_dim=1536, num_layers=3, dus_weights_path=phase4_ckpt)
+dec_st = torch.load(dec_ckpt, map_location="cpu")
+decoder.load_state_dict(dec_st["decoder"], strict=True) # 100% strict совпадение ключей!
+```
+
+### Ловушка 4: Потеря слоев обвязки диффузии (AdaLN)
+Словарь чекпоинта Фазы 4 содержит ключи `dus_ema` (веса трансформера) и ключи `adaLN_attn_ema`, `t_proj_global_ema` и т.д. Если загрузить только `dus_ema`, диффузионная модель останется с рандомно инициализированными слоями времени.
+**Решение:** Обязательно загружать компоненты `["adaLN_attn", "adaLN_mlp", "t_proj_global", "t_proj_token", "t_joint_proj", "sep_embed"]`.
+
+### Ловушка 5: Префиксы ключей (torch.compile и wrapper'ы)
 При загрузке весов всегда нужно чистить ключи от паразитных префиксов:
 - Убирать `_orig_module.` (артефакт `torch.compile`).
 - Убирать `student.model.` или `model.` для весов DUS.
-- Для VAE (в `dus_model.encoder`) чекпоинт Фазы 1 сохранен с ключами `proj.0.weight`. Префикса `encoder.` там нет.
-- Для Декодера Фазы 2 ключи могут содержать префикс `decoder.` (артефакт сохранения).
-
-### Ловушка 4: Qwen LM Head
-Голова генерации `lm_head` слишком тяжелая, чтобы держать весь Qwen в памяти.
-**Решение:** Создаем `AutoModelForCausalLM`, копируем `.lm_head.weight.data.clone()`, и сразу делаем `del causal_model`, чтобы освободить VRAM.
+- В чекпоинте Фазы 6 (`trainable_state`) ключи CA-слоев имеют вид `dus.layers.11.ca_layer.*` (или `ca_layers.12.*`), а размороженные слои — `dus.layers.12.*`.
 
 ---
 
 ## 4. Эталонный код сборки (Reference Implementation)
 
 ```python
-def load_models_for_inference(device):
-    # 1. Загрузка базовой архитектуры Фазы 4 (она уже включает Qwen embeddings и пустой LatentEncoder)
-    dus_model = BEBLaDIIPhase4aEval(
-        embedding_model_path="Qwen/Qwen2.5-1.5B", 
-        modernbert_path="answerdotai/ModernBERT-large"
-    )
+import os
+import torch
+import torch.nn.functional as F
+from transformers import AutoTokenizer, AutoModel
+from src.beb_la_dii.model.vae import LatentEncoder
+from src.beb_la_dii.model.dus import DUSModel
+from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
+from src.beb_la_dii.utils.loss import safe_normalize
 
-    # 2. Загрузка VAE (Фаза 1)
-    vae_st = torch.load(vae_ckpt, map_location="cpu", weights_only=False)
-    if 'encoder' in vae_st:
-        # Убираем префикс encoder. если он есть, иначе грузим как есть
-        clean_vae = {k.replace("encoder.", ""): v for k, v in vae_st["encoder"].items()}
-        dus_model.encoder.load_state_dict(clean_vae, strict=False)
+def load_phase6_pipeline(device="cpu"):
+    tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-1.5B")
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
-    # 3. Загрузка DUS и Диффузионной обвязки (Фаза 4)
-    p4_st = torch.load(phase4_ckpt, map_location="cpu", weights_only=False)
-    
-    # 3.1 Сам трансформер (DUS)
-    dus_ema = p4_st.get("dus_ema", p4_st.get("dus", {}))
-    clean_dus = {}
-    for k, v in dus_ema.items():
-        clean_k = k.replace("_orig_module.", "").replace("student.model.", "").replace("model.", "")
-        clean_dus[clean_k] = v
-    dus_model.dus.load_state_dict(clean_dus, strict=False)
+    # 1. Загрузка Phase 6 модели (включает QwenEmbeddings, VAE, DUS, AdaLN, CA-слои)
+    # См. реализацию класса BEBLaDIIPhase6Eval в evaluate_phase6_metrics.py
+    model = BEBLaDIIPhase6Eval(config).to(device).eval()
 
-    # 3.2 Обвязка диффузии (КРИТИЧЕСКИ ВАЖНО)
-    for name in ["adaLN_attn", "adaLN_mlp", "t_proj_global", "t_proj_token", "t_joint_proj", "sep_embed", "self_cond_proj"]:
-        comp_state = p4_st.get(f"{name}_ema", p4_st.get(name, {}))
-        if comp_state:
-            if name == "sep_embed":
-                dus_model.sep_embed.copy_(comp_state)
-            else:
-                clean_comp = {k.replace("_orig_module.", ""): v for k, v in comp_state.items()}
-                getattr(dus_model, name).load_state_dict(clean_comp, strict=True)
-                
-    dus_model.to(device).eval()
-
-    # 4. Загрузка Декодера (Фаза 2)
-    # КРИТИЧЕСКИ ВАЖНО: передать dus_weights_path, иначе backbone будет рандомным
+    # 2. Загрузка Phase 2 Декодера с ModernBERT бэкбоном
     decoder = ModernLatentDecoder(
         latent_dim=1024, qwen_dim=1536, num_layers=3, 
-        dus_weights_path=dus_base_weights
-    )
-    dec_st = torch.load(dec_ckpt, map_location="cpu", weights_only=False)
-    clean_dec = {k.replace("decoder.", ""): v for k, v in dec_st.get("decoder", dec_st).items()}
-    decoder.load_state_dict(clean_dec, strict=False)
-    decoder.to(device).eval()
+        dus_weights_path=config['phase4_path']
+    ).to(device).eval()
+    
+    ckpt_dec = torch.load(config['phase2_decoder_path'], map_location=device, weights_only=False)
+    decoder.load_state_dict(ckpt_dec["decoder"], strict=True)
 
-    # 5. Загрузка LM Head (Qwen)
-    from transformers import AutoModelForCausalLM
-    causal = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-1.5B", torch_dtype=torch.bfloat16)
-    lm_head_weight = causal.lm_head.weight.data.clone().to(device).float()
-    del causal
+    # 3. Сенсорный словарь для RawDProx
+    latent_dict = torch.load(config['latent_dict_ckpt'], map_location=device).float()
 
-    # 6. Загрузка Головы Уверенности (Фаза 5)
-    conf_head = ConfidenceHead(h39_dim=1024, attn_dim=256, num_heads=4, window_size=32, conf_dim=5, mlp_hidden=512)
-    conf_head.load_state_dict(torch.load(conf_ckpt, map_location="cpu"))
-    conf_head.to(device).eval()
+    return model, decoder, latent_dict, tokenizer
 
-    return dus_model, conf_head, decoder, lm_head_weight
+def generate_answer(model, decoder, latent_dict, tokenizer, prompt_text, device="cpu", steps=25, max_len=64):
+    q_enc = tokenizer(prompt_text, return_tensors='pt').to(device)
+
+    # ADR 099: Предварительный расчет семантического кэша промпта Z_prompt_12
+    Z_prompt_12 = model.encode_prompt(q_enc.input_ids, q_enc.attention_mask)
+
+    # Slerp обратная диффузия от чистого шума t=1.0 до t=0.0
+    B = 1
+    z_canvas = safe_normalize(torch.randn(B, max_len, 1024, device=device), dim=-1)
+    dt = 1.0 / steps
+
+    for i in range(steps):
+        t_val = 1.0 - i * dt
+        t_actual = torch.full((B, max_len), t_val, device=device)
+
+        # Вычисление t_reported через RawDProx
+        sims = torch.matmul(z_canvas, latent_dict.T)
+        raw_dprox, _ = sims.max(dim=-1)
+        t_reported = (1.0 - raw_dprox).clamp(0.0, 1.0)
+
+        # Шаг денойзинга DUS + CA
+        h39, z_pred = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported)
+
+        # Slerp шаг
+        t_next = torch.full((B, max_len), max(0.0, t_val - dt), device=device)
+        theta_now = t_actual.unsqueeze(-1) * (math.pi / 2)
+        theta_next = t_next.unsqueeze(-1) * (math.pi / 2)
+        sin_now = torch.sin(theta_now).clamp(min=1e-5)
+        
+        w_pred = torch.sin(theta_now - theta_next) / sin_now
+        w_cur = torch.sin(theta_next) / sin_now
+        z_next = w_pred * z_pred + w_cur * z_canvas
+        z_canvas = torch.where(theta_now > 1e-5, safe_normalize(z_next, dim=-1), safe_normalize(z_pred, dim=-1))
+
+    # Декодирование текста через ModernLatentDecoder
+    with torch.no_grad():
+        projected = decoder(z_canvas.float())
+        logits = F.linear(projected, model.qwen_embeddings.weight.float())
+        pred_ids = logits.argmax(dim=-1)
+        return tokenizer.decode(pred_ids[0], skip_special_tokens=True)
 ```
-
----
-
-## 4. Сборка Оркестратора и Геометрического Ансамбля (Phase 5/6)
-
-Для правильного инференса (денойзинга) Оркестратор не должен использовать метрику `TrueN`. Решения о шагах принимаются исключительно на основе **Геометрического Ансамбля**, вычисляемого из латентного словаря.
-
-### 4.1. Геометрические метрики Головы Уверенности
-Голова уверенности (Confidence Head) или модуль оценки DUS возвращает 3 критические метрики:
-1. `RawDProx` (Top-1 Similarity): Косинусное расстояние от текущего предсказания $z_{pred}$ до ближайшего слова из словаря $\max_{v \in Vocab} \cos(z_{pred}, v)$.
-2. `Delta`: Разница между косинусным сходством Top-1 и Top-2 слов.
-3. `ConflictSim`: Косинусное сходство между самими векторами Top-1 и Top-2 кандидата в латентном пространстве.
-
-### 4.2. Маршрутизация в Оркестраторе
-В модуле `phase5_orchestrator.py` логика принятия решений работает без словаря (алгебраически):
-- Если токен зависает ($t_{local} = 0$, но `RawDProx` низкий) и `Delta` < 0.05:
-  - Если `ConflictSim` > 0.70 -> **SYNTAX_VARIATION** (игнорировать, Декодер сам разрешит регистр/пробел).
-  - Если `ConflictSim` < 0.30 -> **SEMANTIC_CONFLICT** (сформировать запрос в CLM/RAG для разрешения семантической многозначности).
-
-### 4.3. Адаптивное расписание диффузии (Option 2)
-Оркестратор использует жесткий математический таймер, не позволяющий токену застрять в "чистилище высоких шумов" из-за синонимов:
-`t_next = max(t_local - delta_t, 0.0)`
-Где `delta_t = max(t_local - (1.0 - RawDProx), dt_min)`.
-Это заставляет модель перейти из режима **Broad Exploration** ($t > 0.6$) в режим **Local Exploitation** ($t < 0.4$), гарантируя кристаллизацию любого токена.
