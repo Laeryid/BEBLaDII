@@ -531,21 +531,70 @@ class Phase6BlockWrapper(nn.Module):
 
 def patch_modernbert_xla_safe_mask(modernbert_model):
     """
-    Патчит _update_attention_mask в ModernBertModel для стабильности на TPU XLA (ADR 103).
+    Патчит генерацию масок в ModernBertModel для стабильности на TPU XLA (ADR 103).
     Заменяет torch.finfo(dtype).min (-3.4e38) на безопасный сентинел -10000.0,
     полностью предотвращая floating-point underflow/overflow и появление NaN в backward SDPA.
+    Обеспечивает мультиверсионную совместимость:
+    1. Legacy transformers (<= 4.49): monkey-patch метода model._update_attention_mask.
+    2. Modern transformers (>= 4.50): monkey-patch функций create_bidirectional_mask,
+       create_bidirectional_sliding_window_mask и sdpa_mask в модуле modeling_modernbert и masking_utils.
+    3. Universal safety: monkey-patch слоя внимания layer.attn каждого блока ModernBERT для перехвата
+       любой входящей attention_mask со значениями < -1e20 непосредственно перед SDPA.
     """
-    orig_update_mask = modernbert_model._update_attention_mask
-    def safe_update_attention_mask(attention_mask: torch.Tensor, output_attentions: bool = False):
-        global_mask, sliding_mask = orig_update_mask(attention_mask, output_attentions=output_attentions)
-        safe_min = torch.tensor(-10000.0, dtype=global_mask.dtype, device=global_mask.device)
-        threshold = -1e20
-        if global_mask is not None:
-            global_mask = torch.where(global_mask < threshold, safe_min, global_mask)
-        if sliding_mask is not None:
-            sliding_mask = torch.where(sliding_mask < threshold, safe_min, sliding_mask)
-        return global_mask, sliding_mask
-    modernbert_model._update_attention_mask = safe_update_attention_mask
+    def _clamp_mask_tensor(mask):
+        if mask is not None and torch.is_tensor(mask):
+            safe_min = torch.tensor(-10000.0, dtype=mask.dtype, device=mask.device)
+            threshold = -1e20
+            return torch.where(mask < threshold, safe_min, mask)
+        return mask
+
+    def _wrap_mask_fn(orig_fn):
+        def safe_mask_fn(*args, **kwargs):
+            mask = orig_fn(*args, **kwargs)
+            return _clamp_mask_tensor(mask)
+        return safe_mask_fn
+
+    # 1. Если есть legacy-метод _update_attention_mask (transformers <= 4.49)
+    if hasattr(modernbert_model, "_update_attention_mask"):
+        orig_update_mask = modernbert_model._update_attention_mask
+        def safe_update_attention_mask(attention_mask: torch.Tensor, output_attentions: bool = False):
+            global_mask, sliding_mask = orig_update_mask(attention_mask, output_attentions=output_attentions)
+            return _clamp_mask_tensor(global_mask), _clamp_mask_tensor(sliding_mask)
+        modernbert_model._update_attention_mask = safe_update_attention_mask
+
+    # 2. Модуль modeling_modernbert (transformers >= 4.50)
+    mod = sys.modules.get(modernbert_model.__class__.__module__)
+    if mod is not None:
+        for fn_name in ["create_bidirectional_mask", "create_bidirectional_sliding_window_mask"]:
+            if hasattr(mod, fn_name):
+                setattr(mod, fn_name, _wrap_mask_fn(getattr(mod, fn_name)))
+
+    # 3. Общий модуль transformers.masking_utils
+    try:
+        import transformers.masking_utils as mu
+        for fn_name in ["create_bidirectional_mask", "create_bidirectional_sliding_window_mask", "sdpa_mask"]:
+            if hasattr(mu, fn_name):
+                setattr(mu, fn_name, _wrap_mask_fn(getattr(mu, fn_name)))
+    except (ImportError, AttributeError):
+        pass
+
+    # 4. Непосредственный перехват на уровне слоев внимания (layer.attn.forward)
+    if hasattr(modernbert_model, "layers"):
+        for layer in modernbert_model.layers:
+            attn_mod = getattr(layer, "attn", None)
+            if attn_mod is not None and hasattr(attn_mod, "forward"):
+                orig_attn_forward = attn_mod.forward
+                def _make_safe_attn_forward(orig_fn):
+                    def safe_attn_forward(*args, **kwargs):
+                        if "attention_mask" in kwargs and kwargs["attention_mask"] is not None:
+                            kwargs["attention_mask"] = _clamp_mask_tensor(kwargs["attention_mask"])
+                        elif len(args) >= 3 and args[2] is not None:
+                            args_list = list(args)
+                            args_list[2] = _clamp_mask_tensor(args_list[2])
+                            args = tuple(args_list)
+                        return orig_fn(*args, **kwargs)
+                    return safe_attn_forward
+                attn_mod.forward = _make_safe_attn_forward(orig_attn_forward)
 
 class BEBLaDIIPhase6(nn.Module):
     def __init__(self, config: Config):

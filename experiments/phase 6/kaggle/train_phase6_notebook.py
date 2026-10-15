@@ -953,7 +953,7 @@ def main():
     optimizer.zero_grad()
     start_time = time.time()
     checkpoints_saved = 0
-    time_limit_seconds = 11.5 * 3600  # 11.5 часов для Kaggle
+    time_limit_seconds = 11.9 * 3600  # 11.9 часов для Kaggle
     for epoch in range(args.epochs):
         for step_idx, batch in enumerate(dataloader):
             if global_step >= args.max_steps: return
