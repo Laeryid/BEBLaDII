@@ -1073,6 +1073,16 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 105: Phase 6 RoPE in Self-Attention, Geodesic Tangent-Space Noise, Prompt Pass Truncation, and Phase 4 Core Extraction"
+    },
+    "decisions/106_phase6_checkpoint_abort_decoupling_and_beta_nan_guard.md": {
+      "description": "ADR 106: Phase 6 Checkpoint Abort Decoupling, Beta Sampler NaN Sanitization, and Consecutive NaN Guard (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 106: Phase 6 Checkpoint Abort Decoupling, Beta Sampler NaN Sanitization, and Consecutive NaN Guard"
     }
   },
   "knowledge_system": {

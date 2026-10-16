@@ -253,6 +253,10 @@ def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float =
     except Exception:
         t = tg.view(B, 1).expand(B, T).contiguous()
 
+    # Защита от редких NaN при марсалья-цикуда сэмплировании малых концентраций гамма-распределения на CPU
+    fallback_t = tg.view(B, 1).expand(B, T).contiguous()
+    t = torch.where(torch.isfinite(t), t, fallback_t)
+
     t = torch.round(t * steps) / steps
     t = torch.where(t_global.view(B, 1) >= 1.0, torch.ones_like(t), t)
     return t.clamp(0.0, 1.0)
@@ -1474,6 +1478,7 @@ def main():
         if not resumed and available_ckpts:
             print("[Resume] Ни один из чекпоинтов на GCS не прошел проверку на валидность (все содержали NaN). Стартуем с шага 0.")
 
+    nan_streak = 0
     for epoch in range(args.epochs):
         for batch in dataloader:
             if global_step >= args.max_steps: return
@@ -1518,12 +1523,18 @@ def main():
             check_tensor_nan("loss", loss, global_step)
 
             if not torch.isfinite(loss):
-                print(f"\n[WARN] Шаг {global_step}: Обнаружен не-конечный loss. "
+                nan_streak += 1
+                print(f"\n[WARN] Шаг {global_step}: Обнаружен не-конечный loss (streak: {nan_streak}). "
                       f"Пропуск backward и шага оптимизатора для защиты весов модели.")
+                if nan_streak >= 20:
+                    print(f"\n[ABORT] Превышен лимит последовательных не-конечных loss ({nan_streak} подряд). "
+                          f"Прерывание обучения для сохранения квоты TPU.")
+                    return
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
                 xm.mark_step()
                 continue
+            nan_streak = 0
 
             loss.backward()
 
