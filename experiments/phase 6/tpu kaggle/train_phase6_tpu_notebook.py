@@ -884,19 +884,28 @@ class BEBLaDIIPhase6(nn.Module):
                     _ca_inner(ca)._disable = True
                     ca._disable = True
 
-                orig_layers = self.dus.layers
-                try:
-                    self.dus.layers = orig_layers[:12]
-                    prompt_outputs = self.dus(
-                        inputs_embeds=dus_prompt_extended,
-                        attention_mask=prompt_mask_extended,
-                        output_hidden_states=True,
+                seq_len_p = dus_prompt_extended.shape[1]
+                position_ids_p = torch.arange(seq_len_p, device=dus_prompt_extended.device).unsqueeze(0)
+                if hasattr(self.dus, "_update_attention_mask"):
+                    attention_mask_p, sliding_window_mask_p = self.dus._update_attention_mask(
+                        prompt_mask_extended, output_attentions=False
                     )
-                    # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
-                    # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
-                    Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
-                finally:
-                    self.dus.layers = orig_layers
+                else:
+                    attention_mask_p = prompt_mask_extended
+                    sliding_window_mask_p = None
+
+                hidden_p = dus_prompt_extended
+                for layer in self.dus.layers[:12]:
+                    kwargs_p = {
+                        "attention_mask": attention_mask_p,
+                        "position_ids": position_ids_p,
+                    }
+                    if sliding_window_mask_p is not None:
+                        kwargs_p["sliding_window_mask"] = sliding_window_mask_p
+                    layer_out = layer(hidden_p, **kwargs_p)
+                    hidden_p = layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+
+                Z_prompt_12 = hidden_p[:, 1:, :].to(Z_prompt.dtype)
 
                 for ca in self.ca_layers.values():
                     _ca_inner(ca)._disable = False
@@ -1224,18 +1233,23 @@ def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=Non
     loss_no_ca.backward()
     xm.mark_step()
 
+    dummy_opt_no_ca = torch.optim.AdamW([p for p in trainable_named.values() if p.requires_grad], lr=1e-4)
+    xm.reduce_gradients(dummy_opt_no_ca)
+    xm.mark_step()
+
     nan_no_ca = [n for n, p in trainable_named.items() if p.grad is not None and not torch.isfinite(p.grad).all()]
-    print(f"  NaN gradients without CA: {len(nan_no_ca)} of {len(trainable_named)}")
+    print(f"  NaN gradients without CA (after reduction): {len(nan_no_ca)} of {len(trainable_named)}")
     if len(nan_before) > 0 and len(nan_no_ca) == 0:
         print("  [CONCLUSION] Without CA, gradients are 100% FINITE! Root cause is strictly in CAPromptLayer or Prompt-Pass!")
     elif len(nan_no_ca) > 0:
-        print("  [CONCLUSION] Even without CA, gradients contain NaN! Root cause is in DUS backbone / FSDP / Loss!")
+        print("  [INFO] Parameter gradients without CA:")
         for n in nan_no_ca[:5]:
             print(f"      - {n}")
 
     # Очистка памяти TPU после TEST 2
+    dummy_opt_no_ca.zero_grad(set_to_none=True)
     model.zero_grad(set_to_none=True)
-    del outputs_no_ca, loss_no_ca
+    del dummy_opt_no_ca, outputs_no_ca, loss_no_ca
     clear_tpu_memory()
 
     # -------------------------------------------------------------
@@ -1244,23 +1258,24 @@ def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=Non
     if dus_params and ca_params:
         print("\n[TEST 3] Bisection: Freeze DUS, backward only for CA layers...")
         model.zero_grad(set_to_none=True)
-        for p in dus_params: p.requires_grad = False
-        outputs_ca_only = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
-        loss_ca_only, _, _, _ = compute_phase6_loss(outputs_ca_only, void_margin=0.5, loss_t_power=args.loss_t_power)
-        loss_ca_only.backward()
-        xm.mark_step()
+        try:
+            for p in dus_params: p.requires_grad = False
+            outputs_ca_only = model(input_ids_q, mask_q, input_ids_a, mask_a, warmup_factor=warmup_factor)
+            loss_ca_only, _, _, _ = compute_phase6_loss(outputs_ca_only, void_margin=0.5, loss_t_power=args.loss_t_power)
+            loss_ca_only.backward()
+            xm.mark_step()
 
-        ca_named = {n: p for n, p in model.ca_layers.named_parameters() if p.requires_grad}
-        nan_ca_only = [n for n, p in ca_named.items() if p.grad is not None and not torch.isfinite(p.grad).all()]
-        print(f"  NaN gradients in CA (with frozen DUS): {len(nan_ca_only)} of {len(ca_named)}")
-        if len(nan_ca_only) == 0:
-            print("  [CONCLUSION] With frozen DUS, CA gradients are 100% FINITE!")
-            print("     This proves that NaNs are caused by DUS unfreezing or FSDP wrapping on DUS layers!")
-        else:
-            print("  [CONCLUSION] Even in isolation, CA gradients contain NaN:")
-            for n in nan_ca_only[:5]:
-                print(f"      - {n}")
-        for p in dus_params: p.requires_grad = True
+            ca_named = {n: p for n, p in model.ca_layers.named_parameters() if p.requires_grad}
+            nan_ca_only = [n for n, p in ca_named.items() if p.grad is not None and not torch.isfinite(p.grad).all()]
+            print(f"  NaN gradients in CA (with frozen DUS): {len(nan_ca_only)} of {len(ca_named)}")
+            if len(nan_ca_only) == 0:
+                print("  [CONCLUSION] With frozen DUS, CA gradients are 100% FINITE!")
+            else:
+                print("  [INFO] CA gradients with frozen DUS (note: freezing FSDP modules on XLA may affect reduction):")
+                for n in nan_ca_only[:5]:
+                    print(f"      - {n}")
+        finally:
+            for p in dus_params: p.requires_grad = True
 
         # Очистка памяти TPU после TEST 3
         model.zero_grad(set_to_none=True)
@@ -1502,6 +1517,14 @@ def main():
             check_tensor_nan("dus_final", outputs["dus_final"], global_step)
             check_tensor_nan("loss", loss, global_step)
 
+            if not torch.isfinite(loss):
+                print(f"\n[WARN] Шаг {global_step}: Обнаружен не-конечный loss. "
+                      f"Пропуск backward и шага оптимизатора для защиты весов модели.")
+                optimizer.zero_grad(set_to_none=True)
+                global_step += 1
+                xm.mark_step()
+                continue
+
             loss.backward()
 
             # SPMD All-Reduce для реплицированных и шардированных градиентов по мешу TPU
@@ -1616,23 +1639,26 @@ def main():
                 named_params = dict(model.named_parameters())
                 trainable_state = {k: v for k, v in state_dict.items() if k in named_params and named_params[k].requires_grad}
 
-                is_finite = is_state_dict_finite(trainable_state) and torch.isfinite(loss)
+                is_weights_finite = is_state_dict_finite(trainable_state)
+                is_loss_finite = torch.isfinite(loss)
                 save_payload = {
                     "trainable_state": trainable_state,
                     **trainable_state,
                     "step": global_step,
                     "metrics_history": metrics_history,
                 }
-                # Сохраняем 1 аварийный чекпоинт для возможности диагностики:
+                # Сохраняем чекпоинт:
                 xm.save(save_payload, ckpt_path)
                 ema_tracker.restore(model)
                 if args.gcs_checkpoint_dir:
                     xm.add_step_closure(sync_to_gcs_and_delete, args=(ckpt_path, args.gcs_checkpoint_dir, True))
 
-                if not is_finite:
-                    print(f"\n[ABORT] На шаге {global_step} обнаружены NaN/Inf в весах или лоссе! "
+                if not is_weights_finite:
+                    print(f"\n[ABORT] На шаге {global_step} обнаружены NaN/Inf в весах модели! "
                           f"Аварийный чекпоинт сохранен для диагностики. Обучение прервано для сохранения квоты TPU.")
                     return
+                elif not is_loss_finite:
+                    print(f"\n[WARN] На шаге {global_step} зафиксирован не-конечный loss текущего шага, но веса валидны. Обучение продолжается.")
 
                 checkpoints_saved += 1
                 elapsed = time.time() - start_time
