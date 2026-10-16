@@ -24,6 +24,8 @@ def extract_block(start_marker, end_marker):
         raise ValueError(f"End marker not found: {end_marker}")
     return py_text[start:end].rstrip()
 
+# 0. SPMD Mesh + mark_fsdp_sharding (Cell 8)
+code_mesh = extract_block("GLOBAL_SPMD_MESH = None", "GLOBAL_NAN_NAMES = []")
 # 1. Config (Cell 23)
 code_config = extract_block("class Config:", "args = Config()")
 # 2. CAPromptLayer (Cell 32)
@@ -36,12 +38,14 @@ code_diag = extract_block("def run_nan_diagnosis(", "def main():")
 code_main = extract_block("def main():", 'if __name__ == "__main__":')
 
 # Проверка совпадения ячеек
+assert "def setup_spmd_mesh" in nb["cells"][8]["source"][0] or "GLOBAL_SPMD_MESH" in nb["cells"][8]["source"][0]
 assert "class Config" in nb["cells"][23]["source"][0]
 assert "class CAPromptLayer" in nb["cells"][32]["source"][0]
 assert "class BEBLaDIIPhase6" in nb["cells"][36]["source"][0] or "def patch_modernbert_xla_safe_mask" in nb["cells"][36]["source"][0]
 assert "def run_nan_diagnosis" in nb["cells"][40]["source"][0]
 assert "def main" in nb["cells"][41]["source"][0]
 
+nb["cells"][8]["source"] = to_lines(code_mesh)
 nb["cells"][23]["source"] = to_lines(code_config)
 nb["cells"][32]["source"] = to_lines(code_ca)
 nb["cells"][36]["source"] = to_lines(code_model)

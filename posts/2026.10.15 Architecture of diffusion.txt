@@ -1,0 +1,25 @@
+𝐁𝐄𝐁𝐋𝐚𝐃𝐈𝐈: Diffusion Architecture
+
+Across the first two training phases, I obtained an encoder mapping text to a sequence of vectors on the surface of a 1024-dimensional sphere, and a lightweight decoder to map this space back into text.
+
+Then came the most challenging and uncertain stage — training the diffusion core itself. The entire project hinged on this step, as it was far from obvious that the math would hold together and the idea would actually work.
+
+What is diffusion in the context of generative AI? It is iterative generation: an answer is not produced in a single pass, but constructed gradually, step by step converging toward the final result.
+
+For comparison: autoregressive LLMs (like ChatGPT) generate text word by word sequentially and cannot look back to revise what was already written. Diffusion, on the other hand, operates on the entire output at once, refining it across iterations. This can be implemented in different ways.
+
+For example, when dealing with text, masked diffusion is often used: the token sequence is populated with a placeholder token [MASK], and with each iteration, the AI replaces placeholders with vocabulary words for a subset of tokens — prioritizing those easiest to predict given the available context. The remaining tokens await subsequent iterations.
+
+Another way is continuous diffusion — commonly applied to images. There is no discrete vocabulary there: each image is encoded as a point in a continuous semantic space. Generation starts from a random point ("noise"), and the model nudges it step by step toward a point that represents a meaningful result. That is why diffusion is intuitively understood as a trajectory in this space heading toward a target meaning.
+
+If you read my post on Phase 1, you might remember: I built exactly this kind of space — continuous, without "dead zones", where meanings behave as smooth semantic "patches" rather than isolated spikes. That choice was deliberate: I opted for continuous diffusion over masked diffusion so that even if the trajectory deviates slightly, it stays within meaningful territory.
+
+Now I can place the diffusion core between the encoder and decoder. The core takes the current point, estimates what clean original meaning it should arrive at, and a small step is taken in that direction. Repeating this cycle — whether for 1 or 100 iterations — allows the decoder to turn the final point into text.
+
+Whether that text makes any sense... well, that's a whole different story :)
+
+All that's left is to train a functional core. I'll share the results in upcoming posts!
+
+📦 Repo: https://github.com/Laeryid/BEBLaDII
+
+#AI #MachineLearning #Diffusion #Research #BEBLaDII

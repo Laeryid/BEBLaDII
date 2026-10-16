@@ -49,13 +49,34 @@ except ImportError:
 
 xr.use_spmd()
 
+GLOBAL_SPMD_MESH = None
+
 def setup_spmd_mesh():
+    global GLOBAL_SPMD_MESH
     num_devices = xr.global_runtime_device_count()
     mesh_shape = (num_devices, 1)
     device_ids = np.array(range(num_devices))
     mesh = xs.Mesh(device_ids, mesh_shape, ("fsdp", "model"))
     xs.set_global_mesh(mesh)
+    GLOBAL_SPMD_MESH = mesh
     return mesh
+
+def mark_fsdp_sharding(tensor):
+    if tensor is None or not torch.is_tensor(tensor):
+        return tensor
+    mesh = GLOBAL_SPMD_MESH
+    if mesh is None and hasattr(xs, "get_global_mesh"):
+        try:
+            mesh = xs.get_global_mesh()
+        except Exception:
+            mesh = None
+    if mesh is not None and hasattr(xs, "mark_sharding"):
+        try:
+            spec = ("fsdp",) + (None,) * (tensor.dim() - 1)
+            xs.mark_sharding(tensor, mesh, spec)
+        except Exception:
+            pass
+    return tensor
 
 GLOBAL_NAN_NAMES = []
 GLOBAL_NAN_CHECKS = []
@@ -531,21 +552,25 @@ class Phase6BlockWrapper(nn.Module):
 
 def patch_modernbert_xla_safe_mask(modernbert_model):
     """
-    Патчит генерацию масок в ModernBertModel для стабильности на TPU XLA (ADR 103).
-    Заменяет torch.finfo(dtype).min (-3.4e38) на безопасный сентинел -10000.0,
-    полностью предотвращая floating-point underflow/overflow и появление NaN в backward SDPA.
-    Обеспечивает мультиверсионную совместимость:
-    1. Legacy transformers (<= 4.49): monkey-patch метода model._update_attention_mask.
-    2. Modern transformers (>= 4.50): monkey-patch функций create_bidirectional_mask,
-       create_bidirectional_sliding_window_mask и sdpa_mask в модуле modeling_modernbert и masking_utils.
-    3. Universal safety: monkey-patch слоя внимания layer.attn каждого блока ModernBERT для перехвата
-       любой входящей attention_mask со значениями < -1e20 непосредственно перед SDPA.
+    Патчит генерацию и применение масок в ModernBertModel для стабильности на TPU XLA (ADR 103, ADR 104).
+    1. Заменяет булевы маски (True=attend, False=mask) на аддитивные float-маски (0.0 и -10000.0).
+    2. Заменяет экстремальные отрицательные числа (< -10000.0, -inf, -3.4e38) на безопасный сентинел -10000.0.
+    3. Перехватывает как attention_mask, так и sliding_window_mask на всех уровнях:
+       - legacy _update_attention_mask (transformers <= 4.49)
+       - create_bidirectional_mask, create_bidirectional_sliding_window_mask, sdpa_mask
+       - MODERNBERT_ATTENTION_FUNCTION["sdpa"]
+       - layer.attn.forward
     """
-    def _clamp_mask_tensor(mask):
-        if mask is not None and torch.is_tensor(mask):
+    def _clamp_mask_tensor(mask, target_dtype=torch.float32):
+        if mask is None or not torch.is_tensor(mask):
+            return mask
+        if mask.dtype == torch.bool:
+            zero = torch.tensor(0.0, dtype=target_dtype, device=mask.device)
+            neg = torch.tensor(-10000.0, dtype=target_dtype, device=mask.device)
+            return torch.where(mask, zero, neg)
+        if mask.is_floating_point():
             safe_min = torch.tensor(-10000.0, dtype=mask.dtype, device=mask.device)
-            threshold = -1e20
-            return torch.where(mask < threshold, safe_min, mask)
+            return torch.where((mask < -10000.0) | torch.isneginf(mask), safe_min, mask)
         return mask
 
     def _wrap_mask_fn(orig_fn):
@@ -568,6 +593,16 @@ def patch_modernbert_xla_safe_mask(modernbert_model):
         for fn_name in ["create_bidirectional_mask", "create_bidirectional_sliding_window_mask"]:
             if hasattr(mod, fn_name):
                 setattr(mod, fn_name, _wrap_mask_fn(getattr(mod, fn_name)))
+        if hasattr(mod, "MODERNBERT_ATTENTION_FUNCTION") and "sdpa" in mod.MODERNBERT_ATTENTION_FUNCTION:
+            orig_sdpa = mod.MODERNBERT_ATTENTION_FUNCTION["sdpa"]
+            def safe_sdpa(module, qkv, attention_mask=None, sliding_window_mask=None, *args, **kwargs):
+                td = qkv.dtype if torch.is_tensor(qkv) else torch.float32
+                if attention_mask is not None:
+                    attention_mask = _clamp_mask_tensor(attention_mask, target_dtype=td)
+                if sliding_window_mask is not None:
+                    sliding_window_mask = _clamp_mask_tensor(sliding_window_mask, target_dtype=td)
+                return orig_sdpa(module, qkv, attention_mask=attention_mask, sliding_window_mask=sliding_window_mask, *args, **kwargs)
+            mod.MODERNBERT_ATTENTION_FUNCTION["sdpa"] = safe_sdpa
 
     # 3. Общий модуль transformers.masking_utils
     try:
@@ -586,11 +621,16 @@ def patch_modernbert_xla_safe_mask(modernbert_model):
                 orig_attn_forward = attn_mod.forward
                 def _make_safe_attn_forward(orig_fn):
                     def safe_attn_forward(*args, **kwargs):
+                        td = args[0].dtype if (len(args) > 0 and torch.is_tensor(args[0])) else torch.float32
+                        if "hidden_states" in kwargs and torch.is_tensor(kwargs["hidden_states"]):
+                            td = kwargs["hidden_states"].dtype
                         if "attention_mask" in kwargs and kwargs["attention_mask"] is not None:
-                            kwargs["attention_mask"] = _clamp_mask_tensor(kwargs["attention_mask"])
-                        elif len(args) >= 3 and args[2] is not None:
+                            kwargs["attention_mask"] = _clamp_mask_tensor(kwargs["attention_mask"], target_dtype=td)
+                        if "sliding_window_mask" in kwargs and kwargs["sliding_window_mask"] is not None:
+                            kwargs["sliding_window_mask"] = _clamp_mask_tensor(kwargs["sliding_window_mask"], target_dtype=td)
+                        if len(args) >= 3 and args[2] is not None:
                             args_list = list(args)
-                            args_list[2] = _clamp_mask_tensor(args_list[2])
+                            args_list[2] = _clamp_mask_tensor(args_list[2], target_dtype=td)
                             args = tuple(args_list)
                         return orig_fn(*args, **kwargs)
                     return safe_attn_forward
@@ -612,6 +652,8 @@ class BEBLaDIIPhase6(nn.Module):
 
         dus_wrapper = DUSModel.from_scratch(config={"base_model_id": config.modernbert_path}, weights_path=None, local_files_only=config.local_files_only)
         self.dus = dus_wrapper.model
+        self.dus.to(torch.float32)
+        type(self.dus).dtype = property(lambda self: torch.float32)
         patch_modernbert_xla_safe_mask(self.dus)
         if config.use_gradient_checkpointing and hasattr(self.dus, "gradient_checkpointing_enable"):
             self.dus.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": True, "preserve_rng_state": False})
@@ -726,10 +768,10 @@ class BEBLaDIIPhase6(nn.Module):
             content_indices = torch.cumsum((~is_void).long(), dim=1) - 1
             content_indices = content_indices.clamp(min=0, max=T_a - 1)
 
-            # 4. Векторизованный сдвиг
-            batch_indices = torch.arange(B, device=Z_A_clean.device).unsqueeze(1).expand(B, T_a)
-            shifted_Z_A_clean = Z_A_clean[batch_indices, content_indices, :]
-            shifted_attention_mask_a = attention_mask_a[batch_indices, content_indices]
+            # 4. Векторизованный сдвиг вдоль dim=1 (сохраняет SPMD batch sharding по dim=0)
+            gather_idx_3d = content_indices.unsqueeze(-1).expand(-1, -1, Z_A_clean.shape[-1])
+            shifted_Z_A_clean = torch.gather(Z_A_clean, 1, gather_idx_3d)
+            shifted_attention_mask_a = torch.gather(attention_mask_a, 1, content_indices)
 
             # 5. Итоговая маска void: инжектированные + оригинальные PAD-позиции
             void_mask = is_void | (shifted_attention_mask_a == 0)
@@ -739,6 +781,7 @@ class BEBLaDIIPhase6(nn.Module):
             void_embed_expanded = void_embed.view(1, 1, -1).expand(B, T_a, -1)
             Z_A_clean = torch.where(void_mask_expanded, void_embed_expanded, shifted_Z_A_clean)
             Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1).to(void_embed.dtype)
+            Z_A_clean = mark_fsdp_sharding(Z_A_clean)
 
             attention_mask_a = shifted_attention_mask_a
             # ---------------------------
@@ -750,11 +793,11 @@ class BEBLaDIIPhase6(nn.Module):
             else:
                 t_global_cpu = t_global.detach().to(cpu_dev).float()
             t_actual_cpu = sample_token_noise_levels(t_global_cpu, T_a)
-            t_global = t_global_cpu.to(Z_A_clean.device)
-            t_actual = t_actual_cpu.to(Z_A_clean.device)
+            t_global = mark_fsdp_sharding(t_global_cpu.to(Z_A_clean.device))
+            t_actual = mark_fsdp_sharding(t_actual_cpu.to(Z_A_clean.device))
             # ===============================
 
-            z_noisy = spherical_noise(Z_A_clean, t_actual)
+            z_noisy = mark_fsdp_sharding(spherical_noise(Z_A_clean, t_actual))
 
             # Чанкованное вычисление RawDProx: делим latent_dict на 16 чанков по ~9.5K векторов
             # и считаем матричное умножение в bfloat16 для предотвращения OOM в HBM
@@ -780,7 +823,7 @@ class BEBLaDIIPhase6(nn.Module):
             t_emb_prompt = self.t_joint_proj(cond_prompt)
 
             sep_t_emb_prompt = torch.zeros(B, 1, t_emb_prompt.shape[-1], device=t_emb_prompt.device, dtype=t_emb_prompt.dtype)
-            t_emb_prompt_extended = torch.cat([sep_t_emb_prompt, t_emb_prompt], dim=1)
+            t_emb_prompt_extended = mark_fsdp_sharding(torch.cat([sep_t_emb_prompt, t_emb_prompt], dim=1))
 
             for layer in self.dus.layers:
                 layer_to_check = layer.original_layer if isinstance(layer, Phase6BlockWrapper) else layer
@@ -791,10 +834,10 @@ class BEBLaDIIPhase6(nn.Module):
             # Подготовка входа для промпта
             prompt_in = Z_prompt.float()
             sep_prefix_prompt = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(prompt_in.dtype)
-            dus_prompt_extended = torch.cat([sep_prefix_prompt, prompt_in], dim=1)
+            dus_prompt_extended = mark_fsdp_sharding(torch.cat([sep_prefix_prompt, prompt_in], dim=1))
 
             ones_sep_prompt = torch.ones((B, 1), device=attention_mask_q.device, dtype=attention_mask_q.dtype)
-            prompt_mask_extended = torch.cat([ones_sep_prompt, attention_mask_q], dim=1)
+            prompt_mask_extended = mark_fsdp_sharding(torch.cat([ones_sep_prompt, attention_mask_q], dim=1))
 
             # Отключаем CA и прогоняем промпт
             with torch.no_grad():
@@ -835,10 +878,10 @@ class BEBLaDIIPhase6(nn.Module):
         t_emb_token = self.t_proj_token(t_sin_token)
 
         cond = torch.cat([t_emb_token, t_emb_global.unsqueeze(1).expand(-1, T_a, -1)], dim=-1)
-        t_emb = self.t_joint_proj(cond)
+        t_emb = mark_fsdp_sharding(self.t_joint_proj(cond))
 
         sep_t_emb = torch.zeros(B, 1, t_emb.shape[-1], device=t_emb.device, dtype=t_emb.dtype)
-        t_emb_extended = torch.cat([sep_t_emb, t_emb], dim=1)
+        t_emb_extended = mark_fsdp_sharding(torch.cat([sep_t_emb, t_emb], dim=1))
 
         # Инъекция t_emb и контекста CA
         for layer in self.dus.layers:
@@ -857,14 +900,13 @@ class BEBLaDIIPhase6(nn.Module):
 
         x_in = z_noisy.float()
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
-        dus_input_extended = torch.cat([sep_prefix, x_in], dim=1)
+        dus_input_extended = mark_fsdp_sharding(torch.cat([sep_prefix, x_in], dim=1))
 
         # Полностью снимаем маску с холста для DUS, так как void-позиции тоже обучаются
-        attention_mask_extended = torch.ones((B, T_a + 1), device=x_in.device, dtype=torch.long)
+        attention_mask_extended = mark_fsdp_sharding(torch.ones((B, T_a + 1), device=x_in.device, dtype=torch.long))
 
-        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
-        # (На TPU use_reentrant=True используется в config, поэтому requires_grad_(True) не обязателен, но не мешает)
-        # dus_input_extended.requires_grad_(True)
+        # FIX: Принудительно устанавливаем requires_grad для корректной работы backward-хуков FSDP
+        dus_input_extended = dus_input_extended.requires_grad_(True)
 
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
@@ -873,7 +915,7 @@ class BEBLaDIIPhase6(nn.Module):
         )
 
         pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
-        dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
+        dus_final_raw = self.dus.final_norm(pre_norm).float()
         h_39 = safe_normalize(dus_final_raw, dim=-1)
 
         gate = torch.sin(t_global * (math.pi / 2)).view(B, 1, 1).to(h_39.dtype)
@@ -1097,9 +1139,13 @@ def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=Non
     print(f"\n  [Results BEFORE xm.reduce_gradients]:")
     print(f"    Finite gradients:  {len(finite_before)}")
     print(f"    NaN/Inf gradients: {len(nan_before)}")
+    if finite_before:
+        print("    Parameters with FINITE gradients BEFORE reduction:")
+        for n in finite_before:
+            print(f"      + {n}")
     if nan_before:
         print("    Examples of parameters with NaN BEFORE reduction:")
-        for n in nan_before[:6]:
+        for n in nan_before[:10]:
             print(f"      - {n}")
 
     dummy_opt = torch.optim.AdamW(list(trainable_named.values()), lr=1e-4)
