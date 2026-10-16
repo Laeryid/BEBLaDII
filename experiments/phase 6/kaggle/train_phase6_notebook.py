@@ -296,12 +296,15 @@ def cosine_noise_schedule(t: torch.Tensor) -> torch.Tensor:
 
 def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     B, T, D = x0.shape
-    eps = safe_normalize(torch.randn_like(x0), dim=-1)
+    eps = torch.randn_like(x0)
+    # Ортогонализация eps к x0 в касательном пространстве сферы T_{x0}S^{D-1} (ADR 105)
+    proj = (eps * x0).sum(dim=-1, keepdim=True) * x0
+    eps_ortho = safe_normalize(eps - proj, dim=-1)
     if t.dim() == 1: t = t.view(B, 1, 1)
     elif t.dim() == 2: t = t.unsqueeze(-1)
     mu = cosine_noise_schedule(t)
     sigma = torch.sin(t * (math.pi / 2))
-    return safe_normalize(mu * x0 + sigma * eps, dim=-1)
+    return safe_normalize(mu * x0 + sigma * eps_ortho, dim=-1)
 
 def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0,
                               kappa_max: float = 8.0, steps: int = 25) -> torch.Tensor:
@@ -356,6 +359,35 @@ class AdaLNWrappedLayerNorm(nn.Module):
 # ## 5. CAPromptLayer (Phase 6 Core)
 
 # %%
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
+
+class RotaryEmbedding(nn.Module):
+    """
+    Rotary Position Embedding (RoPE) without learnable parameters (ADR 105).
+    """
+    def __init__(self, dim: int, base: float = 10000.0):
+        super().__init__()
+        self.dim = dim
+        self.base = base
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    def forward(self, x: torch.Tensor, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
+        t = torch.arange(seq_len, device=x.device, dtype=self.inv_freq.dtype)
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos().view(1, 1, seq_len, self.dim).to(dtype=x.dtype)
+        sin = emb.sin().view(1, 1, seq_len, self.dim).to(dtype=x.dtype)
+        return cos, sin
+
 class CAPromptLayer(nn.Module):
     def __init__(self, dim=1024, t_emb_dim=256):
         super().__init__()
@@ -374,6 +406,10 @@ class CAPromptLayer(nn.Module):
         self.qkv_proj_sa = nn.Linear(dim, dim * 3, bias=False)
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
         self.adaln_sa = AdaLNModulation(t_emb_dim, dim)  # AdaLN для SA (модулирует холст перед Self-Attention)
+
+        heads = 16
+        head_dim = dim // heads
+        self.rope_sa = RotaryEmbedding(dim=head_dim)
 
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
@@ -434,12 +470,16 @@ class CAPromptLayer(nn.Module):
         k_sa = k_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         v_sa = v_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
 
+        cos_sa, sin_sa = self.rope_sa(q_sa, T_a)
+        q_sa, k_sa = apply_rotary_pos_emb(q_sa, k_sa, cos_sa, sin_sa)
+
         sa_out = F.scaled_dot_product_attention(q_sa, k_sa, v_sa)
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
         A = A + warmup_factor * sa_out
         return A
+
 
 class Phase6BlockWrapper(nn.Module):
     """Обертка для ModernBERT слоя, позволяющая инжектировать CAPromptLayer."""
@@ -500,6 +540,8 @@ class BEBLaDIIPhase6(nn.Module):
         # 3. DUS Backbone
         dus_wrapper = DUSModel.from_scratch(config={"base_model_id": config.modernbert_path}, weights_path=None, local_files_only=True)
         self.dus = dus_wrapper.model
+        self.dus.to(torch.float32)
+        type(self.dus).dtype = property(lambda self: torch.float32)
         if config.use_gradient_checkpointing and hasattr(self.dus, "gradient_checkpointing_enable"):
             self.dus.gradient_checkpointing_enable({"use_reentrant": False})
 
@@ -631,10 +673,10 @@ class BEBLaDIIPhase6(nn.Module):
             content_indices = torch.cumsum(~is_void, dim=1) - 1
             content_indices = content_indices.clamp(min=0, max=T_a - 1)
 
-            # 4. Векторизованный сдвиг
-            batch_indices = torch.arange(B, device=Z_A_clean.device).unsqueeze(1).expand(B, T_a)
-            shifted_Z_A_clean = Z_A_clean[batch_indices, content_indices, :]
-            shifted_attention_mask_a = attention_mask_a[batch_indices, content_indices]
+            # 4. Векторизованный сдвиг вдоль dim=1 (ADR 104)
+            gather_idx_3d = content_indices.unsqueeze(-1).expand(-1, -1, Z_A_clean.shape[-1])
+            shifted_Z_A_clean = torch.gather(Z_A_clean, 1, gather_idx_3d)
+            shifted_attention_mask_a = torch.gather(attention_mask_a, 1, content_indices)
 
             # 5. Итоговая маска void: инжектированные + оригинальные PAD-позиции
             void_mask = is_void | (shifted_attention_mask_a == 0)
@@ -692,20 +734,25 @@ class BEBLaDIIPhase6(nn.Module):
         ones_sep_prompt = torch.ones((B, 1), device=attention_mask_q.device, dtype=attention_mask_q.dtype)
         prompt_mask_extended = torch.cat([ones_sep_prompt, attention_mask_q], dim=1)
 
-        # Отключаем CA и прогоняем промпт
+        # Отключаем CA и прогоняем промпт через первые 12 слоев (0-11) DUS (ADR 099, ADR 105)
         with torch.no_grad():
             for ca in self.ca_layers.values():
                 ca._disable = True
 
-            prompt_outputs = self.dus(
-                inputs_embeds=dus_prompt_extended,
-                attention_mask=prompt_mask_extended,
-                output_hidden_states=True,
-            )
+            orig_layers = self.dus.layers
+            try:
+                self.dus.layers = orig_layers[:12]
+                prompt_outputs = self.dus(
+                    inputs_embeds=dus_prompt_extended,
+                    attention_mask=prompt_mask_extended,
+                    output_hidden_states=True,
+                )
 
-            # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
-            # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
-            Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
+                # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
+                # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
+                Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
+            finally:
+                self.dus.layers = orig_layers
 
             for ca in self.ca_layers.values():
                 ca._disable = not ca_is_active
@@ -747,8 +794,8 @@ class BEBLaDIIPhase6(nn.Module):
         # Полностью снимаем маску с холста для DUS, так как void-позиции тоже обучаются
         attention_mask_extended = torch.ones((B, T_a + 1), device=x_in.device, dtype=torch.long)
 
-        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS
-        dus_input_extended.requires_grad_(True)
+        # FIX: Принудительно устанавливаем requires_grad для запуска Gradient Checkpointing внутри DUS (ADR 104)
+        dus_input_extended = dus_input_extended.requires_grad_(True)
 
         dus_outputs = self.dus(
             inputs_embeds=dus_input_extended,
@@ -757,7 +804,7 @@ class BEBLaDIIPhase6(nn.Module):
         )
 
         pre_norm = dus_outputs.last_hidden_state[:, 1:, :].float()
-        dus_final_raw = self.dus.final_norm(pre_norm.to(self.dus.dtype)).float()
+        dus_final_raw = self.dus.final_norm(pre_norm).float()
         h_39 = safe_normalize(dus_final_raw, dim=-1)
 
         gate = torch.sin(t_global * (math.pi / 2)).view(B, 1, 1).to(h_39.dtype)
