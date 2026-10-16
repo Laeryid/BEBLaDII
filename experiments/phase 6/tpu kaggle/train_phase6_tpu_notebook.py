@@ -384,12 +384,15 @@ def cosine_noise_schedule(t: torch.Tensor) -> torch.Tensor:
 
 def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     B, T, D = x0.shape
-    eps = safe_normalize(torch.randn_like(x0), dim=-1)
+    eps = torch.randn_like(x0)
+    # Ортогонализация eps к x0 в касательном пространстве сферы T_{x0}S^{D-1}
+    proj = (eps * x0).sum(dim=-1, keepdim=True) * x0
+    eps_ortho = safe_normalize(eps - proj, dim=-1)
     if t.dim() == 1: t = t.view(B, 1, 1)
     elif t.dim() == 2: t = t.unsqueeze(-1)
     mu = cosine_noise_schedule(t)
     sigma = torch.sin(t * (math.pi / 2))
-    return safe_normalize(mu * x0 + sigma * eps, dim=-1)
+    return safe_normalize(mu * x0 + sigma * eps_ortho, dim=-1)
 
 class AdaLNModulation(nn.Module):
     def __init__(self, t_emb_dim: int, hidden_dim: int):
@@ -417,6 +420,35 @@ class AdaLNWrappedLayerNorm(nn.Module):
         shift, scale = self.adaln(self._current_t_emb)
         return out * scale.to(out.dtype) + shift.to(out.dtype)
 
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
+
+class RotaryEmbedding(nn.Module):
+    """
+    XLA-friendly rotary position embedding (RoPE) without learnable parameters.
+    """
+    def __init__(self, dim: int, base: float = 10000.0):
+        super().__init__()
+        self.dim = dim
+        self.base = base
+        inv_freq = 1.0 / (self.base ** (torch.arange(0, self.dim, 2).float() / self.dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+    def forward(self, x: torch.Tensor, seq_len: int) -> tuple[torch.Tensor, torch.Tensor]:
+        t = torch.arange(seq_len, device=x.device, dtype=self.inv_freq.dtype)
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        cos = emb.cos().view(1, 1, seq_len, self.dim).to(dtype=x.dtype)
+        sin = emb.sin().view(1, 1, seq_len, self.dim).to(dtype=x.dtype)
+        return cos, sin
+
 class CAPromptLayer(nn.Module):
     def __init__(self, dim=1024, t_emb_dim=256):
         super().__init__()
@@ -434,6 +466,10 @@ class CAPromptLayer(nn.Module):
         self.qkv_proj_sa = nn.Linear(dim, dim * 3, bias=False)
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
         self.adaln_sa = AdaLNModulation(t_emb_dim, dim)  # AdaLN для SA (модулирует холст перед Self-Attention)
+
+        heads = 16
+        head_dim = dim // heads
+        self.rope_sa = RotaryEmbedding(dim=head_dim)
 
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
@@ -497,6 +533,9 @@ class CAPromptLayer(nn.Module):
         q_sa = q_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         k_sa = k_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         v_sa = v_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
+
+        cos_sa, sin_sa = self.rope_sa(q_sa, T_a)
+        q_sa, k_sa = apply_rotary_pos_emb(q_sa, k_sa, cos_sa, sin_sa)
 
         sa_out = F.scaled_dot_product_attention(q_sa, k_sa, v_sa)
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
@@ -839,21 +878,25 @@ class BEBLaDIIPhase6(nn.Module):
             ones_sep_prompt = torch.ones((B, 1), device=attention_mask_q.device, dtype=attention_mask_q.dtype)
             prompt_mask_extended = mark_fsdp_sharding(torch.cat([ones_sep_prompt, attention_mask_q], dim=1))
 
-            # Отключаем CA и прогоняем промпт
+            # Отключаем CA и прогоняем промпт через первые 12 слоев (0-11) DUS (ADR 099)
             with torch.no_grad():
                 for ca in self.ca_layers.values():
                     _ca_inner(ca)._disable = True
                     ca._disable = True
 
-                prompt_outputs = self.dus(
-                    inputs_embeds=dus_prompt_extended,
-                    attention_mask=prompt_mask_extended,
-                    output_hidden_states=True,
-                )
-
-                # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
-                # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
-                Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
+                orig_layers = self.dus.layers
+                try:
+                    self.dus.layers = orig_layers[:12]
+                    prompt_outputs = self.dus(
+                        inputs_embeds=dus_prompt_extended,
+                        attention_mask=prompt_mask_extended,
+                        output_hidden_states=True,
+                    )
+                    # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
+                    # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
+                    Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
+                finally:
+                    self.dus.layers = orig_layers
 
                 for ca in self.ca_layers.values():
                     _ca_inner(ca)._disable = False

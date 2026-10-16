@@ -1,4 +1,6 @@
 import json
+import os
+import sys
 
 py_path = "experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py"
 ipynb_path = "experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.ipynb"
@@ -24,33 +26,55 @@ def extract_block(start_marker, end_marker):
         raise ValueError(f"End marker not found: {end_marker}")
     return py_text[start:end].rstrip()
 
-# 0. SPMD Mesh + mark_fsdp_sharding (Cell 8)
+def find_cell(marker):
+    for i, cell in enumerate(nb["cells"]):
+        source = "".join(cell.get("source", []))
+        if marker in source:
+            return i
+    raise ValueError(f"Cell with marker '{marker}' not found in notebook!")
+
+# Blocks to sync:
+# 1. Mesh setup
+idx_mesh = find_cell("GLOBAL_SPMD_MESH = None")
 code_mesh = extract_block("GLOBAL_SPMD_MESH = None", "GLOBAL_NAN_NAMES = []")
-# 1. Config (Cell 23)
+nb["cells"][idx_mesh]["source"] = to_lines(code_mesh)
+print(f"Synced mesh block to cell {idx_mesh}")
+
+# 2. Config
+idx_config = find_cell("class Config:")
 code_config = extract_block("class Config:", "args = Config()")
-# 2. CAPromptLayer (Cell 32)
-code_ca = extract_block("class CAPromptLayer(nn.Module):", "def _unwrap_module(m):")
-# 3. BEBLaDIIPhase6 + patch_modernbert_xla_safe_mask (Cell 36)
+nb["cells"][idx_config]["source"] = to_lines(code_config)
+print(f"Synced Config block to cell {idx_config}")
+
+# 3. spherical_noise
+idx_noise = find_cell("def spherical_noise(")
+code_noise = extract_block("def spherical_noise(", "class AdaLNModulation(")
+nb["cells"][idx_noise]["source"] = to_lines(code_noise)
+print(f"Synced spherical_noise to cell {idx_noise}")
+
+# 4. CAPromptLayer (including RotaryEmbedding if in same or separate cell)
+idx_ca = find_cell("class CAPromptLayer(")
+code_ca = extract_block("def rotate_half(", "def _unwrap_module(m):")
+nb["cells"][idx_ca]["source"] = to_lines(code_ca)
+print(f"Synced RotaryEmbedding & CAPromptLayer to cell {idx_ca}")
+
+# 5. BEBLaDIIPhase6 + patch_modernbert_xla_safe_mask
+idx_model = find_cell("def patch_modernbert_xla_safe_mask(")
 code_model = extract_block("def patch_modernbert_xla_safe_mask(", "def compute_phase6_loss(")
-# 4. run_nan_diagnosis (Cell 40)
+nb["cells"][idx_model]["source"] = to_lines(code_model)
+print(f"Synced model block to cell {idx_model}")
+
+# 6. run_nan_diagnosis
+idx_diag = find_cell("def run_nan_diagnosis(")
 code_diag = extract_block("def run_nan_diagnosis(", "def main():")
-# 5. main (Cell 41)
+nb["cells"][idx_diag]["source"] = to_lines(code_diag)
+print(f"Synced run_nan_diagnosis to cell {idx_diag}")
+
+# 7. main
+idx_main = find_cell("def main():")
 code_main = extract_block("def main():", 'if __name__ == "__main__":')
-
-# Проверка совпадения ячеек
-assert "def setup_spmd_mesh" in nb["cells"][8]["source"][0] or "GLOBAL_SPMD_MESH" in nb["cells"][8]["source"][0]
-assert "class Config" in nb["cells"][23]["source"][0]
-assert "class CAPromptLayer" in nb["cells"][32]["source"][0]
-assert "class BEBLaDIIPhase6" in nb["cells"][36]["source"][0] or "def patch_modernbert_xla_safe_mask" in nb["cells"][36]["source"][0]
-assert "def run_nan_diagnosis" in nb["cells"][40]["source"][0]
-assert "def main" in nb["cells"][41]["source"][0]
-
-nb["cells"][8]["source"] = to_lines(code_mesh)
-nb["cells"][23]["source"] = to_lines(code_config)
-nb["cells"][32]["source"] = to_lines(code_ca)
-nb["cells"][36]["source"] = to_lines(code_model)
-nb["cells"][40]["source"] = to_lines(code_diag)
-nb["cells"][41]["source"] = to_lines(code_main)
+nb["cells"][idx_main]["source"] = to_lines(code_main)
+print(f"Synced main to cell {idx_main}")
 
 with open(ipynb_path, "w", encoding="utf-8") as f:
     json.dump(nb, f, indent=1, ensure_ascii=False)

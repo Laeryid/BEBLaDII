@@ -24,6 +24,7 @@ from src.beb_la_dii.model.vae import LatentEncoder
 from src.beb_la_dii.model.dus import DUSModel
 from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
 from src.beb_la_dii.utils.loss import safe_normalize
+from src.beb_la_dii.model.diffusion_blocks import RotaryEmbedding, apply_rotary_pos_emb
 
 
 # =========================================================================
@@ -93,6 +94,10 @@ class CAPromptLayer(nn.Module):
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
         self.adaln_sa = AdaLNModulation(t_emb_dim, dim)
 
+        heads = 16
+        head_dim = dim // heads
+        self.rope_sa = RotaryEmbedding(dim=head_dim)
+
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
         nn.init.zeros_(self.out_proj.weight)
@@ -147,6 +152,9 @@ class CAPromptLayer(nn.Module):
         q_sa = q_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         k_sa = k_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         v_sa = v_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
+
+        cos_sa, sin_sa = self.rope_sa(q_sa, T_a)
+        q_sa, k_sa = apply_rotary_pos_emb(q_sa, k_sa, cos_sa, sin_sa)
 
         sa_out = F.scaled_dot_product_attention(q_sa, k_sa, v_sa)
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
@@ -322,12 +330,17 @@ class BEBLaDIIPhase6Eval(nn.Module):
             for ca in self.ca_layers.values():
                 ca._disable = True
 
-            prompt_outputs = self.dus(
-                inputs_embeds=dus_prompt_ext,
-                attention_mask=prompt_mask_ext,
-                output_hidden_states=True,
-            )
-            Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
+            orig_layers = self.dus.layers
+            try:
+                self.dus.layers = orig_layers[:12]
+                prompt_outputs = self.dus(
+                    inputs_embeds=dus_prompt_ext,
+                    attention_mask=prompt_mask_ext,
+                    output_hidden_states=True,
+                )
+                Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
+            finally:
+                self.dus.layers = orig_layers
 
             for ca in self.ca_layers.values():
                 ca._disable = False

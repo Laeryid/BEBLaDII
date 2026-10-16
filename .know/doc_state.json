@@ -23,6 +23,10 @@
         "hash": "57b3d5503ae0c4e86c3995eb94624d193ed26fe22a9c4a5fd937aeac55f9a21b",
         "mtime": 1789849982.3595695
     },
+    "src\\beb_la_dii\\model\\diffusion_blocks.py": {
+        "hash": "d2c9cd21127834e2ef2a9cf891f904cc984f0c414e06c9573777da691cb79725",
+        "mtime": 1792169936.195989
+    },
     "src\\beb_la_dii\\model\\distiller.py": {
         "hash": "986b1e8d1913e74a12497695226b3ed6e1a95c6dbef78f701f0fda36d832a9a0",
         "mtime": 1779571652.843149
@@ -52,8 +56,8 @@
         "mtime": 1781888639.0582528
     },
     "src\\beb_la_dii\\model\\__init__.py": {
-        "hash": "f3baf663f1af5149aaf3b9ef8867280db9b0bcaf239375fc759f5e80d5aa3209",
-        "mtime": 1775587796.3018782
+        "hash": "d6a8fd8725ae1fc266bbb84d60f3d6be18c1137d6f9973da6ab9d37dcab5b749",
+        "mtime": 1792169969.882706
     },
     "src\\beb_la_dii\\rag\\__init__.py": {
         "hash": "3d1185cf8cfdd8ba43839677e985fb37c56bda365bcb346417458af1e030478c",
@@ -72,8 +76,8 @@
         "mtime": 1775853520.1690574
     },
     "src\\beb_la_dii\\utils\\loss.py": {
-        "hash": "dde4743d1b386507e00169ead3a997cab1b697319feed662602feb8dea054848",
-        "mtime": 1791132923.812661
+        "hash": "61b6707debfe9048c43a9ed2eb47bb9307ab505f929f688f1ff38e9c05912052",
+        "mtime": 1792169877.0206199
     },
     "src\\beb_la_dii\\utils\\loss.py.bak": {
         "hash": "571e57d30cb7fb23795ce9e89a5c7d66ccad4a8d3e1389900ac88963842ec079",
@@ -252,8 +256,8 @@
         "mtime": 1785406215.8853543
     },
     ".know\\doc_config.json": {
-        "hash": "1a5e313b9c2a5fe9a9b136f49ff10ba0423f92caa66e0449b7fa290815adb5c5",
-        "mtime": 1792135037.0493493
+        "hash": "29ffd252b055919ed7bed66442934c35be55d5a2dd97cdbf38031909e9d7d6f4",
+        "mtime": 1792171186.3858192
     },
     "ideas\\Architecture.md": {
         "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
@@ -496,7 +500,7 @@
         "mtime": 1790709807.0369856
     },
     "experiments\\phase 6\\tpu kaggle\\train_phase6_tpu_notebook.py": {
-        "hash": "fa7a8332397a291eda9c6d4d1658eb60798cdb7bba88d3a73104ea51133f2bf6",
-        "mtime": 1792134244.4152565
+        "hash": "7c26d10256921fe89cff9397794b16f409742d5c7ae8e765d80fcaf5c646dfd4",
+        "mtime": 1792170449.6304443
     }
 }

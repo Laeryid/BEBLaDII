@@ -21,6 +21,36 @@ def safe_cosine_similarity(x1, x2, dim=-1, eps=1e-6):
     return torch.sum(x1 * x2, dim=dim) / (norm1 * norm2)
 
 
+def cosine_noise_schedule(t: torch.Tensor) -> torch.Tensor:
+    """Cosine noise schedule for continuous spherical diffusion."""
+    import math
+    return torch.cos(t * (math.pi / 2))
+
+
+def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """
+    Exact spherical interpolation (geodesic trajectory on S^{D-1}).
+    Orthogonalizes random noise eps against x0 in the tangent space T_{x0}S^{D-1}
+    before rotating by angle theta = t * pi / 2.
+    Guarantees cos(x_t, x0) == cos(t * pi / 2) with zero angular jitter.
+    """
+    import math
+    B = x0.shape[0]
+    eps = torch.randn_like(x0)
+    # Project eps onto x0 and remove parallel component: eps_perp = eps - <eps, x0> * x0
+    proj = (eps * x0).sum(dim=-1, keepdim=True) * x0
+    eps_ortho = safe_normalize(eps - proj, dim=-1)
+
+    if t.dim() == 1:
+        t = t.view(B, 1, 1)
+    elif t.dim() == 2:
+        t = t.unsqueeze(-1)
+
+    mu = torch.cos(t * (math.pi / 2))
+    sigma = torch.sin(t * (math.pi / 2))
+    return safe_normalize(mu * x0 + sigma * eps_ortho, dim=-1)
+
+
 class DistillationLoss(nn.Module):
     """
     Расчет L_total для выравнивания латентных пространств.

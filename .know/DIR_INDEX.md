@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~71188 (excluding excluded directories)
+**Total files in project:** ~71190 (excluding excluded directories)
 **Updated:** 2026-10-16
 
 ```
 BEBLaDII/
 |-- .agent/  *(empty)*
-|-- .know/  *134 files*
-|   |-- decisions/  *103 files*
+|-- .know/  *135 files*
+|   |-- decisions/  *104 files*
 |   `-- knowledge/  *26 files*
 |-- BEBLaDII-planB-Phase3-Data/  *9 files*
 |   `-- phase 3/  *6 files*
@@ -93,10 +93,10 @@ BEBLaDII/
 |   `-- plan_A/  *6 files*
 |-- scratch/  *35 files*
 |-- scripts/  *33 files*
-|-- src/  *27 files*
-|   |-- beb_la_dii/  *22 files*
+|-- src/  *28 files*
+|   |-- beb_la_dii/  *23 files*
 |   |   |-- data/  *1 files*
-|   |   |-- model/  *12 files*
+|   |   |-- model/  *13 files*
 |   |   |-- orchestrator/  *(empty)*
 |   |   |-- rag/  *1 files*
 |   |   `-- utils/  *7 files*

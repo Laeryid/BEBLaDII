@@ -1047,6 +1047,32 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 104: Phase 6 TPU SDPA Bool Mask Fix, SPMD Batch Sharding and Memory Restoration"
+    },
+    "decisions/105_phase6_rope_geodesic_noise_and_prompt_truncation.md": {
+      "description": "ADR 105: Phase 6 RoPE in Self-Attention, Geodesic Tangent-Space Noise, Prompt Pass Truncation, and Phase 4 Core Extraction (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "KI_metrics_reference.md",
+        "KI_utilities.md",
+        "decisions/014_metrics_fix_and_delta_recovery.md",
+        "decisions/015_centered_cosine_similarity.md",
+        "decisions/016_decoupling_absolute_space.md",
+        "decisions/017_new_loss_terms_and_metrics.md",
+        "decisions/019_decoupling_intermediate_layers.md",
+        "decisions/022_intermediate_layers_hybrid_regularization.md",
+        "decisions/023_layer40_raw_topology_and_variance.md",
+        "decisions/024_spherical_manifold_distillation.md",
+        "decisions/025_centered_rkd.md",
+        "decisions/026_gradient_stabilization_rkd_cosine.md",
+        "decisions/027_huber_loss_variance_covariance.md",
+        "decisions/028_manual_huber_and_norm_cv_metric.md",
+        "decisions/029_variance_floor_and_scale_invariant_covariance.md",
+        "decisions/030_cov_loss_weight_increase_and_gcs_migration.md",
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 105: Phase 6 RoPE in Self-Attention, Geodesic Tangent-Space Noise, Prompt Pass Truncation, and Phase 4 Core Extraction"
     }
   },
   "knowledge_system": {
