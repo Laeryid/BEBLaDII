@@ -24,57 +24,72 @@ from src.beb_la_dii.model.vae import LatentEncoder
 from src.beb_la_dii.model.dus import DUSModel
 from src.beb_la_dii.model.modern_decoder import ModernLatentDecoder
 from src.beb_la_dii.utils.loss import safe_normalize
-from src.beb_la_dii.model.diffusion_blocks import RotaryEmbedding, apply_rotary_pos_emb
+from src.beb_la_dii.model.diffusion_blocks import (
+    SinusoidalEmbedding,
+    AdaLNModulation,
+    AdaLNWrappedLayerNorm,
+    RotaryEmbedding,
+    apply_rotary_pos_emb,
+    patch_modernbert_xla_safe_mask,
+)
 
 
 # =========================================================================
-# 1. Sinusoidal & AdaLN Modules
+# 1. State Dict Validation & Key Normalization (ADR 100, 101, 102)
 # =========================================================================
-class SinusoidalEmbedding(nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.dim = dim
+def is_state_dict_finite(state_dict: dict) -> bool:
+    """ADR 101: Проверяет отсутствие NaN и Inf во всех тензорах state_dict."""
+    for k, v in state_dict.items():
+        if torch.is_tensor(v) and not torch.isfinite(v).all():
+            return False
+    return True
 
-    def forward(self, t: torch.Tensor) -> torch.Tensor:
-        device = t.device
-        half = self.dim // 2
-        freqs = torch.exp(-math.log(10000) * torch.arange(half, device=device) / (half - 1))
-        args = t.unsqueeze(-1) * freqs
-        return torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
 
-class AdaLNModulation(nn.Module):
-    def __init__(self, t_emb_dim: int, hidden_dim: int):
-        super().__init__()
-        self.modulation = nn.Sequential(nn.SiLU(), nn.Linear(t_emb_dim, 2 * hidden_dim))
-        nn.init.zeros_(self.modulation[-1].weight)
-        bias = torch.zeros(2 * hidden_dim)
-        bias[hidden_dim:] = 1.0
-        self.modulation[-1].bias = nn.Parameter(bias)
-
-    def forward(self, t_emb: torch.Tensor) -> tuple:
-        out = self.modulation(t_emb)
-        shift, scale = out.chunk(2, dim=-1)
-        if shift.dim() == 2:
-            return shift.unsqueeze(1), scale.unsqueeze(1)
-        return shift, scale
-
-class AdaLNWrappedLayerNorm(nn.Module):
-    def __init__(self, original_norm, adaln_module):
-        super().__init__()
-        self.original_norm = original_norm
-        self.adaln = adaln_module
-        self._current_t_emb = None
-
-    def forward(self, x):
-        out = self.original_norm(x)
-        if self._current_t_emb is None:
-            return out
-        shift, scale = self.adaln(self._current_t_emb)
-        return out * scale.to(out.dtype) + shift.to(out.dtype)
+def normalize_key(k: str) -> str:
+    """
+    ADR 100, 102: Очищает FSDP, DDP, Dynamo и EMA префиксы из ключей чекпоинта
+    для гарантированного маппинга на целевую архитектуру.
+    """
+    return (
+        k.replace("._orig_module.", ".")
+        .replace("_orig_module.", "")
+        .replace(".module.", ".")
+        .replace("module.", "")
+        .replace("student.model.", "")
+        .replace("student.", "")
+    )
 
 
 # =========================================================================
-# 2. CAPromptLayer & Block Wrapper (Phase 6 Architecture)
+# 2. Geodesic Noise Schedule in Tangent Space (ADR 105)
+# =========================================================================
+def cosine_noise_schedule(t: torch.Tensor) -> torch.Tensor:
+    return torch.cos(t * (math.pi / 2))
+
+
+def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+    """
+    ADR 105: Точная геодезическая траектория на сфере с ортогонализацией шума
+    в касательном пространстве сферы T_{x0}S^{D-1}.
+    """
+    B, T, D = x0.shape
+    eps = torch.randn_like(x0)
+    # Ортогонализация Грама-Шмидта: исключаем параллельную проекцию на x0
+    proj = (eps * x0).sum(dim=-1, keepdim=True) * x0
+    eps_ortho = safe_normalize(eps - proj, dim=-1)
+
+    if t.dim() == 1:
+        t = t.view(B, 1, 1)
+    elif t.dim() == 2:
+        t = t.unsqueeze(-1)
+
+    mu = cosine_noise_schedule(t)
+    sigma = torch.sin(t * (math.pi / 2))
+    return safe_normalize(mu * x0 + sigma * eps_ortho, dim=-1)
+
+
+# =========================================================================
+# 3. CAPromptLayer & Block Wrapper (ADR 103, 104, 105)
 # =========================================================================
 class CAPromptLayer(nn.Module):
     def __init__(self, dim=1024, t_emb_dim=256):
@@ -82,14 +97,15 @@ class CAPromptLayer(nn.Module):
         self._disable = False
         self.last_ca_ratio = 0.0
 
-        self.norm1 = getattr(nn, 'RMSNorm', nn.LayerNorm)(dim)
-        self.norm_q = getattr(nn, 'RMSNorm', nn.LayerNorm)(dim)
+        # RMSNorm для Q-промпта и A-холста
+        self.norm1 = nn.RMSNorm(dim)
+        self.norm_q = nn.RMSNorm(dim)
         self.q_proj = nn.Linear(dim, dim, bias=False)
         self.kv_proj = nn.Linear(dim, dim * 2, bias=False)
         self.out_proj = nn.Linear(dim, dim, bias=False)
         self.adaln_ca = AdaLNModulation(t_emb_dim, dim)
 
-        self.norm2 = getattr(nn, 'RMSNorm', nn.LayerNorm)(dim)
+        self.norm2 = nn.RMSNorm(dim)
         self.qkv_proj_sa = nn.Linear(dim, dim * 3, bias=False)
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
         self.adaln_sa = AdaLNModulation(t_emb_dim, dim)
@@ -108,20 +124,16 @@ class CAPromptLayer(nn.Module):
         if getattr(self, '_disable', False):
             return A
 
-        # Cross-Attention
+        # --- Cross-Attention ---
         Q_norm = self.norm_q(Q)
         A_norm = self.norm1(A)
         if t_emb is not None:
             shift_ca, scale_ca = self.adaln_ca(t_emb)
-            A_norm = A_norm * scale_ca.to(A_norm.dtype) + shift_ca.to(A_norm.dtype)
+            A_norm = A_norm * scale_ca + shift_ca
 
         q = self.q_proj(A_norm)
         kv = self.kv_proj(Q_norm)
         k, v = kv.chunk(2, dim=-1)
-
-        attn_mask = None
-        if mask_Q is not None:
-            attn_mask = mask_Q.view(A.shape[0], 1, 1, -1).expand(-1, 1, A.shape[1], -1).bool()
 
         B, T_a, D = A.shape
         heads = 16
@@ -130,6 +142,16 @@ class CAPromptLayer(nn.Module):
         q = q.view(B, T_a, heads, head_dim).transpose(1, 2)
         k = k.view(B, -1, heads, head_dim).transpose(1, 2)
         v = v.view(B, -1, heads, head_dim).transpose(1, 2)
+
+        attn_mask = None
+        if mask_Q is not None:
+            # ADR 103 / 104: Безопасная аддитивная float-маска для SDPA
+            mask_q_4d = mask_Q.view(B, 1, 1, -1).bool()
+            attn_mask = torch.where(
+                mask_q_4d,
+                torch.zeros(1, dtype=q.dtype, device=q.device),
+                torch.tensor(-10000.0, dtype=q.dtype, device=q.device)
+            )
 
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
@@ -140,11 +162,11 @@ class CAPromptLayer(nn.Module):
 
         A = A + warmup_factor * ca_out
 
-        # Self-Attention
+        # --- Self-Attention с RoPE (ADR 105) ---
         A_norm2 = self.norm2(A)
         if t_emb is not None:
             shift_sa, scale_sa = self.adaln_sa(t_emb)
-            A_norm2 = A_norm2 * scale_sa.to(A_norm2.dtype) + shift_sa.to(A_norm2.dtype)
+            A_norm2 = A_norm2 * scale_sa + shift_sa
 
         qkv = self.qkv_proj_sa(A_norm2)
         q_sa, k_sa, v_sa = qkv.chunk(3, dim=-1)
@@ -162,6 +184,7 @@ class CAPromptLayer(nn.Module):
 
         A = A + warmup_factor * sa_out
         return A
+
 
 class Phase6BlockWrapper(nn.Module):
     def __init__(self, original_layer, ca_layer=None):
@@ -196,7 +219,7 @@ class Phase6BlockWrapper(nn.Module):
 
 
 # =========================================================================
-# 3. Model Definition for Evaluation
+# 4. Phase 6 Evaluation Model Architecture
 # =========================================================================
 class BEBLaDIIPhase6Eval(nn.Module):
     def __init__(self, config):
@@ -216,15 +239,18 @@ class BEBLaDIIPhase6Eval(nn.Module):
         else:
             raise FileNotFoundError(f"Encoder not found: {config['encoder_path']}")
 
-        # 3. ModernBERT DUS (40 layers)
+        # 3. ModernBERT DUS (40 layers) в FP32 с патчем масок (ADR 103, 104)
         dus_wrapper = DUSModel.from_scratch(
             config={"base_model_id": config['modernbert_path']},
             weights_path=None,
             local_files_only=True
         )
         self.dus = dus_wrapper.model
+        self.dus.to(torch.float32)
+        type(self.dus).dtype = property(lambda self: torch.float32)
+        patch_modernbert_xla_safe_mask(self.dus)
 
-        # 4. Time Projections (Phase 4 compatibility)
+        # 4. Time Projections & AdaLN (Phase 4 фундамент)
         t_emb_dim = 256
         hidden_dim = 1024
         self.t_sin_embed = SinusoidalEmbedding(t_emb_dim)
@@ -239,35 +265,39 @@ class BEBLaDIIPhase6Eval(nn.Module):
             layer.mlp_norm = AdaLNWrappedLayerNorm(layer.mlp_norm, self.adaLN_mlp[i])
 
         self.register_buffer("sep_embed", torch.load(config['sep_token_path'], map_location="cpu").float())
+        if 'void_token_path' in config and os.path.exists(config['void_token_path']):
+            self.register_buffer("void_embed", torch.load(config['void_token_path'], map_location="cpu").float())
+        else:
+            self.register_buffer("void_embed", torch.zeros(1024))
 
-        # Load Phase 4 weights
+        # Загрузка весов Фазы 4 (ADR 102)
         if os.path.exists(config['phase4_path']):
             p4 = torch.load(config['phase4_path'], map_location="cpu", weights_only=False)
             dus_st = p4.get("dus_ema", p4.get("dus", p4.get("model_state_dict", p4)))
-            clean_dus = {k.replace("student.model.", "").replace("model.", "").replace("_orig_module.", ""): v for k, v in dus_st.items()}
+            clean_dus = {normalize_key(k): v for k, v in dus_st.items()}
             self.dus.load_state_dict(clean_dus, strict=False)
 
             if "adaLN_attn_ema" in p4 or "adaLN_attn" in p4:
                 st = p4.get("adaLN_attn_ema", p4.get("adaLN_attn"))
-                self.adaLN_attn.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st.items()}, strict=False)
+                self.adaLN_attn.load_state_dict({normalize_key(k): v for k, v in st.items()}, strict=False)
             if "adaLN_mlp_ema" in p4 or "adaLN_mlp" in p4:
                 st = p4.get("adaLN_mlp_ema", p4.get("adaLN_mlp"))
-                self.adaLN_mlp.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st.items()}, strict=False)
+                self.adaLN_mlp.load_state_dict({normalize_key(k): v for k, v in st.items()}, strict=False)
             if "t_proj_global_ema" in p4 or "t_proj_global" in p4:
                 st = p4.get("t_proj_global_ema", p4.get("t_proj_global"))
-                self.t_proj_global.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st.items()}, strict=False)
+                self.t_proj_global.load_state_dict({normalize_key(k): v for k, v in st.items()}, strict=False)
             if "t_proj_token_ema" in p4 or "t_proj_token" in p4:
                 st = p4.get("t_proj_token_ema", p4.get("t_proj_token"))
-                self.t_proj_token.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st.items()}, strict=False)
+                self.t_proj_token.load_state_dict({normalize_key(k): v for k, v in st.items()}, strict=False)
             if "t_joint_proj_ema" in p4 or "t_joint_proj" in p4:
                 st = p4.get("t_joint_proj_ema", p4.get("t_joint_proj"))
-                self.t_joint_proj.load_state_dict({k.replace("_orig_module.", ""): v for k, v in st.items()}, strict=False)
+                self.t_joint_proj.load_state_dict({normalize_key(k): v for k, v in st.items()}, strict=False)
 
-        # Freeze base parameters
+        # Заморозка базовых весов
         for p in self.parameters():
             p.requires_grad = False
 
-        # Inject CAPromptLayers (layers 12, 24, 36)
+        # Внедрение CAPromptLayers (слои 12, 24, 36 -> индексы 11, 23, 35)
         self.ca_layers = nn.ModuleDict({
             "12": CAPromptLayer(1024, t_emb_dim=256),
             "24": CAPromptLayer(1024, t_emb_dim=256),
@@ -276,22 +306,52 @@ class BEBLaDIIPhase6Eval(nn.Module):
         for i in [11, 23, 35]:
             self.dus.layers[i] = Phase6BlockWrapper(self.dus.layers[i], self.ca_layers[str(i+1)])
 
-        # Load Phase 6 trained weights (CA layers + unfrozen DUS blocks)
+        # Загрузка обученных весов Фазы 6 (ADR 100, 101, 102)
         if config.get('phase6_ckpt') and os.path.exists(config['phase6_ckpt']):
-            st = torch.load(config['phase6_ckpt'], map_location="cpu", weights_only=False)
-            weights_to_load = st.get("trainable_state", st.get("model", st))
-            res = self.load_state_dict(weights_to_load, strict=False)
-            print(f"Loaded Phase 6 weights from {config['phase6_ckpt']}: missing={len(res.missing_keys)}, unexpected={len(res.unexpected_keys)}")
+            self.load_phase6_weights(config['phase6_ckpt'])
         else:
-            print("Warning: Phase 6 checkpoint not found. CA layers are randomly initialized!")
+            print("Warning: Phase 6 checkpoint not provided or not found. CA layers are randomly initialized!")
 
         self.eval()
 
+    def load_phase6_weights(self, ckpt_path: str):
+        """Интеллектуальная нормализация и валидация чекпоинта Фазы 6."""
+        ckpt_state = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        raw_weights = ckpt_state.get("trainable_state", ckpt_state.get("model", ckpt_state)) if isinstance(ckpt_state, dict) else ckpt_state
+
+        # Нормализация ключей модели
+        model_keys = list(self.state_dict().keys())
+        norm_to_model = {normalize_key(k): k for k in model_keys}
+
+        clean_state = {}
+        for ckpt_k, v in raw_weights.items():
+            if not torch.is_tensor(v):
+                continue
+            norm_k = normalize_key(ckpt_k)
+            if norm_k in norm_to_model:
+                clean_state[norm_to_model[norm_k]] = v
+            elif ckpt_k in self.state_dict():
+                clean_state[ckpt_k] = v
+
+        if not is_state_dict_finite(clean_state):
+            print(f"[ERROR] Чекпоинт {ckpt_path} содержит NaN/Inf! Загрузка отменена.")
+            return
+
+        res = self.load_state_dict(clean_state, strict=False)
+        loaded_count = len(clean_state)
+        print(f"Loaded Phase 6 weights from {ckpt_path}: {loaded_count} tensors mapped, missing={len(res.missing_keys)}, unexpected={len(res.unexpected_keys)}")
+
+        # Диагностика загрузки слоев CA
+        ca_keys_loaded = [k for k in clean_state.keys() if "ca_layer" in k or "ca_layers" in k]
+        dus_keys_loaded = [k for k in clean_state.keys() if "dus.layers" in k and "ca_layer" not in k]
+        print(f"   -> CA weights loaded: {len(ca_keys_loaded)} tensors")
+        print(f"   -> DUS unfrozen layers loaded: {len(dus_keys_loaded)} tensors")
+
     def encode_prompt(self, input_ids_q, attention_mask_q):
         """
-        ADR 099 Implementation:
-        Contextualizes prompt Q through layers 0-11 of ModernBERT DUS at t=0.
-        Returns Z_prompt_12 used as Keys/Values for all CA layers.
+        ADR 099 & ADR 105:
+        Контекстуализация промпта Q через слои 0-11 ModernBERT DUS при t=0.
+        Ограничение self.dus.layers[:12] дает ускорение >3x и экономит HBM.
         """
         B = input_ids_q.shape[0]
         device = input_ids_q.device
@@ -395,30 +455,161 @@ class BEBLaDIIPhase6Eval(nn.Module):
 
 
 # =========================================================================
-# 4. Phase 2 ModernLatentDecoder Decoding Function
+# 5. Loss & Metrics Computation (ADR 097, 100, 105)
+# =========================================================================
+def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
+    z_clean = outputs["z_clean"].float()
+    dus_final = outputs["dus_final"].float()
+    t_actual = outputs["t_actual"].float()
+    void_mask = outputs["void_mask"].float()
+    void_embed = outputs["void_embed"].float()
+
+    target = safe_normalize(z_clean, dim=-1)
+    cos_sim = (dus_final * target).sum(dim=-1)
+    loss_el = 1.0 - cos_sim
+
+    # Dynamic Void Penalty
+    cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
+    cos_sim_target_to_void = (target * void_embed.view(1, 1, -1)).sum(dim=-1)
+    content_mask = 1.0 - void_mask
+
+    dynamic_margin = 1.0 - 0.8 * (1.0 - cos_sim_target_to_void)
+    void_penalty = F.relu(cos_sim_to_void - dynamic_margin) * content_mask
+    loss_el = loss_el + 0.5 * void_penalty
+
+    if loss_t_power > 0.0:
+        w_weighted = (1.0 - t_actual).pow(loss_t_power)
+    else:
+        w_weighted = torch.ones_like(t_actual)
+    loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
+
+    avg_cos_sim = cos_sim.mean()
+    true_void_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
+    content_to_void_sim = (cos_sim_to_void * content_mask).sum() / content_mask.sum().clamp(min=1e-8)
+
+    return loss, avg_cos_sim, true_void_sim, content_to_void_sim
+
+
+def evaluate_dataset_metrics(model, tokenizer, df_val, device, max_samples=50):
+    """
+    Вычисляет количественные метрики качества модели на валидационной выборке:
+    loss, avg_cos_sim, true_void_sim, content_to_void_sim, ca_ratio.
+    """
+    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Evaluating metrics on {min(len(df_val), max_samples)} dataset samples...")
+    model.eval()
+
+    total_loss = 0.0
+    total_cos = 0.0
+    total_void_cos = 0.0
+    total_content_cos = 0.0
+    ca_ratios = {"12": [], "24": [], "36": []}
+
+    n_samples = min(len(df_val), max_samples)
+    with torch.no_grad():
+        for idx in range(n_samples):
+            row = df_val.iloc[idx]
+            q_text = row['Q']
+            a_text = row['A']
+
+            q_enc = tokenizer(q_text, return_tensors='pt', max_length=128, truncation=True).to(device)
+            a_enc = tokenizer(a_text, return_tensors='pt', max_length=64, padding="max_length", truncation=True).to(device)
+
+            input_ids_q = q_enc.input_ids
+            attention_mask_q = q_enc.attention_mask
+            input_ids_a = a_enc.input_ids
+            attention_mask_a = a_enc.attention_mask
+
+            B, T_a = input_ids_a.shape
+
+            # Чистый таргет
+            qwen_embeds_a = model.qwen_embeddings(input_ids_a)
+            Z_A_clean, _, _ = model.encoder(qwen_embeds_a)
+            Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
+
+            # Void mask (PAD positions)
+            void_mask = (attention_mask_a == 0).float()
+            void_embed = model.void_embed.to(Z_A_clean.dtype)
+
+            # Фиксированный уровень шума t=0.5 для сопоставимости оценки
+            t_val = 0.5
+            t_actual = torch.full((B, T_a), t_val, device=device)
+            z_noisy = spherical_noise(Z_A_clean, t_actual)
+
+            # dprox
+            t_reported = torch.full((B, T_a), t_val, device=device)
+
+            # Encode prompt
+            Z_prompt_12 = model.encode_prompt(input_ids_q, attention_mask_q)
+
+            # Forward step
+            _, dus_final = model.forward_step(z_noisy, Z_prompt_12, attention_mask_q, t_actual, t_reported)
+
+            outputs = {
+                "z_clean": Z_A_clean,
+                "dus_final": dus_final,
+                "t_actual": t_actual,
+                "void_mask": void_mask,
+                "void_embed": void_embed
+            }
+
+            loss, avg_cos, true_v_cos, cont_v_cos = compute_phase6_loss(outputs)
+            total_loss += loss.item()
+            total_cos += avg_cos.item()
+            total_void_cos += true_v_cos.item()
+            total_content_cos += cont_v_cos.item()
+
+            for k in ["12", "24", "36"]:
+                ca_ratios[k].append(model.ca_layers[k].last_ca_ratio)
+
+    avg_loss = total_loss / n_samples
+    avg_cos = total_cos / n_samples
+    avg_void_cos = total_void_cos / n_samples
+    avg_content_cos = total_content_cos / n_samples
+
+    print("\n" + "="*50)
+    print("PHASE 6 VALIDATION METRICS SUMMARY (at t=0.50):")
+    print(f"  Total Loss               : {avg_loss:.4f}")
+    print(f"  Cos Sim (Z_pred vs Z_tgt): {avg_cos:.4f}")
+    print(f"  True Void Cos Sim        : {avg_void_cos:.4f}")
+    print(f"  Content-to-Void Cos Sim  : {avg_content_cos:.4f}")
+    print(f"  CA Ratio (Layer 12)      : {sum(ca_ratios['12']) / n_samples:.4f}")
+    print(f"  CA Ratio (Layer 24)      : {sum(ca_ratios['24']) / n_samples:.4f}")
+    print(f"  CA Ratio (Layer 36)      : {sum(ca_ratios['36']) / n_samples:.4f}")
+    print("="*50 + "\n")
+
+    return {
+        "loss": avg_loss,
+        "cos_sim": avg_cos,
+        "true_void_cos": avg_void_cos,
+        "content_void_cos": avg_content_cos,
+        "ca_ratio_12": sum(ca_ratios['12']) / n_samples,
+        "ca_ratio_24": sum(ca_ratios['24']) / n_samples,
+        "ca_ratio_36": sum(ca_ratios['36']) / n_samples,
+    }
+
+
+# =========================================================================
+# 6. Text Decoding & Slerp Reverse Diffusion Generation
 # =========================================================================
 def decode_latents_to_text(decoder, qwen_embed_weight, tokenizer, z):
     """
-    Decodes sequence of continuous latent vectors Z into human-readable text
-    using Phase 2 ModernLatentDecoder and tied Qwen LM Head.
+    Декодирует непрерывные векторы Z в текст с помощью ModernLatentDecoder
+    и LM-головы Qwen (Phase 2).
     """
     with torch.no_grad():
-        projected = decoder(z.float()) # [B, T, 1536]
+        projected = decoder(z.float())  # [B, T, 1536]
         logits = F.linear(projected, qwen_embed_weight.float())
         pred_ids = logits.argmax(dim=-1)
         text = tokenizer.decode(pred_ids[0], skip_special_tokens=True)
         return text
 
 
-# =========================================================================
-# 5. Reverse Diffusion Generation (Slerp)
-# =========================================================================
 def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, max_len=64, steps=25):
     print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}'")
     q_enc = tokenizer(query_text, return_tensors='pt').to(device)
 
     with torch.no_grad():
-        # ADR 099: Compute contextualized prompt cache Z_prompt_12
+        # ADR 099 & ADR 105: Contextualized prompt cache Z_prompt_12
         Z_prompt_12 = model.encode_prompt(q_enc.input_ids, q_enc.attention_mask)
 
         B = 1
@@ -432,7 +623,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         run_history = []
 
         for i in range(steps):
-            # Точная дискретная сетка с шагом 0.04, как в обучении (k / 25)
+            # Точная дискретная сетка с шагом 0.04 (k / 25), как в обучении
             t_val = round((1.0 - i * dt) / 0.04) * 0.04
             t_val = max(0.04, min(1.0, round(t_val, 4)))
             t_actual = torch.full((B, T_a), t_val, device=device)
@@ -443,9 +634,9 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
 
             h39, z_pred = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported)
 
-            # Phase 2 Decoder sequence text
+            # Phase 2 Decoder text
             step_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas)
-            # Latent Dict nearest neighbor sample (for comparison)
+            # Latent Dict nearest neighbor sample
             nn_text = tokenizer.decode(nn_ids[0][:20], skip_special_tokens=True)
 
             run_history.append({
@@ -474,7 +665,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             z_next = w_pred * z_pred + w_cur * z_canvas
             z_canvas = torch.where(theta_now > 1e-5, safe_normalize(z_next, dim=-1), safe_normalize(z_pred, dim=-1))
 
-        # Final decode on predicted z_canvas
+        # Финальное декодирование
         final_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas)
         final_sims = torch.matmul(z_canvas, latent_dict.T)
         _, final_nn_ids = final_sims.max(dim=-1)
@@ -483,7 +674,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         print(f"\n=== FINAL ANSWER (ModernLatentDecoder) ===\n{final_text}\n" + "="*42)
         print(f"=== FINAL ANSWER (LatentDict NN) ===\n{final_nn_text}\n" + "="*42)
 
-    return {'query': query_text, 'history': run_history, 'final': final_text}
+    return {'query': query_text, 'history': run_history, 'final': final_text, 'final_nn': final_nn_text}
 
 
 def generate_html(results, html_path):
@@ -508,18 +699,25 @@ def generate_html(results, html_path):
 
 
 # =========================================================================
-# 6. Main CLI
+# 7. Main Entry Point
 # =========================================================================
 def main():
-    parser = argparse.ArgumentParser(description="Phase 6 CA_Prompt Evaluation with ModernLatentDecoder")
-    parser.add_argument("--interactive", action="store_true", help="Run in interactive mode")
+    parser = argparse.ArgumentParser(description="Phase 6 CA_Prompt Evaluation with ModernLatentDecoder & Metrics")
+    parser.add_argument("--interactive", action="store_true", help="Run in interactive generation mode")
     parser.add_argument("--ckpt", type=str, default="", help="Path to CA_Prompt weights (Phase 6)")
     parser.add_argument("--steps", type=int, default=25, help="Number of Slerp diffusion steps")
     parser.add_argument("--max_len", type=int, default=64, help="Maximum generated answer length")
+    parser.add_argument("--eval_samples", type=int, default=50, help="Number of dataset samples for quantitative metric evaluation (0 to skip)")
+    parser.add_argument("--output_html", type=str, default="", help="Path to output HTML report")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Initializing Phase 6 on {device}...")
+
+    # Дефолтный путь к чекпоинту шага 9000 или переданный через CLI
+    default_ckpt_9000 = os.path.join(PROJECT_ROOT, "experiments", "phase 6", "checkpoints", "planB_phase6_checkpoints_phase6_ca_layers_step_9000.pth")
+    default_ckpt_fallback = os.path.join(PROJECT_ROOT, "experiments", "phase 6", "checkpoints", "planB_phase6_checkpoints_phase6_ca_layers_step_6000.pth")
+    target_ckpt = args.ckpt if args.ckpt else (default_ckpt_9000 if os.path.exists(default_ckpt_9000) else default_ckpt_fallback)
 
     config = {
         'qwen_path': "Qwen/Qwen2.5-1.5B",
@@ -528,7 +726,8 @@ def main():
         'phase4_path': os.path.join(PROJECT_ROOT, "experiments", "phase 4", "local_checkpoints", "phase4_step_85995.pth"),
         'phase2_decoder_path': os.path.join(PROJECT_ROOT, "experiments", "phase 2", "planB_phase2_checkpoints_decoder_step_9000.pth"),
         'sep_token_path': os.path.join(PROJECT_ROOT, "storage", "components", "sep_token.pt"),
-        'phase6_ckpt': args.ckpt if args.ckpt else os.path.join(PROJECT_ROOT, "experiments", "phase 6", "checkpoints", "planB_phase6_checkpoints_phase6_ca_layers_step_6000.pth")
+        'void_token_path': os.path.join(PROJECT_ROOT, "storage", "components", "void_token.pt"),
+        'phase6_ckpt': target_ckpt
     }
 
     tokenizer = AutoTokenizer.from_pretrained(config['qwen_path'])
@@ -547,7 +746,7 @@ def main():
     ).to(device)
     ckpt_dec = torch.load(config['phase2_decoder_path'], map_location=device, weights_only=False)
     st_dec = ckpt_dec.get("decoder", ckpt_dec)
-    clean_st_dec = {k.replace("decoder.", ""): v for k, v in st_dec.items()}
+    clean_st_dec = {normalize_key(k).replace("decoder.", ""): v for k, v in st_dec.items()}
     decoder.load_state_dict(clean_st_dec, strict=False)
     decoder.eval()
     print("ModernLatentDecoder loaded successfully.")
@@ -559,28 +758,33 @@ def main():
         print("latent_dict.pt not found! Building from fallback...")
         latent_dict = torch.load(os.path.join(PROJECT_ROOT, "BEBLaDII-planB-Phase5-Data", "latent_dict.pt"), map_location=device).float()
 
-    results = []
-
-    # Dataset sample
+    # 1. Количественная оценка метрик датасета
     ds_path = os.path.join(PROJECT_ROOT, "BEBLaDII-planB-Phase6-Data", "phase 6", "data", "train_phase6.parquet")
+    df = None
     if os.path.exists(ds_path):
         try:
             df = pd.read_parquet(ds_path)
-            if len(df) > 0:
-                sample_q = df.iloc[0]['Q']
-                res = run_generation(model, decoder, latent_dict, tokenizer, sample_q, device, max_len=args.max_len, steps=args.steps)
-                results.append(res)
+            if args.eval_samples > 0 and len(df) > 0:
+                evaluate_dataset_metrics(model, tokenizer, df, device, max_samples=args.eval_samples)
         except Exception as e:
-            print(f"Could not read dataset: {e}")
+            print(f"Dataset metrics evaluation skipped: {e}")
 
-    # Out-of-distribution prompt
+    # 2. Демонстрационная диффузионная генерация
+    results = []
+
+    if df is not None and len(df) > 0:
+        sample_q = df.iloc[0]['Q']
+        res = run_generation(model, decoder, latent_dict, tokenizer, sample_q, device, max_len=args.max_len, steps=args.steps)
+        results.append(res)
+
     ood_q = "Explain why the sky is blue using simple words."
     res = run_generation(model, decoder, latent_dict, tokenizer, ood_q, device, max_len=args.max_len, steps=args.steps)
     results.append(res)
 
-    html_path = os.path.join(PROJECT_ROOT, "experiments", "phase 6", "phase6_generation_demo.html")
+    html_path = args.output_html if args.output_html else os.path.join(PROJECT_ROOT, "experiments", "phase 6", "phase6_generation_demo.html")
     generate_html(results, html_path)
 
+    # 3. Интерактивный режим
     if args.interactive:
         while True:
             try:
@@ -594,6 +798,7 @@ def main():
                 generate_html(results, html_path)
             except KeyboardInterrupt:
                 break
+
 
 if __name__ == "__main__":
     main()

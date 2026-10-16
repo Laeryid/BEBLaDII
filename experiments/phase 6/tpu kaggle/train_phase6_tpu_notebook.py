@@ -278,7 +278,7 @@ class Config:
     output_dir      = "/kaggle/working/checkpoints/phase6_v2" if Path("/kaggle/input").exists() else os.path.join(PROJECT_ROOT, "checkpoints/phase6_v2")
     resume_from_checkpoint = False if os.environ.get("SMOKE_TEST") else True
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
-    batch_size    = 2 if os.environ.get("SMOKE_TEST") else 64
+    batch_size    = 2 if os.environ.get("SMOKE_TEST") else 64*2
     max_length_q  = 64 if os.environ.get("SMOKE_TEST") else 512
     max_length_a  = 64 if os.environ.get("SMOKE_TEST") else 512
     learning_rate = 1e-4
@@ -1406,16 +1406,16 @@ def main():
                         raise RuntimeError(f"GCS client failed and gsutil unavailable to download {latest_ckpt}")
 
                 ckpt_state = torch.load(local_ckpt, map_location="cpu", weights_only=False)
-                
+
                 # ИНТЕЛЛЕКТУАЛЬНЫЙ МАППИНГ КЛЮЧЕЙ (FSDP / torch.compile proof)
                 model_keys = list(model.state_dict().keys())
-                
+
                 def normalize_key(k):
                     return k.replace("._orig_module.", ".").replace("_orig_module.", "").replace(".module.", ".").replace("module.", "")
-                
+
                 norm_to_model = {normalize_key(k): k for k in model_keys}
                 clean_state = {}
-                
+
                 raw_weights = ckpt_state.get("trainable_state", ckpt_state.get("model", ckpt_state)) if isinstance(ckpt_state, dict) else ckpt_state
                 for ckpt_k, v in raw_weights.items():
                     if not torch.is_tensor(v):
@@ -1433,13 +1433,13 @@ def main():
                     continue
 
                 load_info = model.load_state_dict(clean_state, strict=False)
-                
+
                 # Проверка: все ли обучаемые параметры загружены?
                 missing_trainable = [k for k in load_info.missing_keys if k in dict(model.named_parameters()) and dict(model.named_parameters())[k].requires_grad]
                 if missing_trainable:
                     print(f"[Resume ERROR] Не загружены обучаемые веса (FSDP mismatch?): {missing_trainable[:5]}...")
                     sys.exit(1)
-                    
+
                 ema_tracker = EMATracker(model, decay=args.ema_decay)
                 global_step = step
                 if isinstance(ckpt_state, dict) and "metrics_history" in ckpt_state:
@@ -1468,14 +1468,14 @@ def main():
             if session_step == 1 or global_step % 20 == 0:
                 quantized_global = (global_step // 20) * 20
                 quantized_session = (session_step // 20) * 20
-                
+
                 # Глобальный прогрев (зависит от номера шага)
                 lr_warmup = min(1.0, max(0.05, quantized_global / args.warmup_steps))
-                
+
                 # Сессионный прогрев (ребилд AdamW-дисперсии после "амнезии" при resume)
                 # Увеличена длительность до 300 шагов, старт с 1%
                 session_warmup = min(1.0, max(0.01, quantized_session / 300.0))
-                
+
                 eff_lr_factor = min(lr_warmup, session_warmup)
                 for group, base_lr in zip(optimizer.param_groups, base_lrs):
                     group['lr'] = base_lr * eff_lr_factor
