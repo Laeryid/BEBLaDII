@@ -33,6 +33,11 @@ class TPUASTVisitor(ast.NodeVisitor):
         self.has_ema_apply: bool = False
         self.in_val_function: bool = False
         self.has_val_eval: bool = False
+        self.in_train_loop: bool = False
+        self.saw_forward_in_loop: bool = False
+        self.saw_backward_in_loop: bool = False
+        self.saw_mark_step_in_loop: bool = False
+        self.saw_fsdp_in_main: bool = False
 
     def visit_Assign(self, node: ast.Assign):
         # Check: os.environ["XLA_USE_BF16"] = "1"
@@ -52,12 +57,33 @@ class TPUASTVisitor(ast.NodeVisitor):
                                 node.lineno,
                                 "Remove XLA_USE_BF16=1. Keep master weights and optimizer buffers in torch.float32."
                             ))
+            elif isinstance(target, ast.Name) and target.id == "outputs" and self.in_train_loop:
+                self.saw_forward_in_loop = True
+            elif isinstance(target, ast.Name) and target.id == "global_step":
+                # Check: global_step = step during resume without offset
+                if isinstance(node.value, ast.Name) and node.value.id in ("step", "latest_step"):
+                    self.findings.append(Finding(
+                        "RESUME_STEP_COLLISION",
+                        "WARNING",
+                        f"Assigning 'global_step = {node.value.id}' during resume will immediately re-trigger validation and checkpoint saving on step 1 if step is a multiple of interval.",
+                        node.lineno,
+                        f"Use 'global_step = {node.value.id} + 1' so the already-finished checkpoint step is not re-executed."
+                    ))
         self.generic_visit(node)
 
     def visit_For(self, node: ast.For):
         self.in_loop += 1
         self.loop_stack.append(node)
+        iter_str = ast.unparse(node.iter) if hasattr(ast, "unparse") else ""
+        is_train_dl = "dataloader" in iter_str and "val" not in iter_str
+        prev_train = self.in_train_loop
+        if is_train_dl:
+            self.in_train_loop = True
+            self.saw_forward_in_loop = False
+            self.saw_backward_in_loop = False
+            self.saw_mark_step_in_loop = False
         self.generic_visit(node)
+        self.in_train_loop = prev_train
         self.loop_stack.pop()
         self.in_loop -= 1
 
@@ -74,10 +100,25 @@ class TPUASTVisitor(ast.NodeVisitor):
         prev_has_eval = self.has_val_eval
         prev_in_loop = self.in_loop
         prev_loop_stack = self.loop_stack
+        prev_train_loop = self.in_train_loop
 
         # Function definition resets loop context for its body
         self.in_loop = 0
         self.loop_stack = []
+        self.in_train_loop = False
+
+        if node.name == "apply_shadow":
+            code_str = ast.unparse(node) if hasattr(ast, "unparse") else ""
+            if ".clone()" in code_str and ".cpu()" not in code_str:
+                self.findings.append(Finding(
+                    "EMA_BACKUP_ON_DEVICE",
+                    "WARNING",
+                    "EMATracker.apply_shadow clones parameter backups in TPU HBM instead of host CPU RAM.",
+                    node.lineno,
+                    "Use param.detach().cpu().clone() in apply_shadow to save ~0.7 GB of TPU HBM during validation."
+                ))
+        if node.name == "main":
+            self.saw_fsdp_in_main = False
 
         func_name_lower = node.name.lower()
         if any(w in func_name_lower for w in ["val", "eval"]):
@@ -102,6 +143,7 @@ class TPUASTVisitor(ast.NodeVisitor):
         self.has_val_eval = prev_has_eval
         self.in_loop = prev_in_loop
         self.loop_stack = prev_loop_stack
+        self.in_train_loop = prev_train_loop
 
     def visit_If(self, node: ast.If):
         # Track if we are inside a master ordinal check (e.g. if rank == 0 or xm.is_master_ordinal())
@@ -117,6 +159,17 @@ class TPUASTVisitor(ast.NodeVisitor):
                     f"Dynamic random condition with .item() inside training loop: '{test_str[:60]}' (ADR 079).",
                     node.lineno,
                     "Use deterministic in-graph execution (e.g. fixed self-conditioning mask sc_mask) or CPU sampling."
+                ))
+
+        # Check: synchronous tensor finiteness check between forward and backward
+        if self.in_train_loop and self.saw_forward_in_loop and not self.saw_backward_in_loop:
+            if any(k in test_str for k in ["isfinite(loss)", "isnan(loss)", "isinf(loss)"]):
+                self.findings.append(Finding(
+                    "MID_STEP_LOSS_SYNC",
+                    "WARNING",
+                    f"Synchronous '{test_str}' between forward and backward splits XLA graph and retains all forward activations in HBM.",
+                    node.lineno,
+                    "Guard weights in-graph via torch.where(is_safe, ...) and check loss finiteness inside xm.add_step_closure."
                 ))
 
         prev_master = self.in_master_check
@@ -137,6 +190,76 @@ class TPUASTVisitor(ast.NodeVisitor):
                 func_name = f"{node.func.value.id}.{attr_name}"
             else:
                 func_name = attr_name
+
+        full_call_str = ast.unparse(node) if hasattr(ast, "unparse") else ""
+
+        # Track FSDP vs load_state_dict order
+        if "SpmdFullyShardedDataParallel" in func_name or "SpmdFullyShardedDataParallel" in full_call_str:
+            self.saw_fsdp_in_main = True
+        if self.saw_fsdp_in_main and func_name == "model.load_state_dict":
+            self.findings.append(Finding(
+                "RESUME_AFTER_FSDP",
+                "WARNING",
+                "model.load_state_dict() called AFTER SpmdFullyShardedDataParallel wrapping (ADR 006).",
+                node.lineno,
+                "Load resume checkpoint on CPU BEFORE model.to(device) and SpmdFullyShardedDataParallel wrapping."
+            ))
+
+        # Track backward, mark_step, and step closures inside train loop
+        if self.in_train_loop:
+            if attr_name == "backward":
+                self.saw_backward_in_loop = True
+                self.saw_mark_step_in_loop = False
+            elif func_name in ("xm.mark_step", "torch_xla.sync") and self.saw_backward_in_loop:
+                self.saw_mark_step_in_loop = True
+            elif self.saw_mark_step_in_loop and "content_cos_stats(outputs)" in full_call_str:
+                self.findings.append(Finding(
+                    "OUTPUTS_ALIVE_ACROSS_MARK_STEP",
+                    "WARNING",
+                    "Using 'outputs' after xm.mark_step() forces XLA to retain [B, T, D] output buffers in HBM across step boundary.",
+                    node.lineno,
+                    "Compute content_cos_stats(outputs) and 'del outputs' BEFORE calling xm.mark_step()."
+                ))
+            elif self.saw_mark_step_in_loop and (func_name == "xm.add_step_closure" or attr_name == "add_step_closure"):
+                has_step_tensors = any(
+                    any(k in ast.unparse(arg) for k in ["loss", "grad", "norm", "outputs", "cos", "cm", "t_global"])
+                    for arg in node.args
+                ) if hasattr(ast, "unparse") else True
+                if has_step_tensors:
+                    self.findings.append(Finding(
+                        "CLOSURE_AFTER_MARK_STEP",
+                        "WARNING",
+                        "xm.add_step_closure() with step tensors called AFTER the main xm.mark_step() delays execution and leaks tensor buffers.",
+                        node.lineno,
+                        "Register training step closures BEFORE the main training xm.mark_step()."
+                    ))
+
+        # Check: Appending bare tensors to history / metrics collections
+        if attr_name == "append":
+            caller_str = ast.unparse(node.func.value) if hasattr(ast, "unparse") and hasattr(node.func, "value") else ""
+            if any(k in caller_str.lower() for k in ["history", "losses", "metrics"]):
+                for arg in node.args:
+                    if isinstance(arg, ast.Dict):
+                        for v in arg.values:
+                            v_str = ast.unparse(v) if hasattr(ast, "unparse") else ""
+                            if (any(v_str == name for name in ["loss", "outputs", "grad_norm"]) or
+                                (any(k in v_str for k in ["loss", "cos", "norm", "sim"]) and
+                                 not any(k in v_str for k in [".item()", "float(", "int(", ".cpu()", ".tolist()", "dict("]))):
+                                self.findings.append(Finding(
+                                    "TENSOR_IN_HISTORY_LEAK",
+                                    "CRITICAL",
+                                    f"Directly appending un-detached/un-converted tensor '{v_str}' to '{caller_str}' leaks HBM memory indefinitely.",
+                                    node.lineno,
+                                    "Convert tensor to Python float via .item() or move to CPU before appending to history."
+                                ))
+                    elif isinstance(arg, ast.Name) and arg.id in ("loss", "grad_norm", "outputs"):
+                        self.findings.append(Finding(
+                            "TENSOR_IN_HISTORY_LEAK",
+                            "CRITICAL",
+                            f"Directly appending un-detached tensor '{arg.id}' to '{caller_str}' leaks HBM memory indefinitely.",
+                            node.lineno,
+                            "Convert tensor to Python float via .item() or move to CPU before appending to history."
+                        ))
 
         # Check: torch._dynamo.disable()
         if "disable" in attr_name and "dynamo" in func_name:

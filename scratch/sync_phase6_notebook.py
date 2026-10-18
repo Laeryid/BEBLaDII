@@ -46,6 +46,12 @@ code_config = extract_block("class Config:", "args = Config()")
 nb["cells"][idx_config]["source"] = to_lines(code_config)
 print(f"Synced Config block to cell {idx_config}")
 
+# 2b. EMATracker
+idx_ema = find_cell("class EMATracker:")
+code_ema = extract_block("class EMATracker:", "class QADataset(")
+nb["cells"][idx_ema]["source"] = to_lines(code_ema)
+print(f"Synced EMATracker block to cell {idx_ema}")
+
 # 3. spherical_noise
 idx_noise = find_cell("def spherical_noise(")
 code_noise = extract_block("def spherical_noise(", "class AdaLNModulation(")

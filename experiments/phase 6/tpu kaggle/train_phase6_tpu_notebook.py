@@ -282,7 +282,7 @@ class Config:
     output_dir      = "/kaggle/working/checkpoints/phase6_v2" if Path("/kaggle/input").exists() else os.path.join(PROJECT_ROOT, "checkpoints/phase6_v2")
     resume_from_checkpoint = False if os.environ.get("SMOKE_TEST") else True
     gcs_checkpoint_dir = "gs://bebladii-weigths-us/planB/phase6/checkpoints/"
-    batch_size    = 2 if os.environ.get("SMOKE_TEST") else 64*2
+    batch_size    = 2 if os.environ.get("SMOKE_TEST") else 64
     max_length_q  = 64 if os.environ.get("SMOKE_TEST") else 512
     max_length_a  = 64 if os.environ.get("SMOKE_TEST") else 512
     learning_rate = 1e-4
@@ -300,7 +300,7 @@ class Config:
     use_prompt_sa = True  # Prompt-SA + RoPE перед CA
     val_num_samples = 80 # Размер валидационной выборки
     wandb_project = "BEBLaDII-Phase6-Kaggle"
-    run_diagnosis_first  = True  # Запуск 1-шаговой изоляционной диагностики NaN перед обучением
+    run_diagnosis_first  = False # Диагностика успешно пройдена (156/156 finite), отключена для экономии HBM и времени старта
     stop_after_diagnosis = False # Не прерывать после успешной диагностики, продолжать обучение
 
 args = Config()
@@ -339,7 +339,7 @@ class EMATracker:
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
-                    self.backup[name] = param.detach().clone()
+                    self.backup[name] = param.detach().cpu().clone()
                     param.copy_(self.shadow[name].to(param.dtype))
         xm.mark_step()
 
@@ -347,7 +347,7 @@ class EMATracker:
         with torch.no_grad():
             for name, param in model.named_parameters():
                 if param.requires_grad:
-                    param.copy_(self.backup[name])
+                    param.copy_(self.backup[name].to(device=param.device, dtype=param.dtype))
         self.backup = {}
         xm.mark_step()
 
@@ -1331,74 +1331,11 @@ def main():
         print(f"Failed to load dataset: {e}")
         sys.exit(1)
 
-    model = BEBLaDIIPhase6(args).to(device)
-
-    def shard_output(output, mesh): return None
-    for key in list(model.ca_layers.keys()):
-        layer_idx = int(key) - 1
-        model.dus.layers[layer_idx].ca_layer = model.ca_layers[key]
-
-    unfreeze_k = getattr(args, "unfreeze_k_after_ca", 0)
-    if unfreeze_k > 0:
-        ca_indices = [11, 23, 35]
-        unfreeze_indices = []
-        for idx in ca_indices:
-            for k in range(1, unfreeze_k + 1):
-                if idx + k < len(model.dus.layers):
-                    unfreeze_indices.append(idx + k)
-        for i in unfreeze_indices:
-            wrapped = SpmdFullyShardedDataParallel(model.dus.layers[i], mesh=mesh, shard_output=shard_output)
-            model.dus.layers[i] = wrapped
-
-    ema_tracker = EMATracker(model, decay=args.ema_decay)
-    ca_out_params, ca_qkv_params, ca_other_params = [], [], []
-    for name, p in model.ca_layers.named_parameters():
-        if p.requires_grad:
-            if "out_proj" in name:
-                ca_out_params.append(p)
-            elif "q_proj" in name or "k_proj" in name or "v_proj" in name or "qkv_proj" in name:
-                ca_qkv_params.append(p)
-            else:
-                ca_other_params.append(p)
-    dus_params = []
-    for name, p in model.dus.named_parameters():
-        if p.requires_grad and "ca_layer" not in name:
-            dus_params.append(p)
-
-    trainable_params = ca_out_params + ca_qkv_params + ca_other_params + dus_params
-
-    optimizer = torch.optim.AdamW([
-        {'params': ca_out_params, 'lr': 2e-4},     # снижен с 5e-4 для стабильности после warmup
-        {'params': ca_qkv_params, 'lr': 8e-5},     # снижен с 2e-4
-        {'params': ca_other_params, 'lr': 2.5e-5}, # снижен с 5e-5
-        {'params': dus_params, 'lr': 2.5e-5}       # снижен с 5e-5
-    ])
-
-    if getattr(args, "run_diagnosis_first", False):
-        diag_batch = next(iter(dataloader))
-        run_nan_diagnosis(
-            model,
-            diag_batch,
-            device,
-            mesh,
-            ca_params=ca_out_params + ca_qkv_params + ca_other_params,
-            dus_params=dus_params
-        )
-        if getattr(args, "stop_after_diagnosis", False):
-            print("[Diagnosis] stop_after_diagnosis=True: работа завершена для анализа логов.")
-            return
-        optimizer.zero_grad(set_to_none=True)
-        xm.mark_step()
-
-    model.train()
+    model = BEBLaDIIPhase6(args)
     global_step = 0
     metrics_history = []
-    start_time = time.time()
-    checkpoints_saved = 0
-    time_limit_seconds = 9.0 * 3600  # 9 часов для Kaggle TPU
-    base_lrs = [group['lr'] for group in optimizer.param_groups]
-    session_step = 0
 
+    # Загрузка чекпоинта Resume на CPU ДО переноса на TPU и оборачивания в SpmdFullyShardedDataParallel (ADR 006)
     if args.resume_from_checkpoint and args.gcs_checkpoint_dir:
         available_ckpts = get_gcs_checkpoints(args.gcs_checkpoint_dir)
         resumed = False
@@ -1459,13 +1396,13 @@ def main():
                     print(f"[Resume ERROR] Не загружены обучаемые веса (FSDP mismatch?): {missing_trainable[:5]}...")
                     sys.exit(1)
 
-                ema_tracker = EMATracker(model, decay=args.ema_decay)
-                global_step = step
+                # Продолжаем со следующего шага после сохраненного, чтобы не дублировать валидацию и чекпоинт на 1-м шаге
+                global_step = step + 1
                 if isinstance(ckpt_state, dict) and "metrics_history" in ckpt_state:
                     metrics_history = ckpt_state["metrics_history"]
                     print(f"[Resume] Восстановлена история метрик ({len(metrics_history)} записей).")
                 resumed = True
-                print(f"Успешно возобновлено обучение с валидного чекпоинта {latest_ckpt} (шаг {global_step})")
+                print(f"Успешно возобновлено обучение с валидного чекпоинта {latest_ckpt} (продолжаем с шага {global_step})")
                 if os.path.exists(local_ckpt):
                     os.remove(local_ckpt)
                 break
@@ -1478,10 +1415,76 @@ def main():
         if not resumed and available_ckpts:
             print("[Resume] Ни один из чекпоинтов на GCS не прошел проверку на валидность (все содержали NaN). Стартуем с шага 0.")
 
-    nan_streak = 0
+    model = model.to(device)
+
+    def shard_output(output, mesh): return None
+    for key in list(model.ca_layers.keys()):
+        layer_idx = int(key) - 1
+        model.dus.layers[layer_idx].ca_layer = model.ca_layers[key]
+
+    unfreeze_k = getattr(args, "unfreeze_k_after_ca", 0)
+    if unfreeze_k > 0:
+        ca_indices = [11, 23, 35]
+        unfreeze_indices = []
+        for idx in ca_indices:
+            for k in range(1, unfreeze_k + 1):
+                if idx + k < len(model.dus.layers):
+                    unfreeze_indices.append(idx + k)
+        for i in unfreeze_indices:
+            wrapped = SpmdFullyShardedDataParallel(model.dus.layers[i], mesh=mesh, shard_output=shard_output)
+            model.dus.layers[i] = wrapped
+
+    ema_tracker = EMATracker(model, decay=args.ema_decay)
+    ca_out_params, ca_qkv_params, ca_other_params = [], [], []
+    for name, p in model.ca_layers.named_parameters():
+        if p.requires_grad:
+            if "out_proj" in name:
+                ca_out_params.append(p)
+            elif "q_proj" in name or "k_proj" in name or "v_proj" in name or "qkv_proj" in name:
+                ca_qkv_params.append(p)
+            else:
+                ca_other_params.append(p)
+    dus_params = []
+    for name, p in model.dus.named_parameters():
+        if p.requires_grad and "ca_layer" not in name:
+            dus_params.append(p)
+
+    trainable_params = ca_out_params + ca_qkv_params + ca_other_params + dus_params
+
+    optimizer = torch.optim.AdamW([
+        {'params': ca_out_params, 'lr': 2e-4},     # снижен с 5e-4 для стабильности после warmup
+        {'params': ca_qkv_params, 'lr': 8e-5},     # снижен с 2e-4
+        {'params': ca_other_params, 'lr': 2.5e-5}, # снижен с 5e-5
+        {'params': dus_params, 'lr': 2.5e-5}       # снижен с 5e-5
+    ])
+
+    if getattr(args, "run_diagnosis_first", False):
+        diag_batch = next(iter(dataloader))
+        run_nan_diagnosis(
+            model,
+            diag_batch,
+            device,
+            mesh,
+            ca_params=ca_out_params + ca_qkv_params + ca_other_params,
+            dus_params=dus_params
+        )
+        if getattr(args, "stop_after_diagnosis", False):
+            print("[Diagnosis] stop_after_diagnosis=True: работа завершена для анализа логов.")
+            return
+        optimizer.zero_grad(set_to_none=True)
+        xm.mark_step()
+
+    model.train()
+    start_time = time.time()
+    checkpoints_saved = 0
+    time_limit_seconds = 9.0 * 3600  # 9 часов для Kaggle TPU
+    base_lrs = [group['lr'] for group in optimizer.param_groups]
+    session_step = 0
+    nan_state = {"streak": 0, "abort": False}
+
     for epoch in range(args.epochs):
         for batch in dataloader:
-            if global_step >= args.max_steps: return
+            if global_step >= args.max_steps or nan_state["abort"]: return
 
             session_step += 1
             # Ступенчатый прогрев LR и архитектурного сигнала (шаг 20)
@@ -1522,19 +1525,14 @@ def main():
             check_tensor_nan("dus_final", outputs["dus_final"], global_step)
             check_tensor_nan("loss", loss, global_step)
 
-            if not torch.isfinite(loss):
-                nan_streak += 1
-                print(f"\n[WARN] Шаг {global_step}: Обнаружен не-конечный loss (streak: {nan_streak}). "
-                      f"Пропуск backward и шага оптимизатора для защиты весов модели.")
-                if nan_streak >= 20:
-                    print(f"\n[ABORT] Превышен лимит последовательных не-конечных loss ({nan_streak} подряд). "
-                          f"Прерывание обучения для сохранения квоты TPU.")
-                    return
-                optimizer.zero_grad(set_to_none=True)
-                global_step += 1
-                xm.mark_step()
-                continue
-            nan_streak = 0
+            # Вычисляем статистики контента и освобождаем тяжелый словарь outputs ДО backward/mark_step,
+            # чтобы XLA не удерживал буферы [B, T, D] (~0.8 ГБ) живыми после завершения шага
+            with torch.no_grad():
+                cp, cb, cm = content_cos_stats(outputs)
+                cp_det = cp.detach()
+                cm_det = cm.detach()
+                t_global_det = outputs["t_global"].detach()
+            del outputs, cb
 
             loss.backward()
 
@@ -1547,15 +1545,17 @@ def main():
                     if p.requires_grad and p.grad is not None:
                         check_tensor_nan(f"grad.{name}", p.grad, global_step)
 
-            # In-Place поэлементная санитизация: изолирует единичные стохастические выбросы
-            # и гарантирует, что остальные слои модели продолжают обучение
+            # In-Graph защита от не-конечного loss и стохастических выбросов без разрыва графа XLA:
+            is_loss_finite = torch.isfinite(loss)
+            loss_mask_f = is_loss_finite.to(torch.float32)
             for p in trainable_params:
                 if p.grad is not None:
                     p.grad.nan_to_num_(nan=0.0, posinf=1.0, neginf=-1.0)
+                    p.grad.mul_(loss_mask_f.to(p.grad.dtype))
 
             # Клиппинг градиентов после редукции и санитизации
             grad_norm = torch.nn.utils.clip_grad_norm_(trainable_params, max_norm=1.0)
-            is_finite = torch.isfinite(grad_norm)
+            is_finite = is_loss_finite & torch.isfinite(grad_norm)
             is_safe = is_finite & (grad_norm <= 50.0)
 
             # Шаг оптимизатора (градиенты уже редуцированы через xm.reduce_gradients)
@@ -1565,28 +1565,33 @@ def main():
             ema_tracker.update(model, is_safe=is_safe)
             ema_tracker.pace_pullback(model, alpha=args.pace_alpha, is_safe=is_safe)
 
-            xm.mark_step()
-
-            cp, cb, cm = content_cos_stats(outputs)
-
-            try:
-                op12 = _ca_inner(model.ca_layers["12"]).out_proj.weight.detach().abs().mean()
-                op36 = _ca_inner(model.ca_layers["36"]).out_proj.weight.detach().abs().mean()
-                qp36 = _ca_inner(model.ca_layers["36"]).q_proj.weight.detach().abs().mean()
-            except Exception:
-                op12 = torch.tensor(0.0)
-                op36 = torch.tensor(0.0)
-                qp36 = torch.tensor(0.0)
-
-            # ca_ratio_* = ||ca_out|| / ||A|| (тензоры, без .item() в графе XLA)
-            ratio12 = _ca_inner(model.ca_layers["12"]).last_ca_ratio
-            ratio24 = _ca_inner(model.ca_layers["24"]).last_ca_ratio
-            ratio36 = _ca_inner(model.ca_layers["36"]).last_ca_ratio
-
             if global_step % args.log_steps == 0:
+                try:
+                    op12 = _ca_inner(model.ca_layers["12"]).out_proj.weight.detach().abs().mean()
+                    op36 = _ca_inner(model.ca_layers["36"]).out_proj.weight.detach().abs().mean()
+                    qp36 = _ca_inner(model.ca_layers["36"]).q_proj.weight.detach().abs().mean()
+                except Exception:
+                    op12 = torch.tensor(0.0)
+                    op36 = torch.tensor(0.0)
+                    qp36 = torch.tensor(0.0)
+
+                ratio12 = _ca_inner(model.ca_layers["12"]).last_ca_ratio
+                ratio24 = _ca_inner(model.ca_layers["24"]).last_ca_ratio
+                ratio36 = _ca_inner(model.ca_layers["36"]).last_ca_ratio
+
                 def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36, gn_t, lr_out, lr_qkv, lr_dus):
+                    l_val = l.item()
+                    if not math.isfinite(l_val):
+                        nan_state["streak"] += 1
+                        print(f"\n[WARN] Шаг {s}: Зафиксирован не-конечный loss (streak: {nan_state['streak']}). Градиенты были занулены in-graph.")
+                        if nan_state["streak"] >= 20:
+                            print(f"\n[ABORT] Превышен лимит не-конечных loss ({nan_state['streak']}). Остановка обучения.")
+                            nan_state["abort"] = True
+                        return
+                    nan_state["streak"] = 0
+
                     log_dict = {
-                        "loss": l.item(),
+                        "loss": l_val,
                         "cos_sim": c.item(),
                         "void_cos_sim": vc.item(),
                         "content_to_void_sim": cc.item(),
@@ -1622,7 +1627,7 @@ def main():
                 lr_out_val = optimizer.param_groups[0]['lr']
                 lr_qkv_val = optimizer.param_groups[1]['lr']
                 lr_dus_val = optimizer.param_groups[3]['lr']
-                xm.add_step_closure(log_step, args=(global_step, loss, avg_cos_sim, true_void_sim, content_to_void_sim, warmup_factor, op12, op36, qp36, cp.detach(), cm.detach(), outputs["t_global"].detach(), ratio12, ratio24, ratio36, grad_norm.detach(), lr_out_val, lr_qkv_val, lr_dus_val))
+                xm.add_step_closure(log_step, args=(global_step, loss.detach(), avg_cos_sim.detach(), true_void_sim.detach(), content_to_void_sim.detach(), warmup_factor.detach(), op12, op36, qp36, cp_det, cm_det, t_global_det, ratio12, ratio24, ratio36, grad_norm.detach(), lr_out_val, lr_qkv_val, lr_dus_val))
 
             if global_step <= 10 and GLOBAL_NAN_CHECKS:
                 stacked_nan = torch.stack(GLOBAL_NAN_CHECKS)
@@ -1640,6 +1645,9 @@ def main():
                 GLOBAL_NAN_CHECKS.clear()
                 GLOBAL_NAN_NAMES.clear()
 
+            del cp_det, cm_det, t_global_det, loss, avg_cos_sim, true_void_sim, content_to_void_sim, grad_norm
+            xm.mark_step()
+
             if val_dataloader is not None and global_step % args.val_steps == 0 and global_step > 0:
                 run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step, metrics_history=metrics_history)
 
@@ -1651,7 +1659,6 @@ def main():
                 trainable_state = {k: v for k, v in state_dict.items() if k in named_params and named_params[k].requires_grad}
 
                 is_weights_finite = is_state_dict_finite(trainable_state)
-                is_loss_finite = torch.isfinite(loss)
                 save_payload = {
                     "trainable_state": trainable_state,
                     **trainable_state,
@@ -1660,16 +1667,14 @@ def main():
                 }
                 # Сохраняем чекпоинт:
                 xm.save(save_payload, ckpt_path)
-                ema_tracker.restore(model)
                 if args.gcs_checkpoint_dir:
                     xm.add_step_closure(sync_to_gcs_and_delete, args=(ckpt_path, args.gcs_checkpoint_dir, True))
+                ema_tracker.restore(model)
 
                 if not is_weights_finite:
                     print(f"\n[ABORT] На шаге {global_step} обнаружены NaN/Inf в весах модели! "
                           f"Аварийный чекпоинт сохранен для диагностики. Обучение прервано для сохранения квоты TPU.")
                     return
-                elif not is_loss_finite:
-                    print(f"\n[WARN] На шаге {global_step} зафиксирован не-конечный loss текущего шага, но веса валидны. Обучение продолжается.")
 
                 checkpoints_saved += 1
                 elapsed = time.time() - start_time

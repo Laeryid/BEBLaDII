@@ -1083,6 +1083,18 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 106: Phase 6 Checkpoint Abort Decoupling, Beta Sampler NaN Sanitization, and Consecutive NaN Guard"
+    },
+    "decisions/107_phase6_tpu_hbm_program_reservation_and_skill_calibration.md": {
+      "description": "ADR 107: Phase 6 TPU HBM Program Reservation Fix, In-Graph Loss Guard, CPU Resume before FSDP, and TPU Skill Validator Calibration (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/091_global_scheduled_identity_gate.md",
+        "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md",
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 107: Phase 6 TPU HBM Program Reservation Fix, In-Graph Loss Guard, CPU Resume before FSDP, and TPU Skill Validator Calibration"
     }
   },
   "knowledge_system": {
