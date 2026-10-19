@@ -506,6 +506,12 @@ class CAPromptLayer(nn.Module):
         k = k.view(B, -1, heads, head_dim).transpose(1, 2)
         v = v.view(B, -1, heads, head_dim).transpose(1, 2)
 
+        # RoPE in Cross-Attention: provide positional sensitivity to canvas queries and prompt keys
+        cos_q, sin_q = self.rope_sa(q, T_a)
+        cos_k, sin_k = self.rope_sa(k, k.shape[2])
+        q = (q * cos_q) + (rotate_half(q) * sin_q)
+        k = (k * cos_k) + (rotate_half(k) * sin_k)
+
         attn_mask = None
         if mask_Q is not None:
             # Безопасная аддитивная float-маска для TPU XLA (ADR 103):
@@ -1010,6 +1016,30 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     import torch.nn.functional as F
     void_penalty = F.relu(cos_sim_to_void - dynamic_margin) * content_mask
     loss_el = loss_el + 0.5 * void_penalty
+
+    # --- Repulsive Anti-Barycenter & Positional Diversity Loss (ADR 108) ---
+    content_mask_3d = content_mask.unsqueeze(-1)
+    total_content_toks = content_mask.sum().clamp(min=1.0)
+    global_bary = safe_normalize((target * content_mask_3d).sum(dim=(0, 1), keepdim=True) / total_content_toks, dim=-1).detach()
+    cos_pred_gbary = (dus_final * global_bary).sum(dim=-1)
+    cos_tgt_gbary = (target * global_bary).sum(dim=-1)
+    global_bary_penalty = F.relu(cos_pred_gbary - (cos_tgt_gbary + 0.05)) * content_mask
+
+    sample_content_toks = content_mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1.0)
+    pred_sample_bary = safe_normalize((dus_final * content_mask_3d).sum(dim=1, keepdim=True) / sample_content_toks, dim=-1).detach()
+    tgt_sample_bary = safe_normalize((target * content_mask_3d).sum(dim=1, keepdim=True) / sample_content_toks, dim=-1).detach()
+    cos_pred_sbary = (dus_final * pred_sample_bary).sum(dim=-1)
+    cos_tgt_sbary = (target * tgt_sample_bary).sum(dim=-1)
+    sample_bary_penalty = F.relu(cos_pred_sbary - (cos_tgt_sbary + 0.05)) * content_mask
+
+    adj_mask = content_mask[:, :-1] * content_mask[:, 1:]
+    cos_pred_adj = (dus_final[:, :-1, :] * dus_final[:, 1:, :]).sum(dim=-1)
+    cos_tgt_adj = (target[:, :-1, :] * target[:, 1:, :]).sum(dim=-1)
+    adj_repulsion = F.relu(cos_pred_adj - (cos_tgt_adj + 0.05)) * adj_mask
+    adj_repulsion_padded = F.pad(adj_repulsion, (0, 1), value=0.0)
+
+    bary_penalty = 0.5 * (global_bary_penalty + sample_bary_penalty + adj_repulsion_padded)
+    loss_el = loss_el + bary_penalty
     # -------------------------
 
     # loss_t_power > 0 -> (1 - t_actual)^power, иначе равномерный вес 1.0
@@ -1372,7 +1402,7 @@ def main():
                 norm_to_model = {normalize_key(k): k for k in model_keys}
                 clean_state = {}
 
-                raw_weights = ckpt_state.get("trainable_state", ckpt_state.get("model", ckpt_state)) if isinstance(ckpt_state, dict) else ckpt_state
+                raw_weights = ckpt_state.get("live_trainable_state", ckpt_state.get("trainable_state", ckpt_state.get("model", ckpt_state))) if isinstance(ckpt_state, dict) else ckpt_state
                 for ckpt_k, v in raw_weights.items():
                     if not torch.is_tensor(v):
                         continue
@@ -1435,6 +1465,16 @@ def main():
             model.dus.layers[i] = wrapped
 
     ema_tracker = EMATracker(model, decay=args.ema_decay)
+    # Восстановление тени EMA из сохраненного состояния (если доступно)
+    if args.resume_from_checkpoint and args.gcs_checkpoint_dir and 'ckpt_state' in locals() and isinstance(ckpt_state, dict):
+        ema_shadow_to_load = ckpt_state.get("trainable_state", ckpt_state.get("ema_state", None))
+        if isinstance(ema_shadow_to_load, dict):
+            for k, v in ema_shadow_to_load.items():
+                norm_k = normalize_key(k)
+                target_k = norm_to_model.get(norm_k, k)
+                if target_k in ema_tracker.shadow and torch.is_tensor(v):
+                    ema_tracker.shadow[target_k].copy_(v.to(device=ema_tracker.shadow[target_k].device, dtype=torch.float32))
+
     ca_out_params, ca_qkv_params, ca_other_params = [], [], []
     for name, p in model.ca_layers.named_parameters():
         if p.requires_grad:
@@ -1452,10 +1492,10 @@ def main():
     trainable_params = ca_out_params + ca_qkv_params + ca_other_params + dus_params
 
     optimizer = torch.optim.AdamW([
-        {'params': ca_out_params, 'lr': 2e-4},     # снижен с 5e-4 для стабильности после warmup
-        {'params': ca_qkv_params, 'lr': 8e-5},     # снижен с 2e-4
-        {'params': ca_other_params, 'lr': 2.5e-5}, # снижен с 5e-5
-        {'params': dus_params, 'lr': 2.5e-5}       # снижен с 5e-5
+        {'params': ca_out_params, 'lr': 2e-4, 'weight_decay': 0.0},     # снижен с 5e-4 для стабильности после warmup, без decay
+        {'params': ca_qkv_params, 'lr': 8e-5, 'weight_decay': 0.0},     # снижен с 2e-4, без decay
+        {'params': ca_other_params, 'lr': 2.5e-5, 'weight_decay': 0.0}, # снижен с 5e-5, без decay
+        {'params': dus_params, 'lr': 2.5e-5, 'weight_decay': 0.01}       # снижен с 5e-5
     ])
 
     if getattr(args, "run_diagnosis_first", False):
@@ -1652,15 +1692,19 @@ def main():
                 run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step, metrics_history=metrics_history)
 
             if global_step % args.save_steps == 0 and global_step > 0:
-                ema_tracker.apply_shadow(model)
-                ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
                 state_dict = model.state_dict()
                 named_params = dict(model.named_parameters())
-                trainable_state = {k: v for k, v in state_dict.items() if k in named_params and named_params[k].requires_grad}
+                live_trainable_state = {k: v.detach().cpu().clone() for k, v in state_dict.items() if k in named_params and named_params[k].requires_grad}
+
+                ema_tracker.apply_shadow(model)
+                ckpt_path = os.path.join(args.output_dir, f"phase6_ca_layers_step_{global_step}.pth")
+                ema_state_dict = model.state_dict()
+                trainable_state = {k: v for k, v in ema_state_dict.items() if k in named_params and named_params[k].requires_grad}
 
                 is_weights_finite = is_state_dict_finite(trainable_state)
                 save_payload = {
                     "trainable_state": trainable_state,
+                    "live_trainable_state": live_trainable_state,
                     **trainable_state,
                     "step": global_step,
                     "metrics_history": metrics_history,

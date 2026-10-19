@@ -143,6 +143,12 @@ class CAPromptLayer(nn.Module):
         k = k.view(B, -1, heads, head_dim).transpose(1, 2)
         v = v.view(B, -1, heads, head_dim).transpose(1, 2)
 
+        # RoPE in Cross-Attention: provide positional sensitivity to canvas queries and prompt keys
+        cos_q, sin_q = self.rope_sa(q, T_a)
+        cos_k, sin_k = self.rope_sa(k, k.shape[2])
+        q = (q * cos_q) + (rotate_half(q) * sin_q)
+        k = (k * cos_k) + (rotate_half(k) * sin_k)
+
         attn_mask = None
         if mask_Q is not None:
             # ADR 103 / 104: Безопасная аддитивная float-маска для SDPA
@@ -407,9 +413,12 @@ class BEBLaDIIPhase6Eval(nn.Module):
 
             return Z_prompt_12
 
-    def forward_step(self, x_in, Z_prompt_12, mask_Q, t_actual, t_reported):
+    def forward_step(self, x_in, Z_prompt_12, mask_Q, t_actual, t_reported, t_global=None):
         B, T_a, _ = x_in.shape
-        t_global = torch.mean(t_actual, dim=-1)
+        if t_global is None:
+            t_global = torch.mean(t_actual, dim=-1)
+        elif t_global.dim() == 0:
+            t_global = t_global.view(1).expand(B)
 
         t_sin_global = self.t_sin_embed(t_global)
         t_emb_global = self.t_proj_global(t_sin_global)
@@ -455,7 +464,7 @@ class BEBLaDIIPhase6Eval(nn.Module):
 
 
 # =========================================================================
-# 5. Loss & Metrics Computation (ADR 097, 100, 105)
+# 5. Loss & Metrics Computation (ADR 097, 100, 105, 108)
 # =========================================================================
 def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     z_clean = outputs["z_clean"].float()
@@ -468,7 +477,7 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     cos_sim = (dus_final * target).sum(dim=-1)
     loss_el = 1.0 - cos_sim
 
-    # Dynamic Void Penalty
+    # Dynamic Void Penalty (ADR 096)
     cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
     cos_sim_target_to_void = (target * void_embed.view(1, 1, -1)).sum(dim=-1)
     content_mask = 1.0 - void_mask
@@ -476,6 +485,31 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     dynamic_margin = 1.0 - 0.8 * (1.0 - cos_sim_target_to_void)
     void_penalty = F.relu(cos_sim_to_void - dynamic_margin) * content_mask
     loss_el = loss_el + 0.5 * void_penalty
+
+    # --- Repulsive Anti-Barycenter & Positional Diversity Loss (ADR 108) ---
+    content_mask_3d = content_mask.unsqueeze(-1)
+    total_content_toks = content_mask.sum().clamp(min=1.0)
+    global_bary = safe_normalize((target * content_mask_3d).sum(dim=(0, 1), keepdim=True) / total_content_toks, dim=-1).detach()
+    cos_pred_gbary = (dus_final * global_bary).sum(dim=-1)
+    cos_tgt_gbary = (target * global_bary).sum(dim=-1)
+    global_bary_penalty = F.relu(cos_pred_gbary - (cos_tgt_gbary + 0.05)) * content_mask
+
+    sample_content_toks = content_mask.sum(dim=1, keepdim=True).unsqueeze(-1).clamp(min=1.0)
+    pred_sample_bary = safe_normalize((dus_final * content_mask_3d).sum(dim=1, keepdim=True) / sample_content_toks, dim=-1).detach()
+    tgt_sample_bary = safe_normalize((target * content_mask_3d).sum(dim=1, keepdim=True) / sample_content_toks, dim=-1).detach()
+    cos_pred_sbary = (dus_final * pred_sample_bary).sum(dim=-1)
+    cos_tgt_sbary = (target * tgt_sample_bary).sum(dim=-1)
+    sample_bary_penalty = F.relu(cos_pred_sbary - (cos_tgt_sbary + 0.05)) * content_mask
+
+    adj_mask = content_mask[:, :-1] * content_mask[:, 1:]
+    cos_pred_adj = (dus_final[:, :-1, :] * dus_final[:, 1:, :]).sum(dim=-1)
+    cos_tgt_adj = (target[:, :-1, :] * target[:, 1:, :]).sum(dim=-1)
+    adj_repulsion = F.relu(cos_pred_adj - (cos_tgt_adj + 0.05)) * adj_mask
+    adj_repulsion_padded = F.pad(adj_repulsion, (0, 1), value=0.0)
+
+    bary_penalty = 0.5 * (global_bary_penalty + sample_bary_penalty + adj_repulsion_padded)
+    loss_el = loss_el + bary_penalty
+    # ----------------------------------------------------------------------
 
     if loss_t_power > 0.0:
         w_weighted = (1.0 - t_actual).pow(loss_t_power)
@@ -490,18 +524,21 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     return loss, avg_cos_sim, true_void_sim, content_to_void_sim
 
 
-def evaluate_dataset_metrics(model, tokenizer, df_val, device, max_samples=50):
+def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None, max_samples=50):
     """
     Вычисляет количественные метрики качества модели на валидационной выборке:
-    loss, avg_cos_sim, true_void_sim, content_to_void_sim, ca_ratio.
+    loss, avg_cos_sim, true_void_sim, content_to_void_sim, ca_ratio,
+    а также чистый прирост от CA (val_content_gain_CA) и попарное сходство позиций (intra_pos_sim).
     """
     print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Evaluating metrics on {min(len(df_val), max_samples)} dataset samples...")
     model.eval()
 
     total_loss = 0.0
     total_cos = 0.0
+    total_cos_noca = 0.0
     total_void_cos = 0.0
     total_content_cos = 0.0
+    total_intra_sim = 0.0
     ca_ratios = {"12": [], "24": [], "36": []}
 
     n_samples = min(len(df_val), max_samples)
@@ -528,21 +565,33 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, max_samples=50):
 
             # Void mask (PAD positions)
             void_mask = (attention_mask_a == 0).float()
+            content_mask = 1.0 - void_mask
             void_embed = model.void_embed.to(Z_A_clean.dtype)
 
             # Фиксированный уровень шума t=0.5 для сопоставимости оценки
             t_val = 0.5
             t_actual = torch.full((B, T_a), t_val, device=device)
+            t_global = torch.full((B,), t_val, device=device)
             z_noisy = spherical_noise(Z_A_clean, t_actual)
 
-            # dprox
-            t_reported = torch.full((B, T_a), t_val, device=device)
+            # Вычисление dprox через latent_dict, идентично обучению
+            if latent_dict is not None:
+                sims = torch.matmul(z_noisy, latent_dict.T)
+                raw_dprox, _ = sims.max(dim=-1)
+                t_reported = (1.0 - raw_dprox).clamp(0.0, 1.0)
+            else:
+                t_reported = torch.full((B, T_a), t_val, device=device)
 
             # Encode prompt
             Z_prompt_12 = model.encode_prompt(input_ids_q, attention_mask_q)
 
-            # Forward step
-            _, dus_final = model.forward_step(z_noisy, Z_prompt_12, attention_mask_q, t_actual, t_reported)
+            # 1. Forward step с включенным CA
+            _, dus_final = model.forward_step(z_noisy, Z_prompt_12, attention_mask_q, t_actual, t_reported, t_global=t_global)
+
+            # 2. Forward step без CA (абляция)
+            for ca in model.ca_layers.values(): ca._disable = True
+            _, dus_final_noca = model.forward_step(z_noisy, Z_prompt_12, attention_mask_q, t_actual, t_reported, t_global=t_global)
+            for ca in model.ca_layers.values(): ca._disable = False
 
             outputs = {
                 "z_clean": Z_A_clean,
@@ -553,33 +602,56 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, max_samples=50):
             }
 
             loss, avg_cos, true_v_cos, cont_v_cos = compute_phase6_loss(outputs)
+            cos_noca = (dus_final_noca * Z_A_clean).sum(dim=-1).mean().item()
+
             total_loss += loss.item()
             total_cos += avg_cos.item()
+            total_cos_noca += cos_noca
             total_void_cos += true_v_cos.item()
             total_content_cos += cont_v_cos.item()
+
+            # Замер попарного сходства позиций (intra-sample diversity)
+            content_idx = torch.where(content_mask[0] > 0.5)[0]
+            if len(content_idx) > 1:
+                p_vecs = dus_final[0, content_idx, :]
+                sim_m = torch.matmul(p_vecs, p_vecs.T)
+                eye_m = torch.eye(len(content_idx), device=device)
+                intra_sim = ((sim_m * (1.0 - eye_m)).sum() / (len(content_idx) * (len(content_idx) - 1))).item()
+                total_intra_sim += intra_sim
+            else:
+                total_intra_sim += 1.0
 
             for k in ["12", "24", "36"]:
                 ca_ratios[k].append(model.ca_layers[k].last_ca_ratio)
 
     avg_loss = total_loss / n_samples
     avg_cos = total_cos / n_samples
+    avg_cos_noca = total_cos_noca / n_samples
+    avg_gain_ca = avg_cos - avg_cos_noca
     avg_void_cos = total_void_cos / n_samples
     avg_content_cos = total_content_cos / n_samples
+    avg_intra_sim = total_intra_sim / n_samples
 
-    print("\n" + "="*50)
+    print("\n" + "="*55)
     print("PHASE 6 VALIDATION METRICS SUMMARY (at t=0.50):")
-    print(f"  Total Loss               : {avg_loss:.4f}")
-    print(f"  Cos Sim (Z_pred vs Z_tgt): {avg_cos:.4f}")
-    print(f"  True Void Cos Sim        : {avg_void_cos:.4f}")
-    print(f"  Content-to-Void Cos Sim  : {avg_content_cos:.4f}")
-    print(f"  CA Ratio (Layer 12)      : {sum(ca_ratios['12']) / n_samples:.4f}")
-    print(f"  CA Ratio (Layer 24)      : {sum(ca_ratios['24']) / n_samples:.4f}")
-    print(f"  CA Ratio (Layer 36)      : {sum(ca_ratios['36']) / n_samples:.4f}")
-    print("="*50 + "\n")
+    print(f"  Total Loss (incl. anti-bary) : {avg_loss:.4f}")
+    print(f"  Cos Sim (Z_pred vs Z_tgt)    : {avg_cos:.4f}")
+    print(f"  Cos Sim without CA (ablation): {avg_cos_noca:.4f}")
+    print(f"  Pure CA Gain                 : {avg_gain_ca:+.4f}")
+    print(f"  Intra-Sample Pos Sim (i!=j)  : {avg_intra_sim:.4f} (target text: ~0.06)")
+    print(f"  True Void Cos Sim            : {avg_void_cos:.4f}")
+    print(f"  Content-to-Void Cos Sim      : {avg_content_cos:.4f}")
+    print(f"  CA Ratio (Layer 12)          : {sum(ca_ratios['12']) / n_samples:.4f}")
+    print(f"  CA Ratio (Layer 24)          : {sum(ca_ratios['24']) / n_samples:.4f}")
+    print(f"  CA Ratio (Layer 36)          : {sum(ca_ratios['36']) / n_samples:.4f}")
+    print("="*55 + "\n")
 
     return {
         "loss": avg_loss,
         "cos_sim": avg_cos,
+        "cos_sim_no_ca": avg_cos_noca,
+        "gain_ca": avg_gain_ca,
+        "intra_pos_sim": avg_intra_sim,
         "true_void_cos": avg_void_cos,
         "content_void_cos": avg_content_cos,
         "ca_ratio_12": sum(ca_ratios['12']) / n_samples,
@@ -604,8 +676,8 @@ def decode_latents_to_text(decoder, qwen_embed_weight, tokenizer, z):
         return text
 
 
-def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, max_len=64, steps=25):
-    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}'")
+def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, max_len=64, steps=25, cfg_scale=1.0):
+    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}' (CFG scale={cfg_scale})")
     q_enc = tokenizer(query_text, return_tensors='pt').to(device)
 
     with torch.no_grad():
@@ -627,12 +699,21 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             t_val = round((1.0 - i * dt) / 0.04) * 0.04
             t_val = max(0.04, min(1.0, round(t_val, 4)))
             t_actual = torch.full((B, T_a), t_val, device=device)
+            t_global = torch.full((B,), t_val, device=device)
 
             sims = torch.matmul(z_canvas, latent_dict.T)
             raw_dprox, nn_ids = sims.max(dim=-1)
             t_reported = (1.0 - raw_dprox).clamp(0.0, 1.0)
 
-            h39, z_pred = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported)
+            # Conditional pass
+            h39, z_pred = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
+
+            # Classifier-Free Guidance (CFG): вычитание безусловного барицентра
+            if cfg_scale > 1.0:
+                for ca in model.ca_layers.values(): ca._disable = True
+                _, z_uncond = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
+                for ca in model.ca_layers.values(): ca._disable = False
+                z_pred = safe_normalize(z_uncond + cfg_scale * (z_pred - z_uncond), dim=-1)
 
             # Phase 2 Decoder text
             step_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas)
@@ -708,6 +789,7 @@ def main():
     parser.add_argument("--steps", type=int, default=25, help="Number of Slerp diffusion steps")
     parser.add_argument("--max_len", type=int, default=64, help="Maximum generated answer length")
     parser.add_argument("--eval_samples", type=int, default=50, help="Number of dataset samples for quantitative metric evaluation (0 to skip)")
+    parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-Free Guidance scale for prompt conditioning (default: 1.0)")
     parser.add_argument("--output_html", type=str, default="", help="Path to output HTML report")
     args = parser.parse_args()
 
@@ -765,7 +847,7 @@ def main():
         try:
             df = pd.read_parquet(ds_path)
             if args.eval_samples > 0 and len(df) > 0:
-                evaluate_dataset_metrics(model, tokenizer, df, device, max_samples=args.eval_samples)
+                evaluate_dataset_metrics(model, tokenizer, df, device, latent_dict=latent_dict, max_samples=args.eval_samples)
         except Exception as e:
             print(f"Dataset metrics evaluation skipped: {e}")
 
@@ -774,11 +856,11 @@ def main():
 
     if df is not None and len(df) > 0:
         sample_q = df.iloc[0]['Q']
-        res = run_generation(model, decoder, latent_dict, tokenizer, sample_q, device, max_len=args.max_len, steps=args.steps)
+        res = run_generation(model, decoder, latent_dict, tokenizer, sample_q, device, max_len=args.max_len, steps=args.steps, cfg_scale=args.cfg_scale)
         results.append(res)
 
     ood_q = "Explain why the sky is blue using simple words."
-    res = run_generation(model, decoder, latent_dict, tokenizer, ood_q, device, max_len=args.max_len, steps=args.steps)
+    res = run_generation(model, decoder, latent_dict, tokenizer, ood_q, device, max_len=args.max_len, steps=args.steps, cfg_scale=args.cfg_scale)
     results.append(res)
 
     html_path = args.output_html if args.output_html else os.path.join(PROJECT_ROOT, "experiments", "phase 6", "phase6_generation_demo.html")
@@ -793,7 +875,7 @@ def main():
                     break
                 if not user_q.strip():
                     continue
-                res = run_generation(model, decoder, latent_dict, tokenizer, user_q, device, max_len=args.max_len, steps=args.steps)
+                res = run_generation(model, decoder, latent_dict, tokenizer, user_q, device, max_len=args.max_len, steps=args.steps, cfg_scale=args.cfg_scale)
                 results.append(res)
                 generate_html(results, html_path)
             except KeyboardInterrupt:
