@@ -1,0 +1,864 @@
+19.5s 1 [IPKernelApp] WARNING | Kernel is running over TCP without encryption. All communication (including code and outputs) is sent in plain text and is susceptible to eavesdropping. Use IPC transport or launch with kernel manager-provisioned CurveZMQ keys to enable transport encryption.
+40.3s 2 [33mWARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.[0m[33m
+40.4s 3 [0m
+40.4s 4 [1m[[0m[34;49mnotice[0m[1;39;49m][0m[39;49m A new release of pip is available: [0m[31;49m25.0.1[0m[39;49m -> [0m[32;49m26.2.1[0m
+40.4s 5 [1m[[0m[34;49mnotice[0m[1;39;49m][0m[39;49m To update, run: [0m[32;49mpip install --upgrade pip[0m
+40.5s 6 [33mWARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.[0m[33m
+40.5s 7 [0m
+40.5s 8 [1m[[0m[34;49mnotice[0m[1;39;49m][0m[39;49m A new release of pip is available: [0m[31;49m25.0.1[0m[39;49m -> [0m[32;49m26.2.1[0m
+40.5s 9 [1m[[0m[34;49mnotice[0m[1;39;49m][0m[39;49m To update, run: [0m[32;49mpip install --upgrade pip[0m
+40.5s 10 
+40.5s 11 [33mWARNING: Running pip as the 'root' user can result in broken permissions and conflicting behaviour with the system package manager, possibly rendering your system unusable. It is recommended to use a virtual environment instead: https://pip.pypa.io/warnings/venv. Use the --root-user-action option if you know what you are doing and want to suppress this warning.[0m[33m
+40.5s 12 [0m
+40.5s 13 [1m[[0m[34;49mnotice[0m[1;39;49m][0m[39;49m A new release of pip is available: [0m[31;49m25.0.1[0m[39;49m -> [0m[32;49m26.2.1[0m
+40.5s 14 [1m[[0m[34;49mnotice[0m[1;39;49m][0m[39;49m To update, run: [0m[32;49mpip install --upgrade pip[0m
+102.3s 15 /usr/local/lib/python3.12/site-packages/torch_xla/__init__.py:258: UserWarning: `tensorflow` can conflict with `torch-xla`. Prefer `tensorflow-cpu` when using PyTorch/XLA. To silence this warning, `pip uninstall -y tensorflow && pip install tensorflow-cpu`. If you are in a notebook environment such as Colab or Kaggle, restart your notebook runtime afterwards.
+102.3s 16 warnings.warn(
+102.3s 17 
+102.3s 18 /usr/local/lib/python3.12/site-packages/torch_xla/__init__.py:258: UserWarning: `tensorflow` can conflict with `torch-xla`. Prefer `tensorflow-cpu` when using PyTorch/XLA. To silence this warning, `pip uninstall -y tensorflow && pip install tensorflow-cpu`. If you are in a notebook environment such as Colab or Kaggle, restart your notebook runtime afterwards.
+102.3s 19 warnings.warn(
+104.4s 20 Cloning into '/kaggle/working/BEBLaDII'...
+104.6s 21 Cloning into '/kaggle/working/BEBLaDII'...
+104.6s 22 
+104.6s 23 Cloning into '/kaggle/working/BEBLaDII'...
+134.5s 24 WARNING: Logging before InitGoogle() is written to STDERR
+134.5s 25 E0000 00:00:1792493552.689964      73 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+134.5s 26 === Source Location Trace: ===
+134.5s 27 learning/45eac/tfrc/runtime/common_lib.cc:238
+134.7s 28 WARNING: Logging before InitGoogle() is written to STDERR
+134.7s 29 E0000 00:00:1792493552.689964      73 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+134.7s 30 === Source Location Trace: ===
+134.7s 31 learning/45eac/tfrc/runtime/common_lib.cc:238
+134.7s 32 /tmp/ipykernel_73/3947031556.py:3: DeprecationWarning: Use torch_xla.device instead
+134.7s 33 device = xm.xla_device()
+134.7s 34 
+134.7s 35 WARNING: Logging before InitGoogle() is written to STDERR
+134.7s 36 E0000 00:00:1792493552.689964      73 common_lib.cc:648] Could not set metric server port: INVALID_ARGUMENT: Could not find SliceBuilder port 8471 in any of the 0 ports provided in `tpu_process_addresses`="local"
+134.7s 37 === Source Location Trace: ===
+134.7s 38 learning/45eac/tfrc/runtime/common_lib.cc:238
+134.7s 39 /tmp/ipykernel_73/3947031556.py:3: DeprecationWarning: Use torch_xla.device instead
+134.7s 40 device = xm.xla_device()
+134.7s 41 [34m[1mwandb[0m: [33mWARNING[0m If you're specifying your api key in code, ensure this code is not shared publicly.
+134.7s 42 [34m[1mwandb[0m: [33mWARNING[0m Consider setting the WANDB_API_KEY environment variable, or running `wandb login` from the command line.
+134.7s 43 
+134.7s 44 [34m[1mwandb[0m: [33mWARNING[0m If you're specifying your api key in code, ensure this code is not shared publicly.
+134.7s 45 [34m[1mwandb[0m: [33mWARNING[0m Consider setting the WANDB_API_KEY environment variable, or running `wandb login` from the command line.
+135.7s 46 [34m[1mwandb[0m: [wandb.login()] Using explicit session credentials for https://api.forge.coreweave.com.
+135.7s 47 
+135.7s 48 [34m[1mwandb[0m: [wandb.login()] Using explicit session credentials for https://api.forge.coreweave.com.
+135.7s 49 [34m[1mwandb[0m: No netrc file found, creating one.
+135.7s 50 
+135.7s 51 [34m[1mwandb[0m: No netrc file found, creating one.
+135.7s 52 [34m[1mwandb[0m: Appending key for api.forge.coreweave.com to your netrc file: /root/.netrc
+135.7s 53 
+135.7s 54 [34m[1mwandb[0m: Appending key for api.forge.coreweave.com to your netrc file: /root/.netrc
+135.8s 55 [34m[1mwandb[0m: Currently logged in as: [33mbulyakovbr[0m ([33mbulyakovbr-bogdan-buliakov[0m) to [32mhttps://api.forge.coreweave.com[0m. Use [1m`wandb login --relogin`[0m to force relogin
+135.8s 56 
+135.8s 57 [34m[1mwandb[0m: Currently logged in as: [33mbulyakovbr[0m ([33mbulyakovbr-bogdan-buliakov[0m) to [32mhttps://api.forge.coreweave.com[0m. Use [1m`wandb login --relogin`[0m to force relogin
+136.3s 58 [34m[1mwandb[0m: Tracking run with wandb version 0.31.0
+136.3s 59 
+136.3s 60 [34m[1mwandb[0m: Tracking run with wandb version 0.31.0
+136.3s 61 [34m[1mwandb[0m: Run data is saved locally in [35m[1m/kaggle/working/wandb/run-20261020_105243-7jpvazm6[0m
+136.3s 62 [34m[1mwandb[0m: Run [1m`wandb offline`[0m to turn off syncing.
+136.3s 63 
+136.3s 64 [34m[1mwandb[0m: Run data is saved locally in [35m[1m/kaggle/working/wandb/run-20261020_105243-7jpvazm6[0m
+136.3s 65 [34m[1mwandb[0m: Run [1m`wandb offline`[0m to turn off syncing.
+136.3s 66 [34m[1mwandb[0m: Syncing run [33mhearty-thunder-65[0m
+136.3s 67 
+136.3s 68 [34m[1mwandb[0m: Syncing run [33mhearty-thunder-65[0m
+136.3s 69 [34m[1mwandb[0m: ⭐️ View project at [34m[4mhttps://forge.coreweave.com/wandb/bulyakovbr-bogdan-buliakov/BEBLaDII-Phase6-Kaggle[0m
+136.3s 70 
+136.3s 71 [34m[1mwandb[0m: ⭐️ View project at [34m[4mhttps://forge.coreweave.com/wandb/bulyakovbr-bogdan-buliakov/BEBLaDII-Phase6-Kaggle[0m
+136.3s 72 [34m[1mwandb[0m: 🚀 View run at [34m[4mhttps://forge.coreweave.com/wandb/bulyakovbr-bogdan-buliakov/BEBLaDII-Phase6-Kaggle/runs/7jpvazm6[0m
+136.3s 73 
+136.3s 74 [34m[1mwandb[0m: 🚀 View run at [34m[4mhttps://forge.coreweave.com/wandb/bulyakovbr-bogdan-buliakov/BEBLaDII-Phase6-Kaggle/runs/7jpvazm6[0m
+144.1s 75 [transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+144.1s 76 
+144.1s 77 [transformers] `torch_dtype` is deprecated! Use `dtype` instead!
+159.9s 78 IOStream.flush timed out
+162.3s 79 IOStream.flush timed out
+162.3s 80 
+162.3s 81 IOStream.flush timed out
+214.5s 82 Loading model architecture from /kaggle/input/models/answer-ai/modernbert/transformers/large/2...
+215.4s 83 [transformers] [1mModernBertModel LOAD REPORT[0m from: /kaggle/input/models/answer-ai/modernbert/transformers/large/2
+215.4s 84 Key               | Status     |  |
+215.4s 85 ------------------+------------+--+-
+215.4s 86 head.norm.weight  | UNEXPECTED |  |
+215.4s 87 head.dense.weight | UNEXPECTED |  |
+215.4s 88 decoder.bias      | UNEXPECTED |  |
+215.4s 89 
+215.4s 90 Notes:
+215.4s 91 - UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+215.4s 92 
+215.4s 93 [transformers] [1mModernBertModel LOAD REPORT[0m from: /kaggle/input/models/answer-ai/modernbert/transformers/large/2
+215.4s 94 Key               | Status     |  |
+215.4s 95 ------------------+------------+--+-
+215.4s 96 head.norm.weight  | UNEXPECTED |  |
+215.4s 97 head.dense.weight | UNEXPECTED |  |
+215.4s 98 decoder.bias      | UNEXPECTED |  |
+215.4s 99 
+215.4s 100 Notes:
+215.4s 101 - UNEXPECTED:	can be ignored when loading from different task/architecture; not ok if you expect identical arch.
+220.8s 102 Created 40 layers from 28 base layers (DUS applied).
+309.8s 103 /usr/local/lib/python3.12/site-packages/google/auth/transport/grpc.py:43: FutureWarning: grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In April 2027, google-auth will raise its minimum requirements to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography
+309.8s 104 warnings.warn(
+309.8s 105 
+309.8s 106 /usr/local/lib/python3.12/site-packages/google/auth/transport/grpc.py:43: FutureWarning: grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In April 2027, google-auth will raise its minimum requirements to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography
+309.8s 107 warnings.warn(
+310.4s 108 /usr/local/lib/python3.12/site-packages/google/api_core/_python_package_support.py:206: FutureWarning: Package google.api_core depends on grpcio, currently installed at version 1.82.0rc2. grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In April 2027, Google Cloud Python packages will raise their minimum requirements (including google-api-core, grpcio, and grpcio-status) to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography
+310.4s 109 warnings.warn(
+310.4s 110 
+310.4s 111 /usr/local/lib/python3.12/site-packages/google/api_core/_python_package_support.py:206: FutureWarning: Package google.api_core depends on grpcio, currently installed at version 1.82.0rc2. grpcio < 1.83.0 does not support Post-Quantum Cryptography (PQC). Support for non-PQC environments is deprecated. In April 2027, Google Cloud Python packages will raise their minimum requirements (including google-api-core, grpcio, and grpcio-status) to enforce grpcio >= 1.83.0. For more details on Google Cloud's post-quantum security migration, visit: https://cloud.google.com/security/resources/post-quantum-cryptography
+310.4s 112 warnings.warn(
+319.5s 113 [Resume] Восстановлена история метрик (630 записей).
+319.5s 114 Успешно возобновлено обучение с валидного чекпоинта gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_9000.pth (продолжаем с шага 9001)
+935.3s 115 /usr/local/lib/python3.12/site-packages/jax/_src/cloud_tpu_init.py:88: UserWarning: Transparent hugepages are not enabled. TPU runtime startup and shutdown time should be significantly improved on TPU v5e and newer. If not already set, you may need to enable transparent hugepages in your VM image (sudo sh -c "echo always > /sys/kernel/mm/transparent_hugepage/enabled")
+935.3s 116 warnings.warn(
+935.3s 117 
+935.3s 118 /usr/local/lib/python3.12/site-packages/jax/_src/cloud_tpu_init.py:88: UserWarning: Transparent hugepages are not enabled. TPU runtime startup and shutdown time should be significantly improved on TPU v5e and newer. If not already set, you may need to enable transparent hugepages in your VM image (sudo sh -c "echo always > /sys/kernel/mm/transparent_hugepage/enabled")
+935.3s 119 warnings.warn(
+959.7s 120 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+959.7s 121 xm.mark_step()
+959.7s 122 
+959.7s 123 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+959.7s 124 xm.mark_step()
+1135.6s 125 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+1135.6s 126 xm.mark_step()
+1135.6s 127 
+1135.6s 128 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+1135.6s 129 xm.mark_step()
+1422.4s 130 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+1422.4s 131 xm.mark_step()
+1422.4s 132 
+1422.4s 133 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+1422.4s 134 xm.mark_step()
+1424.8s 135 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+1424.8s 136 xm.mark_step()
+1424.8s 137 
+1424.8s 138 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+1424.8s 139 xm.mark_step()
+1489.6s 140 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+1489.6s 141 xm.mark_step()
+1489.6s 142 
+1489.6s 143 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+1489.6s 144 xm.mark_step()
+1521.2s 145 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+1521.2s 146 xm.mark_step()
+1521.2s 147 
+1521.2s 148 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+1521.2s 149 xm.mark_step()
+1557.4s 150 Step 9200 | Val Loss (EMA): 0.1085 | Val Cos (EMA): 0.9169
+1557.4s 151 Step 9200 | Val gain (Total / CA only): tg0.2: +0.043 (CA: -0.000), tg0.5: +0.294 (CA: -0.000), tg0.8: +0.505 (CA: +0.000), tg1.0: +0.180 (CA: +0.047)
+1562.0s 152 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+1562.0s 153 xm.mark_step()
+1562.0s 154 
+1562.0s 155 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+1562.0s 156 xm.mark_step()
+2066.6s 157 Step 9400 | Val Loss (EMA): 0.1186 | Val Cos (EMA): 0.9070
+2066.6s 158 Step 9400 | Val gain (Total / CA only): tg0.2: +0.043 (CA: -0.000), tg0.5: +0.294 (CA: -0.000), tg0.8: +0.503 (CA: +0.001), tg1.0: +0.159 (CA: +0.029)
+2282.7s 159 Step 9600 | Val Loss (EMA): 0.1102 | Val Cos (EMA): 0.9057
+2282.7s 160 Step 9600 | Val gain (Total / CA only): tg0.2: +0.043 (CA: +0.000), tg0.5: +0.295 (CA: +0.000), tg0.8: +0.502 (CA: +0.002), tg1.0: +0.111 (CA: -0.015)
+2495.5s 161 Step 9800 | Val Loss (EMA): 0.1053 | Val Cos (EMA): 0.9052
+2495.5s 162 Step 9800 | Val gain (Total / CA only): tg0.2: +0.043 (CA: +0.000), tg0.5: +0.295 (CA: +0.001), tg0.8: +0.501 (CA: +0.003), tg1.0: +0.078 (CA: -0.043)
+2710.9s 163 Step 10000 | Val Loss (EMA): 0.1019 | Val Cos (EMA): 0.9051
+2710.9s 164 Step 10000 | Val gain (Total / CA only): tg0.2: +0.043 (CA: +0.000), tg0.5: +0.295 (CA: +0.001), tg0.8: +0.501 (CA: +0.003), tg1.0: +0.061 (CA: -0.056)
+2741.9s 165 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_10000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_10000.pth
+2742.5s 166 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+2742.6s 167 xm.mark_step()
+2742.6s 168 
+2742.6s 169 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+2742.6s 170 xm.mark_step()
+2927.9s 171 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+2927.9s 172 xm.mark_step()
+2927.9s 173 
+2927.9s 174 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+2927.9s 175 xm.mark_step()
+2929.6s 176 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+2929.6s 177 xm.mark_step()
+2929.6s 178 
+2929.6s 179 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+2929.6s 180 xm.mark_step()
+2933.7s 181 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+2933.7s 182 xm.mark_step()
+2933.7s 183 
+2933.7s 184 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+2933.7s 185 xm.mark_step()
+2934.5s 186 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+2934.5s 187 xm.mark_step()
+2934.5s 188 
+2934.5s 189 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+2934.5s 190 xm.mark_step()
+2948.6s 191 Step 10200 | Val Loss (EMA): 0.1002 | Val Cos (EMA): 0.9056
+2948.6s 192 Step 10200 | Val gain (Total / CA only): tg0.2: +0.043 (CA: +0.000), tg0.5: +0.295 (CA: +0.001), tg0.8: +0.501 (CA: +0.003), tg1.0: +0.057 (CA: -0.059)
+2952.1s 193 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+2952.1s 194 xm.mark_step()
+2952.1s 195 
+2952.1s 196 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+2952.1s 197 xm.mark_step()
+3160.3s 198 Step 10400 | Val Loss (EMA): 0.0992 | Val Cos (EMA): 0.9048
+3160.3s 199 Step 10400 | Val gain (Total / CA only): tg0.2: +0.043 (CA: +0.000), tg0.5: +0.295 (CA: +0.001), tg0.8: +0.501 (CA: +0.003), tg1.0: +0.054 (CA: -0.059)
+3370.7s 200 Step 10600 | Val Loss (EMA): 0.0986 | Val Cos (EMA): 0.9048
+3370.7s 201 Step 10600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.295 (CA: +0.001), tg0.8: +0.501 (CA: +0.002), tg1.0: +0.053 (CA: -0.059)
+3579.3s 202 Step 10800 | Val Loss (EMA): 0.0983 | Val Cos (EMA): 0.9048
+3579.3s 203 Step 10800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.295 (CA: +0.001), tg0.8: +0.501 (CA: +0.002), tg1.0: +0.052 (CA: -0.059)
+3792.1s 204 Step 11000 | Val Loss (EMA): 0.0981 | Val Cos (EMA): 0.9049
+3792.1s 205 Step 11000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.295 (CA: +0.001), tg0.8: +0.501 (CA: +0.002), tg1.0: +0.053 (CA: -0.057)
+3820.4s 206 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_11000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_11000.pth
+3821.1s 207 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+3821.1s 208 xm.mark_step()
+3821.1s 209 
+3821.1s 210 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+3821.1s 211 xm.mark_step()
+4006.0s 212 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+4006.0s 213 xm.mark_step()
+4006.0s 214 
+4006.0s 215 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+4006.0s 216 xm.mark_step()
+4008.6s 217 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+4008.6s 218 xm.mark_step()
+4008.6s 219 
+4008.6s 220 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+4008.6s 221 xm.mark_step()
+4012.5s 222 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+4012.5s 223 xm.mark_step()
+4012.5s 224 
+4012.5s 225 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+4012.5s 226 xm.mark_step()
+4013.3s 227 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+4013.3s 228 xm.mark_step()
+4013.3s 229 
+4013.3s 230 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+4013.3s 231 xm.mark_step()
+4027.2s 232 Step 11200 | Val Loss (EMA): 0.0978 | Val Cos (EMA): 0.9057
+4027.2s 233 Step 11200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.295 (CA: +0.001), tg0.8: +0.501 (CA: +0.002), tg1.0: +0.053 (CA: -0.056)
+4030.3s 234 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+4030.3s 235 xm.mark_step()
+4030.3s 236 
+4030.3s 237 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+4030.3s 238 xm.mark_step()
+4237.5s 239 Step 11400 | Val Loss (EMA): 0.0976 | Val Cos (EMA): 0.9050
+4237.5s 240 Step 11400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.295 (CA: +0.001), tg0.8: +0.502 (CA: +0.001), tg1.0: +0.054 (CA: -0.055)
+4446.8s 241 Step 11600 | Val Loss (EMA): 0.0975 | Val Cos (EMA): 0.9051
+4446.8s 242 Step 11600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.295 (CA: +0.002), tg0.8: +0.502 (CA: +0.001), tg1.0: +0.055 (CA: -0.053)
+4658.4s 243 Step 11800 | Val Loss (EMA): 0.0973 | Val Cos (EMA): 0.9052
+4658.4s 244 Step 11800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.001), tg0.8: +0.503 (CA: +0.001), tg1.0: +0.055 (CA: -0.052)
+4869.6s 245 Step 12000 | Val Loss (EMA): 0.0973 | Val Cos (EMA): 0.9052
+4869.6s 246 Step 12000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.001), tg0.8: +0.503 (CA: +0.001), tg1.0: +0.056 (CA: -0.051)
+4898.9s 247 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_12000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_12000.pth
+4899.6s 248 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+4899.6s 249 xm.mark_step()
+4899.6s 250 
+4899.6s 251 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+4899.6s 252 xm.mark_step()
+5092.7s 253 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+5092.7s 254 xm.mark_step()
+5092.7s 255 
+5092.7s 256 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+5092.7s 257 xm.mark_step()
+5094.4s 258 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+5094.4s 259 xm.mark_step()
+5094.4s 260 
+5094.4s 261 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+5094.4s 262 xm.mark_step()
+5099.4s 263 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+5099.4s 264 xm.mark_step()
+5099.4s 265 
+5099.4s 266 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+5099.4s 267 xm.mark_step()
+5100.1s 268 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+5100.1s 269 xm.mark_step()
+5100.1s 270 
+5100.1s 271 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+5100.1s 272 xm.mark_step()
+5114.0s 273 Step 12200 | Val Loss (EMA): 0.0918 | Val Cos (EMA): 0.9107
+5114.0s 274 Step 12200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.503 (CA: +0.001), tg1.0: +0.056 (CA: -0.051)
+5121.1s 275 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+5121.1s 276 xm.mark_step()
+5121.1s 277 
+5121.1s 278 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+5121.1s 279 xm.mark_step()
+5322.4s 280 Step 12400 | Val Loss (EMA): 0.0970 | Val Cos (EMA): 0.9054
+5322.4s 281 Step 12400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.504 (CA: +0.001), tg1.0: +0.056 (CA: -0.050)
+5531.8s 282 Step 12600 | Val Loss (EMA): 0.0970 | Val Cos (EMA): 0.9054
+5531.8s 283 Step 12600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.504 (CA: +0.001), tg1.0: +0.057 (CA: -0.048)
+5739.5s 284 Step 12800 | Val Loss (EMA): 0.0968 | Val Cos (EMA): 0.9055
+5739.5s 285 Step 12800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.505 (CA: +0.001), tg1.0: +0.058 (CA: -0.047)
+5951.1s 286 Step 13000 | Val Loss (EMA): 0.0967 | Val Cos (EMA): 0.9056
+5951.1s 287 Step 13000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.505 (CA: +0.001), tg1.0: +0.058 (CA: -0.046)
+5980.0s 288 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_13000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_13000.pth
+5980.7s 289 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+5980.7s 290 xm.mark_step()
+5980.7s 291 
+5980.7s 292 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+5980.7s 293 xm.mark_step()
+6166.7s 294 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+6166.7s 295 xm.mark_step()
+6166.7s 296 
+6166.7s 297 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+6166.7s 298 xm.mark_step()
+6168.2s 299 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+6168.2s 300 xm.mark_step()
+6168.2s 301 
+6168.2s 302 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+6168.2s 303 xm.mark_step()
+6172.2s 304 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+6172.2s 305 xm.mark_step()
+6172.2s 306 
+6172.2s 307 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+6172.2s 308 xm.mark_step()
+6173.9s 309 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+6173.9s 310 xm.mark_step()
+6173.9s 311 
+6173.9s 312 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+6173.9s 313 xm.mark_step()
+6188.6s 314 Step 13200 | Val Loss (EMA): 0.0962 | Val Cos (EMA): 0.9064
+6188.6s 315 Step 13200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.505 (CA: +0.001), tg1.0: +0.059 (CA: -0.044)
+6192.8s 316 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+6192.8s 317 xm.mark_step()
+6192.8s 318 
+6192.8s 319 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+6192.8s 320 xm.mark_step()
+6398.1s 321 Step 13400 | Val Loss (EMA): 0.0965 | Val Cos (EMA): 0.9058
+6398.1s 322 Step 13400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.506 (CA: +0.002), tg1.0: +0.060 (CA: -0.043)
+6608.3s 323 Step 13600 | Val Loss (EMA): 0.0964 | Val Cos (EMA): 0.9059
+6608.3s 324 Step 13600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.506 (CA: +0.002), tg1.0: +0.060 (CA: -0.042)
+6819.0s 325 Step 13800 | Val Loss (EMA): 0.0963 | Val Cos (EMA): 0.9060
+6819.0s 326 Step 13800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.506 (CA: +0.002), tg1.0: +0.061 (CA: -0.040)
+7032.5s 327 Step 14000 | Val Loss (EMA): 0.0962 | Val Cos (EMA): 0.9061
+7032.5s 328 Step 14000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.507 (CA: +0.002), tg1.0: +0.061 (CA: -0.039)
+7060.1s 329 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_14000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_14000.pth
+7060.7s 330 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+7060.7s 331 xm.mark_step()
+7060.7s 332 
+7060.7s 333 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+7060.7s 334 xm.mark_step()
+7247.0s 335 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+7247.0s 336 xm.mark_step()
+7247.0s 337 
+7247.0s 338 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+7247.0s 339 xm.mark_step()
+7249.5s 340 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+7249.5s 341 xm.mark_step()
+7249.5s 342 
+7249.5s 343 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+7249.5s 344 xm.mark_step()
+7254.1s 345 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+7254.1s 346 xm.mark_step()
+7254.1s 347 
+7254.1s 348 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+7254.1s 349 xm.mark_step()
+7255.7s 350 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+7255.7s 351 xm.mark_step()
+7255.7s 352 
+7255.7s 353 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+7255.7s 354 xm.mark_step()
+7270.4s 355 Step 14200 | Val Loss (EMA): 0.0959 | Val Cos (EMA): 0.9067
+7270.4s 356 Step 14200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.507 (CA: +0.002), tg1.0: +0.062 (CA: -0.038)
+7275.2s 357 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+7275.2s 358 xm.mark_step()
+7275.2s 359 
+7275.2s 360 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+7275.2s 361 xm.mark_step()
+7482.0s 362 Step 14400 | Val Loss (EMA): 0.0960 | Val Cos (EMA): 0.9062
+7482.0s 363 Step 14400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.296 (CA: +0.002), tg0.8: +0.507 (CA: +0.002), tg1.0: +0.062 (CA: -0.037)
+7691.4s 364 Step 14600 | Val Loss (EMA): 0.0959 | Val Cos (EMA): 0.9063
+7691.4s 365 Step 14600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.508 (CA: +0.003), tg1.0: +0.062 (CA: -0.035)
+7902.2s 366 Step 14800 | Val Loss (EMA): 0.0957 | Val Cos (EMA): 0.9064
+7902.2s 367 Step 14800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.508 (CA: +0.003), tg1.0: +0.063 (CA: -0.034)
+8114.7s 368 Step 15000 | Val Loss (EMA): 0.0956 | Val Cos (EMA): 0.9065
+8114.7s 369 Step 15000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.508 (CA: +0.003), tg1.0: +0.064 (CA: -0.032)
+8145.1s 370 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_15000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_15000.pth
+8145.8s 371 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+8145.8s 372 xm.mark_step()
+8145.8s 373 
+8145.8s 374 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+8145.8s 375 xm.mark_step()
+8332.3s 376 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+8332.3s 377 xm.mark_step()
+8332.3s 378 
+8332.3s 379 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+8332.3s 380 xm.mark_step()
+8333.9s 381 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+8333.9s 382 xm.mark_step()
+8333.9s 383 
+8333.9s 384 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+8333.9s 385 xm.mark_step()
+8338.3s 386 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+8338.3s 387 xm.mark_step()
+8338.3s 388 
+8338.3s 389 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+8338.3s 390 xm.mark_step()
+8339.9s 391 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+8339.9s 392 xm.mark_step()
+8339.9s 393 
+8339.9s 394 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+8339.9s 395 xm.mark_step()
+8354.8s 396 Step 15200 | Val Loss (EMA): 0.0956 | Val Cos (EMA): 0.9070
+8354.8s 397 Step 15200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.509 (CA: +0.003), tg1.0: +0.064 (CA: -0.031)
+8359.5s 398 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+8359.5s 399 xm.mark_step()
+8359.5s 400 
+8359.5s 401 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+8359.5s 402 xm.mark_step()
+8624.5s 403 Step 15400 | Val Loss (EMA): 0.1020 | Val Cos (EMA): 0.9003
+8624.5s 404 Step 15400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.509 (CA: +0.003), tg1.0: +0.064 (CA: -0.030)
+8839.9s 405 Step 15600 | Val Loss (EMA): 0.0954 | Val Cos (EMA): 0.9067
+8839.9s 406 Step 15600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.509 (CA: +0.003), tg1.0: +0.064 (CA: -0.029)
+9054.1s 407 Step 15800 | Val Loss (EMA): 0.0952 | Val Cos (EMA): 0.9069
+9054.1s 408 Step 15800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.510 (CA: +0.004), tg1.0: +0.065 (CA: -0.029)
+9268.0s 409 Step 16000 | Val Loss (EMA): 0.0952 | Val Cos (EMA): 0.9069
+9268.0s 410 Step 16000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.510 (CA: +0.004), tg1.0: +0.065 (CA: -0.028)
+9297.2s 411 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_16000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_16000.pth
+9297.9s 412 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+9297.9s 413 xm.mark_step()
+9297.9s 414 
+9297.9s 415 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+9297.9s 416 xm.mark_step()
+9481.1s 417 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+9481.1s 418 xm.mark_step()
+9481.1s 419 
+9481.1s 420 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+9481.1s 421 xm.mark_step()
+9482.8s 422 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+9482.8s 423 xm.mark_step()
+9482.8s 424 
+9482.8s 425 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+9482.8s 426 xm.mark_step()
+9487.4s 427 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+9487.4s 428 xm.mark_step()
+9487.4s 429 
+9487.4s 430 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+9487.4s 431 xm.mark_step()
+9488.2s 432 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+9488.2s 433 xm.mark_step()
+9488.2s 434 
+9488.2s 435 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+9488.2s 436 xm.mark_step()
+9503.4s 437 Step 16200 | Val Loss (EMA): 0.0952 | Val Cos (EMA): 0.9074
+9503.4s 438 Step 16200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.510 (CA: +0.004), tg1.0: +0.065 (CA: -0.026)
+9508.5s 439 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+9508.5s 440 xm.mark_step()
+9508.5s 441 
+9508.5s 442 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+9508.5s 443 xm.mark_step()
+9715.8s 444 Step 16400 | Val Loss (EMA): 0.0949 | Val Cos (EMA): 0.9072
+9715.8s 445 Step 16400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.511 (CA: +0.004), tg1.0: +0.066 (CA: -0.026)
+9929.1s 446 Step 16600 | Val Loss (EMA): 0.0949 | Val Cos (EMA): 0.9072
+9929.1s 447 Step 16600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.511 (CA: +0.004), tg1.0: +0.066 (CA: -0.025)
+10142.1s 448 Step 16800 | Val Loss (EMA): 0.0949 | Val Cos (EMA): 0.9073
+10142.1s 449 Step 16800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.511 (CA: +0.004), tg1.0: +0.067 (CA: -0.024)
+10354.4s 450 Step 17000 | Val Loss (EMA): 0.0948 | Val Cos (EMA): 0.9074
+10354.4s 451 Step 17000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.512 (CA: +0.004), tg1.0: +0.067 (CA: -0.024)
+10384.1s 452 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_17000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_17000.pth
+10384.7s 453 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+10384.7s 454 xm.mark_step()
+10384.7s 455 
+10384.7s 456 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+10384.7s 457 xm.mark_step()
+10568.1s 458 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+10568.1s 459 xm.mark_step()
+10568.1s 460 
+10568.1s 461 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+10568.1s 462 xm.mark_step()
+10569.8s 463 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+10569.8s 464 xm.mark_step()
+10569.8s 465 
+10569.8s 466 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+10569.8s 467 xm.mark_step()
+10574.4s 468 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+10574.4s 469 xm.mark_step()
+10574.4s 470 
+10574.4s 471 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+10574.4s 472 xm.mark_step()
+10575.7s 473 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+10575.7s 474 xm.mark_step()
+10575.7s 475 
+10575.7s 476 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+10575.7s 477 xm.mark_step()
+10590.4s 478 Step 17200 | Val Loss (EMA): 0.0949 | Val Cos (EMA): 0.9077
+10590.4s 479 Step 17200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.512 (CA: +0.004), tg1.0: +0.067 (CA: -0.024)
+10595.2s 480 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+10595.2s 481 xm.mark_step()
+10595.2s 482 
+10595.2s 483 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+10595.2s 484 xm.mark_step()
+10804.1s 485 Step 17400 | Val Loss (EMA): 0.0946 | Val Cos (EMA): 0.9075
+10804.1s 486 Step 17400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.512 (CA: +0.004), tg1.0: +0.068 (CA: -0.023)
+11018.5s 487 Step 17600 | Val Loss (EMA): 0.0946 | Val Cos (EMA): 0.9076
+11018.5s 488 Step 17600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.512 (CA: +0.004), tg1.0: +0.068 (CA: -0.022)
+11231.8s 489 Step 17800 | Val Loss (EMA): 0.0945 | Val Cos (EMA): 0.9077
+11231.8s 490 Step 17800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.297 (CA: +0.002), tg0.8: +0.513 (CA: +0.004), tg1.0: +0.069 (CA: -0.021)
+11443.7s 491 Step 18000 | Val Loss (EMA): 0.0944 | Val Cos (EMA): 0.9077
+11443.7s 492 Step 18000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.513 (CA: +0.005), tg1.0: +0.070 (CA: -0.020)
+11472.4s 493 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_18000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_18000.pth
+11473.0s 494 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+11473.0s 495 xm.mark_step()
+11473.0s 496 
+11473.0s 497 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+11473.0s 498 xm.mark_step()
+11658.1s 499 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+11658.1s 500 xm.mark_step()
+11658.1s 501 
+11658.1s 502 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+11658.1s 503 xm.mark_step()
+11659.7s 504 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+11659.7s 505 xm.mark_step()
+11659.7s 506 
+11659.7s 507 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+11659.7s 508 xm.mark_step()
+11664.4s 509 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+11664.4s 510 xm.mark_step()
+11664.4s 511 
+11664.4s 512 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+11664.4s 513 xm.mark_step()
+11665.2s 514 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+11665.2s 515 xm.mark_step()
+11665.2s 516 
+11665.2s 517 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+11665.2s 518 xm.mark_step()
+11679.3s 519 Step 18200 | Val Loss (EMA): 0.0945 | Val Cos (EMA): 0.9081
+11679.3s 520 Step 18200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.513 (CA: +0.005), tg1.0: +0.070 (CA: -0.020)
+11683.4s 521 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+11683.4s 522 xm.mark_step()
+11683.4s 523 
+11683.4s 524 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+11683.4s 525 xm.mark_step()
+11902.8s 526 Step 18400 | Val Loss (EMA): 0.1196 | Val Cos (EMA): 0.8831
+11902.8s 527 Step 18400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.514 (CA: +0.005), tg1.0: +0.070 (CA: -0.019)
+12115.7s 528 Step 18600 | Val Loss (EMA): 0.0943 | Val Cos (EMA): 0.9079
+12115.7s 529 Step 18600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.514 (CA: +0.005), tg1.0: +0.071 (CA: -0.018)
+12325.1s 530 Step 18800 | Val Loss (EMA): 0.0943 | Val Cos (EMA): 0.9079
+12325.1s 531 Step 18800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.514 (CA: +0.005), tg1.0: +0.071 (CA: -0.017)
+12538.8s 532 Step 19000 | Val Loss (EMA): 0.0943 | Val Cos (EMA): 0.9080
+12538.8s 533 Step 19000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.514 (CA: +0.005), tg1.0: +0.072 (CA: -0.015)
+12565.3s 534 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_19000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_19000.pth
+12565.9s 535 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+12565.9s 536 xm.mark_step()
+12565.9s 537 
+12565.9s 538 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+12565.9s 539 xm.mark_step()
+12748.3s 540 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+12748.3s 541 xm.mark_step()
+12748.3s 542 
+12748.3s 543 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+12748.3s 544 xm.mark_step()
+12750.0s 545 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+12750.0s 546 xm.mark_step()
+12750.0s 547 
+12750.0s 548 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+12750.0s 549 xm.mark_step()
+12754.2s 550 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+12754.2s 551 xm.mark_step()
+12754.2s 552 
+12754.2s 553 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+12754.2s 554 xm.mark_step()
+12755.4s 555 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+12755.4s 556 xm.mark_step()
+12755.4s 557 
+12755.4s 558 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+12755.4s 559 xm.mark_step()
+12769.9s 560 Step 19200 | Val Loss (EMA): 0.0942 | Val Cos (EMA): 0.9083
+12769.9s 561 Step 19200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.515 (CA: +0.005), tg1.0: +0.072 (CA: -0.015)
+12773.9s 562 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+12773.9s 563 xm.mark_step()
+12773.9s 564 
+12773.9s 565 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+12773.9s 566 xm.mark_step()
+12983.0s 567 Step 19400 | Val Loss (EMA): 0.0942 | Val Cos (EMA): 0.9080
+12983.0s 568 Step 19400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.515 (CA: +0.005), tg1.0: +0.073 (CA: -0.015)
+13196.7s 569 Step 19600 | Val Loss (EMA): 0.0941 | Val Cos (EMA): 0.9082
+13196.7s 570 Step 19600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.515 (CA: +0.006), tg1.0: +0.073 (CA: -0.015)
+13407.1s 571 Step 19800 | Val Loss (EMA): 0.0940 | Val Cos (EMA): 0.9082
+13407.1s 572 Step 19800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.516 (CA: +0.006), tg1.0: +0.074 (CA: -0.014)
+13621.3s 573 Step 20000 | Val Loss (EMA): 0.0939 | Val Cos (EMA): 0.9083
+13621.3s 574 Step 20000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.516 (CA: +0.006), tg1.0: +0.074 (CA: -0.013)
+13648.7s 575 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_20000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_20000.pth
+13649.3s 576 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+13649.3s 577 xm.mark_step()
+13649.3s 578 
+13649.3s 579 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+13649.3s 580 xm.mark_step()
+13834.4s 581 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+13834.4s 582 xm.mark_step()
+13834.4s 583 
+13834.4s 584 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+13834.4s 585 xm.mark_step()
+13836.1s 586 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+13836.1s 587 xm.mark_step()
+13836.1s 588 
+13836.1s 589 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+13836.1s 590 xm.mark_step()
+13840.4s 591 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+13840.4s 592 xm.mark_step()
+13840.4s 593 
+13840.4s 594 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+13840.4s 595 xm.mark_step()
+13841.5s 596 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+13841.5s 597 xm.mark_step()
+13841.5s 598 
+13841.5s 599 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+13841.5s 600 xm.mark_step()
+13855.9s 601 Step 20200 | Val Loss (EMA): 0.0937 | Val Cos (EMA): 0.9087
+13855.9s 602 Step 20200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.516 (CA: +0.006), tg1.0: +0.074 (CA: -0.013)
+13860.5s 603 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+13860.5s 604 xm.mark_step()
+13860.5s 605 
+13860.5s 606 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+13860.5s 607 xm.mark_step()
+14069.7s 608 Step 20400 | Val Loss (EMA): 0.0938 | Val Cos (EMA): 0.9085
+14069.7s 609 Step 20400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.516 (CA: +0.006), tg1.0: +0.074 (CA: -0.012)
+14284.0s 610 Step 20600 | Val Loss (EMA): 0.0937 | Val Cos (EMA): 0.9086
+14284.0s 611 Step 20600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.517 (CA: +0.006), tg1.0: +0.075 (CA: -0.011)
+14496.4s 612 Step 20800 | Val Loss (EMA): 0.0936 | Val Cos (EMA): 0.9086
+14496.4s 613 Step 20800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.517 (CA: +0.007), tg1.0: +0.075 (CA: -0.011)
+14706.3s 614 Step 21000 | Val Loss (EMA): 0.0935 | Val Cos (EMA): 0.9087
+14706.3s 615 Step 21000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.003), tg0.8: +0.517 (CA: +0.007), tg1.0: +0.076 (CA: -0.010)
+14737.5s 616 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_21000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_21000.pth
+14738.1s 617 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+14738.1s 618 xm.mark_step()
+14738.1s 619 
+14738.1s 620 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+14738.1s 621 xm.mark_step()
+14918.1s 622 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+14918.1s 623 xm.mark_step()
+14918.1s 624 
+14918.1s 625 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+14918.1s 626 xm.mark_step()
+14920.7s 627 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+14920.7s 628 xm.mark_step()
+14920.7s 629 
+14920.7s 630 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+14920.7s 631 xm.mark_step()
+14925.9s 632 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+14925.9s 633 xm.mark_step()
+14925.9s 634 
+14925.9s 635 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+14925.9s 636 xm.mark_step()
+14926.9s 637 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+14926.9s 638 xm.mark_step()
+14926.9s 639 
+14926.9s 640 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+14926.9s 641 xm.mark_step()
+14941.6s 642 Step 21200 | Val Loss (EMA): 0.0932 | Val Cos (EMA): 0.9089
+14941.6s 643 Step 21200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.517 (CA: +0.007), tg1.0: +0.076 (CA: -0.009)
+14944.9s 644 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+14944.9s 645 xm.mark_step()
+14944.9s 646 
+14944.9s 647 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+14944.9s 648 xm.mark_step()
+15153.6s 649 Step 21400 | Val Loss (EMA): 0.0934 | Val Cos (EMA): 0.9088
+15153.6s 650 Step 21400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.003), tg0.8: +0.517 (CA: +0.006), tg1.0: +0.077 (CA: -0.008)
+15374.9s 651 Step 21600 | Val Loss (EMA): 0.1184 | Val Cos (EMA): 0.8839
+15374.9s 652 Step 21600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.003), tg0.8: +0.517 (CA: +0.007), tg1.0: +0.077 (CA: -0.007)
+15588.3s 653 Step 21800 | Val Loss (EMA): 0.0932 | Val Cos (EMA): 0.9089
+15588.3s 654 Step 21800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.003), tg0.8: +0.517 (CA: +0.007), tg1.0: +0.077 (CA: -0.006)
+15802.8s 655 Step 22000 | Val Loss (EMA): 0.0932 | Val Cos (EMA): 0.9089
+15802.8s 656 Step 22000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.518 (CA: +0.007), tg1.0: +0.078 (CA: -0.005)
+15833.2s 657 [GCS] Synced: /kaggle/working/checkpoints/phase6_v2/phase6_ca_layers_step_22000.pth → gs://bebladii-weigths-us/planB/phase6/checkpoints/phase6_ca_layers_step_22000.pth
+15833.8s 658 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+15833.8s 659 xm.mark_step()
+15833.8s 660 
+15833.8s 661 /tmp/ipykernel_73/3947031556.py:365: DeprecationWarning: Use torch_xla.sync instead
+15833.8s 662 xm.mark_step()
+16023.5s 663 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+16023.5s 664 xm.mark_step()
+16023.5s 665 
+16023.5s 666 /tmp/ipykernel_73/3787354982.py:37: DeprecationWarning: Use torch_xla.sync instead
+16023.5s 667 xm.mark_step()
+16025.2s 668 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+16025.2s 669 xm.mark_step()
+16025.2s 670 
+16025.2s 671 /tmp/ipykernel_73/1252159399.py:28: DeprecationWarning: Use torch_xla.sync instead
+16025.2s 672 xm.mark_step()
+16029.8s 673 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+16029.8s 674 xm.mark_step()
+16029.8s 675 
+16029.8s 676 /tmp/ipykernel_73/1252159399.py:55: DeprecationWarning: Use torch_xla.sync instead
+16029.8s 677 xm.mark_step()
+16030.7s 678 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+16030.7s 679 xm.mark_step()
+16030.7s 680 
+16030.7s 681 /tmp/ipykernel_73/1252159399.py:63: DeprecationWarning: Use torch_xla.sync instead
+16030.7s 682 xm.mark_step()
+16045.2s 683 Step 22200 | Val Loss (EMA): 0.0927 | Val Cos (EMA): 0.9092
+16045.2s 684 Step 22200 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.518 (CA: +0.007), tg1.0: +0.078 (CA: -0.004)
+16050.1s 685 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+16050.1s 686 xm.mark_step()
+16050.1s 687 
+16050.1s 688 /tmp/ipykernel_73/3787354982.py:45: DeprecationWarning: Use torch_xla.sync instead
+16050.1s 689 xm.mark_step()
+16257.2s 690 Step 22400 | Val Loss (EMA): 0.0930 | Val Cos (EMA): 0.9091
+16257.2s 691 Step 22400 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.002), tg0.8: +0.518 (CA: +0.007), tg1.0: +0.079 (CA: -0.003)
+16468.7s 692 Step 22600 | Val Loss (EMA): 0.0930 | Val Cos (EMA): 0.9091
+16468.7s 693 Step 22600 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.003), tg0.8: +0.518 (CA: +0.007), tg1.0: +0.079 (CA: -0.003)
+16682.2s 694 Step 22800 | Val Loss (EMA): 0.0930 | Val Cos (EMA): 0.9092
+16682.2s 695 Step 22800 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.003), tg0.8: +0.519 (CA: +0.008), tg1.0: +0.080 (CA: -0.002)
+16892.0s 696 Step 23000 | Val Loss (EMA): 0.0932 | Val Cos (EMA): 0.9089
+16892.0s 697 Step 23000 | Val gain (Total / CA only): tg0.2: +0.044 (CA: +0.000), tg0.5: +0.298 (CA: +0.003), tg0.8: +0.518 (CA: +0.008), tg1.0: +0.079 (CA: +0.000)
+16966.4s 698 [1;34mwandb[0m:
+16966.4s 699 [1;34mwandb[0m: 🚀 View run [33mhearty-thunder-65[0m at: [34mhttps://forge.coreweave.com/wandb/bulyakovbr-bogdan-buliakov/BEBLaDII-Phase6-Kaggle/runs/7jpvazm6[0m
+16966.4s 700 [1;34mwandb[0m: Find logs at: [1;35mwandb/run-20261020_105243-7jpvazm6/logs[0m
+16976.4s 701 OSError: [Errno 28] No space left on device
+16976.4s 702 
+16976.4s 703 During handling of the above exception, another exception occurred:
+16976.4s 704 
+16976.4s 705 Traceback (most recent call last):
+16976.4s 706 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 371, in execute_notebook
+16976.4s 707 cls.execute_managed_notebook(nb_man, kernel_name, log_output=log_output, **kwargs)
+16976.4s 708 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 443, in execute_managed_notebook
+16976.4s 709 return PapermillNotebookClient(nb_man, **final_kwargs).execute()
+16976.4s 710 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 711 File "/usr/local/lib/python3.12/site-packages/papermill/clientwrap.py", line 45, in execute
+16976.4s 712 self.papermill_execute_cells()
+16976.4s 713 File "/usr/local/lib/python3.12/site-packages/papermill/clientwrap.py", line 77, in papermill_execute_cells
+16976.4s 714 self.nb_man.cell_complete(self.nb.cells[index], cell_index=index)
+16976.4s 715 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 77, in wrapper
+16976.4s 716 return func(self, *args, **kwargs)
+16976.4s 717 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 718 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 274, in cell_complete
+16976.4s 719 self.save()
+16976.4s 720 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 77, in wrapper
+16976.4s 721 return func(self, *args, **kwargs)
+16976.4s 722 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 723 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 153, in save
+16976.4s 724 write_ipynb(self.nb, self.output_path)
+16976.4s 725 File "/usr/local/lib/python3.12/site-packages/papermill/iorw.py", line 486, in write_ipynb
+16976.4s 726 papermill_io.write(nbformat.writes(nb), path)
+16976.4s 727 File "/usr/local/lib/python3.12/site-packages/papermill/iorw.py", line 102, in write
+16976.4s 728 return self.get_handler(path, extensions).write(buf, path)
+16976.4s 729 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 730 File "/usr/local/lib/python3.12/site-packages/papermill/iorw.py", line 214, in write
+16976.4s 731 with open(path, 'w', encoding="utf-8") as f:
+16976.4s 732 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 733 OSError: [Errno 28] No space left on device
+16976.4s 734 
+16976.4s 735 During handling of the above exception, another exception occurred:
+16976.4s 736 
+16976.4s 737 OSError: [Errno 28] No space left on device
+16976.4s 738 
+16976.4s 739 During handling of the above exception, another exception occurred:
+16976.4s 740 
+16976.4s 741 Traceback (most recent call last):
+16976.4s 742 File "<string>", line 1, in <module>
+16976.4s 743 File "/usr/local/lib/python3.12/site-packages/papermill/execute.py", line 116, in execute_notebook
+16976.4s 744 nb = papermill_engines.execute_notebook_with_engine(
+16976.4s 745 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 746 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 49, in execute_notebook_with_engine
+16976.4s 747 return self.get_engine(engine_name).execute_notebook(nb, kernel_name, **kwargs)
+16976.4s 748 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 749 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 374, in execute_notebook
+16976.4s 750 nb_man.notebook_complete()
+16976.4s 751 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 77, in wrapper
+16976.4s 752 return func(self, *args, **kwargs)
+16976.4s 753 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 754 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 302, in notebook_complete
+16976.4s 755 self.save()
+16976.4s 756 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 77, in wrapper
+16976.4s 757 return func(self, *args, **kwargs)
+16976.4s 758 ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 759 File "/usr/local/lib/python3.12/site-packages/papermill/engines.py", line 153, in save
+16976.4s 760 write_ipynb(self.nb, self.output_path)
+16976.4s 761 File "/usr/local/lib/python3.12/site-packages/papermill/iorw.py", line 486, in write_ipynb
+16976.4s 762 papermill_io.write(nbformat.writes(nb), path)
+16976.4s 763 File "/usr/local/lib/python3.12/site-packages/papermill/iorw.py", line 102, in write
+16976.4s 764 return self.get_handler(path, extensions).write(buf, path)
+16976.4s 765 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 766 File "/usr/local/lib/python3.12/site-packages/papermill/iorw.py", line 214, in write
+16976.4s 767 with open(path, 'w', encoding="utf-8") as f:
+16976.4s 768 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16976.4s 769 OSError: [Errno 28] No space left on device
+16976.9s 770 /bin/sh: 1: echo: echo: I/O error
+16979.7s 771 Traceback (most recent call last):
+16979.7s 772 File "/usr/local/lib/python3.12/site-packages/traitlets/utils/importstring.py", line 35, in import_item
+16979.7s 773 pak = getattr(module, obj)
+16979.7s 774 ^^^^^^^^^^^^^^^^^^^^
+16979.7s 775 AttributeError: module 'remove_papermill_header' has no attribute 'RemovePapermillHeader'
+16979.7s 776 
+16979.7s 777 The above exception was the direct cause of the following exception:
+16979.7s 778 
+16979.7s 779 Traceback (most recent call last):
+16979.7s 780 File "/usr/local/bin/jupyter-nbconvert", line 10, in <module>
+16979.7s 781 sys.exit(main())
+16979.7s 782 ^^^^^^
+16979.7s 783 File "/usr/local/lib/python3.12/site-packages/jupyter_core/application.py", line 284, in launch_instance
+16979.7s 784 super().launch_instance(argv=argv, **kwargs)
+16979.7s 785 File "/usr/local/lib/python3.12/site-packages/traitlets/config/application.py", line 1082, in launch_instance
+16979.7s 786 app.start()
+16979.7s 787 File "/usr/local/lib/python3.12/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+16979.7s 788 self.convert_notebooks()
+16979.7s 789 File "/usr/local/lib/python3.12/site-packages/nbconvert/nbconvertapp.py", line 585, in convert_notebooks
+16979.7s 790 cls = get_exporter(self.export_format)
+16979.7s 791 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16979.7s 792 File "/usr/local/lib/python3.12/site-packages/nbconvert/exporters/base.py", line 110, in get_exporter
+16979.7s 793 if getattr(exporter(config=config), "enabled", True):
+16979.7s 794 ^^^^^^^^^^^^^^^^^^^^^^^
+16979.7s 795 File "/usr/local/lib/python3.12/site-packages/nbconvert/exporters/exporter.py", line 123, in __init__
+16979.7s 796 self._init_preprocessors()
+16979.7s 797 File "/usr/local/lib/python3.12/site-packages/nbconvert/exporters/exporter.py", line 294, in _init_preprocessors
+16979.7s 798 self.register_preprocessor(preprocessor, enabled=True)
+16979.7s 799 File "/usr/local/lib/python3.12/site-packages/nbconvert/exporters/exporter.py", line 253, in register_preprocessor
+16979.7s 800 preprocessor_cls = import_item(preprocessor)
+16979.7s 801 ^^^^^^^^^^^^^^^^^^^^^^^^^
+16979.7s 802 File "/usr/local/lib/python3.12/site-packages/traitlets/utils/importstring.py", line 37, in import_item
+16979.7s 803 raise ImportError("No module named %s" % obj) from e
+16979.7s 804 ImportError: No module named RemovePapermillHeader
+16982.1s 805 [NbConvertApp] Converting notebook __notebook__.ipynb to html
+16982.1s 806 Traceback (most recent call last):
+16982.1s 807 File "/usr/local/lib/python3.12/site-packages/nbformat/reader.py", line 19, in parse_json
+16982.1s 808 nb_dict = json.loads(s, **kwargs)
+16982.1s 809 ^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 810 File "/usr/local/lib/python3.12/json/__init__.py", line 346, in loads
+16982.1s 811 return _default_decoder.decode(s)
+16982.1s 812 ^^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 813 File "/usr/local/lib/python3.12/json/decoder.py", line 338, in decode
+16982.1s 814 obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+16982.1s 815 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 816 File "/usr/local/lib/python3.12/json/decoder.py", line 354, in raw_decode
+16982.1s 817 obj, end = self.scan_once(s, idx)
+16982.1s 818 ^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 819 json.decoder.JSONDecodeError: Unterminated string starting at: line 4814 column 7 (char 208209)
+16982.1s 820 
+16982.1s 821 The above exception was the direct cause of the following exception:
+16982.1s 822 
+16982.1s 823 Traceback (most recent call last):
+16982.1s 824 File "/usr/local/bin/jupyter-nbconvert", line 10, in <module>
+16982.1s 825 sys.exit(main())
+16982.1s 826 ^^^^^^
+16982.1s 827 File "/usr/local/lib/python3.12/site-packages/jupyter_core/application.py", line 284, in launch_instance
+16982.1s 828 super().launch_instance(argv=argv, **kwargs)
+16982.1s 829 File "/usr/local/lib/python3.12/site-packages/traitlets/config/application.py", line 1082, in launch_instance
+16982.1s 830 app.start()
+16982.1s 831 File "/usr/local/lib/python3.12/site-packages/nbconvert/nbconvertapp.py", line 420, in start
+16982.1s 832 self.convert_notebooks()
+16982.1s 833 File "/usr/local/lib/python3.12/site-packages/nbconvert/nbconvertapp.py", line 597, in convert_notebooks
+16982.1s 834 self.convert_single_notebook(notebook_filename)
+16982.1s 835 File "/usr/local/lib/python3.12/site-packages/nbconvert/nbconvertapp.py", line 563, in convert_single_notebook
+16982.1s 836 output, resources = self.export_single_notebook(
+16982.1s 837 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 838 File "/usr/local/lib/python3.12/site-packages/nbconvert/nbconvertapp.py", line 487, in export_single_notebook
+16982.1s 839 output, resources = self.exporter.from_filename(
+16982.1s 840 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 841 File "/usr/local/lib/python3.12/site-packages/nbconvert/exporters/templateexporter.py", line 390, in from_filename
+16982.1s 842 return super().from_filename(filename, resources, **kw)  # type:ignore[return-value]
+16982.1s 843 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 844 File "/usr/local/lib/python3.12/site-packages/nbconvert/exporters/exporter.py", line 201, in from_filename
+16982.1s 845 return self.from_file(f, resources=resources, **kw)
+16982.1s 846 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 847 File "/usr/local/lib/python3.12/site-packages/nbconvert/exporters/templateexporter.py", line 396, in from_file
+16982.1s 848 return super().from_file(file_stream, resources, **kw)  # type:ignore[return-value]
+16982.1s 849 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 850 File "/usr/local/lib/python3.12/site-packages/nbconvert/exporters/exporter.py", line 221, in from_file
+16982.1s 851 nbformat.read(file_stream, as_version=4), resources=resources, **kw
+16982.1s 852 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 853 File "/usr/local/lib/python3.12/site-packages/nbformat/__init__.py", line 174, in read
+16982.1s 854 return reads(buf, as_version, capture_validation_error, **kwargs)
+16982.1s 855 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 856 File "/usr/local/lib/python3.12/site-packages/nbformat/__init__.py", line 92, in reads
+16982.1s 857 nb = reader.reads(s, **kwargs)
+16982.1s 858 ^^^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 859 File "/usr/local/lib/python3.12/site-packages/nbformat/reader.py", line 75, in reads
+16982.1s 860 nb_dict = parse_json(s, **kwargs)
+16982.1s 861 ^^^^^^^^^^^^^^^^^^^^^^^
+16982.1s 862 File "/usr/local/lib/python3.12/site-packages/nbformat/reader.py", line 25, in parse_json
+16982.1s 863 raise NotJSONError(message) from e
+16982.1s 864 nbformat.reader.NotJSONError: Notebook does not appear to be JSON: '{\n "cells": [\n  {\n   "cell_type": "c...

@@ -29,6 +29,7 @@ from src.beb_la_dii.model.diffusion_blocks import (
     AdaLNModulation,
     AdaLNWrappedLayerNorm,
     RotaryEmbedding,
+    rotate_half,
     apply_rotary_pos_emb,
     patch_modernbert_xla_safe_mask,
 )
@@ -780,7 +781,89 @@ def generate_html(results, html_path):
 
 
 # =========================================================================
-# 7. Main Entry Point
+# 7. Pre-flight Environment & File Verification
+# =========================================================================
+def validate_environment(config: dict, dict_paths: list, ds_path: str, verbose: bool = True) -> tuple:
+    """
+    Выполняет pre-flight проверку файловой инфраструктуры, наличия чекпоинтов,
+    буферов и датасетов перед запуском тяжелых вычислений.
+    Возвращает (all_critical_ok, resolved_dict_path).
+    """
+    items = [
+        ("Phase 6 Checkpoint", config.get('phase6_ckpt', ''), True),
+        ("Phase 1 VAE Encoder", config.get('encoder_path', ''), True),
+        ("Phase 4 DUS Backbone", config.get('phase4_path', ''), True),
+        ("Phase 2 ModernDecoder", config.get('phase2_decoder_path', ''), True),
+        ("SEP Token Buffer", config.get('sep_token_path', ''), True),
+        ("VOID Token Buffer", config.get('void_token_path', ''), False),
+    ]
+
+    # Поиск доступного словаря латентов
+    resolved_dict_path = None
+    for p in dict_paths:
+        if p and os.path.exists(p):
+            resolved_dict_path = p
+            break
+
+    dict_label_path = resolved_dict_path if resolved_dict_path else (dict_paths[0] if dict_paths else "")
+    items.append(("Latent Dictionary", dict_label_path, True))
+    items.append(("Phase 6 Dataset", ds_path, False))
+
+    critical_missing = 0
+    optional_missing = 0
+
+    if verbose:
+        print("\n" + "=" * 80)
+        print("PRE-FLIGHT ENVIRONMENT & FILE VALIDATION")
+        print("=" * 80)
+        header = f"{'Component':<24} | {'Status':<10} | {'Size (MB)':<10} | {'Path'}"
+        print(header)
+        print("-" * 80)
+
+    for name, path, is_critical in items:
+        exists = bool(path and os.path.exists(path))
+        if exists:
+            status = "[OK]"
+            try:
+                size_mb = f"{os.path.getsize(path) / (1024 * 1024):.2f}"
+            except Exception:
+                size_mb = "N/A"
+        else:
+            status = "[MISSING]" if is_critical else "[WARN]"
+            size_mb = "-"
+            if is_critical:
+                critical_missing += 1
+            else:
+                optional_missing += 1
+
+        if verbose:
+            print(f"{name:<24} | {status:<10} | {size_mb:<10} | {path}")
+
+    if verbose:
+        print("-" * 80)
+        # Сканирование доступных чекпоинтов Фазы 6
+        ckpt_dir = os.path.join(PROJECT_ROOT, "experiments", "phase 6", "checkpoints")
+        if os.path.exists(ckpt_dir):
+            ckpts = [f for f in os.listdir(ckpt_dir) if f.endswith(".pth")]
+            ckpts.sort()
+            print(f"Available Phase 6 Checkpoints in {ckpt_dir} ({len(ckpts)} found):")
+            for c in ckpts:
+                c_path = os.path.join(ckpt_dir, c)
+                try:
+                    c_size = os.path.getsize(c_path) / (1024 * 1024)
+                    print(f"  * {c:<56} ({c_size:.1f} MB)")
+                except Exception:
+                    print(f"  * {c}")
+        else:
+            print(f"Checkpoint directory not found: {ckpt_dir}")
+        print("=" * 80 + "\n")
+
+    all_critical_ok = (critical_missing == 0)
+    return all_critical_ok, resolved_dict_path
+
+
+# =========================================================================
+# 8. Main Entry Point
 # =========================================================================
 def main():
     parser = argparse.ArgumentParser(description="Phase 6 CA_Prompt Evaluation with ModernLatentDecoder & Metrics")
@@ -791,10 +874,9 @@ def main():
     parser.add_argument("--eval_samples", type=int, default=50, help="Number of dataset samples for quantitative metric evaluation (0 to skip)")
     parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-Free Guidance scale for prompt conditioning (default: 1.0)")
     parser.add_argument("--output_html", type=str, default="", help="Path to output HTML report")
+    parser.add_argument("--check-files", "--check-only", dest="check_files", action="store_true",
+                        help="Perform pre-flight verification of all checkpoints, tokens, and datasets without loading models")
     args = parser.parse_args()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Initializing Phase 6 on {device}...")
 
     # Дефолтный путь к чекпоинту шага 9000 или переданный через CLI
     default_ckpt_9000 = os.path.join(PROJECT_ROOT, "experiments", "phase 6", "checkpoints", "planB_phase6_checkpoints_phase6_ca_layers_step_9000.pth")
@@ -811,6 +893,29 @@ def main():
         'void_token_path': os.path.join(PROJECT_ROOT, "storage", "components", "void_token.pt"),
         'phase6_ckpt': target_ckpt
     }
+
+    dict_primary = os.path.join(PROJECT_ROOT, "experiments", "phase 5", "local", "latent_dict.pt")
+    dict_fallback = os.path.join(PROJECT_ROOT, "BEBLaDII-planB-Phase5-Data", "latent_dict.pt")
+    dict_paths = [dict_primary, dict_fallback]
+    ds_path = os.path.join(PROJECT_ROOT, "BEBLaDII-planB-Phase6-Data", "phase 6", "data", "train_phase6.parquet")
+
+    # Pre-flight проверка файлов
+    all_critical_ok, resolved_dict_path = validate_environment(config, dict_paths, ds_path, verbose=True)
+
+    if args.check_files:
+        if all_critical_ok:
+            print("[SUCCESS] All critical files and checkpoints verified successfully.")
+            sys.exit(0)
+        else:
+            print("[ERROR] Critical files are missing! Check the table above.")
+            sys.exit(1)
+
+    if not all_critical_ok:
+        print("[ERROR] Execution halted: missing critical checkpoint/component files. Run with --check-files for details.")
+        sys.exit(1)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Initializing Phase 6 on {device}...")
 
     tokenizer = AutoTokenizer.from_pretrained(config['qwen_path'])
     if tokenizer.pad_token is None:
@@ -833,15 +938,12 @@ def main():
     decoder.eval()
     print("ModernLatentDecoder loaded successfully.")
 
-    dict_path = os.path.join(PROJECT_ROOT, "experiments", "phase 5", "local", "latent_dict.pt")
-    if os.path.exists(dict_path):
-        latent_dict = torch.load(dict_path, map_location=device).float()
+    if resolved_dict_path:
+        latent_dict = torch.load(resolved_dict_path, map_location=device).float()
     else:
-        print("latent_dict.pt not found! Building from fallback...")
-        latent_dict = torch.load(os.path.join(PROJECT_ROOT, "BEBLaDII-planB-Phase5-Data", "latent_dict.pt"), map_location=device).float()
+        raise FileNotFoundError("Could not find latent_dict.pt in primary or fallback paths!")
 
     # 1. Количественная оценка метрик датасета
-    ds_path = os.path.join(PROJECT_ROOT, "BEBLaDII-planB-Phase6-Data", "phase 6", "data", "train_phase6.parquet")
     df = None
     if os.path.exists(ds_path):
         try:

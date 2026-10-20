@@ -10,6 +10,47 @@ if sys.platform == "win32":
         if hasattr(sys.stderr, "reconfigure"): sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception: pass
 
+import shutil
+from pathlib import Path
+
+def cleanup_kaggle_checkpoints():
+    """Очищает старые локальные чекпоинты на диске Kaggle для предотвращения ошибки No space left on device."""
+    working_dir = Path("/kaggle/working")
+    if not working_dir.exists():
+        return
+    total, used, free = shutil.disk_usage(working_dir)
+    gb = 1024 ** 3
+    print(f"[Disk Cleanup] До очистки доступно: {free / gb:.2f} GB из {total / gb:.2f} GB")
+
+    deleted = 0
+    freed = 0
+    ckpt_dir = working_dir / "checkpoints"
+    if ckpt_dir.exists():
+        for f in ckpt_dir.rglob("*.pth"):
+            try:
+                sz = f.stat().st_size
+                f.unlink()
+                deleted += 1
+                freed += sz
+            except OSError as e:
+                print(f"[Disk Cleanup] Ошибка при удалении {f}: {e}")
+
+    for pattern in ("phase6_ca_layers_step_*.pth", "resume_step_*.pth"):
+        for f in working_dir.glob(pattern):
+            try:
+                sz = f.stat().st_size
+                f.unlink()
+                deleted += 1
+                freed += sz
+            except OSError as e:
+                print(f"[Disk Cleanup] Ошибка при удалении {f}: {e}")
+
+    total, used, free = shutil.disk_usage(working_dir)
+    print(f"[Disk Cleanup] Удалено файлов: {deleted} (освобождено {freed / gb:.2f} GB). Свободно: {free / gb:.2f} GB")
+
+cleanup_kaggle_checkpoints()
+
+
 # Install Kaggle TPU dependencies (equivalent to: !pip install -q -U --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage)
 try:
     import wandb
@@ -1323,6 +1364,7 @@ def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=Non
     print("="*70 + "\n")
 
 def main():
+    cleanup_kaggle_checkpoints()
     mesh = setup_spmd_mesh()
     device = xm.xla_device()
     os.makedirs(args.output_dir, exist_ok=True)
@@ -1712,7 +1754,7 @@ def main():
                 # Сохраняем чекпоинт:
                 xm.save(save_payload, ckpt_path)
                 if args.gcs_checkpoint_dir:
-                    xm.add_step_closure(sync_to_gcs_and_delete, args=(ckpt_path, args.gcs_checkpoint_dir, True))
+                    xm.add_step_closure(sync_to_gcs_and_delete, args=(ckpt_path, args.gcs_checkpoint_dir, False))
                 ema_tracker.restore(model)
 
                 if not is_weights_finite:
