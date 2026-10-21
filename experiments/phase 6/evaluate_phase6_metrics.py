@@ -677,8 +677,20 @@ def decode_latents_to_text(decoder, qwen_embed_weight, tokenizer, z):
         return text
 
 
-def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, max_len=64, steps=25, cfg_scale=1.0):
-    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}' (CFG scale={cfg_scale})")
+def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, max_len=64, steps=25,
+                   cfg_scale=1.0, cfg_max=None, cfg_min=None, cfg_power=1.0,
+                   sampler="hybrid", seed=42, re_noise_t=0.88):
+    if cfg_max is None:
+        cfg_max = cfg_scale if cfg_scale > 1.0 else 1.0
+    if cfg_min is None:
+        cfg_min = 1.0
+
+    if seed is None or seed < 0:
+        import random
+        seed = random.randint(1, 1000000)
+
+    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}'")
+    print(f"   [Sampler: {sampler} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (power={cfg_power}) | Steps: {steps}]")
     q_enc = tokenizer(query_text, return_tensors='pt').to(device)
 
     with torch.no_grad():
@@ -687,18 +699,31 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
 
         B = 1
         T_a = max_len
-        torch.manual_seed(42)
+        torch.manual_seed(seed)
         if torch.cuda.is_available():
-            torch.cuda.manual_seed_all(42)
+            torch.cuda.manual_seed_all(seed)
 
         z_canvas = safe_normalize(torch.randn(B, T_a, 1024, device=device), dim=-1)
-        dt = 1.0 / steps
         run_history = []
 
-        for i in range(steps):
-            # Точная дискретная сетка с шагом 0.04 (k / 25), как в обучении
-            t_val = round((1.0 - i * dt) / 0.04) * 0.04
-            t_val = max(0.04, min(1.0, round(t_val, 4)))
+        # Построение временной сетки:
+        if sampler in ["hybrid", "anchor_jump"]:
+            # Шаг 0 на t=1.0, затем прыжок к re_noise_t и равномерный спуск до 0.04
+            remaining_steps = max(1, steps - 1)
+            t_schedule = [1.0]
+            for step_idx in range(remaining_steps):
+                t_val = re_noise_t - step_idx * (re_noise_t / remaining_steps)
+                t_val = max(0.04, min(1.0, round(round(t_val / 0.04) * 0.04, 4)))
+                t_schedule.append(t_val)
+        else:
+            dt = 1.0 / steps
+            t_schedule = []
+            for step_idx in range(steps):
+                t_val = round((1.0 - step_idx * dt) / 0.04) * 0.04
+                t_val = max(0.04, min(1.0, round(t_val, 4)))
+                t_schedule.append(t_val)
+
+        for i, t_val in enumerate(t_schedule):
             t_actual = torch.full((B, T_a), t_val, device=device)
             t_global = torch.full((B,), t_val, device=device)
 
@@ -709,12 +734,13 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             # Conditional pass
             h39, z_pred = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
 
-            # Classifier-Free Guidance (CFG): вычитание безусловного барицентра
-            if cfg_scale > 1.0:
+            # Time-scheduled CFG:
+            cfg_t = cfg_min + (cfg_max - cfg_min) * (((t_val - 0.04) / 0.96) ** cfg_power) if cfg_max > cfg_min else cfg_max
+            if cfg_t > 1.0:
                 for ca in model.ca_layers.values(): ca._disable = True
                 _, z_uncond = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
                 for ca in model.ca_layers.values(): ca._disable = False
-                z_pred = safe_normalize(z_uncond + cfg_scale * (z_pred - z_uncond), dim=-1)
+                z_pred = safe_normalize(z_uncond + cfg_t * (z_pred - z_uncond), dim=-1)
 
             # Phase 2 Decoder text
             step_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas)
@@ -724,28 +750,38 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             run_history.append({
                 'step': i,
                 't': t_val,
+                'cfg': cfg_t,
                 'text': step_text,
                 'raw_dprox': raw_dprox[0].mean().item()
             })
 
-            if i % 5 == 0 or i == steps - 1:
-                print(f"Step {i:02d} (t={t_val:.2f}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
+            if i % 5 == 0 or i == len(t_schedule) - 1:
+                print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
                 print(f"   [Phase 2 Decoder]: {step_text[:90]}...")
                 print(f"   [Latent Dict NN ]: {nn_text[:60]}...")
 
-            t_next_val = max(0.0, round((t_val - 0.04) / 0.04) * 0.04)
-            t_next_val = round(t_next_val, 4)
-            t_next = torch.full((B, T_a), t_next_val, device=device)
-            theta_now = t_actual.unsqueeze(-1) * (math.pi / 2)
-            theta_next = t_next.unsqueeze(-1) * (math.pi / 2)
+            if i == len(t_schedule) - 1:
+                z_canvas = z_pred
+                break
 
-            sin_now = torch.sin(theta_now)
-            sin_now = torch.where(sin_now < 1e-5, torch.ones_like(sin_now) * 1e-5, sin_now)
-            w_pred = torch.sin(theta_now - theta_next) / sin_now
-            w_cur = torch.sin(theta_next) / sin_now
+            # Anchor Jump на шаге 0: вместо Slerp от стартового шума прыгаем вокруг z_pred
+            if i == 0 and sampler in ["hybrid", "anchor_jump"]:
+                t_next_val = t_schedule[i + 1]
+                t_noise = torch.full((B, T_a), t_next_val, device=device)
+                z_canvas = spherical_noise(z_pred, t_noise)
+            else:
+                t_next_val = t_schedule[i + 1]
+                t_next = torch.full((B, T_a), t_next_val, device=device)
+                theta_now = t_actual.unsqueeze(-1) * (math.pi / 2)
+                theta_next = t_next.unsqueeze(-1) * (math.pi / 2)
 
-            z_next = w_pred * z_pred + w_cur * z_canvas
-            z_canvas = torch.where(theta_now > 1e-5, safe_normalize(z_next, dim=-1), safe_normalize(z_pred, dim=-1))
+                sin_now = torch.sin(theta_now)
+                sin_now = torch.where(sin_now < 1e-5, torch.ones_like(sin_now) * 1e-5, sin_now)
+                w_pred = torch.sin(theta_now - theta_next) / sin_now
+                w_cur = torch.sin(theta_next) / sin_now
+
+                z_next = w_pred * z_pred + w_cur * z_canvas
+                z_canvas = torch.where(theta_now > 1e-5, safe_normalize(z_next, dim=-1), safe_normalize(z_pred, dim=-1))
 
         # Финальное декодирование
         final_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas)
@@ -756,7 +792,8 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         print(f"\n=== FINAL ANSWER (ModernLatentDecoder) ===\n{final_text}\n" + "="*42)
         print(f"=== FINAL ANSWER (LatentDict NN) ===\n{final_nn_text}\n" + "="*42)
 
-    return {'query': query_text, 'history': run_history, 'final': final_text, 'final_nn': final_nn_text}
+    meta_str = f"Sampler: {sampler} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (p={cfg_power})"
+    return {'query': query_text, 'meta': meta_str, 'history': run_history, 'final': final_text, 'final_nn': final_nn_text}
 
 
 def generate_html(results, html_path):
@@ -764,14 +801,19 @@ def generate_html(results, html_path):
     html += "<style>body{font-family:sans-serif; margin:20px; background:#f9f9f9} "
     html += ".run{background:#fff; padding:15px; margin-bottom:20px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1)} "
     html += ".step{font-family:monospace; color:#555; margin:5px 0; padding-bottom:5px; border-bottom:1px solid #eee} "
+    html += ".meta{font-size:0.9em; color:#777; margin-bottom:8px} "
     html += ".final{font-weight:bold; color:#2c3e50; margin-top:10px; font-size:1.1em; background:#eef6ff; padding:10px; border-radius:4px}</style></head><body>"
     html += "<h1>Phase 6 CA_Prompt Generation Demos (ModernLatentDecoder + Z_prompt_12)</h1>"
 
     for res in results:
+        sampler_meta = res.get('meta', '')
         html += f"<div class='run'><h3>Q: {res['query']}</h3>"
+        if sampler_meta:
+            html += f"<div class='meta'>{sampler_meta}</div>"
         for h in res['history']:
             if h['step'] % 5 == 0 or h['step'] == len(res['history'])-1:
-                html += f"<div class='step'>[Step {h['step']:02d} | t={h['t']:.2f} | DProx={h['raw_dprox']:.3f}] {h['text']}</div>"
+                cfg_info = f" | CFG={h.get('cfg', 1.0):.2f}" if 'cfg' in h else ""
+                html += f"<div class='step'>[Step {h['step']:02d} | t={h['t']:.2f}{cfg_info} | DProx={h['raw_dprox']:.3f}] {h['text']}</div>"
         html += f"<div class='final'>A: {res['final']}</div></div>"
 
     html += "</body></html>"
@@ -872,7 +914,14 @@ def main():
     parser.add_argument("--steps", type=int, default=25, help="Number of Slerp diffusion steps")
     parser.add_argument("--max_len", type=int, default=64, help="Maximum generated answer length")
     parser.add_argument("--eval_samples", type=int, default=50, help="Number of dataset samples for quantitative metric evaluation (0 to skip)")
-    parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-Free Guidance scale for prompt conditioning (default: 1.0)")
+    parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-Free Guidance scale (or min CFG if scheduled)")
+    parser.add_argument("--cfg_max", type=float, default=4.0, help="Maximum CFG scale at t=1.0 for scheduled guidance")
+    parser.add_argument("--cfg_min", type=float, default=1.0, help="Minimum CFG scale at t=0.04 for scheduled guidance")
+    parser.add_argument("--cfg_power", type=float, default=1.0, help="Power exponent for CFG decay schedule")
+    parser.add_argument("--sampler", type=str, default="hybrid", choices=["standard", "anchor_jump", "hybrid"], help="Sampling strategy")
+    parser.add_argument("--seed", type=int, default=42, help="Seed for generation (-1 for random seed)")
+    parser.add_argument("--random_seed", action="store_true", help="Pick random seed for each generation")
+    parser.add_argument("--re_noise_t", type=float, default=0.88, help="Target noise level for anchor jump re-noising")
     parser.add_argument("--output_html", type=str, default="", help="Path to output HTML report")
     parser.add_argument("--check-files", "--check-only", dest="check_files", action="store_true",
                         help="Perform pre-flight verification of all checkpoints, tokens, and datasets without loading models")
@@ -956,13 +1005,19 @@ def main():
     # 2. Демонстрационная диффузионная генерация
     results = []
 
+    gen_seed = -1 if args.random_seed else args.seed
+
     if df is not None and len(df) > 0:
         sample_q = df.iloc[0]['Q']
-        res = run_generation(model, decoder, latent_dict, tokenizer, sample_q, device, max_len=args.max_len, steps=args.steps, cfg_scale=args.cfg_scale)
+        res = run_generation(model, decoder, latent_dict, tokenizer, sample_q, device, max_len=args.max_len, steps=args.steps,
+                             cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
+                             sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t)
         results.append(res)
 
     ood_q = "Explain why the sky is blue using simple words."
-    res = run_generation(model, decoder, latent_dict, tokenizer, ood_q, device, max_len=args.max_len, steps=args.steps, cfg_scale=args.cfg_scale)
+    res = run_generation(model, decoder, latent_dict, tokenizer, ood_q, device, max_len=args.max_len, steps=args.steps,
+                         cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
+                         sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t)
     results.append(res)
 
     html_path = args.output_html if args.output_html else os.path.join(PROJECT_ROOT, "experiments", "phase 6", "phase6_generation_demo.html")
@@ -977,7 +1032,9 @@ def main():
                     break
                 if not user_q.strip():
                     continue
-                res = run_generation(model, decoder, latent_dict, tokenizer, user_q, device, max_len=args.max_len, steps=args.steps, cfg_scale=args.cfg_scale)
+                res = run_generation(model, decoder, latent_dict, tokenizer, user_q, device, max_len=args.max_len, steps=args.steps,
+                                     cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
+                                     sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t)
                 results.append(res)
                 generate_html(results, html_path)
             except KeyboardInterrupt:

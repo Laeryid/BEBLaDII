@@ -338,6 +338,9 @@ class Config:
     unfreeze_k_after_ca = 4
     use_gradient_checkpointing = False
     loss_t_power  = 0.0   # 0.0 = равномерный вес лосса по токенам (ADR 098)
+    loss_t_mode   = "high_t_boost" # "uniform" или "high_t_boost" (w(t) = 0.2 + 0.8 * t)
+    prompt_dropout = 0.15 # 15% батча без CA для обучения безусловного распределения (CFG)
+    high_t_sampling = True # 20% t=1.0, 40% t in [0.72, 0.96], 40% t in [0.04, 0.68]
     use_prompt_sa = True  # Prompt-SA + RoPE перед CA
     val_num_samples = 80 # Размер валидационной выборки
     wandb_project = "BEBLaDII-Phase6-Kaggle"
@@ -567,6 +570,9 @@ class CAPromptLayer(nn.Module):
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
+        prompt_mask = getattr(self, '_current_prompt_mask', None)
+        if prompt_mask is not None:
+            ca_out = ca_out * prompt_mask
         with torch.no_grad():
             self.last_ca_ratio = ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)
         A = A + warmup_factor * ca_out
@@ -879,13 +885,33 @@ class BEBLaDIIPhase6(nn.Module):
             # === XLA SAFE SAMPLING (CPU) ===
             cpu_dev = torch.device('cpu')
             if t_global is None:
-                t_global_cpu = torch.randint(1, 26, (B,), device=cpu_dev).float() / 25.0
+                if getattr(args, "high_t_sampling", True):
+                    # Смесь с концентрацией на сильном шуме:
+                    # 20% чистый шум (t_global = 1.00, k=25)
+                    # 40% сильный шум (t_global in [0.72, 0.96], k in [18, 24])
+                    # 40% средний и малый шум (t_global in [0.04, 0.68], k in [1, 17])
+                    u_t = torch.rand(B, device=cpu_dev)
+                    k_pure = torch.full((B,), 25, device=cpu_dev, dtype=torch.long)
+                    k_high = torch.randint(18, 25, (B,), device=cpu_dev)
+                    k_low = torch.randint(1, 18, (B,), device=cpu_dev)
+                    k_sampled = torch.where(u_t < 0.20, k_pure, torch.where(u_t < 0.60, k_high, k_low))
+                    t_global_cpu = k_sampled.float() / 25.0
+                else:
+                    t_global_cpu = torch.randint(1, 26, (B,), device=cpu_dev).float() / 25.0
             else:
                 t_global_cpu = t_global.detach().to(cpu_dev).float()
             t_actual_cpu = sample_token_noise_levels(t_global_cpu, T_a)
             t_global = mark_fsdp_sharding(t_global_cpu.to(Z_A_clean.device))
             t_actual = mark_fsdp_sharding(t_actual_cpu.to(Z_A_clean.device))
             # ===============================
+
+            # Prompt Dropout: генерация маски для обучения безусловной ветки (CFG)
+            if self.training and getattr(args, "prompt_dropout", 0.0) > 0.0:
+                rand_drop = torch.rand((B, 1, 1), device=cpu_dev)
+                prompt_mask_cpu = (rand_drop >= args.prompt_dropout).float()
+                prompt_mask = mark_fsdp_sharding(prompt_mask_cpu.to(Z_A_clean.device))
+            else:
+                prompt_mask = None
 
             z_noisy = mark_fsdp_sharding(spherical_noise(Z_A_clean, t_actual))
 
@@ -997,9 +1023,11 @@ class BEBLaDIIPhase6(nn.Module):
             ca._current_mask_Q = attention_mask_q
             ca._current_warmup_factor = warmup_factor
             ca._current_t_emb = t_emb  # [B, T_a, 256] — per-token time embedding для AdaLN в CA/SA
+            ca._current_prompt_mask = prompt_mask
             _ca_inner(ca)._current_mask_Q = attention_mask_q
             _ca_inner(ca)._current_warmup_factor = warmup_factor
             _ca_inner(ca)._current_t_emb = t_emb
+            _ca_inner(ca)._current_prompt_mask = prompt_mask
 
         x_in = z_noisy.float()
         sep_prefix = self.sep_embed.unsqueeze(0).unsqueeze(0).expand(B, 1, -1).to(x_in.dtype)
@@ -1083,8 +1111,12 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     loss_el = loss_el + bary_penalty
     # -------------------------
 
-    # loss_t_power > 0 -> (1 - t_actual)^power, иначе равномерный вес 1.0
-    if loss_t_power > 0.0:
+    # Взвешивание функции потерь по времени t
+    loss_t_mode = getattr(args, "loss_t_mode", "high_t_boost")
+    if loss_t_mode == "high_t_boost":
+        # Усиление лосса при высоком шуме: штраф за потерю темы на t=1.0 в 5 раз выше, чем на t=0.04
+        w_weighted = 0.2 + 0.8 * t_actual
+    elif loss_t_power > 0.0:
         w_weighted = (1.0 - t_actual).pow(loss_t_power)
     else:
         w_weighted = torch.ones_like(t_actual)
@@ -1517,12 +1549,14 @@ def main():
                 if target_k in ema_tracker.shadow and torch.is_tensor(v):
                     ema_tracker.shadow[target_k].copy_(v.to(device=ema_tracker.shadow[target_k].device, dtype=torch.float32))
 
-    ca_out_params, ca_qkv_params, ca_other_params = [], [], []
+    ca_out_params, ca_qkv_params, ca_sa_params, ca_other_params = [], [], [], []
     for name, p in model.ca_layers.named_parameters():
         if p.requires_grad:
-            if "out_proj" in name:
+            if "out_proj_sa" in name or "qkv_proj_sa" in name or "adaln_sa" in name or "norm2" in name:
+                ca_sa_params.append(p)
+            elif "out_proj" in name:
                 ca_out_params.append(p)
-            elif "q_proj" in name or "k_proj" in name or "v_proj" in name or "qkv_proj" in name:
+            elif any(k in name for k in ["q_proj", "kv_proj", "norm_q", "adaln_ca"]):
                 ca_qkv_params.append(p)
             else:
                 ca_other_params.append(p)
@@ -1531,13 +1565,14 @@ def main():
         if p.requires_grad and "ca_layer" not in name:
             dus_params.append(p)
 
-    trainable_params = ca_out_params + ca_qkv_params + ca_other_params + dus_params
+    trainable_params = ca_out_params + ca_qkv_params + ca_sa_params + ca_other_params + dus_params
 
     optimizer = torch.optim.AdamW([
-        {'params': ca_out_params, 'lr': 2e-4, 'weight_decay': 0.0},     # снижен с 5e-4 для стабильности после warmup, без decay
-        {'params': ca_qkv_params, 'lr': 8e-5, 'weight_decay': 0.0},     # снижен с 2e-4, без decay
-        {'params': ca_other_params, 'lr': 2.5e-5, 'weight_decay': 0.0}, # снижен с 5e-5, без decay
-        {'params': dus_params, 'lr': 2.5e-5, 'weight_decay': 0.01}       # снижен с 5e-5
+        {'params': ca_out_params,   'lr': 2e-4, 'weight_decay': 0.0},   # CA out_proj (прямой канал промпта)
+        {'params': ca_qkv_params,   'lr': 1e-4, 'weight_decay': 0.0},   # CA q_proj, kv_proj, adaln_ca, norm_q
+        {'params': ca_sa_params,    'lr': 5e-6, 'weight_decay': 0.0},   # Canvas SA (out_proj_sa, qkv_proj_sa, adaln_sa) - снижен в 40 раз!
+        {'params': ca_other_params, 'lr': 1e-4, 'weight_decay': 0.0},   # norm1
+        {'params': dus_params,      'lr': 5e-6, 'weight_decay': 0.01}   # 12 buffer layers DUS - снижен в 5 раз!
     ])
 
     if getattr(args, "run_diagnosis_first", False):
@@ -1661,7 +1696,7 @@ def main():
                 ratio24 = _ca_inner(model.ca_layers["24"]).last_ca_ratio
                 ratio36 = _ca_inner(model.ca_layers["36"]).last_ca_ratio
 
-                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36, gn_t, lr_out, lr_qkv, lr_dus):
+                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36, gn_t, lr_out, lr_qkv, lr_sa, lr_dus):
                     l_val = l.item()
                     if not math.isfinite(l_val):
                         nan_state["streak"] += 1
@@ -1681,6 +1716,7 @@ def main():
                         "warmup_factor": w.item(),
                         "lr_ca_out": float(lr_out),
                         "lr_ca_qkv": float(lr_qkv),
+                        "lr_ca_sa": float(lr_sa),
                         "lr_dus": float(lr_dus),
                         "out_proj_12_amp": o12.item(),
                         "out_proj_36_amp": o36.item(),
@@ -1708,8 +1744,9 @@ def main():
 
                 lr_out_val = optimizer.param_groups[0]['lr']
                 lr_qkv_val = optimizer.param_groups[1]['lr']
-                lr_dus_val = optimizer.param_groups[3]['lr']
-                xm.add_step_closure(log_step, args=(global_step, loss.detach(), avg_cos_sim.detach(), true_void_sim.detach(), content_to_void_sim.detach(), warmup_factor.detach(), op12, op36, qp36, cp_det, cm_det, t_global_det, ratio12, ratio24, ratio36, grad_norm.detach(), lr_out_val, lr_qkv_val, lr_dus_val))
+                lr_sa_val  = optimizer.param_groups[2]['lr']
+                lr_dus_val = optimizer.param_groups[4]['lr']
+                xm.add_step_closure(log_step, args=(global_step, loss.detach(), avg_cos_sim.detach(), true_void_sim.detach(), content_to_void_sim.detach(), warmup_factor.detach(), op12, op36, qp36, cp_det, cm_det, t_global_det, ratio12, ratio24, ratio36, grad_norm.detach(), lr_out_val, lr_qkv_val, lr_sa_val, lr_dus_val))
 
             if global_step <= 10 and GLOBAL_NAN_CHECKS:
                 stacked_nan = torch.stack(GLOBAL_NAN_CHECKS)

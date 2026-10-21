@@ -1107,6 +1107,16 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 108: Устранение позиционного коллапса в Phase 6: RoPE в Cross-Attention, отталкивающий анти-барицентровый лосс, обнуление weight decay и разделение live/EMA чекпоинтов"
+    },
+    "decisions/109_phase6_high_noise_sampling_and_hybrid_inference.md": {
+      "description": "ADR 109: Phase 6 High-Noise t_global Mixture, Canvas Self-Attention LR Isolation, Prompt Dropout, and Hybrid Scheduled Inference (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 109: Phase 6 High-Noise t_global Mixture, Canvas Self-Attention LR Isolation, Prompt Dropout, and Hybrid Scheduled Inference"
     }
   },
   "knowledge_system": {
