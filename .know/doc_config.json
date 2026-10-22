@@ -1117,6 +1117,20 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 109: Phase 6 High-Noise t_global Mixture, Canvas Self-Attention LR Isolation, Prompt Dropout, and Hybrid Scheduled Inference"
+    },
+    "KI_clm_geometric_pooling.md": {
+      "description": "Geometric knowledge spaces, parameter-free symplectic bilinear pooling (s_b, c_b) for CLM chunk compression, symmetric query-chunk indexing, and Decoupled RoPE + micro-order Cross-Attention (CA_Memory).",
+      "covers": [
+        "CLM geometric pooling",
+        "RAG-pooling",
+        "Hierarchical RoPE + Bilinear Cross-Attention"
+      ],
+      "depends_on": [
+        "src/beb_la_dii/rag/__init__.py",
+        "src/beb_la_dii/model/diffusion_blocks.py",
+        "src/beb_la_dii/utils/loss.py"
+      ],
+      "summary": "CLM chunk compression via symplectic bilinear accumulation (s, c) and hierarchical RoPE Cross-Attention."
     }
   },
   "knowledge_system": {
