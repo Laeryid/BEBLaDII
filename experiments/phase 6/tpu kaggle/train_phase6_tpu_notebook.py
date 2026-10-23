@@ -502,6 +502,7 @@ class CAPromptLayer(nn.Module):
         super().__init__()
         self._disable = False
         self.last_ca_ratio = 0.0
+        self.last_sa_ratio = 0.0
 
         self.norm1 = nn.RMSNorm(dim)
         self.norm_q = nn.RMSNorm(dim)  # отдельная норма для Q промпта
@@ -570,22 +571,26 @@ class CAPromptLayer(nn.Module):
         ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
-        prompt_mask = getattr(self, '_current_prompt_mask', None)
-        if prompt_mask is not None:
-            ca_out = ca_out * prompt_mask
-        with torch.no_grad():
-            self.last_ca_ratio = ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)
-        A = A + warmup_factor * ca_out
 
-        # --- Self-Attention ---
-        # AdaLN — модулируем пропорции смешивания токенов холста в зависимости от t
-        A_norm2 = self.norm2(A)
+        # --- True CA-Adapter (Self-Attention over ca_out payload) ---
+        # 1. Routing Queries & Keys: context of canvas state + extracted prompt delta
+        A_mid = A + warmup_factor * ca_out
+        A_norm2 = self.norm2(A_mid)
         if t_emb is not None:
             shift_sa, scale_sa = self.adaln_sa(t_emb)
             A_norm2 = A_norm2 * scale_sa + shift_sa
+        else:
+            scale_sa = None
 
-        qkv = self.qkv_proj_sa(A_norm2)
-        q_sa, k_sa, v_sa = qkv.chunk(3, dim=-1)
+        w_q, w_k, w_v = self.qkv_proj_sa.weight.chunk(3, dim=0)
+        q_sa = F.linear(A_norm2, w_q)
+        k_sa = F.linear(A_norm2, w_k)
+
+        # 2. Values: payload comes EXCLUSIVELY from ca_out (no raw canvas tokens!)
+        ca_norm2 = self.norm2(ca_out)
+        if scale_sa is not None:
+            ca_norm2 = ca_norm2 * scale_sa
+        v_sa = F.linear(ca_norm2, w_v)
 
         q_sa = q_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         k_sa = k_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
@@ -598,7 +603,17 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
-        A = A + warmup_factor * sa_out
+        # 3. Unified Capsule Residual
+        delta = ca_out + sa_out
+        prompt_mask = getattr(self, '_current_prompt_mask', None)
+        if prompt_mask is not None:
+            delta = delta * prompt_mask
+
+        with torch.no_grad():
+            self.last_ca_ratio = ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)
+            self.last_sa_ratio = sa_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)
+
+        A = A + warmup_factor * delta
         return A
 
 def _unwrap_module(m):
@@ -1500,6 +1515,23 @@ def main():
                     print(f"[Resume ERROR] Не загружены обучаемые веса (FSDP mismatch?): {missing_trainable[:5]}...")
                     sys.exit(1)
 
+                # Проверяем версию SA-адаптера: если переходим со старого чекпоинта (v1), сбрасываем веса SA для True CA-Adapter
+                is_legacy_sa = isinstance(ckpt_state, dict) and (ckpt_state.get("sa_adapter_version", 1) < 2)
+                if is_legacy_sa:
+                    print("[Resume] Обнаружен чекпоинт с устаревшим SA (v1). Реинициализируем SA-адаптер (out_proj_sa=0.0) для True CA-Adapter...")
+                    for ca in model.ca_layers.values():
+                        layer = _ca_inner(ca)
+                        with torch.no_grad():
+                            if hasattr(layer.norm2, "weight") and layer.norm2.weight is not None:
+                                layer.norm2.weight.fill_(1.0)
+                            nn.init.xavier_uniform_(layer.qkv_proj_sa.weight)
+                            nn.init.zeros_(layer.out_proj_sa.weight)
+                            if hasattr(layer.adaln_sa, "modulation"):
+                                nn.init.zeros_(layer.adaln_sa.modulation[-1].weight)
+                                bias = torch.zeros(2 * 1024, device=layer.adaln_sa.modulation[-1].bias.device)
+                                bias[1024:] = 1.0
+                                layer.adaln_sa.modulation[-1].bias.copy_(bias)
+
                 # Продолжаем со следующего шага после сохраненного, чтобы не дублировать валидацию и чекпоинт на 1-м шаге
                 global_step = step + 1
                 if isinstance(ckpt_state, dict) and "metrics_history" in ckpt_state:
@@ -1547,32 +1579,28 @@ def main():
                 norm_k = normalize_key(k)
                 target_k = norm_to_model.get(norm_k, k)
                 if target_k in ema_tracker.shadow and torch.is_tensor(v):
+                    # Если чекпоинт legacy SA (v1), НЕ восстанавливаем старую тень для параметров SA!
+                    if ('is_legacy_sa' in locals() and is_legacy_sa) and any(sa_name in target_k for sa_name in ["out_proj_sa", "qkv_proj_sa", "adaln_sa", "norm2"]):
+                        continue
                     ema_tracker.shadow[target_k].copy_(v.to(device=ema_tracker.shadow[target_k].device, dtype=torch.float32))
 
-    ca_out_params, ca_qkv_params, ca_sa_params, ca_other_params = [], [], [], []
+    ca_out_params, ca_inner_params, dus_params = [], [], []
     for name, p in model.ca_layers.named_parameters():
         if p.requires_grad:
-            if "out_proj_sa" in name or "qkv_proj_sa" in name or "adaln_sa" in name or "norm2" in name:
-                ca_sa_params.append(p)
-            elif "out_proj" in name:
+            if "out_proj" in name or "out_proj_sa" in name:
                 ca_out_params.append(p)
-            elif any(k in name for k in ["q_proj", "kv_proj", "norm_q", "adaln_ca"]):
-                ca_qkv_params.append(p)
             else:
-                ca_other_params.append(p)
-    dus_params = []
+                ca_inner_params.append(p)
     for name, p in model.dus.named_parameters():
         if p.requires_grad and "ca_layer" not in name:
             dus_params.append(p)
 
-    trainable_params = ca_out_params + ca_qkv_params + ca_sa_params + ca_other_params + dus_params
+    trainable_params = ca_out_params + ca_inner_params + dus_params
 
     optimizer = torch.optim.AdamW([
-        {'params': ca_out_params,   'lr': 2e-4, 'weight_decay': 0.0},   # CA out_proj (прямой канал промпта)
-        {'params': ca_qkv_params,   'lr': 1e-4, 'weight_decay': 0.0},   # CA q_proj, kv_proj, adaln_ca, norm_q
-        {'params': ca_sa_params,    'lr': 5e-6, 'weight_decay': 0.0},   # Canvas SA (out_proj_sa, qkv_proj_sa, adaln_sa) - снижен в 40 раз!
-        {'params': ca_other_params, 'lr': 1e-4, 'weight_decay': 0.0},   # norm1
-        {'params': dus_params,      'lr': 5e-6, 'weight_decay': 0.01}   # 12 buffer layers DUS - снижен в 5 раз!
+        {'params': ca_out_params,   'lr': 2e-4, 'weight_decay': 0.0},   # CA & True CA-Adapter out_proj (2e-4)
+        {'params': ca_inner_params, 'lr': 1e-4, 'weight_decay': 0.0},   # Inner QKV projections, norms & AdaLN (1e-4)
+        {'params': dus_params,      'lr': 5e-6, 'weight_decay': 0.01}   # 12 buffer layers DUS (5e-6)
     ])
 
     if getattr(args, "run_diagnosis_first", False):
@@ -1695,8 +1723,11 @@ def main():
                 ratio12 = _ca_inner(model.ca_layers["12"]).last_ca_ratio
                 ratio24 = _ca_inner(model.ca_layers["24"]).last_ca_ratio
                 ratio36 = _ca_inner(model.ca_layers["36"]).last_ca_ratio
+                sa_ratio12 = _ca_inner(model.ca_layers["12"]).last_sa_ratio
+                sa_ratio24 = _ca_inner(model.ca_layers["24"]).last_sa_ratio
+                sa_ratio36 = _ca_inner(model.ca_layers["36"]).last_sa_ratio
 
-                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36, gn_t, lr_out, lr_qkv, lr_sa, lr_dus):
+                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36, sr12, sr24, sr36, gn_t, lr_out, lr_inner, lr_dus):
                     l_val = l.item()
                     if not math.isfinite(l_val):
                         nan_state["streak"] += 1
@@ -1715,8 +1746,7 @@ def main():
                         "grad_norm": gn_t.item(),
                         "warmup_factor": w.item(),
                         "lr_ca_out": float(lr_out),
-                        "lr_ca_qkv": float(lr_qkv),
-                        "lr_ca_sa": float(lr_sa),
+                        "lr_ca_inner": float(lr_inner),
                         "lr_dus": float(lr_dus),
                         "out_proj_12_amp": o12.item(),
                         "out_proj_36_amp": o36.item(),
@@ -1724,6 +1754,9 @@ def main():
                         "ca_ratio_12": float(r12.item()) if torch.is_tensor(r12) else float(r12),
                         "ca_ratio_24": float(r24.item()) if torch.is_tensor(r24) else float(r24),
                         "ca_ratio_36": float(r36.item()) if torch.is_tensor(r36) else float(r36),
+                        "sa_ratio_12": float(sr12.item()) if torch.is_tensor(sr12) else float(sr12),
+                        "sa_ratio_24": float(sr24.item()) if torch.is_tensor(sr24) else float(sr24),
+                        "sa_ratio_36": float(sr36.item()) if torch.is_tensor(sr36) else float(sr36),
                     }
                     cp_cpu = cp_t.cpu()
                     cm_cpu = cm_t.cpu()
@@ -1743,10 +1776,9 @@ def main():
                     wandb.log(log_dict, step=s)
 
                 lr_out_val = optimizer.param_groups[0]['lr']
-                lr_qkv_val = optimizer.param_groups[1]['lr']
-                lr_sa_val  = optimizer.param_groups[2]['lr']
-                lr_dus_val = optimizer.param_groups[4]['lr']
-                xm.add_step_closure(log_step, args=(global_step, loss.detach(), avg_cos_sim.detach(), true_void_sim.detach(), content_to_void_sim.detach(), warmup_factor.detach(), op12, op36, qp36, cp_det, cm_det, t_global_det, ratio12, ratio24, ratio36, grad_norm.detach(), lr_out_val, lr_qkv_val, lr_sa_val, lr_dus_val))
+                lr_inner_val = optimizer.param_groups[1]['lr']
+                lr_dus_val = optimizer.param_groups[2]['lr']
+                xm.add_step_closure(log_step, args=(global_step, loss.detach(), avg_cos_sim.detach(), true_void_sim.detach(), content_to_void_sim.detach(), warmup_factor.detach(), op12, op36, qp36, cp_det, cm_det, t_global_det, ratio12, ratio24, ratio36, sa_ratio12, sa_ratio24, sa_ratio36, grad_norm.detach(), lr_out_val, lr_inner_val, lr_dus_val))
 
             if global_step <= 10 and GLOBAL_NAN_CHECKS:
                 stacked_nan = torch.stack(GLOBAL_NAN_CHECKS)
@@ -1787,6 +1819,7 @@ def main():
                     **trainable_state,
                     "step": global_step,
                     "metrics_history": metrics_history,
+                    "sa_adapter_version": 2,
                 }
                 # Сохраняем чекпоинт:
                 xm.save(save_payload, ckpt_path)

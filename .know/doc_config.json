@@ -1131,6 +1131,16 @@
         "src/beb_la_dii/utils/loss.py"
       ],
       "summary": "CLM chunk compression via symplectic bilinear accumulation (s, c) and hierarchical RoPE Cross-Attention."
+    },
+    "decisions/110_phase6_true_ca_adapter_and_payload_isolation.md": {
+      "description": "ADR 110: Phase 6 True CA-Adapter: Value Payload Isolation, Unified Module Gating, and SA Parameter Reinitialization (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 110: Phase 6 True CA-Adapter: Value Payload Isolation, Unified Module Gating, and SA Parameter Reinitialization"
     }
   },
   "knowledge_system": {

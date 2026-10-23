@@ -97,6 +97,7 @@ class CAPromptLayer(nn.Module):
         super().__init__()
         self._disable = False
         self.last_ca_ratio = 0.0
+        self.last_sa_ratio = 0.0
 
         # RMSNorm для Q-промпта и A-холста
         self.norm1 = nn.RMSNorm(dim)
@@ -164,19 +165,25 @@ class CAPromptLayer(nn.Module):
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
 
-        with torch.no_grad():
-            self.last_ca_ratio = (ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)).item()
-
-        A = A + warmup_factor * ca_out
-
-        # --- Self-Attention с RoPE (ADR 105) ---
-        A_norm2 = self.norm2(A)
+        # --- True CA-Adapter (Self-Attention over ca_out payload) ---
+        # 1. Routing Queries & Keys: context of canvas state + extracted prompt delta
+        A_mid = A + warmup_factor * ca_out
+        A_norm2 = self.norm2(A_mid)
         if t_emb is not None:
             shift_sa, scale_sa = self.adaln_sa(t_emb)
             A_norm2 = A_norm2 * scale_sa + shift_sa
+        else:
+            scale_sa = None
 
-        qkv = self.qkv_proj_sa(A_norm2)
-        q_sa, k_sa, v_sa = qkv.chunk(3, dim=-1)
+        w_q, w_k, w_v = self.qkv_proj_sa.weight.chunk(3, dim=0)
+        q_sa = F.linear(A_norm2, w_q)
+        k_sa = F.linear(A_norm2, w_k)
+
+        # 2. Values: payload comes EXCLUSIVELY from ca_out (no raw canvas tokens!)
+        ca_norm2 = self.norm2(ca_out)
+        if scale_sa is not None:
+            ca_norm2 = ca_norm2 * scale_sa
+        v_sa = F.linear(ca_norm2, w_v)
 
         q_sa = q_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         k_sa = k_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
@@ -189,7 +196,17 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
-        A = A + warmup_factor * sa_out
+        # 3. Unified Capsule Residual
+        delta = ca_out + sa_out
+        prompt_mask = getattr(self, '_current_prompt_mask', None)
+        if prompt_mask is not None:
+            delta = delta * prompt_mask
+
+        with torch.no_grad():
+            self.last_ca_ratio = (ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)).item()
+            self.last_sa_ratio = (sa_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)).item()
+
+        A = A + warmup_factor * delta
         return A
 
 
@@ -353,6 +370,23 @@ class BEBLaDIIPhase6Eval(nn.Module):
         dus_keys_loaded = [k for k in clean_state.keys() if "dus.layers" in k and "ca_layer" not in k]
         print(f"   -> CA weights loaded: {len(ca_keys_loaded)} tensors")
         print(f"   -> DUS unfrozen layers loaded: {len(dus_keys_loaded)} tensors")
+
+        # Если чекпоинт legacy SA (v1), реинициализируем SA-адаптер в out_proj_sa=0.0 для True CA-Adapter
+        is_legacy_sa = isinstance(ckpt_state, dict) and (ckpt_state.get("sa_adapter_version", 1) < 2)
+        if is_legacy_sa:
+            print("   -> [INFO] Legacy SA (v1) detected in checkpoint. Re-initializing SA adapter (out_proj_sa=0.0) for True CA-Adapter evaluation.")
+            for ca in self.ca_layers.values():
+                layer = ca.ca_layer if hasattr(ca, "ca_layer") else ca
+                with torch.no_grad():
+                    if hasattr(layer.norm2, "weight") and layer.norm2.weight is not None:
+                        layer.norm2.weight.fill_(1.0)
+                    nn.init.xavier_uniform_(layer.qkv_proj_sa.weight)
+                    nn.init.zeros_(layer.out_proj_sa.weight)
+                    if hasattr(layer.adaln_sa, "modulation"):
+                        nn.init.zeros_(layer.adaln_sa.modulation[-1].weight)
+                        bias = torch.zeros(2 * 1024, device=layer.adaln_sa.modulation[-1].bias.device)
+                        bias[1024:] = 1.0
+                        layer.adaln_sa.modulation[-1].bias.copy_(bias)
 
     def encode_prompt(self, input_ids_q, attention_mask_q):
         """
@@ -541,6 +575,7 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
     total_content_cos = 0.0
     total_intra_sim = 0.0
     ca_ratios = {"12": [], "24": [], "36": []}
+    sa_ratios = {"12": [], "24": [], "36": []}
 
     n_samples = min(len(df_val), max_samples)
     with torch.no_grad():
@@ -624,6 +659,7 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
 
             for k in ["12", "24", "36"]:
                 ca_ratios[k].append(model.ca_layers[k].last_ca_ratio)
+                sa_ratios[k].append(model.ca_layers[k].last_sa_ratio)
 
     avg_loss = total_loss / n_samples
     avg_cos = total_cos / n_samples
@@ -644,6 +680,10 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
     print(f"  Content-to-Void Cos Sim      : {avg_content_cos:.4f}")
     print(f"  CA Ratio (Layer 12)          : {sum(ca_ratios['12']) / n_samples:.4f}")
     print(f"  CA Ratio (Layer 24)          : {sum(ca_ratios['24']) / n_samples:.4f}")
+    print(f"  CA Ratio (Layer 36)          : {sum(ca_ratios['36']) / n_samples:.4f}")
+    print(f"  SA Ratio (Layer 12)          : {sum(sa_ratios['12']) / n_samples:.4f}")
+    print(f"  SA Ratio (Layer 24)          : {sum(sa_ratios['24']) / n_samples:.4f}")
+    print(f"  SA Ratio (Layer 36)          : {sum(sa_ratios['36']) / n_samples:.4f}")
     print(f"  CA Ratio (Layer 36)          : {sum(ca_ratios['36']) / n_samples:.4f}")
     print("="*55 + "\n")
 

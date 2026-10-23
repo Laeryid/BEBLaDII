@@ -159,6 +159,10 @@
         "hash": "77caf0fd9b6d3e107d7791c0c9928ea7002b9c0dc2655092dc67a61e37e39e07",
         "mtime": 1790018483.0009265
     },
+    ".know\\knowledge\\KI_clm_geometric_pooling.md": {
+        "hash": "c402fd5fe41138ded102db09d3e2f76e8a4a73bc0e5e2e0d03f4a81d206f49e6",
+        "mtime": 1792648468.6569536
+    },
     ".know\\knowledge\\KI_datasets.md": {
         "hash": "0b3caba5f70a4ed7a34f02aed2a8b34153e3a84e22630882ca7fab01a65b3eb6",
         "mtime": 1785406216.074494
@@ -232,8 +236,8 @@
         "mtime": 1785406216.6019702
     },
     ".know\\knowledge\\KI_rag_engine.md": {
-        "hash": "3d03af5f5f848bc79c97b65268429a0edbcf816651463bfd5d2575b6950dcfa8",
-        "mtime": 1785406215.8395438
+        "hash": "c43a7b7b9d5b5d8342fe2f4af4016a43b9ef0584fcefe3fa00e9cecef61c3282",
+        "mtime": 1792648489.0236845
     },
     ".know\\knowledge\\KI_tests.md": {
         "hash": "0f06cee121f077ccc820ba31ea75444e585edfc58343524e7b732a1adb730711",
@@ -256,8 +260,8 @@
         "mtime": 1785406215.8853543
     },
     ".know\\doc_config.json": {
-        "hash": "e3d2b3f4dafa6929c7a04d3eecc82d21fd0e4a6ecb505950f937bb945393c143",
-        "mtime": 1792317279.9748628
+        "hash": "ae494d51fcc99b6f3f9aac68e1c49b7ffa474df201856f703fe6776d79b21149",
+        "mtime": 1792776208.0970643
     },
     "ideas\\Architecture.md": {
         "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
@@ -488,8 +492,8 @@
         "mtime": 1790018229.7123277
     },
     "experiments\\phase 6\\kaggle\\train_phase6_notebook.py": {
-        "hash": "1ec04c0a3e84f8445a717512b4d93cf220246ce66a9565848d83c427f6ec714d",
-        "mtime": 1792238941.875485
+        "hash": "e451fbeb4043222d3cbe6b43d9e98c5adf7a1cb73162763efbf9c1148336abf9",
+        "mtime": 1792386698.9563682
     },
     "experiments\\phase 6\\plan.md": {
         "hash": "4bc26f9a5f03f8ccb6d7c4e15d755a00ca1881732e14ccbb3d8b66ce5bd20e8b",
@@ -500,7 +504,7 @@
         "mtime": 1790709807.0369856
     },
     "experiments\\phase 6\\tpu kaggle\\train_phase6_tpu_notebook.py": {
-        "hash": "a19bc20fe1a9ea2202b402132721192dc1375106409b4827a6f9d610eb904770",
-        "mtime": 1792317596.6131277
+        "hash": "021e33ecdd196224e89fa31f4a6555d8b8653eb0aae86f9487be894c2f285d52",
+        "mtime": 1792772099.8666854
     }
 }
