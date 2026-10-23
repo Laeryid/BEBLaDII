@@ -393,6 +393,7 @@ class CAPromptLayer(nn.Module):
         super().__init__()
         self._disable = False
         self.last_ca_ratio = 0.0
+        self.last_sa_ratio = 0.0
 
         self.norm1 = nn.RMSNorm(dim)
         self.norm_q = nn.RMSNorm(dim)  # отдельная норма для Q промпта
@@ -457,20 +458,25 @@ class CAPromptLayer(nn.Module):
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
 
-        with torch.no_grad():
-            self.last_ca_ratio = (ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)).item()
-
-        A = A + warmup_factor * ca_out
-
-        # --- Self-Attention ---
-        # AdaLN — модулируем пропорции смешивания токенов холста в зависимости от t
-        A_norm2 = self.norm2(A)
+        # --- True CA-Adapter (Self-Attention over ca_out payload) ---
+        # 1. Routing Queries & Keys: context of canvas state + extracted prompt delta
+        A_mid = A + warmup_factor * ca_out
+        A_norm2 = self.norm2(A_mid)
         if t_emb is not None:
             shift_sa, scale_sa = self.adaln_sa(t_emb)
             A_norm2 = A_norm2 * scale_sa + shift_sa
+        else:
+            scale_sa = None
 
-        qkv = self.qkv_proj_sa(A_norm2)
-        q_sa, k_sa, v_sa = qkv.chunk(3, dim=-1)
+        w_q, w_k, w_v = self.qkv_proj_sa.weight.chunk(3, dim=0)
+        q_sa = F.linear(A_norm2, w_q)
+        k_sa = F.linear(A_norm2, w_k)
+
+        # 2. Values: payload comes EXCLUSIVELY from ca_out (no raw canvas tokens!)
+        ca_norm2 = self.norm2(ca_out)
+        if scale_sa is not None:
+            ca_norm2 = ca_norm2 * scale_sa
+        v_sa = F.linear(ca_norm2, w_v)
 
         q_sa = q_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
         k_sa = k_sa.view(B, T_a, heads, head_dim).transpose(1, 2)
@@ -483,7 +489,17 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
-        A = A + warmup_factor * sa_out
+        # 3. Unified Capsule Residual
+        delta = ca_out + sa_out
+        prompt_mask = getattr(self, '_current_prompt_mask', None)
+        if prompt_mask is not None:
+            delta = delta * prompt_mask
+
+        with torch.no_grad():
+            self.last_ca_ratio = (ca_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)).item()
+            self.last_sa_ratio = (sa_out.norm(dim=-1).mean() / (A.norm(dim=-1).mean() + 1e-8)).item()
+
+        A = A + warmup_factor * delta
         return A
 
 
@@ -965,16 +981,13 @@ def main():
     ema_tracker = EMATracker(model, decay=args.ema_decay)
 
     ca_out_params = []
-    ca_qkv_params = []
-    ca_other_params = []
+    ca_inner_params = []
     for name, p in model.ca_layers.named_parameters():
         if p.requires_grad:
-            if "out_proj" in name:
+            if "out_proj" in name or "out_proj_sa" in name:
                 ca_out_params.append(p)
-            elif "q_proj" in name or "k_proj" in name or "v_proj" in name or "qkv_proj" in name:
-                ca_qkv_params.append(p)
             else:
-                ca_other_params.append(p)
+                ca_inner_params.append(p)
 
     dus_params = []
     for name, p in model.dus.named_parameters():
@@ -982,10 +995,9 @@ def main():
             dus_params.append(p)
 
     optimizer = torch.optim.AdamW([
-        {'params': ca_out_params, 'lr': 5e-4, 'weight_decay': 0.0},     # x10 boost для выхода CA/SA без decay
-        {'params': ca_qkv_params, 'lr': 2e-4, 'weight_decay': 0.0},     # Attention projections (CA + Prompt-SA) без decay
-        {'params': ca_other_params, 'lr': 5e-5, 'weight_decay': 0.0},   # Базовый CA LR (AdaLN, norm) без decay
-        {'params': dus_params, 'lr': 5e-5, 'weight_decay': 0.01}
+        {'params': ca_out_params, 'lr': 2e-4, 'weight_decay': 0.0},     # CA & True CA-Adapter out_proj (2e-4)
+        {'params': ca_inner_params, 'lr': 1e-4, 'weight_decay': 0.0},   # Inner QKV projections, norms & AdaLN (1e-4)
+        {'params': dus_params, 'lr': 5e-6, 'weight_decay': 0.01}        # DUS buffer layers
     ])
 
     model.train()
@@ -1016,6 +1028,22 @@ def main():
 
                 model.load_state_dict(weights_to_load, strict=False)
 
+                is_legacy_sa = isinstance(ckpt_state, dict) and (ckpt_state.get("sa_adapter_version", 1) < 2)
+                if is_legacy_sa:
+                    print("[Resume] Legacy SA (v1) detected. Re-initializing SA adapter (out_proj_sa=0.0) for True CA-Adapter...")
+                    for ca in model.ca_layers.values():
+                        layer = ca.ca_layer if hasattr(ca, "ca_layer") else ca
+                        with torch.no_grad():
+                            if hasattr(layer.norm2, "weight") and layer.norm2.weight is not None:
+                                layer.norm2.weight.fill_(1.0)
+                            nn.init.xavier_uniform_(layer.qkv_proj_sa.weight)
+                            nn.init.zeros_(layer.out_proj_sa.weight)
+                            if hasattr(layer.adaln_sa, "modulation"):
+                                nn.init.zeros_(layer.adaln_sa.modulation[-1].weight)
+                                bias = torch.zeros(2 * 1024, device=layer.adaln_sa.modulation[-1].bias.device)
+                                bias[1024:] = 1.0
+                                layer.adaln_sa.modulation[-1].bias.copy_(bias)
+
                 if isinstance(ckpt_state, dict) and "metrics_history" in ckpt_state:
                     metrics_history = ckpt_state["metrics_history"]
                     print(f"[Resume] Restored {len(metrics_history)} metric records from checkpoint.")
@@ -1025,6 +1053,8 @@ def main():
                 ema_shadow_to_load = ckpt_state.get("trainable_state", ckpt_state.get("ema_state", weights_to_load))
                 if isinstance(ema_shadow_to_load, dict):
                     for k, v in ema_shadow_to_load.items():
+                        if is_legacy_sa and any(sa_name in k for sa_name in ["out_proj_sa", "qkv_proj_sa", "adaln_sa", "norm2"]):
+                            continue
                         if k in ema_tracker.shadow and torch.is_tensor(v):
                             ema_tracker.shadow[k].copy_(v.to(dtype=ema_tracker.shadow[k].dtype))
                 global_step = step
@@ -1234,6 +1264,7 @@ def main():
                         **trainable_state,
                         "step": global_step,
                         "metrics_history": metrics_history,
+                        "sa_adapter_version": 2,
                     }
                     torch.save(save_payload, ckpt_path)
                     ema_tracker.restore(model)

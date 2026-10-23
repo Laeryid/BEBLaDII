@@ -4,7 +4,7 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~71225 (excluding excluded directories)
+**Total files in project:** ~71226 (excluding excluded directories)
 **Updated:** 2026-10-23
 
 ```
@@ -88,7 +88,7 @@ BEBLaDII/
 |-- posts/  *15 files*
 |-- reports/  *11 files*
 |   `-- plan_A/  *6 files*
-|-- scratch/  *36 files*
+|-- scratch/  *37 files*
 |-- scripts/  *33 files*
 |-- src/  *28 files*
 |   |-- beb_la_dii/  *23 files*
