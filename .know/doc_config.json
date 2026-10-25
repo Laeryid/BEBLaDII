@@ -1141,6 +1141,16 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 110: Phase 6 True CA-Adapter: Value Payload Isolation, Unified Module Gating, and SA Parameter Reinitialization"
+    },
+    "decisions/111_phase6_coherence_and_span_noise.md": {
+      "description": "ADR 111: Phase 6 Coherence Fix: Uniform/Span Noise, RoPE Coordinate Stabilization, Transition Bigram Loss, and 512 Canvas Synchronization (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 111: Phase 6 Coherence Fix: Uniform/Span Noise, RoPE Coordinate Stabilization, Transition Bigram Loss, and 512 Canvas Synchronization"
     }
   },
   "knowledge_system": {
