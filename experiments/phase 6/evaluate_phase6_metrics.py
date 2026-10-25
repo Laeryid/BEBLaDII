@@ -546,11 +546,25 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     loss_el = loss_el + bary_penalty
     # ----------------------------------------------------------------------
 
+    # --- Transition / Bigram Cosine Loss (ADR 111) ---
+    diff_pred = safe_normalize(dus_final[:, 1:, :] - dus_final[:, :-1, :], dim=-1)
+    diff_tgt = safe_normalize(target[:, 1:, :] - target[:, :-1, :], dim=-1)
+    cos_diff = (diff_pred * diff_tgt).sum(dim=-1)
+    loss_trans_raw = 1.0 - cos_diff
+    adj_content_mask = content_mask[:, 1:] * content_mask[:, :-1]
+    loss_trans = F.pad(loss_trans_raw * adj_content_mask, (0, 1), value=0.0)
+    loss_el = loss_el + 0.25 * loss_trans
+
+    # --- Ребалансировка весов контента и VOID (ADR 111) ---
+    token_importance = content_mask + 0.20 * void_mask
+    loss_el = loss_el * token_importance
+
     if loss_t_power > 0.0:
         w_weighted = (1.0 - t_actual).pow(loss_t_power)
     else:
         w_weighted = torch.ones_like(t_actual)
-    loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
+    w_effective = w_weighted * token_importance
+    loss = (w_weighted * loss_el).sum() / w_effective.sum().clamp(min=1e-8)
 
     avg_cos_sim = cos_sim.mean()
     true_void_sim = (cos_sim_to_void * void_mask).sum() / void_mask.sum().clamp(min=1e-8)
@@ -559,13 +573,13 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     return loss, avg_cos_sim, true_void_sim, content_to_void_sim
 
 
-def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None, max_samples=50):
+def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None, max_samples=50, max_len=512):
     """
     Вычисляет количественные метрики качества модели на валидационной выборке:
     loss, avg_cos_sim, true_void_sim, content_to_void_sim, ca_ratio,
     а также чистый прирост от CA (val_content_gain_CA) и попарное сходство позиций (intra_pos_sim).
     """
-    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Evaluating metrics on {min(len(df_val), max_samples)} dataset samples...")
+    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Evaluating metrics on {min(len(df_val), max_samples)} dataset samples (canvas length: {max_len})...")
     model.eval()
 
     total_loss = 0.0
@@ -585,7 +599,7 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
             a_text = row['A']
 
             q_enc = tokenizer(q_text, return_tensors='pt', max_length=128, truncation=True).to(device)
-            a_enc = tokenizer(a_text, return_tensors='pt', max_length=64, padding="max_length", truncation=True).to(device)
+            a_enc = tokenizer(a_text, return_tensors='pt', max_length=max_len, padding="max_length", truncation=True).to(device)
 
             input_ids_q = q_enc.input_ids
             attention_mask_q = q_enc.attention_mask
@@ -603,6 +617,9 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
             void_mask = (attention_mask_a == 0).float()
             content_mask = 1.0 - void_mask
             void_embed = model.void_embed.to(Z_A_clean.dtype)
+            void_embed_expanded = void_embed.view(1, 1, -1).expand(B, T_a, -1)
+            Z_A_clean = torch.where(void_mask.unsqueeze(-1).bool(), void_embed_expanded, Z_A_clean)
+            Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
 
             # Фиксированный уровень шума t=0.5 для сопоставимости оценки
             t_val = 0.5
@@ -952,7 +969,7 @@ def main():
     parser.add_argument("--interactive", action="store_true", help="Run in interactive generation mode")
     parser.add_argument("--ckpt", type=str, default="", help="Path to CA_Prompt weights (Phase 6)")
     parser.add_argument("--steps", type=int, default=25, help="Number of Slerp diffusion steps")
-    parser.add_argument("--max_len", type=int, default=64, help="Maximum generated answer length")
+    parser.add_argument("--max_len", type=int, default=512, help="Maximum generated answer length")
     parser.add_argument("--eval_samples", type=int, default=50, help="Number of dataset samples for quantitative metric evaluation (0 to skip)")
     parser.add_argument("--cfg_scale", type=float, default=1.0, help="Classifier-Free Guidance scale (or min CFG if scheduled)")
     parser.add_argument("--cfg_max", type=float, default=4.0, help="Maximum CFG scale at t=1.0 for scheduled guidance")
@@ -1038,7 +1055,7 @@ def main():
         try:
             df = pd.read_parquet(ds_path)
             if args.eval_samples > 0 and len(df) > 0:
-                evaluate_dataset_metrics(model, tokenizer, df, device, latent_dict=latent_dict, max_samples=args.eval_samples)
+                evaluate_dataset_metrics(model, tokenizer, df, device, latent_dict=latent_dict, max_samples=args.eval_samples, max_len=args.max_len)
         except Exception as e:
             print(f"Dataset metrics evaluation skipped: {e}")
 

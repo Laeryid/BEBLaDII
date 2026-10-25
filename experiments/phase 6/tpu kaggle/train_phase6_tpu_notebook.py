@@ -272,12 +272,14 @@ def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step
     return None, 0
 
 def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0,
-                              kappa_max: float = 8.0, steps: int = 25) -> torch.Tensor:
+                              kappa_max: float = 8.0, steps: int = 25,
+                              flat_prob: float = 0.60, span_block_size: int = 16) -> torch.Tensor:
     """
-    Per-token t_i ~ Beta(t_g*kappa, (1-t_g)*kappa): E[t_i] = t_g.
-    Малое kappa -> бимодально (чистые vs сильно зашумлённые): при низком t_g в основном чистые токены,
-    при высоком - в основном зашумлённые. kappa выбирается на сэмпл (log-uniform [kappa_min, kappa_max]).
-    t_global >= 1.0 -> чистый шум (все t_i = 1). Результат квантуется до сетки k/steps.
+    ADR 111: Гибридный сэмплер шума для устранения Shortcut Learning:
+      - 60% батча (flat_prob=0.60): единый плоский шум t_i == t_global по всему холсту
+        (устраняет чистые якорные токены при t >= 0.5, вынуждая CA удерживать тему точно как на инференсе).
+      - 40% батча: блочное (Span-Masking) зашумление отрезками по span_block_size=16 токенов.
+        Внутри каждого блока уровень шума постоянен, что исключает по-токенную утечку локальных биграмм.
     Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta.
     """
     B = t_global.shape[0]
@@ -285,18 +287,27 @@ def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float =
     tg = t_global.float().clamp(0.02, 0.98)
     u = torch.rand(B, device=dev)
     kappa = torch.exp(math.log(kappa_min) + u * (math.log(kappa_max) - math.log(kappa_min)))
-    a = (tg * kappa).view(B, 1).expand(B, T).contiguous()
-    b = ((1.0 - tg) * kappa).view(B, 1).expand(B, T).contiguous()
+
+    # 1. 60% плоский шум t_i = t_global
+    flat_t = tg.view(B, 1).expand(B, T).contiguous()
+
+    # 2. 40% блочное (Span-Masking) зашумление блоками по 16 токенов
+    num_blocks = math.ceil(T / span_block_size)
+    a_block = (tg * kappa).view(B, 1).expand(B, num_blocks).contiguous()
+    b_block = ((1.0 - tg) * kappa).view(B, 1).expand(B, num_blocks).contiguous()
 
     try:
         from torch.distributions import Beta
-        t = Beta(a, b).sample()
+        span_t_blocks = Beta(a_block, b_block).sample()
     except Exception:
-        t = tg.view(B, 1).expand(B, T).contiguous()
+        span_t_blocks = tg.view(B, 1).expand(B, num_blocks).contiguous()
 
-    # Защита от редких NaN при марсалья-цикуда сэмплировании малых концентраций гамма-распределения на CPU
-    fallback_t = tg.view(B, 1).expand(B, T).contiguous()
-    t = torch.where(torch.isfinite(t), t, fallback_t)
+    fallback_blocks = tg.view(B, 1).expand(B, num_blocks).contiguous()
+    span_t_blocks = torch.where(torch.isfinite(span_t_blocks), span_t_blocks, fallback_blocks)
+    span_t = span_t_blocks.repeat_interleave(span_block_size, dim=1)[:, :T].contiguous()
+
+    mode_u = torch.rand(B, 1, device=dev)
+    t = torch.where(mode_u < flat_prob, flat_t, span_t)
 
     t = torch.round(t * steps) / steps
     t = torch.where(t_global.view(B, 1) >= 1.0, torch.ones_like(t), t)
@@ -346,6 +357,11 @@ class Config:
     wandb_project = "BEBLaDII-Phase6-Kaggle"
     run_diagnosis_first  = False # Диагностика успешно пройдена (156/156 finite), отключена для экономии HBM и времени старта
     stop_after_diagnosis = False # Не прерывать после успешной диагностики, продолжать обучение
+    # ADR 111: Параметры для устранения качественного потолка и синтаксической связности
+    flat_noise_prob = 0.60         # 60% батча с плоским шумом t_i = t_global
+    span_block_size = 16           # Размер блока при Span-Masking шуме (40% батча)
+    transition_loss_weight = 0.25  # Вес Transition / Bigram Cosine Loss для связности текста
+    void_loss_weight = 0.20        # Вес потерь на PAD/VOID позициях относительно контента (предотвращает перекос градиента)
 
 args = Config()
 
@@ -855,14 +871,18 @@ class BEBLaDIIPhase6(nn.Module):
                 Z_prompt, _, _ = self.encoder(qwen_embeds_q)
                 Z_prompt = safe_normalize(Z_prompt.float(), dim=-1)
 
-            # --- VOID TOKEN INJECTION ---
+            # --- VOID TOKEN INJECTION (ADR 111: Стабилизация позиций RoPE) ---
             void_embed = self.void_embed.to(Z_A_clean.dtype)
 
-            # 1. Генерация маски слотов для void (5% шанс для mid-voids)
-            is_void = torch.rand((B, T_a), device=Z_A_clean.device) < 0.05
+            # 1. Генерация редких слотов для void (1.5% шанс для эластичности без разрыва биграмм)
+            is_void = torch.rand((B, T_a), device=Z_A_clean.device) < 0.015
 
-            # 2. Префиксный сдвиг (0-10 void в начале)
-            shift_k = torch.randint(0, 11, (B,), device=Z_A_clean.device)
+            # 2. Стабилизация RoPE: в 90% случаев ответ начинается строго с позиции 0 (shift_k=0)
+            # Устраняет позиционный барицентр и артефакт '|' на 0-м токене при инференсе.
+            # В 10% случаев допускается микроджиттер shift_k in {1, 2} для эластичности длины.
+            shift_u = torch.rand((B,), device=Z_A_clean.device)
+            shift_jitter = torch.randint(1, 3, (B,), device=Z_A_clean.device)
+            shift_k = torch.where(shift_u < 0.90, torch.zeros((B,), device=Z_A_clean.device, dtype=torch.long), shift_jitter)
             seq_indices = torch.arange(T_a, device=Z_A_clean.device).unsqueeze(0).expand(B, T_a)
             prefix_mask = seq_indices < shift_k.unsqueeze(1)
             is_void = is_void | prefix_mask
@@ -915,7 +935,9 @@ class BEBLaDIIPhase6(nn.Module):
                     t_global_cpu = torch.randint(1, 26, (B,), device=cpu_dev).float() / 25.0
             else:
                 t_global_cpu = t_global.detach().to(cpu_dev).float()
-            t_actual_cpu = sample_token_noise_levels(t_global_cpu, T_a)
+            flat_prob = getattr(args, "flat_noise_prob", 0.60)
+            span_size = getattr(args, "span_block_size", 16)
+            t_actual_cpu = sample_token_noise_levels(t_global_cpu, T_a, flat_prob=flat_prob, span_block_size=span_size)
             t_global = mark_fsdp_sharding(t_global_cpu.to(Z_A_clean.device))
             t_actual = mark_fsdp_sharding(t_actual_cpu.to(Z_A_clean.device))
             # ===============================
@@ -1126,6 +1148,23 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     loss_el = loss_el + bary_penalty
     # -------------------------
 
+    # --- Transition / Bigram Cosine Loss (ADR 111) ---
+    # Штраф за рассогласование производных соседних токенов: обучает связным переходам (биграммам)
+    diff_pred = safe_normalize(dus_final[:, 1:, :] - dus_final[:, :-1, :], dim=-1)
+    diff_tgt = safe_normalize(target[:, 1:, :] - target[:, :-1, :], dim=-1)
+    cos_diff = (diff_pred * diff_tgt).sum(dim=-1)
+    loss_trans_raw = 1.0 - cos_diff
+    adj_content_mask = content_mask[:, 1:] * content_mask[:, :-1]
+    loss_trans = F.pad(loss_trans_raw * adj_content_mask, (0, 1), value=0.0)
+    lambda_trans = getattr(args, "transition_loss_weight", 0.25)
+    loss_el = loss_el + lambda_trans * loss_trans
+
+    # --- Ребалансировка весов контента и VOID (ADR 111) ---
+    # PAD/VOID позиции получают пониженный вес (0.20), предотвращая доминирование 240+ пустых позиций
+    void_weight = getattr(args, "void_loss_weight", 0.20)
+    token_importance = content_mask + void_weight * void_mask
+    loss_el = loss_el * token_importance
+
     # Взвешивание функции потерь по времени t
     loss_t_mode = getattr(args, "loss_t_mode", "high_t_boost")
     if loss_t_mode == "high_t_boost":
@@ -1135,7 +1174,8 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
         w_weighted = (1.0 - t_actual).pow(loss_t_power)
     else:
         w_weighted = torch.ones_like(t_actual)
-    loss = (w_weighted * loss_el).sum() / w_weighted.sum().clamp(min=1e-8)
+    w_effective = w_weighted * token_importance
+    loss = (w_weighted * loss_el).sum() / w_effective.sum().clamp(min=1e-8)
 
     avg_cos_sim = cos_sim.mean()
     cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
