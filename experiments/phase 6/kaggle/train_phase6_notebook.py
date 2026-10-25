@@ -188,8 +188,8 @@ class Config:
     max_length_q  = 512
     max_length_a  = 512
     learning_rate = 2e-4
-    epochs        = 50
-    max_steps     = 20005
+    epochs        = 500
+    max_steps     = 200005
     log_steps     = 10
     val_steps     = 200
     save_steps    = 1000
