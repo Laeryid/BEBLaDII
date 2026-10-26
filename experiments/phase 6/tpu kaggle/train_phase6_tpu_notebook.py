@@ -1000,22 +1000,73 @@ class BEBLaDIIPhase6(nn.Module):
 
                 seq_len_p = dus_prompt_extended.shape[1]
                 position_ids_p = torch.arange(seq_len_p, device=dus_prompt_extended.device).unsqueeze(0)
+                hidden_p = dus_prompt_extended
+
+                # 1. Позиционные RoPE-эмбеддинги (transformers >= 4.49 / 4.50)
+                pos_emb_dict_p = None
+                if hasattr(self.dus, "rotary_emb"):
+                    pos_emb_dict_p = {}
+                    layer_types = getattr(self.dus.config, "layer_types", ["full_attention"])
+                    for l_type in set(layer_types):
+                        try:
+                            pos_emb_dict_p[l_type] = self.dus.rotary_emb(hidden_p, position_ids_p, l_type)
+                        except TypeError:
+                            pos_emb_dict_p[l_type] = self.dus.rotary_emb(hidden_p, position_ids_p)
+
+                # 2. Маски внимания (поддержка как legacy _update_attention_mask, так и create_bidirectional_mask)
+                attn_mask_mapping_p = None
                 if hasattr(self.dus, "_update_attention_mask"):
                     attention_mask_p, sliding_window_mask_p = self.dus._update_attention_mask(
                         prompt_mask_extended, output_attentions=False
                     )
                 else:
-                    attention_mask_p = prompt_mask_extended
-                    sliding_window_mask_p = None
+                    mask_fn_global = None
+                    mask_fn_sliding = None
+                    try:
+                        from transformers.masking_utils import create_bidirectional_mask, create_bidirectional_sliding_window_mask
+                        mask_fn_global = create_bidirectional_mask
+                        mask_fn_sliding = create_bidirectional_sliding_window_mask
+                    except (ImportError, AttributeError):
+                        mod = sys.modules.get(self.dus.__class__.__module__)
+                        if mod is not None:
+                            mask_fn_global = getattr(mod, "create_bidirectional_mask", None)
+                            mask_fn_sliding = getattr(mod, "create_bidirectional_sliding_window_mask", None)
 
-                hidden_p = dus_prompt_extended
+                    if mask_fn_global is not None and mask_fn_sliding is not None:
+                        mask_kwargs = {
+                            "config": self.dus.config,
+                            "inputs_embeds": hidden_p,
+                            "attention_mask": prompt_mask_extended,
+                        }
+                        attn_mask_mapping_p = {
+                            "full_attention": mask_fn_global(**mask_kwargs),
+                            "sliding_attention": mask_fn_sliding(**mask_kwargs),
+                        }
+                        attention_mask_p = None
+                        sliding_window_mask_p = None
+                    else:
+                        attention_mask_p = prompt_mask_extended
+                        sliding_window_mask_p = None
+
                 for layer in self.dus.layers[:12]:
+                    actual_layer = getattr(layer, "original_layer", layer)
+                    actual_layer = _unwrap_module(actual_layer)
+                    l_type = getattr(actual_layer, "attention_type", "full_attention")
+
                     kwargs_p = {
-                        "attention_mask": attention_mask_p,
                         "position_ids": position_ids_p,
                     }
-                    if sliding_window_mask_p is not None:
-                        kwargs_p["sliding_window_mask"] = sliding_window_mask_p
+                    if attn_mask_mapping_p is not None:
+                        kwargs_p["attention_mask"] = attn_mask_mapping_p.get(l_type, attn_mask_mapping_p.get("full_attention"))
+                    else:
+                        kwargs_p["attention_mask"] = attention_mask_p
+                        if sliding_window_mask_p is not None:
+                            kwargs_p["sliding_window_mask"] = sliding_window_mask_p
+
+                    if pos_emb_dict_p is not None:
+                        fallback_emb = next(iter(pos_emb_dict_p.values())) if pos_emb_dict_p else None
+                        kwargs_p["position_embeddings"] = pos_emb_dict_p.get(l_type, pos_emb_dict_p.get("full_attention", fallback_emb))
+
                     layer_out = layer(hidden_p, **kwargs_p)
                     hidden_p = layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
 

@@ -45,6 +45,12 @@ code_ca = extract_block("def rotate_half(x: torch.Tensor)", "def _unwrap_module(
 nb["cells"][idx_ca]["source"] = to_lines(code_ca)
 print(f"Synced CAPromptLayer to cell {idx_ca}")
 
+# 2.1 BEBLaDIIPhase6
+idx_model = find_cell("class BEBLaDIIPhase6(nn.Module):")
+code_model = extract_block("class BEBLaDIIPhase6(nn.Module):", "def compute_phase6_loss(")
+nb["cells"][idx_model]["source"] = to_lines(code_model)
+print(f"Synced BEBLaDIIPhase6 to cell {idx_model}")
+
 # 3. compute_phase6_loss
 idx_loss = find_cell("def compute_phase6_loss(")
 code_loss = extract_block("def compute_phase6_loss(", "def _set_seed(")

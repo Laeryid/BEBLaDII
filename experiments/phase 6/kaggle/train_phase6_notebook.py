@@ -530,6 +530,13 @@ class CAPromptLayer(nn.Module):
         return A
 
 
+def _unwrap_module(m):
+    """Снимает обёртки SpmdFullyShardedDataParallel / DDP / DataParallel / torch._dynamo."""
+    while hasattr(m, "module") or hasattr(m, "_orig_module"):
+        m = getattr(m, "module", None) or getattr(m, "_orig_module", None)
+    return m
+
+
 class Phase6BlockWrapper(nn.Module):
     """Обертка для ModernBERT слоя, позволяющая инжектировать CAPromptLayer."""
     def __init__(self, original_layer, ca_layer=None):
@@ -794,20 +801,79 @@ class BEBLaDIIPhase6(nn.Module):
             for ca in self.ca_layers.values():
                 ca._disable = True
 
-            orig_layers = self.dus.layers
-            try:
-                self.dus.layers = orig_layers[:12]
-                prompt_outputs = self.dus(
-                    inputs_embeds=dus_prompt_extended,
-                    attention_mask=prompt_mask_extended,
-                    output_hidden_states=True,
-                )
+            seq_len_p = dus_prompt_extended.shape[1]
+            position_ids_p = torch.arange(seq_len_p, device=dus_prompt_extended.device).unsqueeze(0)
+            hidden_p = dus_prompt_extended
 
-                # Индекс 12 соответствует выходу 12-го слоя (11-й по индексу 0-11)
-                # Нам нужен выход слоя 11 (12-го по счету). Это hidden_states[12]
-                Z_prompt_12 = prompt_outputs.hidden_states[12][:, 1:, :].to(Z_prompt.dtype)
-            finally:
-                self.dus.layers = orig_layers
+            # 1. Позиционные RoPE-эмбеддинги (transformers >= 4.49 / 4.50)
+            pos_emb_dict_p = None
+            if hasattr(self.dus, "rotary_emb"):
+                pos_emb_dict_p = {}
+                layer_types = getattr(self.dus.config, "layer_types", ["full_attention"])
+                for l_type in set(layer_types):
+                    try:
+                        pos_emb_dict_p[l_type] = self.dus.rotary_emb(hidden_p, position_ids_p, l_type)
+                    except TypeError:
+                        pos_emb_dict_p[l_type] = self.dus.rotary_emb(hidden_p, position_ids_p)
+
+            # 2. Маски внимания (поддержка как legacy _update_attention_mask, так и create_bidirectional_mask)
+            attn_mask_mapping_p = None
+            if hasattr(self.dus, "_update_attention_mask"):
+                attention_mask_p, sliding_window_mask_p = self.dus._update_attention_mask(
+                    prompt_mask_extended, output_attentions=False
+                )
+            else:
+                mask_fn_global = None
+                mask_fn_sliding = None
+                try:
+                    from transformers.masking_utils import create_bidirectional_mask, create_bidirectional_sliding_window_mask
+                    mask_fn_global = create_bidirectional_mask
+                    mask_fn_sliding = create_bidirectional_sliding_window_mask
+                except (ImportError, AttributeError):
+                    mod = sys.modules.get(self.dus.__class__.__module__)
+                    if mod is not None:
+                        mask_fn_global = getattr(mod, "create_bidirectional_mask", None)
+                        mask_fn_sliding = getattr(mod, "create_bidirectional_sliding_window_mask", None)
+
+                if mask_fn_global is not None and mask_fn_sliding is not None:
+                    mask_kwargs = {
+                        "config": self.dus.config,
+                        "inputs_embeds": hidden_p,
+                        "attention_mask": prompt_mask_extended,
+                    }
+                    attn_mask_mapping_p = {
+                        "full_attention": mask_fn_global(**mask_kwargs),
+                        "sliding_attention": mask_fn_sliding(**mask_kwargs),
+                    }
+                    attention_mask_p = None
+                    sliding_window_mask_p = None
+                else:
+                    attention_mask_p = prompt_mask_extended
+                    sliding_window_mask_p = None
+
+            for layer in self.dus.layers[:12]:
+                actual_layer = getattr(layer, "original_layer", layer)
+                actual_layer = _unwrap_module(actual_layer)
+                l_type = getattr(actual_layer, "attention_type", "full_attention")
+
+                kwargs_p = {
+                    "position_ids": position_ids_p,
+                }
+                if attn_mask_mapping_p is not None:
+                    kwargs_p["attention_mask"] = attn_mask_mapping_p.get(l_type, attn_mask_mapping_p.get("full_attention"))
+                else:
+                    kwargs_p["attention_mask"] = attention_mask_p
+                    if sliding_window_mask_p is not None:
+                        kwargs_p["sliding_window_mask"] = sliding_window_mask_p
+
+                if pos_emb_dict_p is not None:
+                    fallback_emb = next(iter(pos_emb_dict_p.values())) if pos_emb_dict_p else None
+                    kwargs_p["position_embeddings"] = pos_emb_dict_p.get(l_type, pos_emb_dict_p.get("full_attention", fallback_emb))
+
+                layer_out = layer(hidden_p, **kwargs_p)
+                hidden_p = layer_out[0] if isinstance(layer_out, (tuple, list)) else layer_out
+
+            Z_prompt_12 = hidden_p[:, 1:, :].to(Z_prompt.dtype)
 
             for ca in self.ca_layers.values():
                 ca._disable = not ca_is_active
