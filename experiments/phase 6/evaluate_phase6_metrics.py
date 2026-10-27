@@ -737,7 +737,7 @@ def decode_latents_to_text(decoder, qwen_embed_weight, tokenizer, z):
 def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, max_len=64, steps=25,
                    cfg_scale=1.0, cfg_max=None, cfg_min=None, cfg_power=1.0,
                    sampler="hybrid", seed=42, re_noise_t=0.88,
-                   spec_tau=0.12, spec_temp=0.04):
+                   spec_tau=0.75, spec_temp=0.35):
     if cfg_max is None:
         cfg_max = cfg_scale if cfg_scale > 1.0 else 1.0
     if cfg_min is None:
@@ -748,7 +748,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         seed = random.randint(1, 1000000)
 
     print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}'")
-    spec_desc = f" | Spec(tau={spec_tau}, temp={spec_temp})" if "specificity" in sampler else ""
+    spec_desc = f" | Spec(tau_z={spec_tau}, temp={spec_temp})" if "specificity" in sampler else ""
     print(f"   [Sampler: {sampler}{spec_desc} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (power={cfg_power}) | Steps: {steps}]")
     q_enc = tokenizer(query_text, return_tensors='pt').to(device)
 
@@ -766,7 +766,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         run_history = []
 
         # Построение временной сетки:
-        if sampler in ["hybrid", "anchor_jump", "specificity_hybrid"]:
+        if sampler in ["hybrid", "anchor_jump", "specificity_hybrid", "impulse_hybrid"]:
             # Шаг 0 на t=1.0, затем прыжок к re_noise_t и равномерный спуск до 0.04
             remaining_steps = max(1, steps - 1)
             t_schedule = [1.0]
@@ -794,24 +794,47 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             h39, z_pred = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
 
             # Time-scheduled CFG & Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395):
-            cfg_t = cfg_min + (cfg_max - cfg_min) * (((t_val - 0.04) / 0.96) ** cfg_power) if cfg_max > cfg_min else cfg_max
+            if sampler == "impulse_hybrid":
+                # Импульсный CFG: полный cfg_max на шаге 0 (t=1.0) перед Anchor Jump, и мягкий cfg_min (или 1.1) далее,
+                # чтобы не выжигать общую безусловную грамматику английского языка (overlap erosion)
+                cfg_t = cfg_max if i == 0 else (cfg_min if cfg_min > 1.0 else 1.0 + 0.05 * (cfg_max - 1.0) * ((t_val - 0.04) / 0.96))
+            else:
+                cfg_t = cfg_min + (cfg_max - cfg_min) * (((t_val - 0.04) / 0.96) ** cfg_power) if cfg_max > cfg_min else cfg_max
+
             mean_spec_gate = None
+            spec_active_pct = None
+            mean_disagreement = None
+
             if cfg_t > 1.0:
                 for ca in model.ca_layers.values(): ca._disable = True
                 _, z_uncond = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
                 for ca in model.ca_layers.values(): ca._disable = False
 
                 if sampler in ["specificity", "specificity_hybrid"]:
-                    # Оцениваем расхождение между условным и безусловным предсказанием (overlap/specificity proxy)
+                    # Потокенное расхождение между условным и безусловным полем
                     cos_sim = (z_pred * z_uncond).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
                     disagreement = (1.0 - cos_sim) * 0.5  # [B, T_a, 1], диапазон [0.0, 1.0]
+                    mean_disagreement = disagreement.mean().item()
 
-                    # Логистический сигмоидный гейт отношения правдоподобия:
-                    # В области пересечения (disagreement < spec_tau) вес g -> 0 (не выжигаем общий синтаксис)
-                    spec_gate = torch.sigmoid((disagreement - spec_tau) / max(1e-4, spec_temp))
+                    # На шаге 0 при старте из чистого шума (median(d) > 0.20) весь холст формирует якорь промпта.
+                    # На шагах денойзинга (t < 1.0) углы между z_pred и z_uncond малы (~0.002..0.02),
+                    # поэтому в соответствии с идеей медианного центрирования (Eq. 74 arXiv:2610.00395)
+                    # нормируем расхождение внутри текущего шага по холсту: z_i = (d_i - median(d)) / std(d).
+                    med_d = disagreement.median(dim=1, keepdim=True).values
+                    std_d = disagreement.std(dim=1, keepdim=True, unbiased=False).clamp(min=1e-6)
+
+                    if i == 0 and sampler == "specificity_hybrid" and mean_disagreement > 0.20:
+                        spec_gate = torch.ones_like(disagreement)
+                    else:
+                        z_score = (disagreement - med_d) / std_d
+                        spec_gate = torch.sigmoid((z_score - spec_tau) / max(1e-4, spec_temp))
+
                     mean_spec_gate = spec_gate.mean().item()
+                    spec_active_pct = (spec_gate > 0.5).float().mean().item() * 100.0
 
-                    # Модулированный эффективный CFG вектор:
+                    # Модулированный эффективный CFG для каждого токена:
+                    # Токены общего синтаксиса (z_score < spec_tau) получают cfg_eff -> 1.0 (защита overlap-мод),
+                    # семантически специфичные токены (z_score > spec_tau) получают полный импульс cfg_t.
                     cfg_eff = 1.0 + (cfg_t - 1.0) * spec_gate
                     z_pred = safe_normalize(z_uncond + cfg_eff * (z_pred - z_uncond), dim=-1)
                 else:
@@ -831,10 +854,15 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             }
             if mean_spec_gate is not None:
                 step_entry['spec_gate'] = mean_spec_gate
+                step_entry['spec_active_pct'] = spec_active_pct
+                step_entry['mean_d'] = mean_disagreement
             run_history.append(step_entry)
 
             if i % 5 == 0 or i == len(t_schedule) - 1:
-                spec_str = f", spec_gate={mean_spec_gate:.2f}" if mean_spec_gate is not None else ""
+                spec_str = (
+                    f", spec_gate={mean_spec_gate:.2f} (act={spec_active_pct:.0f}%, d={mean_disagreement:.4f})"
+                    if mean_spec_gate is not None else ""
+                )
                 print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}{spec_str}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
                 print(f"   [Phase 2 Decoder]: {step_text[:90]}...")
                 print(f"   [Latent Dict NN ]: {nn_text[:60]}...")
@@ -844,7 +872,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 break
 
             # Anchor Jump на шаге 0: вместо Slerp от стартового шума прыгаем вокруг z_pred
-            if i == 0 and sampler in ["hybrid", "anchor_jump", "specificity_hybrid"]:
+            if i == 0 and sampler in ["hybrid", "anchor_jump", "specificity_hybrid", "impulse_hybrid"]:
                 t_next_val = t_schedule[i + 1]
                 t_noise = torch.full((B, T_a), t_next_val, device=device)
                 z_canvas = spherical_noise(z_pred, t_noise)
@@ -873,7 +901,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
 
     meta_str = f"Sampler: {sampler} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (p={cfg_power})"
     if "specificity" in sampler:
-        meta_str += f" | Spec(tau={spec_tau}, temp={spec_temp})"
+        meta_str += f" | Spec(tau_z={spec_tau}, temp={spec_temp})"
     return {'query': query_text, 'meta': meta_str, 'history': run_history, 'final': final_text, 'final_nn': final_nn_text}
 
 
@@ -894,7 +922,8 @@ def generate_html(results, html_path):
         for h in res['history']:
             if h['step'] % 5 == 0 or h['step'] == len(res['history'])-1:
                 cfg_info = f" | CFG={h.get('cfg', 1.0):.2f}" if 'cfg' in h else ""
-                html += f"<div class='step'>[Step {h['step']:02d} | t={h['t']:.2f}{cfg_info} | DProx={h['raw_dprox']:.3f}] {h['text']}</div>"
+                spec_info = f" | Spec={h['spec_gate']:.2f} (act={h.get('spec_active_pct', 0.0):.0f}%)" if 'spec_gate' in h else ""
+                html += f"<div class='step'>[Step {h['step']:02d} | t={h['t']:.2f}{cfg_info}{spec_info} | DProx={h['raw_dprox']:.3f}] {h['text']}</div>"
         html += f"<div class='final'>A: {res['final']}</div></div>"
 
     html += "</body></html>"
@@ -1000,12 +1029,12 @@ def main():
     parser.add_argument("--cfg_min", type=float, default=1.0, help="Minimum CFG scale at t=0.04 for scheduled guidance")
     parser.add_argument("--cfg_power", type=float, default=1.0, help="Power exponent for CFG decay schedule")
     parser.add_argument("--sampler", type=str, default="hybrid",
-                        choices=["standard", "anchor_jump", "hybrid", "specificity", "specificity_hybrid"],
-                        help="Sampling strategy: standard (Slerp), anchor_jump, hybrid, specificity (LR-Gated CFG), specificity_hybrid (Anchor Jump + LR-Gated CFG)")
-    parser.add_argument("--spec_tau", type=float, default=0.12,
-                        help="Specificity gate threshold for disagreement (arXiv:2610.00395). Tokens with disagreement < tau receive cfg=1.0")
-    parser.add_argument("--spec_temp", type=float, default=0.04,
-                        help="Specificity gate temperature for sigmoid transition steepness")
+                        choices=["standard", "anchor_jump", "hybrid", "specificity", "specificity_hybrid", "impulse_hybrid"],
+                        help="Sampling strategy: standard, anchor_jump, hybrid, specificity (step-normalized LR-Gated CFG), specificity_hybrid (Anchor Jump + LR-Gated CFG), impulse_hybrid (Full CFG at step 0 + gentle CFG decay)")
+    parser.add_argument("--spec_tau", type=float, default=0.75,
+                        help="Specificity gate z-score threshold above canvas median (arXiv:2610.00395 Eq. 74). Default 0.75 selects top ~20-25% specific tokens")
+    parser.add_argument("--spec_temp", type=float, default=0.35,
+                        help="Specificity gate temperature in z-score units for sigmoid transition steepness")
     parser.add_argument("--seed", type=int, default=42, help="Seed for generation (-1 for random seed)")
     parser.add_argument("--random_seed", action="store_true", help="Pick random seed for each generation")
     parser.add_argument("--re_noise_t", type=float, default=0.88, help="Target noise level for anchor jump re-noising")

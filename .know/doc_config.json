@@ -1153,12 +1153,20 @@
       "summary": "ADR 111: Phase 6 Coherence Fix: Uniform/Span Noise, RoPE Coordinate Stabilization, Transition Bigram Loss, and 512 Canvas Synchronization"
     },
     "decisions/112_phase6_specificity_aware_gated_guidance.md": {
-      "description": "ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395) (Accepted)",
+      "description": "ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395) (Superseded by ADR 113)",
       "covers": [
         "Architecture Decisions"
       ],
       "depends_on": [],
       "summary": "ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395)"
+    },
+    "decisions/113_phase6_step_normalized_specificity_and_impulse_cfg.md": {
+      "description": "ADR 113: Phase 6 Step-Normalized Specificity Gating and Impulse CFG Schedule (Correction of ADR 112) (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 113: Phase 6 Step-Normalized Specificity Gating and Impulse CFG Schedule (Correction of ADR 112)"
     }
   },
   "knowledge_system": {

@@ -1,8 +1,11 @@
 <!-- created: 2026-10-27 -->
-<!-- status: Accepted -->
+<!-- status: Superseded by ADR 113 -->
 # ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395)
 
-**Status**: Accepted  
+> [!WARNING]
+> **This ADR is superseded by [ADR 113: Phase 6 Step-Normalized Specificity Gating and Impulse CFG Schedule (Correction of ADR 112)](./113_phase6_step_normalized_specificity_and_impulse_cfg.md).**
+
+**Status**: Superseded by [ADR 113](./113_phase6_step_normalized_specificity_and_impulse_cfg.md)
 **Date**: 2026-10-27  
 **Git Commit**: `3f6bfd2` (branch: `main`)  
 **Author**: Bogdan Buliakov  
