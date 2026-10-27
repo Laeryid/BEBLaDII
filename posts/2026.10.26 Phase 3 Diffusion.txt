@@ -1,0 +1,32 @@
+𝐁𝐄𝐁𝐋𝐚𝐃𝐈𝐈: Phase 3 — Continuous Spherical Diffusion Core with global t.
+
+In my last post, I outlined the concept of continuous text diffusion on a hypersphere. And Phase 3 delivers this milestone: the 40-layer core is trained, stabilized, and actively denoising.
+
+Getting here required surviving a cascade of numerical and architectural crises. Here is what Phase 3 was about, how we made it work, and the results.
+
+🎯 𝐓𝐡𝐞 𝐎𝐛𝐣𝐞𝐜𝐭𝐢𝐯𝐞
+Train a 40-layer DUS Backbone (ModernBERT-large scaled via Depth Up-Scaling) to perform continuous denoising directly on the S^(1023) hyperspherical manifold. Given a noised latent vector at continuous time t in [0, 1], the model must iteratively recover the clean original semantic vector x_0. A defining feature of this phase was applying a uniform noise level across the entire canvas.
+
+🛠️ 𝐓𝐡𝐞 𝐁𝐚𝐭𝐭𝐥𝐞𝐬 & 𝐁𝐫𝐞𝐚𝐤𝐭𝐡𝐫𝐨𝐮𝐠𝐡𝐬
+We initially tried shortcuts: confidence embeddings, teacher distillation, and steep non-linear penalties. They backfired. We hit bfloat16 gradient collapse, Pre-LN norm explosions, and AdaLN residual stream multiplication bugs that broke identity mapping.
+
+The breakthrough came from stripping away crutches and moving to canonical, mathematically sound continuous diffusion:
+• 𝐒𝐭𝐫𝐢𝐜𝐭 𝐟𝐥𝐨𝐚𝐭𝟑𝟐 𝐏𝐫𝐞𝐜𝐢𝐬𝐢𝐨𝐧: Eliminated the rounding and underflow issues of bfloat16 on the hypersphere.
+• 𝐂𝐨𝐬𝐢𝐧𝐞 𝐒𝐜𝐡𝐞𝐝𝐮𝐥𝐞 & 𝐒𝐋𝐄𝐑𝐏: Full continuous noise range t in [0, 1] using Spherical Linear Interpolation for noise injection.
+• 𝐃𝐢𝐓-𝐒𝐭𝐲𝐥𝐞 𝐙𝐞𝐫𝐨-𝐈𝐧𝐢𝐭 𝐀𝐝𝐚𝐋𝐍: Time conditioning integrated inside EVERY ModernBERT block.
+• 𝐭-𝐃𝐞𝐩𝐞𝐧𝐝𝐞𝐧𝐭 𝐎𝐮𝐭𝐩𝐮𝐭 𝐆𝐚𝐭𝐞: Structurally guarantees identity mapping at t=0.
+• 𝐒𝐞𝐥𝐟-𝐂𝐨𝐧𝐝𝐢𝐭𝐢𝐨𝐧𝐢𝐧𝐠: Re-enabled with Xavier initialization to give the core a "second glance" at its own preliminary x_0 prediction during denoising.
+
+⚡ 𝐓𝐡𝐞 𝐑𝐞𝐬𝐮𝐥𝐭𝐬
+Using our Phase 2 grammatical decoder to inspect denoising trajectories step-by-step:
+✓ 𝐋𝐨𝐰 𝐧𝐨𝐢𝐬𝐞 (𝐭 <= 𝟎.𝟑): Near-instant semantic recovery with Cosine Similarity > 0.98.
+✓ 𝐌𝐞𝐝𝐢𝐮𝐦 𝐧𝐨𝐢𝐬𝐞 (𝐭 = 𝟎.𝟒 – 𝟎.𝟔): Robust semantic healing. Even when heavy noise pushes the trajectory toward neighboring concepts (e.g., predicting "bread fox" instead of "brown fox"), it converges smoothly back to the exact target sentence ("The quick brown fox...").
+✓ 𝐇𝐢𝐠𝐡 / 𝐏𝐮𝐫𝐞 𝐧𝐨𝐢𝐬𝐞 (𝐭 >= 𝟎.𝟖): Generates grammatically coherent token attractors — the expected, mathematically correct unconditional behavior without prompt guidance.
+
+Phase 3 proved that continuous diffusion on a spherical manifold is not just viable, but robust. The foundation is set.
+
+Next in line is Phase 4 — diffusion with per-token noise levels, training the model to leverage confident context on the canvas to denoise the remaining tokens.
+
+📦 Report & details: https://github.com/Laeryid/BEBLaDII/blob/main/reports/plan_b_phase3_report.md
+
+#AI #MachineLearning #Diffusion #DeepLearning #BEBLaDII

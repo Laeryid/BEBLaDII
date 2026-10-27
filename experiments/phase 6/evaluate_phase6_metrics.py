@@ -736,7 +736,8 @@ def decode_latents_to_text(decoder, qwen_embed_weight, tokenizer, z):
 
 def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, max_len=64, steps=25,
                    cfg_scale=1.0, cfg_max=None, cfg_min=None, cfg_power=1.0,
-                   sampler="hybrid", seed=42, re_noise_t=0.88):
+                   sampler="hybrid", seed=42, re_noise_t=0.88,
+                   spec_tau=0.12, spec_temp=0.04):
     if cfg_max is None:
         cfg_max = cfg_scale if cfg_scale > 1.0 else 1.0
     if cfg_min is None:
@@ -747,7 +748,8 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         seed = random.randint(1, 1000000)
 
     print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}'")
-    print(f"   [Sampler: {sampler} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (power={cfg_power}) | Steps: {steps}]")
+    spec_desc = f" | Spec(tau={spec_tau}, temp={spec_temp})" if "specificity" in sampler else ""
+    print(f"   [Sampler: {sampler}{spec_desc} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (power={cfg_power}) | Steps: {steps}]")
     q_enc = tokenizer(query_text, return_tensors='pt').to(device)
 
     with torch.no_grad():
@@ -764,7 +766,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         run_history = []
 
         # Построение временной сетки:
-        if sampler in ["hybrid", "anchor_jump"]:
+        if sampler in ["hybrid", "anchor_jump", "specificity_hybrid"]:
             # Шаг 0 на t=1.0, затем прыжок к re_noise_t и равномерный спуск до 0.04
             remaining_steps = max(1, steps - 1)
             t_schedule = [1.0]
@@ -791,29 +793,49 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             # Conditional pass
             h39, z_pred = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
 
-            # Time-scheduled CFG:
+            # Time-scheduled CFG & Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395):
             cfg_t = cfg_min + (cfg_max - cfg_min) * (((t_val - 0.04) / 0.96) ** cfg_power) if cfg_max > cfg_min else cfg_max
+            mean_spec_gate = None
             if cfg_t > 1.0:
                 for ca in model.ca_layers.values(): ca._disable = True
                 _, z_uncond = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
                 for ca in model.ca_layers.values(): ca._disable = False
-                z_pred = safe_normalize(z_uncond + cfg_t * (z_pred - z_uncond), dim=-1)
+
+                if sampler in ["specificity", "specificity_hybrid"]:
+                    # Оцениваем расхождение между условным и безусловным предсказанием (overlap/specificity proxy)
+                    cos_sim = (z_pred * z_uncond).sum(dim=-1, keepdim=True).clamp(-1.0, 1.0)
+                    disagreement = (1.0 - cos_sim) * 0.5  # [B, T_a, 1], диапазон [0.0, 1.0]
+
+                    # Логистический сигмоидный гейт отношения правдоподобия:
+                    # В области пересечения (disagreement < spec_tau) вес g -> 0 (не выжигаем общий синтаксис)
+                    spec_gate = torch.sigmoid((disagreement - spec_tau) / max(1e-4, spec_temp))
+                    mean_spec_gate = spec_gate.mean().item()
+
+                    # Модулированный эффективный CFG вектор:
+                    cfg_eff = 1.0 + (cfg_t - 1.0) * spec_gate
+                    z_pred = safe_normalize(z_uncond + cfg_eff * (z_pred - z_uncond), dim=-1)
+                else:
+                    z_pred = safe_normalize(z_uncond + cfg_t * (z_pred - z_uncond), dim=-1)
 
             # Phase 2 Decoder text
             step_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas)
             # Latent Dict nearest neighbor sample
             nn_text = tokenizer.decode(nn_ids[0][:20], skip_special_tokens=True)
 
-            run_history.append({
+            step_entry = {
                 'step': i,
                 't': t_val,
                 'cfg': cfg_t,
                 'text': step_text,
                 'raw_dprox': raw_dprox[0].mean().item()
-            })
+            }
+            if mean_spec_gate is not None:
+                step_entry['spec_gate'] = mean_spec_gate
+            run_history.append(step_entry)
 
             if i % 5 == 0 or i == len(t_schedule) - 1:
-                print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
+                spec_str = f", spec_gate={mean_spec_gate:.2f}" if mean_spec_gate is not None else ""
+                print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}{spec_str}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
                 print(f"   [Phase 2 Decoder]: {step_text[:90]}...")
                 print(f"   [Latent Dict NN ]: {nn_text[:60]}...")
 
@@ -822,7 +844,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 break
 
             # Anchor Jump на шаге 0: вместо Slerp от стартового шума прыгаем вокруг z_pred
-            if i == 0 and sampler in ["hybrid", "anchor_jump"]:
+            if i == 0 and sampler in ["hybrid", "anchor_jump", "specificity_hybrid"]:
                 t_next_val = t_schedule[i + 1]
                 t_noise = torch.full((B, T_a), t_next_val, device=device)
                 z_canvas = spherical_noise(z_pred, t_noise)
@@ -850,6 +872,8 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         print(f"=== FINAL ANSWER (LatentDict NN) ===\n{final_nn_text}\n" + "="*42)
 
     meta_str = f"Sampler: {sampler} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (p={cfg_power})"
+    if "specificity" in sampler:
+        meta_str += f" | Spec(tau={spec_tau}, temp={spec_temp})"
     return {'query': query_text, 'meta': meta_str, 'history': run_history, 'final': final_text, 'final_nn': final_nn_text}
 
 
@@ -975,7 +999,13 @@ def main():
     parser.add_argument("--cfg_max", type=float, default=4.0, help="Maximum CFG scale at t=1.0 for scheduled guidance")
     parser.add_argument("--cfg_min", type=float, default=1.0, help="Minimum CFG scale at t=0.04 for scheduled guidance")
     parser.add_argument("--cfg_power", type=float, default=1.0, help="Power exponent for CFG decay schedule")
-    parser.add_argument("--sampler", type=str, default="hybrid", choices=["standard", "anchor_jump", "hybrid"], help="Sampling strategy")
+    parser.add_argument("--sampler", type=str, default="hybrid",
+                        choices=["standard", "anchor_jump", "hybrid", "specificity", "specificity_hybrid"],
+                        help="Sampling strategy: standard (Slerp), anchor_jump, hybrid, specificity (LR-Gated CFG), specificity_hybrid (Anchor Jump + LR-Gated CFG)")
+    parser.add_argument("--spec_tau", type=float, default=0.12,
+                        help="Specificity gate threshold for disagreement (arXiv:2610.00395). Tokens with disagreement < tau receive cfg=1.0")
+    parser.add_argument("--spec_temp", type=float, default=0.04,
+                        help="Specificity gate temperature for sigmoid transition steepness")
     parser.add_argument("--seed", type=int, default=42, help="Seed for generation (-1 for random seed)")
     parser.add_argument("--random_seed", action="store_true", help="Pick random seed for each generation")
     parser.add_argument("--re_noise_t", type=float, default=0.88, help="Target noise level for anchor jump re-noising")
@@ -1068,13 +1098,15 @@ def main():
         sample_q = df.iloc[0]['Q']
         res = run_generation(model, decoder, latent_dict, tokenizer, sample_q, device, max_len=args.max_len, steps=args.steps,
                              cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
-                             sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t)
+                             sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t,
+                             spec_tau=args.spec_tau, spec_temp=args.spec_temp)
         results.append(res)
 
     ood_q = "Explain why the sky is blue using simple words."
     res = run_generation(model, decoder, latent_dict, tokenizer, ood_q, device, max_len=args.max_len, steps=args.steps,
                          cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
-                         sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t)
+                         sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t,
+                         spec_tau=args.spec_tau, spec_temp=args.spec_temp)
     results.append(res)
 
     html_path = args.output_html if args.output_html else os.path.join(PROJECT_ROOT, "experiments", "phase 6", "phase6_generation_demo.html")
@@ -1091,7 +1123,8 @@ def main():
                     continue
                 res = run_generation(model, decoder, latent_dict, tokenizer, user_q, device, max_len=args.max_len, steps=args.steps,
                                      cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
-                                     sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t)
+                                     sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t,
+                                     spec_tau=args.spec_tau, spec_temp=args.spec_temp)
                 results.append(res)
                 generate_html(results, html_path)
             except KeyboardInterrupt:

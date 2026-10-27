@@ -1151,6 +1151,14 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 111: Phase 6 Coherence Fix: Uniform/Span Noise, RoPE Coordinate Stabilization, Transition Bigram Loss, and 512 Canvas Synchronization"
+    },
+    "decisions/112_phase6_specificity_aware_gated_guidance.md": {
+      "description": "ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395) (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395)"
     }
   },
   "knowledge_system": {
