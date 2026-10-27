@@ -1,3 +1,19 @@
+# ---
+# jupyter:
+#   jupytext:
+#     cell_metadata_filter: -all
+#     notebook_metadata_filter: -all
+#     text_representation:
+#       extension: .py
+#       format_name: percent
+#       format_version: '1.3'
+#       jupytext_version: 1.19.1
+# ---
+
+# %% [markdown]
+# ## Environment & Disk Cleanup
+
+# %%
 import math
 import os
 import subprocess
@@ -50,7 +66,10 @@ def cleanup_kaggle_checkpoints():
 
 cleanup_kaggle_checkpoints()
 
+# %% [markdown]
+# ## Install Dependencies
 
+# %%
 # Install Kaggle TPU dependencies (equivalent to: !pip install -q -U --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage)
 try:
     import wandb
@@ -59,6 +78,10 @@ except ImportError:
     subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-U", "--no-cache-dir",
                     "einops", "wandb", "indexed_parquet_dataset", "google-cloud-storage"])
 
+# %% [markdown]
+# ## Imports & XLA Initialization
+
+# %%
 import pandas as pd
 import torch
 import torch.nn as nn
@@ -90,6 +113,10 @@ except ImportError:
 
 xr.use_spmd()
 
+# %% [markdown]
+# ## SPMD Mesh & Sharding Setup
+
+# %%
 GLOBAL_SPMD_MESH = None
 
 def setup_spmd_mesh():
@@ -119,6 +146,10 @@ def mark_fsdp_sharding(tensor):
             pass
     return tensor
 
+# %% [markdown]
+# ## Tensor NaN Checking Utilities
+
+# %%
 GLOBAL_NAN_NAMES = []
 GLOBAL_NAN_CHECKS = []
 
@@ -131,6 +162,10 @@ def check_tensor_nan(name: str, tensor: torch.Tensor, step: int = 0, step_limit:
     GLOBAL_NAN_NAMES.append(name)
     GLOBAL_NAN_CHECKS.append(is_bad)
 
+# %% [markdown]
+# ## Project Root & Model Imports
+
+# %%
 from pathlib import Path
 if Path("/kaggle/input").exists():
     PROJECT_ROOT = "/kaggle/working/BEBLaDII"
@@ -149,6 +184,10 @@ from src.beb_la_dii.model.dus import DUSModel
 from src.beb_la_dii.model.vae import LatentEncoder
 from src.beb_la_dii.utils.loss import safe_normalize
 
+# %% [markdown]
+# ## Path Resolution Helpers
+
+# %%
 def resolve_model_path(base_path: str, fallback: str = "") -> str:
     import pathlib
     p = pathlib.Path(base_path)
@@ -178,6 +217,10 @@ def resolve_file_path(filename: str, fallback_dir="/kaggle/input") -> str:
                 return str(m)
     return filename
 
+# %% [markdown]
+# ## GCS Checkpointing & Sync Utilities
+
+# %%
 def get_gcs_client():
     try:
         from google.cloud import storage
@@ -271,6 +314,10 @@ def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step
         return ckpts[0][0], ckpts[0][1]
     return None, 0
 
+# %% [markdown]
+# ## Noise Scheduling & Stats
+
+# %%
 def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0,
                               kappa_max: float = 8.0, steps: int = 25,
                               flat_prob: float = 0.60, span_block_size: int = 16) -> torch.Tensor:
@@ -320,6 +367,10 @@ def content_cos_stats(outputs):
     cm = (~outputs["void_mask"].bool()).float()
     return cp, cb, cm
 
+# %% [markdown]
+# ## Configuration
+
+# %%
 class Config:
     embedding_model_path = resolve_model_path("/kaggle/input/datasets/ragnar123/qwen2-5-1-5b", "Qwen/Qwen2.5-1.5B")
     modernbert_path      = resolve_model_path("/kaggle/input/models/answer-ai/modernbert/transformers/large/2", "answerdotai/ModernBERT-large")
@@ -365,6 +416,10 @@ class Config:
 
 args = Config()
 
+# %% [markdown]
+# ## EMA Tracker
+
+# %%
 class EMATracker:
     def __init__(self, model, decay=0.999):
         self.decay = decay
@@ -411,6 +466,10 @@ class EMATracker:
         self.backup = {}
         xm.mark_step()
 
+# %% [markdown]
+# ## QA Dataset
+
+# %%
 class QADataset(Dataset):
     def __init__(self, parquet_path, tokenizer, max_length_q=512, max_length_a=512):
         self.df = pd.read_parquet(parquet_path)
@@ -432,6 +491,10 @@ class QADataset(Dataset):
             'attention_mask_a': a_enc.attention_mask.squeeze(0),
         }
 
+# %% [markdown]
+# ## Sinusoidal & Spherical Noise
+
+# %%
 class SinusoidalEmbedding(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
@@ -458,6 +521,10 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
     sigma = torch.sin(t * (math.pi / 2))
     return safe_normalize(mu * x0 + sigma * eps_ortho, dim=-1)
 
+# %% [markdown]
+# ## AdaLN Modulation
+
+# %%
 class AdaLNModulation(nn.Module):
     def __init__(self, t_emb_dim: int, hidden_dim: int):
         super().__init__()
@@ -484,6 +551,10 @@ class AdaLNWrappedLayerNorm(nn.Module):
         shift, scale = self.adaln(self._current_t_emb)
         return out * scale.to(out.dtype) + shift.to(out.dtype)
 
+# %% [markdown]
+# ## Rotary Embedding (RoPE)
+
+# %%
 def rotate_half(x: torch.Tensor) -> torch.Tensor:
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
@@ -513,6 +584,10 @@ class RotaryEmbedding(nn.Module):
         sin = emb.sin().view(1, 1, seq_len, self.dim).to(dtype=x.dtype)
         return cos, sin
 
+# %% [markdown]
+# ## CAPromptLayer
+
+# %%
 class CAPromptLayer(nn.Module):
     def __init__(self, dim=1024, t_emb_dim=256):
         super().__init__()
@@ -632,6 +707,10 @@ class CAPromptLayer(nn.Module):
         A = A + warmup_factor * delta
         return A
 
+# %% [markdown]
+# ## Module Unwrapping & Phase6BlockWrapper
+
+# %%
 def _unwrap_module(m):
     """Снимает обёртки SpmdFullyShardedDataParallel / DDP / DataParallel / torch._dynamo."""
     while hasattr(m, "module") or hasattr(m, "_orig_module"):
@@ -677,6 +756,10 @@ class Phase6BlockWrapper(nn.Module):
             return (hidden,) + tuple(out[1:])
         return hidden
 
+# %% [markdown]
+# ## ModernBERT TPU XLA Safe Mask Patch
+
+# %%
 def patch_modernbert_xla_safe_mask(modernbert_model):
     """
     Патчит генерацию и применение масок в ModernBertModel для стабильности на TPU XLA (ADR 103, ADR 104).
@@ -763,6 +846,10 @@ def patch_modernbert_xla_safe_mask(modernbert_model):
                     return safe_attn_forward
                 attn_mod.forward = _make_safe_attn_forward(orig_attn_forward)
 
+# %% [markdown]
+# ## BEBLaDIIPhase6 Model Architecture
+
+# %%
 class BEBLaDIIPhase6(nn.Module):
     def __init__(self, config: Config):
         super().__init__()
@@ -1151,6 +1238,10 @@ class BEBLaDIIPhase6(nn.Module):
             "void_embed": void_embed
         }
 
+# %% [markdown]
+# ## Loss Function (Phase 6)
+
+# %%
 def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     z_clean = outputs["z_clean"].float()
     dus_final = outputs["dus_final"].float()
@@ -1237,6 +1328,10 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
 
     return loss, avg_cos_sim, true_void_sim, content_to_void_sim
 
+# %% [markdown]
+# ## Validation Routine
+
+# %%
 def _set_seed(seed: int):
     torch.manual_seed(seed)
     xm.set_rng_state(seed)
@@ -1333,6 +1428,10 @@ def run_validation(model, ema_tracker, val_dataloader, device, mesh, global_step
     model.train()
     ema_tracker.restore(model)
 
+# %% [markdown]
+# ## Multi-Stage NaN Diagnosis
+
+# %%
 def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=None):
     print("\n" + "="*70)
     print("           [DIAGNOSIS] FULL NaN GRADIENT AUDIT (TPU/CPU)          ")
@@ -1501,6 +1600,10 @@ def run_nan_diagnosis(model, batch, device, mesh, ca_params=None, dus_params=Non
     print("                    [FINISH] DIAGNOSIS COMPLETED                    ")
     print("="*70 + "\n")
 
+# %% [markdown]
+# ## Main Training Routine
+
+# %%
 def main():
     cleanup_kaggle_checkpoints()
     mesh = setup_spmd_mesh()
@@ -1934,5 +2037,10 @@ def main():
 
             global_step += 1
 
+# %% [markdown]
+# ## Entry Point
+
+# %%
 if __name__ == "__main__":
     main()
+
