@@ -408,11 +408,15 @@ class Config:
     wandb_project = "BEBLaDII-Phase6-Kaggle"
     run_diagnosis_first  = False # Диагностика успешно пройдена (156/156 finite), отключена для экономии HBM и времени старта
     stop_after_diagnosis = False # Не прерывать после успешной диагностики, продолжать обучение
-    # ADR 111: Параметры для устранения качественного потолка и синтаксической связности
+    # ADR 111 & 113: Параметры для устранения качественного потолка и ликвидации Exposure Bias
     flat_noise_prob = 0.60         # 60% батча с плоским шумом t_i = t_global
     span_block_size = 16           # Размер блока при Span-Masking шуме (40% батча)
     transition_loss_weight = 0.25  # Вес Transition / Bigram Cosine Loss для связности текста
-    void_loss_weight = 0.20        # Вес потерь на PAD/VOID позициях относительно контента (предотвращает перекос градиента)
+    void_loss_weight = 0.75        # Вес потерь на PAD/VOID позициях относительно контента (сбалансирован до ~50% байесовского порога)
+    void_penalty_margin = 0.50     # Порог отталкивания контента от void_embed (вместо жесткого 0.20)
+    void_penalty_weight = 0.25     # Коэффициент штрафа отталкивания от void_embed
+    tail_erasing_prob = 0.25       # Доля батча со Spurious-Tail Erasing аугментацией для устранения Exposure Bias
+    max_resume_step = 107000       # Гарантированный возврат к проверенному чекпоинту 107000 (игнорировать шаги > 107k)
 
 args = Config()
 
@@ -1037,7 +1041,21 @@ class BEBLaDIIPhase6(nn.Module):
             else:
                 prompt_mask = None
 
-            z_noisy = mark_fsdp_sharding(spherical_noise(Z_A_clean, t_actual))
+            # Spurious-Tail Erasing Augmentation (ADR 113: устранение Exposure Bias):
+            # В tail_erasing_prob (25%) батча входной источник шума для хвостовых позиций
+            # формируется из зашумленного текста ответа, в то время как целевой таргет Z_A_clean строго содержит void_embed!
+            tail_erasing_prob = getattr(args, "tail_erasing_prob", 0.25)
+            if self.training and tail_erasing_prob > 0.0:
+                erase_u = (torch.rand((B, 1, 1), device=cpu_dev) < tail_erasing_prob).float()
+                erase_u_dev = mark_fsdp_sharding(erase_u.to(Z_A_clean.device)).bool()
+                tail_pos = (shifted_attention_mask_a == 0).unsqueeze(-1)
+                high_noise_pos = (t_actual >= 0.40).unsqueeze(-1) if t_actual.dim() == 2 else (t_actual.view(B, 1, 1) >= 0.40)
+                spurious_mask = erase_u_dev & tail_pos & high_noise_pos
+                z_noisy_source = torch.where(spurious_mask, shifted_Z_A_clean, Z_A_clean)
+            else:
+                z_noisy_source = Z_A_clean
+
+            z_noisy = mark_fsdp_sharding(spherical_noise(z_noisy_source, t_actual))
 
             # Чанкованное вычисление RawDProx: делим latent_dict на 16 чанков по ~9.5K векторов
             # и считаем матричное умножение в bfloat16 для предотвращения OOM в HBM
@@ -1258,12 +1276,14 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     cos_sim_target_to_void = (target * void_embed.view(1, 1, -1)).sum(dim=-1)
     content_mask = 1.0 - void_mask
 
-    # 80% от расстояния между void и z_clean (в терминах косинусного сходства)
-    dynamic_margin = 1.0 - 0.8 * (1.0 - cos_sim_target_to_void)
-
+    # ADR 113: Смягченный порог отталкивания от void_embed
+    # Защищает контентные токены от схлопывания в void при сходстве > 0.50,
+    # но убирает ложное отталкивание при умеренном шуме на высоких t
     import torch.nn.functional as F
-    void_penalty = F.relu(cos_sim_to_void - dynamic_margin) * content_mask
-    loss_el = loss_el + 0.5 * void_penalty
+    void_margin_val = getattr(args, "void_penalty_margin", 0.50)
+    void_pen_weight = getattr(args, "void_penalty_weight", 0.25)
+    void_penalty = F.relu(cos_sim_to_void - void_margin_val) * content_mask
+    loss_el = loss_el + void_pen_weight * void_penalty
 
     # --- Repulsive Anti-Barycenter & Positional Diversity Loss (ADR 108) ---
     content_mask_3d = content_mask.unsqueeze(-1)
@@ -1651,6 +1671,9 @@ def main():
     # Загрузка чекпоинта Resume на CPU ДО переноса на TPU и оборачивания в SpmdFullyShardedDataParallel (ADR 006)
     if args.resume_from_checkpoint and args.gcs_checkpoint_dir:
         available_ckpts = get_gcs_checkpoints(args.gcs_checkpoint_dir)
+        max_resume = getattr(args, "max_resume_step", None)
+        if max_resume is not None:
+            available_ckpts = [(c, s) for c, s in available_ckpts if s <= max_resume]
         resumed = False
         for latest_ckpt, step in available_ckpts:
             local_ckpt = os.path.join(args.output_dir, f"resume_step_{step}.pth")

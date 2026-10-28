@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~71256 (excluding excluded directories)
-**Updated:** 2026-10-27
+**Total files in project:** ~71269 (excluding excluded directories)
+**Updated:** 2026-10-28
 
 ```
 BEBLaDII/
 |-- .agent/  *(empty)*
-|-- .know/  *144 files*
-|   |-- decisions/  *112 files*
+|-- .know/  *145 files*
+|   |-- decisions/  *113 files*
 |   `-- knowledge/  *27 files*
 |-- BEBLaDII-planB-Phase3-Data/  *9 files*
 |   `-- phase 3/  *6 files*
@@ -45,7 +45,7 @@ BEBLaDII/
 |   |   |-- data/  *6 files*
 |   |   `-- metadata/  *12 files*
 |   `-- russian-reasoning/  *2 files*
-|-- experiments/  *502 files*
+|-- experiments/  *507 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -57,11 +57,11 @@ BEBLaDII/
 |   |   |-- kaggle/  *9 files*
 |   |   |-- local/  *14 files*
 |   |   `-- screenshots/  *6 files*
-|   |-- phase 3/  *197 files*
+|   |-- phase 3/  *196 files*
 |   |   |-- Lightning/  *3 files*
 |   |   |-- bad scripts/  *24 files*
 |   |   |-- kaggle/  *18 files*
-|   |   |-- local_checkpoints/  *1 files*
+|   |   |-- local_checkpoints/  *(empty)*
 |   |   `-- screenshots/  *139 files*
 |   |-- phase 4/  *110 files*
 |   |   |-- kaggle/  *3 files*
@@ -75,18 +75,18 @@ BEBLaDII/
 |   |   |-- local/  *6 files*
 |   |   |-- local_checkpoints/  *(empty)*
 |   |   `-- screenshots/  *(empty)*
-|   `-- phase 6/  *74 files*
+|   `-- phase 6/  *80 files*
 |       |-- checkpoints/  *3 files*
 |       |-- data/  *12 files*
 |       |-- kaggle/  *3 files*
 |       |-- scratch/  *6 files*
 |       |-- screenshots/  *25 files*
-|       `-- tpu kaggle/  *2 files*
+|       `-- tpu kaggle/  *3 files*
 |-- hugging face/  *2 files*
 |-- ideas/  *81 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
 |-- kaggle_upload_1_2/  *2 files*
-|-- posts/  *22 files*
+|-- posts/  *24 files*
 |-- reports/  *11 files*
 |   `-- plan_A/  *6 files*
 |-- scratch/  *37 files*
@@ -113,7 +113,7 @@ BEBLaDII/
 |-- tmp/  *9 files*
 |   `-- test_tracker/  *3 files*
 |       `-- results/  *3 files*
-`-- wandb/  *30 files*
+`-- wandb/  *35 files*
     |-- offline-run-20261015_194223-3jn9g1cj/  *5 files*
     |   |-- files/  *1 files*
     |   |-- logs/  *2 files*
@@ -134,7 +134,11 @@ BEBLaDII/
     |   |-- files/  *1 files*
     |   |-- logs/  *2 files*
     |   `-- tmp/  *(empty)*
-    `-- offline-run-20261025_121015-7t5cszll/  *5 files*
+    |-- offline-run-20261025_121015-7t5cszll/  *5 files*
+    |   |-- files/  *1 files*
+    |   |-- logs/  *2 files*
+    |   `-- tmp/  *(empty)*
+    `-- offline-run-20261028_125521-t5gr3o7x/  *5 files*
         |-- files/  *1 files*
         |-- logs/  *2 files*
         `-- tmp/  *(empty)*

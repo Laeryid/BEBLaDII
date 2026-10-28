@@ -721,17 +721,39 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
 # =========================================================================
 # 6. Text Decoding & Slerp Reverse Diffusion Generation
 # =========================================================================
-def decode_latents_to_text(decoder, qwen_embed_weight, tokenizer, z):
+def decode_latents_to_text(decoder, qwen_embed_weight, tokenizer, z, void_embed=None, void_thresh=0.60):
     """
     Декодирует непрерывные векторы Z в текст с помощью ModernLatentDecoder
-    и LM-головы Qwen (Phase 2).
+    и LM-головы Qwen (Phase 2). При передаче void_embed участки с cos(z, void) >= void_thresh
+    схлопываются в читаемые токены <|void xN|>.
     """
     with torch.no_grad():
         projected = decoder(z.float())  # [B, T, 1536]
         logits = F.linear(projected, qwen_embed_weight.float())
-        pred_ids = logits.argmax(dim=-1)
-        text = tokenizer.decode(pred_ids[0], skip_special_tokens=True)
-        return text
+        pred_ids = logits.argmax(dim=-1)[0]
+        
+        if void_embed is None:
+            return tokenizer.decode(pred_ids, skip_special_tokens=True)
+            
+        sim_void = (z[0].float() * void_embed.to(z.device).float()).sum(dim=-1)
+        is_void = (sim_void >= void_thresh).cpu().numpy()
+        
+        tokens = []
+        i = 0
+        T = len(pred_ids)
+        while i < T:
+            if is_void[i]:
+                start = i
+                while i < T and is_void[i]:
+                    i += 1
+                tokens.append(f"<|void x{i - start}|>")
+            else:
+                start = i
+                while i < T and not is_void[i]:
+                    i += 1
+                chunk_text = tokenizer.decode(pred_ids[start:i], skip_special_tokens=True)
+                tokens.append(chunk_text)
+        return " ".join(tokens)
 
 
 def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, max_len=64, steps=25,
@@ -747,9 +769,12 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         import random
         seed = random.randint(1, 1000000)
 
-    print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}'")
+    header_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}'"
     spec_desc = f" | Spec(tau_z={spec_tau}, temp={spec_temp})" if "specificity" in sampler else ""
-    print(f"   [Sampler: {sampler}{spec_desc} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (power={cfg_power}) | Steps: {steps}]")
+    meta_desc = f"   [Sampler: {sampler}{spec_desc} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (power={cfg_power}) | Steps: {steps}]"
+    print(f"\n{header_msg}\n{meta_desc}")
+    detailed_log_lines = [header_msg, meta_desc]
+
     q_enc = tokenizer(query_text, return_tensors='pt').to(device)
 
     with torch.no_grad():
@@ -764,6 +789,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
 
         z_canvas = safe_normalize(torch.randn(B, T_a, 1024, device=device), dim=-1)
         run_history = []
+        void_embed = model.void_embed.to(device).float() if hasattr(model, 'void_embed') else None
 
         # Построение временной сетки:
         if sampler in ["hybrid", "anchor_jump", "specificity_hybrid", "impulse_hybrid"]:
@@ -795,8 +821,6 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
 
             # Time-scheduled CFG & Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395):
             if sampler == "impulse_hybrid":
-                # Импульсный CFG: полный cfg_max на шаге 0 (t=1.0) перед Anchor Jump, и мягкий cfg_min (или 1.1) далее,
-                # чтобы не выжигать общую безусловную грамматику английского языка (overlap erosion)
                 cfg_t = cfg_max if i == 0 else (cfg_min if cfg_min > 1.0 else 1.0 + 0.05 * (cfg_max - 1.0) * ((t_val - 0.04) / 0.96))
             else:
                 cfg_t = cfg_min + (cfg_max - cfg_min) * (((t_val - 0.04) / 0.96) ** cfg_power) if cfg_max > cfg_min else cfg_max
@@ -816,32 +840,33 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                     disagreement = (1.0 - cos_sim) * 0.5  # [B, T_a, 1], диапазон [0.0, 1.0]
                     mean_disagreement = disagreement.mean().item()
 
-                    # На шаге 0 при старте из чистого шума (median(d) > 0.20) весь холст формирует якорь промпта.
-                    # На шагах денойзинга (t < 1.0) углы между z_pred и z_uncond малы (~0.002..0.02),
-                    # поэтому в соответствии с идеей медианного центрирования (Eq. 74 arXiv:2610.00395)
+                    # В соответствии с идеей медианного центрирования (Eq. 74 arXiv:2610.00395)
                     # нормируем расхождение внутри текущего шага по холсту: z_i = (d_i - median(d)) / std(d).
                     med_d = disagreement.median(dim=1, keepdim=True).values
                     std_d = disagreement.std(dim=1, keepdim=True, unbiased=False).clamp(min=1e-6)
 
-                    if i == 0 and sampler == "specificity_hybrid" and mean_disagreement > 0.20:
-                        spec_gate = torch.ones_like(disagreement)
-                    else:
-                        z_score = (disagreement - med_d) / std_d
-                        spec_gate = torch.sigmoid((z_score - spec_tau) / max(1e-4, spec_temp))
+                    z_score = (disagreement - med_d) / std_d
+                    spec_gate = torch.sigmoid((z_score - spec_tau) / max(1e-4, spec_temp))
 
                     mean_spec_gate = spec_gate.mean().item()
                     spec_active_pct = (spec_gate > 0.5).float().mean().item() * 100.0
 
                     # Модулированный эффективный CFG для каждого токена:
-                    # Токены общего синтаксиса (z_score < spec_tau) получают cfg_eff -> 1.0 (защита overlap-мод),
-                    # семантически специфичные токены (z_score > spec_tau) получают полный импульс cfg_t.
                     cfg_eff = 1.0 + (cfg_t - 1.0) * spec_gate
                     z_pred = safe_normalize(z_uncond + cfg_eff * (z_pred - z_uncond), dim=-1)
                 else:
                     z_pred = safe_normalize(z_uncond + cfg_t * (z_pred - z_uncond), dim=-1)
 
+            # Void metrics
+            void_pct = 0.0
+            avg_v_cos = 0.0
+            if void_embed is not None:
+                cos_v = (z_pred[0] * void_embed).sum(dim=-1)
+                void_pct = (cos_v >= 0.60).float().mean().item() * 100.0
+                avg_v_cos = cos_v.mean().item()
+
             # Phase 2 Decoder text
-            step_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas)
+            step_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas, void_embed=void_embed)
             # Latent Dict nearest neighbor sample
             nn_text = tokenizer.decode(nn_ids[0][:20], skip_special_tokens=True)
 
@@ -850,7 +875,9 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 't': t_val,
                 'cfg': cfg_t,
                 'text': step_text,
-                'raw_dprox': raw_dprox[0].mean().item()
+                'raw_dprox': raw_dprox[0].mean().item(),
+                'void_pct': void_pct,
+                'avg_v_cos': avg_v_cos
             }
             if mean_spec_gate is not None:
                 step_entry['spec_gate'] = mean_spec_gate
@@ -858,12 +885,18 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 step_entry['mean_d'] = mean_disagreement
             run_history.append(step_entry)
 
+            step_log_str = (
+                f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%, v_cos={avg_v_cos:+.3f}, dprox={raw_dprox[0].mean().item():.3f}): "
+                f"[Dec]: {step_text[:110]}... | [NN]: {nn_text[:40]}..."
+            )
+            detailed_log_lines.append(step_log_str)
+
             if i % 5 == 0 or i == len(t_schedule) - 1:
                 spec_str = (
                     f", spec_gate={mean_spec_gate:.2f} (act={spec_active_pct:.0f}%, d={mean_disagreement:.4f})"
                     if mean_spec_gate is not None else ""
                 )
-                print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}{spec_str}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
+                print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%{spec_str}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
                 print(f"   [Phase 2 Decoder]: {step_text[:90]}...")
                 print(f"   [Latent Dict NN ]: {nn_text[:60]}...")
 
@@ -891,18 +924,27 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 z_canvas = torch.where(theta_now > 1e-5, safe_normalize(z_next, dim=-1), safe_normalize(z_pred, dim=-1))
 
         # Финальное декодирование
-        final_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas)
+        final_text = decode_latents_to_text(decoder, model.qwen_embeddings.weight, tokenizer, z_canvas, void_embed=void_embed)
         final_sims = torch.matmul(z_canvas, latent_dict.T)
         _, final_nn_ids = final_sims.max(dim=-1)
         final_nn_text = tokenizer.decode(final_nn_ids[0], skip_special_tokens=True)
 
         print(f"\n=== FINAL ANSWER (ModernLatentDecoder) ===\n{final_text}\n" + "="*42)
         print(f"=== FINAL ANSWER (LatentDict NN) ===\n{final_nn_text}\n" + "="*42)
+        detailed_log_lines.append(f"\n=== FINAL ANSWER (ModernLatentDecoder) ===\n{final_text}")
+        detailed_log_lines.append(f"=== FINAL ANSWER (LatentDict NN) ===\n{final_nn_text}")
 
     meta_str = f"Sampler: {sampler} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (p={cfg_power})"
     if "specificity" in sampler:
         meta_str += f" | Spec(tau_z={spec_tau}, temp={spec_temp})"
-    return {'query': query_text, 'meta': meta_str, 'history': run_history, 'final': final_text, 'final_nn': final_nn_text}
+    return {
+        'query': query_text,
+        'meta': meta_str,
+        'history': run_history,
+        'final': final_text,
+        'final_nn': final_nn_text,
+        'detailed_log': "\n".join(detailed_log_lines)
+    }
 
 
 def generate_html(results, html_path):
@@ -911,7 +953,10 @@ def generate_html(results, html_path):
     html += ".run{background:#fff; padding:15px; margin-bottom:20px; border-radius:8px; box-shadow:0 2px 4px rgba(0,0,0,0.1)} "
     html += ".step{font-family:monospace; color:#555; margin:5px 0; padding-bottom:5px; border-bottom:1px solid #eee} "
     html += ".meta{font-size:0.9em; color:#777; margin-bottom:8px} "
-    html += ".final{font-weight:bold; color:#2c3e50; margin-top:10px; font-size:1.1em; background:#eef6ff; padding:10px; border-radius:4px}</style></head><body>"
+    html += ".final{font-weight:bold; color:#2c3e50; margin-top:10px; font-size:1.1em; background:#eef6ff; padding:10px; border-radius:4px} "
+    html += ".spoiler{margin-top:12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; padding:10px} "
+    html += ".spoiler summary{cursor:pointer; font-weight:bold; color:#334155; font-size:0.95em} "
+    html += ".spoiler pre{font-family:Consolas, monospace; font-size:0.85em; white-space:pre-wrap; color:#1e293b; margin-top:8px; line-height:1.4}</style></head><body>"
     html += "<h1>Phase 6 CA_Prompt Generation Demos (ModernLatentDecoder + Z_prompt_12)</h1>"
 
     for res in results:
@@ -923,8 +968,15 @@ def generate_html(results, html_path):
             if h['step'] % 5 == 0 or h['step'] == len(res['history'])-1:
                 cfg_info = f" | CFG={h.get('cfg', 1.0):.2f}" if 'cfg' in h else ""
                 spec_info = f" | Spec={h['spec_gate']:.2f} (act={h.get('spec_active_pct', 0.0):.0f}%)" if 'spec_gate' in h else ""
-                html += f"<div class='step'>[Step {h['step']:02d} | t={h['t']:.2f}{cfg_info}{spec_info} | DProx={h['raw_dprox']:.3f}] {h['text']}</div>"
-        html += f"<div class='final'>A: {res['final']}</div></div>"
+                void_info = f" | Void={h.get('void_pct', 0.0):.1f}%" if 'void_pct' in h else ""
+                html += f"<div class='step'>[Step {h['step']:02d} | t={h['t']:.2f}{cfg_info}{spec_info}{void_info} | DProx={h['raw_dprox']:.3f}] {h['text']}</div>"
+        html += f"<div class='final'>A: {res['final']}</div>"
+        
+        # Скрытый под спойлер подробный лог шагов и метрик
+        detailed_log = res.get('detailed_log', '')
+        if detailed_log:
+            html += f"<details class='spoiler'><summary>📋 Развернуть подробный лог генерации по всем шагам</summary><pre>{detailed_log}</pre></details>"
+        html += "</div>"
 
     html += "</body></html>"
     with open(html_path, "w", encoding="utf-8") as f:

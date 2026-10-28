@@ -1167,6 +1167,16 @@
       ],
       "depends_on": [],
       "summary": "ADR 113: Phase 6 Step-Normalized Specificity Gating and Impulse CFG Schedule (Correction of ADR 112)"
+    },
+    "decisions/114_phase6_void_balance_and_tail_erasing.md": {
+      "description": "ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000 (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000"
     }
   },
   "knowledge_system": {
