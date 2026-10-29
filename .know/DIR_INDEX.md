@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~71269 (excluding excluded directories)
+**Total files in project:** ~71286 (excluding excluded directories)
 **Updated:** 2026-10-28
 
 ```
 BEBLaDII/
 |-- .agent/  *(empty)*
-|-- .know/  *145 files*
-|   |-- decisions/  *113 files*
+|-- .know/  *146 files*
+|   |-- decisions/  *114 files*
 |   `-- knowledge/  *27 files*
 |-- BEBLaDII-planB-Phase3-Data/  *9 files*
 |   `-- phase 3/  *6 files*
@@ -45,7 +45,7 @@ BEBLaDII/
 |   |   |-- data/  *6 files*
 |   |   `-- metadata/  *12 files*
 |   `-- russian-reasoning/  *2 files*
-|-- experiments/  *507 files*
+|-- experiments/  *519 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -75,7 +75,7 @@ BEBLaDII/
 |   |   |-- local/  *6 files*
 |   |   |-- local_checkpoints/  *(empty)*
 |   |   `-- screenshots/  *(empty)*
-|   `-- phase 6/  *80 files*
+|   `-- phase 6/  *92 files*
 |       |-- checkpoints/  *3 files*
 |       |-- data/  *12 files*
 |       |-- kaggle/  *3 files*
@@ -83,7 +83,7 @@ BEBLaDII/
 |       |-- screenshots/  *25 files*
 |       `-- tpu kaggle/  *3 files*
 |-- hugging face/  *2 files*
-|-- ideas/  *81 files*
+|-- ideas/  *85 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
 |-- kaggle_upload_1_2/  *2 files*
 |-- posts/  *24 files*

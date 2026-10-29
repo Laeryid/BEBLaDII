@@ -260,8 +260,8 @@
         "mtime": 1785406215.8853543
     },
     ".know\\doc_config.json": {
-        "hash": "26a1ce24caffeec09acc5d006a97fa559199798bd1a729d926d8d89c8d9629ab",
-        "mtime": 1793095097.2743895
+        "hash": "20226667dec7b8257c4c5825a105e3b45d9e90082b7254c61ce1685eb51afc6b",
+        "mtime": 1793209331.9474967
     },
     "ideas\\Architecture.md": {
         "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
@@ -492,8 +492,8 @@
         "mtime": 1790018229.7123277
     },
     "experiments\\phase 6\\kaggle\\train_phase6_notebook.py": {
-        "hash": "fa4f225399101a8380b5fa954870a31f4399be47a1102feccf903b3c3cfb457a",
-        "mtime": 1793035126.3555808
+        "hash": "90bf5fbed939f3e8ea14eee7d88bc195bc5b7bb79661c483785c3be4667e09df",
+        "mtime": 1793215091.889875
     },
     "experiments\\phase 6\\plan.md": {
         "hash": "4bc26f9a5f03f8ccb6d7c4e15d755a00ca1881732e14ccbb3d8b66ce5bd20e8b",
@@ -504,7 +504,7 @@
         "mtime": 1790709807.0369856
     },
     "experiments\\phase 6\\tpu kaggle\\train_phase6_tpu_notebook.py": {
-        "hash": "fbec1ca03a6c68d63c4929f7e3115c7ecb7159f30f2339ba99d2c31ffcbd9e9a",
-        "mtime": 1793034925.4088302
+        "hash": "3f5b831965722d37c70afca0dc14f27c127575395cbea9cd246dccd7cecbc149",
+        "mtime": 1793215082.1787987
     }
 }

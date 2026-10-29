@@ -1,0 +1,57 @@
+{
+  "baseline": {
+    "mode_desc": "baseline (SmartCrop=none, VoidDProx=OFF)",
+    "time_min": 12.34,
+    "content_words": 288,
+    "void_tokens": 0,
+    "ppl_gpt2": 24.0,
+    "distinct1": 0.194,
+    "distinct2": 0.463,
+    "distinct3": 0.713,
+    "prompt_word_share": 0.007
+  },
+  "void_dprox": {
+    "mode_desc": "void_dprox (SmartCrop=none, VoidDProx=ON)",
+    "time_min": 16.79,
+    "content_words": 288,
+    "void_tokens": 0,
+    "ppl_gpt2": 24.0,
+    "distinct1": 0.194,
+    "distinct2": 0.463,
+    "distinct3": 0.713,
+    "prompt_word_share": 0.007
+  },
+  "soft": {
+    "mode_desc": "soft SmartCrop (tau=0.90)",
+    "time_min": 10.71,
+    "content_words": 162,
+    "void_tokens": 249,
+    "ppl_gpt2": 81.2,
+    "distinct1": 0.29,
+    "distinct2": 0.596,
+    "distinct3": 0.838,
+    "prompt_word_share": 0.031
+  },
+  "hard_v2": {
+    "mode_desc": "hard SmartCrop v2 (strict crop, buffer=0)",
+    "time_min": 4.79,
+    "content_words": 165,
+    "void_tokens": 0,
+    "ppl_gpt2": 70.1,
+    "distinct1": 0.267,
+    "distinct2": 0.567,
+    "distinct3": 0.804,
+    "prompt_word_share": 0.0
+  },
+  "hard_buf16": {
+    "mode_desc": "hard SmartCrop + 16 void buffer (1A)",
+    "time_min": 4.05,
+    "content_words": 176,
+    "void_tokens": 16,
+    "ppl_gpt2": 61.5,
+    "distinct1": 0.261,
+    "distinct2": 0.514,
+    "distinct3": 0.741,
+    "prompt_word_share": 0.017
+  }
+}

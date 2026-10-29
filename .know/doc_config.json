@@ -1177,6 +1177,16 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000"
+    },
+    "decisions/115_phase6_variable_length_and_exposure_bias_synthesis.md": {
+      "description": "ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling) (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling)"
     }
   },
   "knowledge_system": {

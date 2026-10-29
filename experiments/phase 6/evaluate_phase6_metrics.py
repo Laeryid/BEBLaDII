@@ -759,7 +759,9 @@ def decode_latents_to_text(decoder, qwen_embed_weight, tokenizer, z, void_embed=
 def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, max_len=64, steps=25,
                    cfg_scale=1.0, cfg_max=None, cfg_min=None, cfg_power=1.0,
                    sampler="hybrid", seed=42, re_noise_t=0.88,
-                   spec_tau=0.75, spec_temp=0.35):
+                   spec_tau=0.75, spec_temp=0.35,
+                   smartcrop="none", smartcrop_tau=0.90, smartcrop_buffer=16,
+                   void_aware_dprox=False, eps_scale=1.0):
     if cfg_max is None:
         cfg_max = cfg_scale if cfg_scale > 1.0 else 1.0
     if cfg_min is None:
@@ -771,7 +773,10 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
 
     header_msg = f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Generating answer for: '{query_text}'"
     spec_desc = f" | Spec(tau_z={spec_tau}, temp={spec_temp})" if "specificity" in sampler else ""
-    meta_desc = f"   [Sampler: {sampler}{spec_desc} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (power={cfg_power}) | Steps: {steps}]"
+    crop_desc = f" | SmartCrop={smartcrop}(tau={smartcrop_tau})" if smartcrop != "none" else ""
+    dprox_desc = " | VoidDProx=ON" if void_aware_dprox else ""
+    eps_desc = f" | EpsScale={eps_scale:.2f}" if eps_scale != 1.0 else ""
+    meta_desc = f"   [Sampler: {sampler}{spec_desc}{crop_desc}{dprox_desc}{eps_desc} | Seed: {seed} | CFG: {cfg_max:.1f} -> {cfg_min:.1f} (power={cfg_power}) | Steps: {steps}]"
     print(f"\n{header_msg}\n{meta_desc}")
     detailed_log_lines = [header_msg, meta_desc]
 
@@ -790,6 +795,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         z_canvas = safe_normalize(torch.randn(B, T_a, 1024, device=device), dim=-1)
         run_history = []
         void_embed = model.void_embed.to(device).float() if hasattr(model, 'void_embed') else None
+        crop_L_hat = T_a  # По умолчанию граница не обрезается
 
         # Построение временной сетки:
         if sampler in ["hybrid", "anchor_jump", "specificity_hybrid", "impulse_hybrid"]:
@@ -814,6 +820,12 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
 
             sims = torch.matmul(z_canvas, latent_dict.T)
             raw_dprox, nn_ids = sims.max(dim=-1)
+
+            # Вариант 3 (ADR 115): Синхронизация t_reported с void_embed
+            if void_aware_dprox and void_embed is not None:
+                sim_void = (z_canvas * void_embed.view(1, 1, -1)).sum(dim=-1)
+                raw_dprox = torch.maximum(raw_dprox, sim_void)
+
             t_reported = (1.0 - raw_dprox).clamp(0.0, 1.0)
 
             # Conditional pass
@@ -856,6 +868,52 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                     z_pred = safe_normalize(z_uncond + cfg_eff * (z_pred - z_uncond), dim=-1)
                 else:
                     z_pred = safe_normalize(z_uncond + cfg_t * (z_pred - z_uncond), dim=-1)
+
+            # Вариант 1 (ADR 115): SmartCrop на шаге 0 (Rossi et al., arXiv:2603.06123)
+            # Ищем стабильный конец ответа (не менее 2 подряд идущих войда и пропуск начального shift-префикса j >= 8)
+            if i == 0 and smartcrop != "none" and void_embed is not None:
+                cos_v_0 = (z_pred[0] * void_embed).sum(dim=-1)
+                # Сигмоидальная вероятность перехода в терминатор войда
+                phi_v = torch.sigmoid((cos_v_0 - 0.40) / 0.15).clamp(1e-4, 1.0 - 1e-4)
+
+                # Игнорируем начальный префикс холста (токены 0..7), где может быть артефакт RoPE-стабилизации
+                start_scan = min(8, T_a // 4)
+                
+                # Ищем 2 последовательных токена с высокой вероятностью войда:
+                # bi_phi[j] = phi_v[j] * phi_v[j+1]
+                bi_phi = phi_v[:-1] * phi_v[1:]
+                
+                # Функция обратного выживания по парным терминаторам:
+                log_surv = torch.cumsum(torch.log(1.0 - bi_phi[start_scan:].clamp(max=1.0 - 1e-4)), dim=0)
+                cum_term_prob = 1.0 - torch.exp(log_surv)
+                cutoff_indices = (cum_term_prob >= smartcrop_tau).nonzero(as_tuple=True)[0]
+                
+                if len(cutoff_indices) > 0:
+                    raw_cut = start_scan + cutoff_indices[0].item()
+                    crop_L_hat = max(16, min(T_a, raw_cut)) # Оцененная граница ответа
+                    
+                    if smartcrop == "hard" and crop_L_hat < T_a:
+                        # Физически обрезаем холст (с учетом буфера войда)
+                        hard_cutoff = min(T_a, crop_L_hat + smartcrop_buffer)
+                        buf_desc = f"+{smartcrop_buffer} void buffer" if smartcrop_buffer > 0 else "no buffer"
+                        print(f"   [SmartCrop Hard] Estimated content: {crop_L_hat} tokens, Physical canvas cropped to {hard_cutoff}/{T_a} ({buf_desc}, tau={smartcrop_tau})")
+                        detailed_log_lines.append(f"   [SmartCrop Hard] Estimated content: {crop_L_hat} tokens, Physical canvas cropped to {hard_cutoff}/{T_a} ({buf_desc}, tau={smartcrop_tau})")
+                        T_a = hard_cutoff
+                        z_canvas = z_canvas[:, :T_a, :]
+                        z_pred = z_pred[:, :T_a, :]
+                        t_actual = t_actual[:, :T_a]
+                        nn_ids = nn_ids[:, :T_a]
+                        raw_dprox = raw_dprox[:, :T_a]
+                    else:
+                        print(f"   [SmartCrop] Detected output length: {crop_L_hat}/{T_a} tokens (tau={smartcrop_tau}, raw_cut={raw_cut}, start_scan={start_scan})")
+                        detailed_log_lines.append(f"   [SmartCrop] Detected output length: {crop_L_hat}/{T_a} tokens (tau={smartcrop_tau}, raw_cut={raw_cut}, start_scan={start_scan})")
+                else:
+                    print(f"   [SmartCrop] No termination detected (full length {T_a} preserved)")
+                    detailed_log_lines.append(f"   [SmartCrop] No termination detected (full length {T_a} preserved)")
+
+            # Фиксация хвоста в void_embed (для Soft SmartCrop и для буферной зоны Hard SmartCrop)
+            if smartcrop in ["soft", "hard"] and crop_L_hat < T_a and void_embed is not None:
+                z_pred[:, crop_L_hat:, :] = void_embed.view(1, 1, -1)
 
             # Void metrics
             void_pct = 0.0
@@ -915,10 +973,17 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 theta_now = t_actual.unsqueeze(-1) * (math.pi / 2)
                 theta_next = t_next.unsqueeze(-1) * (math.pi / 2)
 
+                # Вариант 4 (ADR 115): Angular Epsilon Scaling (Ning et al., 2024)
+                if eps_scale != 1.0 and eps_scale > 0.0:
+                    d_theta = (theta_now - theta_next) / eps_scale
+                    theta_next_eff = theta_now - d_theta
+                else:
+                    theta_next_eff = theta_next
+
                 sin_now = torch.sin(theta_now)
                 sin_now = torch.where(sin_now < 1e-5, torch.ones_like(sin_now) * 1e-5, sin_now)
-                w_pred = torch.sin(theta_now - theta_next) / sin_now
-                w_cur = torch.sin(theta_next) / sin_now
+                w_pred = torch.sin(theta_now - theta_next_eff) / sin_now
+                w_cur = torch.sin(theta_next_eff) / sin_now
 
                 z_next = w_pred * z_pred + w_cur * z_canvas
                 z_canvas = torch.where(theta_now > 1e-5, safe_normalize(z_next, dim=-1), safe_normalize(z_pred, dim=-1))
@@ -1090,6 +1155,13 @@ def main():
     parser.add_argument("--seed", type=int, default=42, help="Seed for generation (-1 for random seed)")
     parser.add_argument("--random_seed", action="store_true", help="Pick random seed for each generation")
     parser.add_argument("--re_noise_t", type=float, default=0.88, help="Target noise level for anchor jump re-noising")
+    parser.add_argument("--prompt_text", type=str, default="", help="Single specific prompt to evaluate (skips dataset/OOD defaults)")
+    parser.add_argument("--smartcrop", type=str, default="none", choices=["none", "hard", "soft"],
+                        help="SmartCrop mode (Rossi et al. 2026): 'none', 'hard' (physical canvas truncation), 'soft' (void clamping)")
+    parser.add_argument("--smartcrop_tau", type=float, default=0.90, help="Cumulative termination probability threshold for SmartCrop")
+    parser.add_argument("--smartcrop_buffer", type=int, default=16, help="Void buffer length for hard SmartCrop (0 for strict crop)")
+    parser.add_argument("--void_aware_dprox", action="store_true", help="Include void_embed in RawDProx proximity calculation for t_reported")
+    parser.add_argument("--eps_scale", type=float, default=1.0, help="Angular Epsilon Scaling lambda_t factor (Ning et al. 2024)")
     parser.add_argument("--output_html", type=str, default="", help="Path to output HTML report")
     parser.add_argument("--check-files", "--check-only", dest="check_files", action="store_true",
                         help="Perform pre-flight verification of all checkpoints, tokens, and datasets without loading models")
@@ -1175,20 +1247,33 @@ def main():
 
     gen_seed = -1 if args.random_seed else args.seed
 
-    if df is not None and len(df) > 0:
-        sample_q = df.iloc[0]['Q']
-        res = run_generation(model, decoder, latent_dict, tokenizer, sample_q, device, max_len=args.max_len, steps=args.steps,
+    if args.prompt_text:
+        res = run_generation(model, decoder, latent_dict, tokenizer, args.prompt_text, device, max_len=args.max_len, steps=args.steps,
                              cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
                              sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t,
-                             spec_tau=args.spec_tau, spec_temp=args.spec_temp)
+                             spec_tau=args.spec_tau, spec_temp=args.spec_temp,
+                             smartcrop=args.smartcrop, smartcrop_tau=args.smartcrop_tau, smartcrop_buffer=args.smartcrop_buffer,
+                             void_aware_dprox=args.void_aware_dprox, eps_scale=args.eps_scale)
         results.append(res)
+    else:
+        if df is not None and len(df) > 0:
+            sample_q = df.iloc[0]['Q']
+            res = run_generation(model, decoder, latent_dict, tokenizer, sample_q, device, max_len=args.max_len, steps=args.steps,
+                                 cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
+                                 sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t,
+                                 spec_tau=args.spec_tau, spec_temp=args.spec_temp,
+                                 smartcrop=args.smartcrop, smartcrop_tau=args.smartcrop_tau, smartcrop_buffer=args.smartcrop_buffer,
+                                 void_aware_dprox=args.void_aware_dprox, eps_scale=args.eps_scale)
+            results.append(res)
 
-    ood_q = "Explain why the sky is blue using simple words."
-    res = run_generation(model, decoder, latent_dict, tokenizer, ood_q, device, max_len=args.max_len, steps=args.steps,
-                         cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
-                         sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t,
-                         spec_tau=args.spec_tau, spec_temp=args.spec_temp)
-    results.append(res)
+        ood_q = "Explain why the sky is blue using simple words."
+        res = run_generation(model, decoder, latent_dict, tokenizer, ood_q, device, max_len=args.max_len, steps=args.steps,
+                             cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
+                             sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t,
+                             spec_tau=args.spec_tau, spec_temp=args.spec_temp,
+                             smartcrop=args.smartcrop, smartcrop_tau=args.smartcrop_tau, smartcrop_buffer=args.smartcrop_buffer,
+                             void_aware_dprox=args.void_aware_dprox, eps_scale=args.eps_scale)
+        results.append(res)
 
     html_path = args.output_html if args.output_html else os.path.join(PROJECT_ROOT, "experiments", "phase 6", "phase6_generation_demo.html")
     generate_html(results, html_path)
@@ -1205,7 +1290,9 @@ def main():
                 res = run_generation(model, decoder, latent_dict, tokenizer, user_q, device, max_len=args.max_len, steps=args.steps,
                                      cfg_scale=args.cfg_scale, cfg_max=args.cfg_max, cfg_min=args.cfg_min, cfg_power=args.cfg_power,
                                      sampler=args.sampler, seed=gen_seed, re_noise_t=args.re_noise_t,
-                                     spec_tau=args.spec_tau, spec_temp=args.spec_temp)
+                                     spec_tau=args.spec_tau, spec_temp=args.spec_temp,
+                                     smartcrop=args.smartcrop, smartcrop_tau=args.smartcrop_tau,
+                                     void_aware_dprox=args.void_aware_dprox, eps_scale=args.eps_scale)
                 results.append(res)
                 generate_html(results, html_path)
             except KeyboardInterrupt:

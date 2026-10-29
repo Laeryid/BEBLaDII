@@ -1,0 +1,47 @@
+{
+  "baseline": {
+    "content_words": 384,
+    "void_tokens": 1,
+    "ppl_gpt2": 31.2,
+    "distinct1": 0.148,
+    "distinct2": 0.405,
+    "distinct3": 0.686,
+    "prompt_word_share": 0.031
+  },
+  "void_dprox": {
+    "content_words": 379,
+    "void_tokens": 1,
+    "ppl_gpt2": 32.6,
+    "distinct1": 0.161,
+    "distinct2": 0.402,
+    "distinct3": 0.698,
+    "prompt_word_share": 0.032
+  },
+  "soft": {
+    "content_words": 222,
+    "void_tokens": 207,
+    "ppl_gpt2": 67.6,
+    "distinct1": 0.293,
+    "distinct2": 0.633,
+    "distinct3": 0.895,
+    "prompt_word_share": 0.131
+  },
+  "hard_v2": {
+    "content_words": 218,
+    "void_tokens": 1,
+    "ppl_gpt2": 58.2,
+    "distinct1": 0.271,
+    "distinct2": 0.59,
+    "distinct3": 0.81,
+    "prompt_word_share": 0.073
+  },
+  "hard_buf16": {
+    "content_words": 218,
+    "void_tokens": 17,
+    "ppl_gpt2": 55.4,
+    "distinct1": 0.257,
+    "distinct2": 0.599,
+    "distinct3": 0.819,
+    "prompt_word_share": 0.073
+  }
+}

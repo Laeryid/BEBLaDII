@@ -390,7 +390,7 @@ class Config:
     max_length_a  = 64 if os.environ.get("SMOKE_TEST") else 512
     learning_rate = 1e-4
     epochs        = 50
-    max_steps     = int(os.environ.get("MAX_STEPS", 200000))
+    max_steps     = int(os.environ.get("MAX_STEPS", 300000))
     log_steps     = 10
     val_steps     = 200
     save_steps    = 1000
@@ -400,7 +400,7 @@ class Config:
     unfreeze_k_after_ca = 4
     use_gradient_checkpointing = False
     loss_t_power  = 0.0   # 0.0 = равномерный вес лосса по токенам (ADR 098)
-    loss_t_mode   = "high_t_boost" # "uniform" или "high_t_boost" (w(t) = 0.2 + 0.8 * t)
+    loss_t_mode   = "uniform" # "uniform" или "high_t_boost" (w(t) = 0.2 + 0.8 * t)
     prompt_dropout = 0.15 # 15% батча без CA для обучения безусловного распределения (CFG)
     high_t_sampling = True # 20% t=1.0, 40% t in [0.72, 0.96], 40% t in [0.04, 0.68]
     use_prompt_sa = True  # Prompt-SA + RoPE перед CA
@@ -411,7 +411,7 @@ class Config:
     # ADR 111 & 113: Параметры для устранения качественного потолка и ликвидации Exposure Bias
     flat_noise_prob = 0.60         # 60% батча с плоским шумом t_i = t_global
     span_block_size = 16           # Размер блока при Span-Masking шуме (40% батча)
-    transition_loss_weight = 0.25  # Вес Transition / Bigram Cosine Loss для связности текста
+    transition_loss_weight = 0.0   # Вес Transition / Bigram Cosine Loss (отключен для стабилизации DProx)
     void_loss_weight = 0.75        # Вес потерь на PAD/VOID позициях относительно контента (сбалансирован до ~50% байесовского порога)
     void_penalty_margin = 0.50     # Порог отталкивания контента от void_embed (вместо жесткого 0.20)
     void_penalty_weight = 0.25     # Коэффициент штрафа отталкивания от void_embed
@@ -956,6 +956,7 @@ class BEBLaDIIPhase6(nn.Module):
             qwen_embeds_a = self.qwen_embeddings(input_ids_a)
             Z_A_clean, _, _ = self.encoder(qwen_embeds_a)
             Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
+            orig_Z_A_clean = Z_A_clean
 
             if not disable_ca:
                 qwen_embeds_q = self.qwen_embeddings(input_ids_q)
@@ -1051,7 +1052,11 @@ class BEBLaDIIPhase6(nn.Module):
                 tail_pos = (shifted_attention_mask_a == 0).unsqueeze(-1)
                 high_noise_pos = (t_actual >= 0.40).unsqueeze(-1) if t_actual.dim() == 2 else (t_actual.view(B, 1, 1) >= 0.40)
                 spurious_mask = erase_u_dev & tail_pos & high_noise_pos
-                z_noisy_source = torch.where(spurious_mask, shifted_Z_A_clean, Z_A_clean)
+                safe_orig_len = orig_len.clamp(min=1).unsqueeze(1)
+                wrap_indices = seq_indices % safe_orig_len
+                wrap_idx_3d = wrap_indices.unsqueeze(-1).expand(-1, -1, orig_Z_A_clean.shape[-1])
+                spurious_tail_tokens = torch.gather(orig_Z_A_clean, 1, wrap_idx_3d)
+                z_noisy_source = torch.where(spurious_mask, spurious_tail_tokens, Z_A_clean)
             else:
                 z_noisy_source = Z_A_clean
 
@@ -1064,6 +1069,8 @@ class BEBLaDIIPhase6(nn.Module):
             for dict_chunk in self.latent_dict.chunk(16, dim=0):
                 sims_chunk = torch.matmul(z_noisy_bf16, dict_chunk.T)
                 RawDProx = torch.maximum(RawDProx, sims_chunk.max(dim=-1).values)
+            void_sim_bf16 = torch.matmul(z_noisy_bf16, void_embed.to(torch.bfloat16).view(1, -1).T).squeeze(-1)
+            RawDProx = torch.maximum(RawDProx, void_sim_bf16)
             t_reported = (1.0 - RawDProx.float()).clamp(0.0, 1.0)
 
         # ==========================================
@@ -1318,17 +1325,18 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     loss_trans_raw = 1.0 - cos_diff
     adj_content_mask = content_mask[:, 1:] * content_mask[:, :-1]
     loss_trans = F.pad(loss_trans_raw * adj_content_mask, (0, 1), value=0.0)
-    lambda_trans = getattr(args, "transition_loss_weight", 0.25)
-    loss_el = loss_el + lambda_trans * loss_trans
+    lambda_trans = getattr(args, "transition_loss_weight", 0.0)
+    if lambda_trans > 0.0:
+        loss_el = loss_el + lambda_trans * loss_trans
 
     # --- Ребалансировка весов контента и VOID (ADR 111) ---
     # PAD/VOID позиции получают пониженный вес (0.20), предотвращая доминирование 240+ пустых позиций
-    void_weight = getattr(args, "void_loss_weight", 0.20)
+    void_weight = getattr(args, "void_loss_weight", 0.75)
     token_importance = content_mask + void_weight * void_mask
     loss_el = loss_el * token_importance
 
     # Взвешивание функции потерь по времени t
-    loss_t_mode = getattr(args, "loss_t_mode", "high_t_boost")
+    loss_t_mode = getattr(args, "loss_t_mode", "uniform")
     if loss_t_mode == "high_t_boost":
         # Усиление лосса при высоком шуме: штраф за потерю темы на t=1.0 в 5 раз выше, чем на t=0.04
         w_weighted = 0.2 + 0.8 * t_actual
@@ -2066,4 +2074,3 @@ def main():
 # %%
 if __name__ == "__main__":
     main()
-
