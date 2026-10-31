@@ -1,8 +1,11 @@
 <!-- created: 2026-10-28 -->
-<!-- status: Accepted -->
+<!-- status: Superseded by ADR 116 -->
 # ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000
 
-**Status**: Accepted  
+> [!WARNING]
+> **This ADR is superseded by [ADR 116: Phase 6 Coherence Restoration, Boundary Void Weighting, and Adaptive Inference Cropping](./116_phase6_coherence_boundary_adaptive_crop.md).**
+
+**Status**: Superseded by [ADR 116](./116_phase6_coherence_boundary_adaptive_crop.md)
 **Date**: 2026-10-28  
 **Git Commit**: `16194ed` (branch: `main`)  
 **Author**: Bogdan Buliakov  

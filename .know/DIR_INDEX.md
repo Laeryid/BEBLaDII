@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~71286 (excluding excluded directories)
-**Updated:** 2026-10-28
+**Total files in project:** ~71318 (excluding excluded directories)
+**Updated:** 2026-10-31
 
 ```
 BEBLaDII/
 |-- .agent/  *(empty)*
-|-- .know/  *146 files*
-|   |-- decisions/  *114 files*
+|-- .know/  *147 files*
+|   |-- decisions/  *115 files*
 |   `-- knowledge/  *27 files*
 |-- BEBLaDII-planB-Phase3-Data/  *9 files*
 |   `-- phase 3/  *6 files*
@@ -45,7 +45,7 @@ BEBLaDII/
 |   |   |-- data/  *6 files*
 |   |   `-- metadata/  *12 files*
 |   `-- russian-reasoning/  *2 files*
-|-- experiments/  *519 files*
+|-- experiments/  *544 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -75,7 +75,8 @@ BEBLaDII/
 |   |   |-- local/  *6 files*
 |   |   |-- local_checkpoints/  *(empty)*
 |   |   `-- screenshots/  *(empty)*
-|   `-- phase 6/  *92 files*
+|   `-- phase 6/  *117 files*
+|       |-- Demos/  *35 files*
 |       |-- checkpoints/  *3 files*
 |       |-- data/  *12 files*
 |       |-- kaggle/  *3 files*
@@ -83,7 +84,7 @@ BEBLaDII/
 |       |-- screenshots/  *25 files*
 |       `-- tpu kaggle/  *3 files*
 |-- hugging face/  *2 files*
-|-- ideas/  *85 files*
+|-- ideas/  *86 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
 |-- kaggle_upload_1_2/  *2 files*
 |-- posts/  *24 files*
@@ -113,7 +114,7 @@ BEBLaDII/
 |-- tmp/  *9 files*
 |   `-- test_tracker/  *3 files*
 |       `-- results/  *3 files*
-`-- wandb/  *35 files*
+`-- wandb/  *40 files*
     |-- offline-run-20261015_194223-3jn9g1cj/  *5 files*
     |   |-- files/  *1 files*
     |   |-- logs/  *2 files*
@@ -138,7 +139,11 @@ BEBLaDII/
     |   |-- files/  *1 files*
     |   |-- logs/  *2 files*
     |   `-- tmp/  *(empty)*
-    `-- offline-run-20261028_125521-t5gr3o7x/  *5 files*
+    |-- offline-run-20261028_125521-t5gr3o7x/  *5 files*
+    |   |-- files/  *1 files*
+    |   |-- logs/  *2 files*
+    |   `-- tmp/  *(empty)*
+    `-- offline-run-20261029_215746-86op35sq/  *5 files*
         |-- files/  *1 files*
         |-- logs/  *2 files*
         `-- tmp/  *(empty)*

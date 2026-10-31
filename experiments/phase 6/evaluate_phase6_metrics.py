@@ -330,6 +330,14 @@ class BEBLaDIIPhase6Eval(nn.Module):
         for i in [11, 23, 35]:
             self.dus.layers[i] = Phase6BlockWrapper(self.dus.layers[i], self.ca_layers[str(i+1)])
 
+        # Информационно-геометрическая диагностика (arXiv:2610.36864v1):
+        # Перехват бинарных знаков вентилей GeGLU (\Pi_l) и FFN-сдвигов в первых буферных слоях
+        # сразу после инъекции CA_Prompt (индексы 12, 24, 36 -> после CA_12, CA_24, CA_36).
+        self._capture_routing = False
+        self.last_routing_signs = {}
+        self.last_ffn_deltas = {}
+        self._register_routing_hooks()
+
         # Загрузка обученных весов Фазы 6 (ADR 100, 101, 102)
         if config.get('phase6_ckpt') and os.path.exists(config['phase6_ckpt']):
             self.load_phase6_weights(config['phase6_ckpt'])
@@ -337,6 +345,49 @@ class BEBLaDIIPhase6Eval(nn.Module):
             print("Warning: Phase 6 checkpoint not provided or not found. CA layers are randomly initialized!")
 
         self.eval()
+
+    def _register_routing_hooks(self):
+        r"""
+        Регистрирует легковесные forward-хуки на MLP первых буферных слоев после CA (индексы 12, 24, 36,
+        соответствующие ключам "12", "24", "36") для замера Routing Information (Hamming flip rate \Pi_l)
+        и Within-Region FFN cosine similarity по методологии Mylius-Kroken et al. (arXiv:2610.36864v1).
+        """
+        buffer_map = {"12": 12, "24": 24, "36": 36}
+        for ca_key, layer_idx in buffer_map.items():
+            if layer_idx >= len(self.dus.layers):
+                continue
+            layer_obj = self.dus.layers[layer_idx]
+            base_layer = layer_obj.original_layer if isinstance(layer_obj, Phase6BlockWrapper) else layer_obj
+            mlp_mod = getattr(base_layer, "mlp", None)
+            if mlp_mod is None:
+                continue
+
+            wi_mod = getattr(mlp_mod, "Wi", None)
+            if wi_mod is not None:
+                def _make_wi_hook(key):
+                    def _wi_hook(module, inputs, output):
+                        if not getattr(self, "_capture_routing", False):
+                            return
+                        with torch.no_grad():
+                            # В ModernBertMLP Wi(x) делится пополам: u, g = Wi(x).chunk(2, dim=-1), где GeGLU = GELU(u) * g.
+                            # Отрезаем префиксный SEP-токен ([:, 1:, :]), оставляя только холст ответа T_a.
+                            u_gate = output[:, 1:, : output.shape[-1] // 2]
+                            self.last_routing_signs[key] = (u_gate > 0).detach()
+                    return _wi_hook
+                wi_mod.register_forward_hook(_make_wi_hook(ca_key))
+
+            def _make_mlp_hook(key, has_wi):
+                def _mlp_hook(module, inputs, output):
+                    if not getattr(self, "_capture_routing", False):
+                        return
+                    with torch.no_grad():
+                        if not has_wi and len(inputs) > 0 and torch.is_tensor(inputs[0]):
+                            self.last_routing_signs[key] = (inputs[0][:, 1:, :] > 0).detach()
+                        out_tensor = output[0] if isinstance(output, (tuple, list)) else output
+                        if torch.is_tensor(out_tensor):
+                            self.last_ffn_deltas[key] = safe_normalize(out_tensor[:, 1:, :].float(), dim=-1).detach()
+                return _mlp_hook
+            mlp_mod.register_forward_hook(_make_mlp_hook(ca_key, wi_mod is not None))
 
     def load_phase6_weights(self, ckpt_path: str):
         """Интеллектуальная нормализация и валидация чекпоинта Фазы 6."""
@@ -512,14 +563,13 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     cos_sim = (dus_final * target).sum(dim=-1)
     loss_el = 1.0 - cos_sim
 
-    # Dynamic Void Penalty (ADR 096)
+    # Dynamic / Fixed Void Penalty (ADR 114 & 116)
     cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
-    cos_sim_target_to_void = (target * void_embed.view(1, 1, -1)).sum(dim=-1)
     content_mask = 1.0 - void_mask
 
-    dynamic_margin = 1.0 - 0.8 * (1.0 - cos_sim_target_to_void)
-    void_penalty = F.relu(cos_sim_to_void - dynamic_margin) * content_mask
-    loss_el = loss_el + 0.5 * void_penalty
+    # Мягкий порог отталкивания 0.50 с коэффициентом 0.25 (ADR 114)
+    void_penalty = F.relu(cos_sim_to_void - 0.50) * content_mask
+    loss_el = loss_el + 0.25 * void_penalty
 
     # --- Repulsive Anti-Barycenter & Positional Diversity Loss (ADR 108) ---
     content_mask_3d = content_mask.unsqueeze(-1)
@@ -546,17 +596,45 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     loss_el = loss_el + bary_penalty
     # ----------------------------------------------------------------------
 
-    # --- Transition / Bigram Cosine Loss (ADR 111) ---
+    # --- Transition / Bigram Cosine Loss (ADR 111 & 116) ---
     diff_pred = safe_normalize(dus_final[:, 1:, :] - dus_final[:, :-1, :], dim=-1)
     diff_tgt = safe_normalize(target[:, 1:, :] - target[:, :-1, :], dim=-1)
     cos_diff = (diff_pred * diff_tgt).sum(dim=-1)
     loss_trans_raw = 1.0 - cos_diff
-    adj_content_mask = content_mask[:, 1:] * content_mask[:, :-1]
-    loss_trans = F.pad(loss_trans_raw * adj_content_mask, (0, 1), value=0.0)
+
+    boundary_mask = outputs.get("boundary_mask", None)
+    if boundary_mask is None:
+        boundary_mask = torch.zeros_like(void_mask)
+
+    adj_content_mask = (content_mask[:, :-1] * content_mask[:, 1:]) + (content_mask[:, :-1] * boundary_mask[:, 1:])
+    adj_content_mask = adj_content_mask.clamp(0.0, 1.0)
+
+    # Строгий гейтинг по шуму: t <= 0.28
+    trans_max_t = 0.28
+    if t_actual.dim() == 2:
+        t_gate = (t_actual[:, :-1] <= trans_max_t) & (t_actual[:, 1:] <= trans_max_t)
+    else:
+        t_gate = (t_actual <= trans_max_t)
+    loss_trans = F.pad(loss_trans_raw * adj_content_mask * t_gate.float(), (0, 1), value=0.0)
     loss_el = loss_el + 0.25 * loss_trans
 
-    # --- Ребалансировка весов контента и VOID (ADR 111) ---
-    token_importance = content_mask + 0.20 * void_mask
+    # --- Prompt Anti-Copy Penalty (ADR 116 / Итерация 2) ---
+    z_prompt = outputs.get("z_prompt", None)
+    attn_mask_q = outputs.get("attention_mask_q", None)
+    if z_prompt is not None and attn_mask_q is not None:
+        sims_pred = torch.bmm(dus_final, z_prompt.transpose(1, 2))
+        sims_tgt = torch.bmm(target, z_prompt.transpose(1, 2))
+        q_mask = attn_mask_q.unsqueeze(1).expand_as(sims_pred)
+        sims_pred = torch.where(q_mask > 0, sims_pred, torch.tensor(-2.0, device=sims_pred.device, dtype=sims_pred.dtype))
+        sims_tgt = torch.where(q_mask > 0, sims_tgt, torch.tensor(-2.0, device=sims_tgt.device, dtype=sims_tgt.dtype))
+        s_pred_max = sims_pred.max(dim=-1).values
+        s_tgt_max = sims_tgt.max(dim=-1).values
+        loss_copy = F.relu(s_pred_max - (s_tgt_max + 0.05)) * content_mask
+        loss_el = loss_el + 0.25 * loss_copy
+
+    # --- Граничное взвешивание VOID (ADR 116 / dLLM-Var) ---
+    far_void_mask = (void_mask - boundary_mask).clamp(min=0.0)
+    token_importance = content_mask + 1.20 * boundary_mask + 0.60 * far_void_mask
     loss_el = loss_el * token_importance
 
     if loss_t_power > 0.0:
@@ -573,11 +651,59 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     return loss, avg_cos_sim, true_void_sim, content_to_void_sim
 
 
-def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None, max_samples=50, max_len=512):
+def compute_ffn_effective_rank(op_vecs: torch.Tensor, mask: torch.Tensor) -> tuple[float, int]:
+    r"""
+    Идея Б (Functional-Equivalence Quotient, Mylius-Kroken et al., arXiv:2610.36864v1):
+    Вычисляет спектральный эффективный ранг K_eff = exp(H(\lambda)) (Roy-Vetterli Effective Rank)
+    для матрицы Грама векторов сдвига FFN \Delta h_i^{FFN} в регионе.
+    Возвращает (k_eff, n_tok), где k_eff in [1, min(n_tok, D)]:
+    * k_eff -> 1.0 означает схлопывание всех токенов региона в единый коллинеарный вектор/направление (стационарный режим покоя на <|void|>).
+    * k_eff >> 1.0 отражает эффективную размерность активного семантического пространства операторов FFN на контенте.
     """
+    valid_idx = torch.where(mask > 0.5)[0]
+    n_tok = len(valid_idx)
+    if n_tok <= 1:
+        return float(n_tok), n_tok
+    v = safe_normalize(op_vecs[valid_idx].float(), dim=-1)
+    gram = torch.matmul(v, v.T) / float(n_tok)
+    eigvals = torch.linalg.eigvalsh(gram).clamp(min=1e-12)
+    eigvals = eigvals / eigvals.sum()
+    entropy = -(eigvals * torch.log(eigvals)).sum()
+    k_eff = torch.exp(entropy).item()
+    return max(1.0, min(float(n_tok), k_eff)), n_tok
+
+
+def compute_routing_agreement(signs: torch.Tensor, mask: torch.Tensor) -> float:
+    r"""
+    Идея А & Б (Routing Polytope Agreement, arXiv:2610.36864v1):
+    Вычисляет среднюю долю совпадающих знаков вентилей GeGLU (\Pi_l) между различными токенами региона (i != j):
+    R_agree = (1 / (N*(N-1))) \sum_{i != j} (1 / D_ff) \sum_d I[sign(u_{i,d}) == sign(u_{j,d})].
+    * R_agree -> 100% означает полный политопический коллапс: все токены делят один сектор/ячейку разбиения FFN.
+    * R_agree -> 50% означает случайное, статистически независимое разбиение пространства между токенами.
+    """
+    valid_idx = torch.where(mask > 0.5)[0]
+    n_tok = len(valid_idx)
+    if n_tok <= 1:
+        return 100.0
+    s = signs[valid_idx].float()  # [N, D_ff]
+    # Эффективный расчет попарного совпадения через биполярные спины (+1 / -1):
+    spin = 2.0 * s - 1.0  # [N, D_ff]
+    d_ff = float(spin.shape[-1])
+    dot_matrix = torch.matmul(spin, spin.T) / d_ff  # [N, N], значения в [-1.0, 1.0]
+    agree_matrix = (dot_matrix + 1.0) * 50.0        # процент совпадений [0, 100]
+    eye_m = torch.eye(n_tok, device=agree_matrix.device)
+    mean_agree = ((agree_matrix * (1.0 - eye_m)).sum() / float(n_tok * (n_tok - 1))).item()
+    return max(0.0, min(100.0, mean_agree))
+
+
+def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None, max_samples=50, max_len=512):
+    r"""
     Вычисляет количественные метрики качества модели на валидационной выборке:
     loss, avg_cos_sim, true_void_sim, content_to_void_sim, ca_ratio,
-    а также чистый прирост от CA (val_content_gain_CA) и попарное сходство позиций (intra_pos_sim).
+    чистый прирост от CA (val_content_gain_CA), попарное сходство позиций (intra_pos_sim),
+    а также информационно-геометрические метрики по arXiv:2610.36864v1:
+    - Routing Gate Flip Rate (\Pi_l) и Within-Region FFN Cosine в буферных слоях после CA (12, 24, 36);
+    - Functional-Equivalence Compression Ratio (CR) по операторам FFN для контента и <|void|>-хвоста.
     """
     print(f"\n[{datetime.datetime.now().strftime('%H:%M:%S')}] Evaluating metrics on {min(len(df_val), max_samples)} dataset samples (canvas length: {max_len})...")
     model.eval()
@@ -590,93 +716,178 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
     total_intra_sim = 0.0
     ca_ratios = {"12": [], "24": [], "36": []}
     sa_ratios = {"12": [], "24": [], "36": []}
+    routing_flips_content = {"12": [], "24": [], "36": []}
+    routing_flips_void = {"12": [], "24": [], "36": []}
+    within_region_cos = {"12": [], "24": [], "36": []}
+    within_region_void_cos = {"12": [], "24": [], "36": []}
+    routing_agree_content = {"12": [], "24": [], "36": []}
+    routing_agree_void = {"12": [], "24": [], "36": []}
+    ffn_keff_content = {"12": [], "24": [], "36": []}
+    ffn_keff_void = {"12": [], "24": [], "36": []}
+    content_lengths = []
+    void_lengths = []
+    tail_void_recalls = []
+    content_false_voids = []
+    boundary_pos_errs = []
 
     n_samples = min(len(df_val), max_samples)
-    with torch.no_grad():
-        for idx in range(n_samples):
-            row = df_val.iloc[idx]
-            q_text = row['Q']
-            a_text = row['A']
+    model._capture_routing = True
+    try:
+        with torch.no_grad():
+            for idx in range(n_samples):
+                row = df_val.iloc[idx]
+                q_text = row['Q']
+                a_text = row['A']
 
-            q_enc = tokenizer(q_text, return_tensors='pt', max_length=128, truncation=True).to(device)
-            a_enc = tokenizer(a_text, return_tensors='pt', max_length=max_len, padding="max_length", truncation=True).to(device)
+                q_enc = tokenizer(q_text, return_tensors='pt', max_length=128, truncation=True).to(device)
+                a_enc = tokenizer(a_text, return_tensors='pt', max_length=max_len, padding="max_length", truncation=True).to(device)
 
-            input_ids_q = q_enc.input_ids
-            attention_mask_q = q_enc.attention_mask
-            input_ids_a = a_enc.input_ids
-            attention_mask_a = a_enc.attention_mask
+                input_ids_q = q_enc.input_ids
+                attention_mask_q = q_enc.attention_mask
+                input_ids_a = a_enc.input_ids
+                attention_mask_a = a_enc.attention_mask
 
-            B, T_a = input_ids_a.shape
+                B, T_a = input_ids_a.shape
 
-            # Чистый таргет
-            qwen_embeds_a = model.qwen_embeddings(input_ids_a)
-            Z_A_clean, _, _ = model.encoder(qwen_embeds_a)
-            Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
+                # Чистый таргет
+                qwen_embeds_a = model.qwen_embeddings(input_ids_a)
+                Z_A_clean, _, _ = model.encoder(qwen_embeds_a)
+                Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
 
-            # Void mask (PAD positions)
-            void_mask = (attention_mask_a == 0).float()
-            content_mask = 1.0 - void_mask
-            void_embed = model.void_embed.to(Z_A_clean.dtype)
-            void_embed_expanded = void_embed.view(1, 1, -1).expand(B, T_a, -1)
-            Z_A_clean = torch.where(void_mask.unsqueeze(-1).bool(), void_embed_expanded, Z_A_clean)
-            Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
+                # Void mask (PAD positions)
+                void_mask = (attention_mask_a == 0).float()
+                content_mask = 1.0 - void_mask
+                void_embed = model.void_embed.to(Z_A_clean.dtype)
+                void_embed_expanded = void_embed.view(1, 1, -1).expand(B, T_a, -1)
+                Z_A_clean = torch.where(void_mask.unsqueeze(-1).bool(), void_embed_expanded, Z_A_clean)
+                Z_A_clean = safe_normalize(Z_A_clean.float(), dim=-1)
 
-            # Фиксированный уровень шума t=0.5 для сопоставимости оценки
-            t_val = 0.5
-            t_actual = torch.full((B, T_a), t_val, device=device)
-            t_global = torch.full((B,), t_val, device=device)
-            z_noisy = spherical_noise(Z_A_clean, t_actual)
+                # Фиксированный уровень шума t=0.5 для сопоставимости оценки
+                t_val = 0.5
+                t_actual = torch.full((B, T_a), t_val, device=device)
+                t_global = torch.full((B,), t_val, device=device)
+                z_noisy = spherical_noise(Z_A_clean, t_actual)
 
-            # Вычисление dprox через latent_dict, идентично обучению
-            if latent_dict is not None:
-                sims = torch.matmul(z_noisy, latent_dict.T)
-                raw_dprox, _ = sims.max(dim=-1)
-                t_reported = (1.0 - raw_dprox).clamp(0.0, 1.0)
-            else:
-                t_reported = torch.full((B, T_a), t_val, device=device)
+                # Вычисление dprox через latent_dict, с поддержкой void_aware_dprox
+                if latent_dict is not None:
+                    sims = torch.matmul(z_noisy, latent_dict.T)
+                    raw_dprox, _ = sims.max(dim=-1)
+                    if void_embed is not None:
+                        sim_void = (z_noisy * void_embed.view(1, 1, -1)).sum(dim=-1)
+                        raw_dprox = torch.maximum(raw_dprox, sim_void)
+                    t_reported = (1.0 - raw_dprox).clamp(0.0, 1.0)
+                else:
+                    t_reported = torch.full((B, T_a), t_val, device=device)
 
-            # Encode prompt
-            Z_prompt_12 = model.encode_prompt(input_ids_q, attention_mask_q)
+                # Encode prompt
+                Z_prompt_12 = model.encode_prompt(input_ids_q, attention_mask_q)
 
-            # 1. Forward step с включенным CA
-            _, dus_final = model.forward_step(z_noisy, Z_prompt_12, attention_mask_q, t_actual, t_reported, t_global=t_global)
+                # 1. Forward step с включенным CA
+                model.last_routing_signs.clear()
+                model.last_ffn_deltas.clear()
+                _, dus_final = model.forward_step(z_noisy, Z_prompt_12, attention_mask_q, t_actual, t_reported, t_global=t_global)
+                signs_ca = {k: v.clone() for k, v in model.last_routing_signs.items()}
+                ffn_ca = {k: v.clone() for k, v in model.last_ffn_deltas.items()}
 
-            # 2. Forward step без CA (абляция)
-            for ca in model.ca_layers.values(): ca._disable = True
-            _, dus_final_noca = model.forward_step(z_noisy, Z_prompt_12, attention_mask_q, t_actual, t_reported, t_global=t_global)
-            for ca in model.ca_layers.values(): ca._disable = False
+                # 2. Forward step без CA (абляция)
+                model.last_routing_signs.clear()
+                model.last_ffn_deltas.clear()
+                for ca in model.ca_layers.values(): ca._disable = True
+                _, dus_final_noca = model.forward_step(z_noisy, Z_prompt_12, attention_mask_q, t_actual, t_reported, t_global=t_global)
+                for ca in model.ca_layers.values(): ca._disable = False
+                signs_noca = {k: v.clone() for k, v in model.last_routing_signs.items()}
+                ffn_noca = {k: v.clone() for k, v in model.last_ffn_deltas.items()}
 
-            outputs = {
-                "z_clean": Z_A_clean,
-                "dus_final": dus_final,
-                "t_actual": t_actual,
-                "void_mask": void_mask,
-                "void_embed": void_embed
-            }
+                # 3. Вычисление Routing Flip Rate (Идея А), Within-Region FFN Cosine и Functional Compression Ratio (Идея Б)
+                c_sum = content_mask.sum().clamp(min=1.0)
+                v_sum = void_mask.sum().clamp(min=1.0)
 
-            loss, avg_cos, true_v_cos, cont_v_cos = compute_phase6_loss(outputs)
-            cos_noca = (dus_final_noca * Z_A_clean).sum(dim=-1).mean().item()
+                for k in ["12", "24", "36"]:
+                    if k in signs_ca and k in signs_noca:
+                        diff_bits = (signs_ca[k] != signs_noca[k]).float()  # [B, T_a, D_ff]
+                        token_flip_rate = diff_bits.mean(dim=-1)            # [B, T_a]
+                        flip_c = ((token_flip_rate * content_mask).sum() / c_sum).item()
+                        flip_v = ((token_flip_rate * void_mask).sum() / v_sum).item()
+                        routing_flips_content[k].append(flip_c)
+                        routing_flips_void[k].append(flip_v)
+                        routing_agree_content[k].append(compute_routing_agreement(signs_ca[k][0], content_mask[0]))
+                        routing_agree_void[k].append(compute_routing_agreement(signs_ca[k][0], void_mask[0]))
+                    if k in ffn_ca and k in ffn_noca:
+                        ffn_cos = (ffn_ca[k] * ffn_noca[k]).sum(dim=-1)     # [B, T_a]
+                        w_cos_c = ((ffn_cos * content_mask).sum() / c_sum).item()
+                        w_cos_v = ((ffn_cos * void_mask).sum() / v_sum).item()
+                        within_region_cos[k].append(w_cos_c)
+                        within_region_void_cos[k].append(w_cos_v)
+                        k_c, _ = compute_ffn_effective_rank(ffn_ca[k][0], content_mask[0])
+                        k_v, _ = compute_ffn_effective_rank(ffn_ca[k][0], void_mask[0])
+                        ffn_keff_content[k].append(k_c)
+                        ffn_keff_void[k].append(k_v)
+                content_lengths.append(int(c_sum.item()))
+                void_lengths.append(int(v_sum.item()))
 
-            total_loss += loss.item()
-            total_cos += avg_cos.item()
-            total_cos_noca += cos_noca
-            total_void_cos += true_v_cos.item()
-            total_content_cos += cont_v_cos.item()
+                boundary_mask = torch.zeros_like(void_mask)
+                for b in range(B):
+                    c_len = int(content_mask[b].sum().item())
+                    if c_len < T_a:
+                        b_end = min(T_a, c_len + 24)
+                        boundary_mask[b, c_len:b_end] = 1.0
 
-            # Замер попарного сходства позиций (intra-sample diversity)
-            content_idx = torch.where(content_mask[0] > 0.5)[0]
-            if len(content_idx) > 1:
-                p_vecs = dus_final[0, content_idx, :]
-                sim_m = torch.matmul(p_vecs, p_vecs.T)
-                eye_m = torch.eye(len(content_idx), device=device)
-                intra_sim = ((sim_m * (1.0 - eye_m)).sum() / (len(content_idx) * (len(content_idx) - 1))).item()
-                total_intra_sim += intra_sim
-            else:
-                total_intra_sim += 1.0
+                outputs = {
+                    "z_clean": Z_A_clean,
+                    "dus_final": dus_final,
+                    "t_actual": t_actual,
+                    "void_mask": void_mask,
+                    "boundary_mask": boundary_mask,
+                    "void_embed": void_embed,
+                    "z_prompt": Z_prompt_12,
+                    "attention_mask_q": attention_mask_q,
+                }
 
-            for k in ["12", "24", "36"]:
-                ca_ratios[k].append(model.ca_layers[k].last_ca_ratio)
-                sa_ratios[k].append(model.ca_layers[k].last_sa_ratio)
+                loss, avg_cos, true_v_cos, cont_v_cos = compute_phase6_loss(outputs)
+                cos_noca = (dus_final_noca * Z_A_clean).sum(dim=-1).mean().item()
+
+                total_loss += loss.item()
+                total_cos += avg_cos.item()
+                total_cos_noca += cos_noca
+                total_void_cos += true_v_cos.item()
+                total_content_cos += cont_v_cos.item()
+
+                # Метрики границы и удержания войда (ADR 116)
+                cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
+                if void_mask.sum() > 0:
+                    tv_recall = ((cos_sim_to_void >= 0.50).float() * void_mask).sum() / void_mask.sum().clamp(min=1.0)
+                    tail_void_recalls.append(tv_recall.item())
+                if content_mask.sum() > 0:
+                    cf_void = ((cos_sim_to_void >= 0.50).float() * content_mask).sum() / content_mask.sum().clamp(min=1.0)
+                    content_false_voids.append(cf_void.item())
+
+                c_len_true = int(content_mask[0].sum().item())
+                cos_v_sample = cos_sim_to_void[0]
+                detected_cut = T_a
+                for j_pos in range(min(16, T_a), max(16, T_a - 4)):
+                    if (cos_v_sample[j_pos:] >= 0.50).float().mean() >= 0.80:
+                        detected_cut = j_pos
+                        break
+                boundary_pos_errs.append(abs(detected_cut - c_len_true))
+
+                # Замер попарного сходства позиций (intra-sample diversity)
+                content_idx = torch.where(content_mask[0] > 0.5)[0]
+                if len(content_idx) > 1:
+                    p_vecs = dus_final[0, content_idx, :]
+                    sim_m = torch.matmul(p_vecs, p_vecs.T)
+                    eye_m = torch.eye(len(content_idx), device=device)
+                    intra_sim = ((sim_m * (1.0 - eye_m)).sum() / (len(content_idx) * (len(content_idx) - 1))).item()
+                    total_intra_sim += intra_sim
+                else:
+                    total_intra_sim += 1.0
+
+                for k in ["12", "24", "36"]:
+                    ca_ratios[k].append(model.ca_layers[k].last_ca_ratio)
+                    sa_ratios[k].append(model.ca_layers[k].last_sa_ratio)
+    finally:
+        model._capture_routing = False
+        model.last_routing_signs.clear()
+        model.last_ffn_deltas.clear()
 
     avg_loss = total_loss / n_samples
     avg_cos = total_cos / n_samples
@@ -686,23 +897,50 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
     avg_content_cos = total_content_cos / n_samples
     avg_intra_sim = total_intra_sim / n_samples
 
-    print("\n" + "="*55)
+    def _mean_or_zero(lst):
+        return sum(lst) / len(lst) if lst else 0.0
+
+    rf_c_12, rf_c_24, rf_c_36 = _mean_or_zero(routing_flips_content["12"]), _mean_or_zero(routing_flips_content["24"]), _mean_or_zero(routing_flips_content["36"])
+    rf_v_12, rf_v_24, rf_v_36 = _mean_or_zero(routing_flips_void["12"]), _mean_or_zero(routing_flips_void["24"]), _mean_or_zero(routing_flips_void["36"])
+    wr_c_12, wr_c_24, wr_c_36 = _mean_or_zero(within_region_cos["12"]), _mean_or_zero(within_region_cos["24"]), _mean_or_zero(within_region_cos["36"])
+    wr_v_12, wr_v_24, wr_v_36 = _mean_or_zero(within_region_void_cos["12"]), _mean_or_zero(within_region_void_cos["24"]), _mean_or_zero(within_region_void_cos["36"])
+    ra_c_12, ra_c_24, ra_c_36 = _mean_or_zero(routing_agree_content["12"]), _mean_or_zero(routing_agree_content["24"]), _mean_or_zero(routing_agree_content["36"])
+    ra_v_12, ra_v_24, ra_v_36 = _mean_or_zero(routing_agree_void["12"]), _mean_or_zero(routing_agree_void["24"]), _mean_or_zero(routing_agree_void["36"])
+    keff_c_12, keff_c_24, keff_c_36 = _mean_or_zero(ffn_keff_content["12"]), _mean_or_zero(ffn_keff_content["24"]), _mean_or_zero(ffn_keff_content["36"])
+    keff_v_12, keff_v_24, keff_v_36 = _mean_or_zero(ffn_keff_void["12"]), _mean_or_zero(ffn_keff_void["24"]), _mean_or_zero(ffn_keff_void["36"])
+    mean_nc = _mean_or_zero(content_lengths)
+    mean_nv = _mean_or_zero(void_lengths)
+    mean_tv_rec = _mean_or_zero(tail_void_recalls)
+    mean_cf_void = _mean_or_zero(content_false_voids)
+    mean_b_err = _mean_or_zero(boundary_pos_errs)
+
+    print("\n" + "="*72)
     print("PHASE 6 VALIDATION METRICS SUMMARY (at t=0.50):")
-    print(f"  Total Loss (incl. anti-bary) : {avg_loss:.4f}")
-    print(f"  Cos Sim (Z_pred vs Z_tgt)    : {avg_cos:.4f}")
-    print(f"  Cos Sim without CA (ablation): {avg_cos_noca:.4f}")
-    print(f"  Pure CA Gain                 : {avg_gain_ca:+.4f}")
-    print(f"  Intra-Sample Pos Sim (i!=j)  : {avg_intra_sim:.4f} (target text: ~0.06)")
-    print(f"  True Void Cos Sim            : {avg_void_cos:.4f}")
-    print(f"  Content-to-Void Cos Sim      : {avg_content_cos:.4f}")
-    print(f"  CA Ratio (Layer 12)          : {sum(ca_ratios['12']) / n_samples:.4f}")
-    print(f"  CA Ratio (Layer 24)          : {sum(ca_ratios['24']) / n_samples:.4f}")
-    print(f"  CA Ratio (Layer 36)          : {sum(ca_ratios['36']) / n_samples:.4f}")
-    print(f"  SA Ratio (Layer 12)          : {sum(sa_ratios['12']) / n_samples:.4f}")
-    print(f"  SA Ratio (Layer 24)          : {sum(sa_ratios['24']) / n_samples:.4f}")
-    print(f"  SA Ratio (Layer 36)          : {sum(sa_ratios['36']) / n_samples:.4f}")
-    print(f"  CA Ratio (Layer 36)          : {sum(ca_ratios['36']) / n_samples:.4f}")
-    print("="*55 + "\n")
+    print(f"  Total Loss (incl. anti-bary)     : {avg_loss:.4f}")
+    print(f"  Cos Sim (Z_pred vs Z_tgt)        : {avg_cos:.4f}")
+    print(f"  Cos Sim without CA (ablation)    : {avg_cos_noca:.4f}")
+    print(f"  Pure CA Gain                     : {avg_gain_ca:+.4f}")
+    print(f"  Intra-Sample Pos Sim (i!=j)      : {avg_intra_sim:.4f} (target text: ~0.06)")
+    print(f"  True Void Cos Sim                : {avg_void_cos:.4f}")
+    print(f"  Content-to-Void Cos Sim          : {avg_content_cos:.4f}")
+    print(f"  Tail Void Recall (cos>=0.50)     : {mean_tv_rec*100:5.2f}% (higher=better native tail void)")
+    print(f"  Content False Void (cos>=0.50)   : {mean_cf_void*100:5.2f}% (lower=better text preservation)")
+    print(f"  Boundary Position Error (tokens) : {mean_b_err:5.2f} (lower=sharper boundary recognition)")
+    print("-" * 72)
+    print("  [CA/SA Amplitude Ratios]")
+    print(f"  CA Ratio (L12 / L24 / L36)       : {sum(ca_ratios['12'])/n_samples:.4f} / {sum(ca_ratios['24'])/n_samples:.4f} / {sum(ca_ratios['36'])/n_samples:.4f}")
+    print(f"  SA Ratio (L12 / L24 / L36)       : {sum(sa_ratios['12'])/n_samples:.4f} / {sum(sa_ratios['24'])/n_samples:.4f} / {sum(sa_ratios['36'])/n_samples:.4f}")
+    print("-" * 72)
+    print("  [Intrinsic Info-Theoretic Diagnostics (arXiv:2610.36864v1)]")
+    print(f"  GeGLU Routing Flip Content   (%) : L13={rf_c_12*100:5.2f}% | L25={rf_c_24*100:5.2f}% | L37={rf_c_36*100:5.2f}%")
+    print(f"  GeGLU Routing Flip Void      (%) : L13={rf_v_12*100:5.2f}% | L25={rf_v_24*100:5.2f}% | L37={rf_v_36*100:5.2f}%")
+    print(f"  Within-Region FFN Cos Content    : L13={wr_c_12:.4f}  | L25={wr_c_24:.4f}  | L37={wr_c_36:.4f}")
+    print(f"  Within-Region FFN Cos Void       : L13={wr_v_12:.4f}  | L25={wr_v_24:.4f}  | L37={wr_v_36:.4f}")
+    print(f"  GeGLU Routing Agreement Content  : L13={ra_c_12:5.2f}% | L25={ra_c_24:5.2f}% | L37={ra_c_36:5.2f}% (50%=diverse, 100%=polytope collapse)")
+    print(f"  GeGLU Routing Agreement Void     : L13={ra_v_12:5.2f}% | L25={ra_v_24:5.2f}% | L37={ra_v_36:5.2f}%")
+    print(f"  FFN Effective Rank Content(Keff) : L13={keff_c_12:4.1f}/{mean_nc:.0f} | L25={keff_c_24:4.1f}/{mean_nc:.0f} | L37={keff_c_36:4.1f}/{mean_nc:.0f} (higher=more expressive)")
+    print(f"  FFN Effective Rank Void   (Keff) : L13={keff_v_12:4.1f}/{mean_nv:.0f} | L25={keff_v_24:4.1f}/{mean_nv:.0f} | L37={keff_v_36:4.1f}/{mean_nv:.0f} (1.0=dormant state)")
+    print("="*72 + "\n")
 
     return {
         "loss": avg_loss,
@@ -715,6 +953,29 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
         "ca_ratio_12": sum(ca_ratios['12']) / n_samples,
         "ca_ratio_24": sum(ca_ratios['24']) / n_samples,
         "ca_ratio_36": sum(ca_ratios['36']) / n_samples,
+        "routing_flip_c_12": rf_c_12,
+        "routing_flip_c_24": rf_c_24,
+        "routing_flip_c_36": rf_c_36,
+        "routing_flip_v_12": rf_v_12,
+        "routing_flip_v_24": rf_v_24,
+        "routing_flip_v_36": rf_v_36,
+        "within_region_cos_12": wr_c_12,
+        "within_region_cos_24": wr_c_24,
+        "within_region_cos_36": wr_c_36,
+        "within_region_void_cos_12": wr_v_12,
+        "within_region_void_cos_24": wr_v_24,
+        "within_region_void_cos_36": wr_v_36,
+        "routing_agree_c_12": ra_c_12,
+        "routing_agree_c_24": ra_c_24,
+        "routing_agree_c_36": ra_c_36,
+        "routing_agree_v_12": ra_v_12,
+        "routing_agree_v_24": ra_v_24,
+        "routing_agree_v_36": ra_v_36,
+        "keff_content_36": keff_c_36,
+        "keff_void_36": keff_v_36,
+        "tail_void_recall": mean_tv_rec,
+        "content_false_void": mean_cf_void,
+        "boundary_pos_err": mean_b_err,
     }
 
 
@@ -761,7 +1022,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                    sampler="hybrid", seed=42, re_noise_t=0.88,
                    spec_tau=0.75, spec_temp=0.35,
                    smartcrop="none", smartcrop_tau=0.90, smartcrop_buffer=16,
-                   void_aware_dprox=False, eps_scale=1.0):
+                   void_aware_dprox=True, eps_scale=1.0):
     if cfg_max is None:
         cfg_max = cfg_scale if cfg_scale > 1.0 else 1.0
     if cfg_min is None:
@@ -796,6 +1057,8 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
         run_history = []
         void_embed = model.void_embed.to(device).float() if hasattr(model, 'void_embed') else None
         crop_L_hat = T_a  # По умолчанию граница не обрезается
+        adaptive_candidates = []
+        adaptive_cropped = False
 
         # Построение временной сетки:
         if sampler in ["hybrid", "anchor_jump", "specificity_hybrid", "impulse_hybrid"]:
@@ -828,8 +1091,13 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
 
             t_reported = (1.0 - raw_dprox).clamp(0.0, 1.0)
 
-            # Conditional pass
+            # Conditional pass (с захватом бинарных кодов вентилей \Pi_l и FFN-операторов для arXiv:2610.36864v1)
+            model._capture_routing = True
+            model.last_routing_signs.clear()
+            model.last_ffn_deltas.clear()
             h39, z_pred = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
+            signs_cond = {k: v.clone() for k, v in model.last_routing_signs.items()}
+            ffn_cond_36 = model.last_ffn_deltas.get("36", h39).clone()
 
             # Time-scheduled CFG & Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395):
             if sampler == "impulse_hybrid":
@@ -840,11 +1108,22 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             mean_spec_gate = None
             spec_active_pct = None
             mean_disagreement = None
+            step_routing_flip = None
 
             if cfg_t > 1.0:
+                model.last_routing_signs.clear()
+                model.last_ffn_deltas.clear()
                 for ca in model.ca_layers.values(): ca._disable = True
                 _, z_uncond = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
                 for ca in model.ca_layers.values(): ca._disable = False
+                signs_uncond = {k: v.clone() for k, v in model.last_routing_signs.items()}
+
+                flips_step = []
+                for k in ["12", "24", "36"]:
+                    if k in signs_cond and k in signs_uncond:
+                        flips_step.append((signs_cond[k] != signs_uncond[k]).float().mean().item() * 100.0)
+                if flips_step:
+                    step_routing_flip = sum(flips_step) / len(flips_step)
 
                 if sampler in ["specificity", "specificity_hybrid"]:
                     # Потокенное расхождение между условным и безусловным полем
@@ -869,9 +1148,12 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 else:
                     z_pred = safe_normalize(z_uncond + cfg_t * (z_pred - z_uncond), dim=-1)
 
-            # Вариант 1 (ADR 115): SmartCrop на шаге 0 (Rossi et al., arXiv:2603.06123)
-            # Ищем стабильный конец ответа (не менее 2 подряд идущих войда и пропуск начального shift-префикса j >= 8)
-            if i == 0 and smartcrop != "none" and void_embed is not None:
+            model._capture_routing = False
+            model.last_routing_signs.clear()
+            model.last_ffn_deltas.clear()
+
+            # SmartCrop (Rossi et al., arXiv:2603.06123 & ADR 116 Adaptive Crop)
+            if i == 0 and smartcrop in ["hard", "soft"] and void_embed is not None:
                 cos_v_0 = (z_pred[0] * void_embed).sum(dim=-1)
                 # Сигмоидальная вероятность перехода в терминатор войда
                 phi_v = torch.sigmoid((cos_v_0 - 0.40) / 0.15).clamp(1e-4, 1.0 - 1e-4)
@@ -880,7 +1162,6 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 start_scan = min(8, T_a // 4)
                 
                 # Ищем 2 последовательных токена с высокой вероятностью войда:
-                # bi_phi[j] = phi_v[j] * phi_v[j+1]
                 bi_phi = phi_v[:-1] * phi_v[1:]
                 
                 # Функция обратного выживания по парным терминаторам:
@@ -901,6 +1182,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                         T_a = hard_cutoff
                         z_canvas = z_canvas[:, :T_a, :]
                         z_pred = z_pred[:, :T_a, :]
+                        ffn_cond_36 = ffn_cond_36[:, :T_a, :]
                         t_actual = t_actual[:, :T_a]
                         nn_ids = nn_ids[:, :T_a]
                         raw_dprox = raw_dprox[:, :T_a]
@@ -911,8 +1193,62 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                     print(f"   [SmartCrop] No termination detected (full length {T_a} preserved)")
                     detailed_log_lines.append(f"   [SmartCrop] No termination detected (full length {T_a} preserved)")
 
-            # Фиксация хвоста в void_embed (для Soft SmartCrop и для буферной зоны Hard SmartCrop)
-            if smartcrop in ["soft", "hard"] and crop_L_hat < T_a and void_embed is not None:
+            elif smartcrop == "adaptive" and not adaptive_cropped and t_val <= 0.70 and void_embed is not None:
+                cos_v_step = (z_pred[0] * void_embed).sum(dim=-1)
+                min_cand = None
+                for j_cand in range(16, max(16, T_a - 16)):
+                    tail_cos = cos_v_step[j_cand:]
+                    if (tail_cos >= 0.55).float().mean() >= 0.90:
+                        min_cand = j_cand
+                        break
+                if min_cand is not None:
+                    adaptive_candidates.append(min_cand)
+                    if len(adaptive_candidates) >= 2 and abs(adaptive_candidates[-1] - adaptive_candidates[-2]) <= 4:
+                        crop_L_hat = max(adaptive_candidates[-1], adaptive_candidates[-2])
+                        hard_cutoff = min(T_a, crop_L_hat + smartcrop_buffer)
+                        adaptive_cropped = True
+                        buf_desc = f"+{smartcrop_buffer} void buffer" if smartcrop_buffer > 0 else "no buffer"
+                        msg = f"   [SmartCrop Adaptive] Stabilized at step {i} (t={t_val:.2f}): content={crop_L_hat}, physical crop={hard_cutoff}/{T_a} ({buf_desc})"
+                        print(msg)
+                        detailed_log_lines.append(msg)
+                        T_a = hard_cutoff
+                        z_canvas = z_canvas[:, :T_a, :]
+                        z_pred = z_pred[:, :T_a, :]
+                        ffn_cond_36 = ffn_cond_36[:, :T_a, :]
+                        t_actual = t_actual[:, :T_a]
+                        nn_ids = nn_ids[:, :T_a]
+                        raw_dprox = raw_dprox[:, :T_a]
+
+            # Определяем естественную границу контента и хвоста (по cos_v либо по границе SmartCrop) ДО жесткого перезаписывания хвоста
+            op_step = ffn_cond_36[0]
+            step_keff_c = 0.0
+            step_keff_v = 0.0
+            step_agree_c = 50.0
+            step_agree_v = 50.0
+            signs_step_36 = signs_cond.get("36", None)
+            signs_step_36_0 = signs_step_36[0] if signs_step_36 is not None else None
+
+            if void_embed is not None:
+                cos_v_raw = (z_pred[0] * void_embed).sum(dim=-1)
+                if smartcrop in ["soft", "hard", "adaptive"] and crop_L_hat < T_a:
+                    is_v_mask_op = torch.zeros(T_a, device=device)
+                    is_v_mask_op[crop_L_hat:] = 1.0
+                    is_v_mask_op = torch.maximum(is_v_mask_op, (cos_v_raw >= 0.60).float())
+                else:
+                    is_v_mask_op = (cos_v_raw >= 0.60).float()
+                is_c_mask_op = 1.0 - is_v_mask_op
+                step_keff_c, _ = compute_ffn_effective_rank(op_step, is_c_mask_op)
+                step_keff_v, _ = compute_ffn_effective_rank(op_step, is_v_mask_op)
+                if signs_step_36_0 is not None:
+                    step_agree_c = compute_routing_agreement(signs_step_36_0, is_c_mask_op)
+                    step_agree_v = compute_routing_agreement(signs_step_36_0, is_v_mask_op)
+            else:
+                step_keff_c, _ = compute_ffn_effective_rank(op_step, torch.ones(T_a, device=device))
+                if signs_step_36_0 is not None:
+                    step_agree_c = compute_routing_agreement(signs_step_36_0, torch.ones(T_a, device=device))
+
+            # Фиксация хвоста в void_embed (для Soft SmartCrop и для буферной зоны Hard/Adaptive SmartCrop)
+            if smartcrop in ["soft", "hard", "adaptive"] and crop_L_hat < T_a and void_embed is not None:
                 z_pred[:, crop_L_hat:, :] = void_embed.view(1, 1, -1)
 
             # Void metrics
@@ -935,16 +1271,24 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 'text': step_text,
                 'raw_dprox': raw_dprox[0].mean().item(),
                 'void_pct': void_pct,
-                'avg_v_cos': avg_v_cos
+                'avg_v_cos': avg_v_cos,
+                'keff_c': step_keff_c,
+                'keff_v': step_keff_v,
+                'agree_c': step_agree_c,
+                'agree_v': step_agree_v,
             }
+            if step_routing_flip is not None:
+                step_entry['routing_flip'] = step_routing_flip
             if mean_spec_gate is not None:
                 step_entry['spec_gate'] = mean_spec_gate
                 step_entry['spec_active_pct'] = spec_active_pct
                 step_entry['mean_d'] = mean_disagreement
             run_history.append(step_entry)
 
+            rf_str = f", r_flip={step_routing_flip:4.1f}%" if step_routing_flip is not None else ""
+            geom_str = f", keff={step_keff_c:.1f}/{step_keff_v:.1f}, agree_c={step_agree_c:.1f}%"
             step_log_str = (
-                f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%, v_cos={avg_v_cos:+.3f}, dprox={raw_dprox[0].mean().item():.3f}): "
+                f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%, v_cos={avg_v_cos:+.3f}{rf_str}{geom_str}, dprox={raw_dprox[0].mean().item():.3f}): "
                 f"[Dec]: {step_text[:110]}... | [NN]: {nn_text[:40]}..."
             )
             detailed_log_lines.append(step_log_str)
@@ -954,7 +1298,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                     f", spec_gate={mean_spec_gate:.2f} (act={spec_active_pct:.0f}%, d={mean_disagreement:.4f})"
                     if mean_spec_gate is not None else ""
                 )
-                print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%{spec_str}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
+                print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%{rf_str}{geom_str}{spec_str}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
                 print(f"   [Phase 2 Decoder]: {step_text[:90]}...")
                 print(f"   [Latent Dict NN ]: {nn_text[:60]}...")
 
@@ -1034,7 +1378,9 @@ def generate_html(results, html_path):
                 cfg_info = f" | CFG={h.get('cfg', 1.0):.2f}" if 'cfg' in h else ""
                 spec_info = f" | Spec={h['spec_gate']:.2f} (act={h.get('spec_active_pct', 0.0):.0f}%)" if 'spec_gate' in h else ""
                 void_info = f" | Void={h.get('void_pct', 0.0):.1f}%" if 'void_pct' in h else ""
-                html += f"<div class='step'>[Step {h['step']:02d} | t={h['t']:.2f}{cfg_info}{spec_info}{void_info} | DProx={h['raw_dprox']:.3f}] {h['text']}</div>"
+                rf_info = f" | RFlip={h['routing_flip']:.1f}%" if 'routing_flip' in h else ""
+                geom_info = f" | Keff(c/v)={h.get('keff_c', 0.0):.1f}/{h.get('keff_v', 0.0):.1f} | Agree(c)={h.get('agree_c', 0.0):.1f}%" if 'keff_c' in h else ""
+                html += f"<div class='step'>[Step {h['step']:02d} | t={h['t']:.2f}{cfg_info}{spec_info}{void_info}{rf_info}{geom_info} | DProx={h['raw_dprox']:.3f}] {h['text']}</div>"
         html += f"<div class='final'>A: {res['final']}</div>"
         
         # Скрытый под спойлер подробный лог шагов и метрик
@@ -1156,11 +1502,12 @@ def main():
     parser.add_argument("--random_seed", action="store_true", help="Pick random seed for each generation")
     parser.add_argument("--re_noise_t", type=float, default=0.88, help="Target noise level for anchor jump re-noising")
     parser.add_argument("--prompt_text", type=str, default="", help="Single specific prompt to evaluate (skips dataset/OOD defaults)")
-    parser.add_argument("--smartcrop", type=str, default="none", choices=["none", "hard", "soft"],
-                        help="SmartCrop mode (Rossi et al. 2026): 'none', 'hard' (physical canvas truncation), 'soft' (void clamping)")
+    parser.add_argument("--smartcrop", type=str, default="none", choices=["none", "hard", "soft", "adaptive"],
+                        help="SmartCrop mode (Rossi et al. 2026 / ADR 116): 'none', 'hard' (physical canvas truncation at step 0), 'soft' (void clamping), 'adaptive' (stabilized boundary detection at t<=0.70)")
     parser.add_argument("--smartcrop_tau", type=float, default=0.90, help="Cumulative termination probability threshold for SmartCrop")
-    parser.add_argument("--smartcrop_buffer", type=int, default=16, help="Void buffer length for hard SmartCrop (0 for strict crop)")
-    parser.add_argument("--void_aware_dprox", action="store_true", help="Include void_embed in RawDProx proximity calculation for t_reported")
+    parser.add_argument("--smartcrop_buffer", type=int, default=16, help="Void buffer length for hard/adaptive SmartCrop (0 for strict crop)")
+    parser.add_argument("--void_aware_dprox", action=argparse.BooleanOptionalAction, default=True,
+                        help="Include void_embed in RawDProx proximity calculation for t_reported (enabled by default)")
     parser.add_argument("--eps_scale", type=float, default=1.0, help="Angular Epsilon Scaling lambda_t factor (Ning et al. 2024)")
     parser.add_argument("--output_html", type=str, default="", help="Path to output HTML report")
     parser.add_argument("--check-files", "--check-only", dest="check_files", action="store_true",

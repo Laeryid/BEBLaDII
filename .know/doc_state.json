@@ -260,8 +260,8 @@
         "mtime": 1785406215.8853543
     },
     ".know\\doc_config.json": {
-        "hash": "20226667dec7b8257c4c5825a105e3b45d9e90082b7254c61ce1685eb51afc6b",
-        "mtime": 1793209331.9474967
+        "hash": "9998146c4bac284708119517672087a38191fc6a105c729ed95cbc04056aa440",
+        "mtime": 1793445930.0889733
     },
     "ideas\\Architecture.md": {
         "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
@@ -504,7 +504,7 @@
         "mtime": 1790709807.0369856
     },
     "experiments\\phase 6\\tpu kaggle\\train_phase6_tpu_notebook.py": {
-        "hash": "3f5b831965722d37c70afca0dc14f27c127575395cbea9cd246dccd7cecbc149",
-        "mtime": 1793215082.1787987
+        "hash": "3ef034633aab05a6ebb631f4de616e9dbc99354515fdd365f1fd07b9cf221a3a",
+        "mtime": 1793445162.0408466
     }
 }

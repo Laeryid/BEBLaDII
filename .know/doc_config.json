@@ -1169,7 +1169,7 @@
       "summary": "ADR 113: Phase 6 Step-Normalized Specificity Gating and Impulse CFG Schedule (Correction of ADR 112)"
     },
     "decisions/114_phase6_void_balance_and_tail_erasing.md": {
-      "description": "ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000 (Accepted)",
+      "description": "ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000 (Superseded by ADR 116)",
       "covers": [
         "Architecture Decisions"
       ],
@@ -1179,7 +1179,7 @@
       "summary": "ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000"
     },
     "decisions/115_phase6_variable_length_and_exposure_bias_synthesis.md": {
-      "description": "ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling) (Accepted)",
+      "description": "ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling) (Superseded by ADR 116)",
       "covers": [
         "Architecture Decisions"
       ],
@@ -1187,6 +1187,16 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling)"
+    },
+    "decisions/116_phase6_coherence_boundary_adaptive_crop.md": {
+      "description": "ADR 116: Phase 6 Coherence Restoration, Boundary Void Weighting, and Adaptive Inference Cropping (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 116: Phase 6 Coherence Restoration, Boundary Void Weighting, and Adaptive Inference Cropping"
     }
   },
   "knowledge_system": {

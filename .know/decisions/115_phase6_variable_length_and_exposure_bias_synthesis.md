@@ -1,8 +1,11 @@
 <!-- created: 2026-10-28 -->
-<!-- status: Accepted -->
+<!-- status: Superseded by ADR 116 -->
 # ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling)
 
-**Status**: Accepted  
+> [!WARNING]
+> **This ADR is superseded by [ADR 116: Phase 6 Coherence Restoration, Boundary Void Weighting, and Adaptive Inference Cropping](./116_phase6_coherence_boundary_adaptive_crop.md).**
+
+**Status**: Superseded by [ADR 116](./116_phase6_coherence_boundary_adaptive_crop.md)
 **Date**: 2026-10-28  
 **Git Commit**: `82bfdeb` (branch: `main`)  
 **Author**: Bogdan Buliakov  

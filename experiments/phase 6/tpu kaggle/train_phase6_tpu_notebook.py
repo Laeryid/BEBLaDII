@@ -320,13 +320,16 @@ def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step
 # %%
 def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0,
                               kappa_max: float = 8.0, steps: int = 25,
-                              flat_prob: float = 0.60, span_block_size: int = 16) -> torch.Tensor:
+                              flat_prob: float = 0.35, span_prob: float = 0.35,
+                              ramp_prob: float = 0.30, span_block_size: int = 16) -> torch.Tensor:
     """
-    ADR 111: Гибридный сэмплер шума для устранения Shortcut Learning:
-      - 60% батча (flat_prob=0.60): единый плоский шум t_i == t_global по всему холсту
-        (устраняет чистые якорные токены при t >= 0.5, вынуждая CA удерживать тему точно как на инференсе).
-      - 40% батча: блочное (Span-Masking) зашумление отрезками по span_block_size=16 токенов.
-        Внутри каждого блока уровень шума постоянен, что исключает по-токенную утечку локальных биграмм.
+    ADR 111 & 116: Трехкомпонентный сэмплер шума:
+      - 35% батча (flat_prob=0.35): единый плоский шум t_i == t_global по всему холсту
+        (устраняет чистые якорные токены при t >= 0.5, вынуждая CA удерживать тему).
+      - 35% батча (span_prob=0.35): блочное (Span-Masking) зашумление отрезками по span_block_size=16 токенов.
+        Внутри каждого блока уровень шума постоянен.
+      - 30% батча (ramp_prob=0.30): Prefix-to-Tail Ramp (наклон шума от t - 0.35 в начале до t + 0.35 в хвосте).
+        Обучает модель считывать сформированный контекст начала ответа для обнаружения границы перехода в <|void|>.
     Вычисляется на CPU, чтобы XLA не падал на torch.distributions.Beta.
     """
     B = t_global.shape[0]
@@ -335,10 +338,10 @@ def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float =
     u = torch.rand(B, device=dev)
     kappa = torch.exp(math.log(kappa_min) + u * (math.log(kappa_max) - math.log(kappa_min)))
 
-    # 1. 60% плоский шум t_i = t_global
+    # 1. 35% плоский шум t_i = t_global
     flat_t = tg.view(B, 1).expand(B, T).contiguous()
 
-    # 2. 40% блочное (Span-Masking) зашумление блоками по 16 токенов
+    # 2. 35% блочное (Span-Masking) зашумление блоками по 16 токенов
     num_blocks = math.ceil(T / span_block_size)
     a_block = (tg * kappa).view(B, 1).expand(B, num_blocks).contiguous()
     b_block = ((1.0 - tg) * kappa).view(B, 1).expand(B, num_blocks).contiguous()
@@ -353,8 +356,13 @@ def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float =
     span_t_blocks = torch.where(torch.isfinite(span_t_blocks), span_t_blocks, fallback_blocks)
     span_t = span_t_blocks.repeat_interleave(span_block_size, dim=1)[:, :T].contiguous()
 
+    # 3. 30% Prefix-to-Tail Ramp: чистый префикс (t - 0.35) -> зашумленный хвост (t + 0.35)
+    ramp_slope = torch.linspace(-0.35, 0.35, T, device=dev).unsqueeze(0).expand(B, T)
+    ramp_t = (tg.view(B, 1) + ramp_slope).contiguous()
+
     mode_u = torch.rand(B, 1, device=dev)
-    t = torch.where(mode_u < flat_prob, flat_t, span_t)
+    t = torch.where(mode_u < flat_prob, flat_t,
+                    torch.where(mode_u < (flat_prob + span_prob), span_t, ramp_t))
 
     t = torch.round(t * steps) / steps
     t = torch.where(t_global.view(B, 1) >= 1.0, torch.ones_like(t), t)
@@ -408,14 +416,22 @@ class Config:
     wandb_project = "BEBLaDII-Phase6-Kaggle"
     run_diagnosis_first  = False # Диагностика успешно пройдена (156/156 finite), отключена для экономии HBM и времени старта
     stop_after_diagnosis = False # Не прерывать после успешной диагностики, продолжать обучение
-    # ADR 111 & 113: Параметры для устранения качественного потолка и ликвидации Exposure Bias
-    flat_noise_prob = 0.60         # 60% батча с плоским шумом t_i = t_global
-    span_block_size = 16           # Размер блока при Span-Masking шуме (40% батча)
-    transition_loss_weight = 0.0   # Вес Transition / Bigram Cosine Loss (отключен для стабилизации DProx)
-    void_loss_weight = 0.75        # Вес потерь на PAD/VOID позициях относительно контента (сбалансирован до ~50% байесовского порога)
-    void_penalty_margin = 0.50     # Порог отталкивания контента от void_embed (вместо жесткого 0.20)
+    # ADR 111, 114, 116: Параметры для связности, баланса границ ответа и устранения copy shortcut
+    flat_noise_prob = 0.35         # 35% батча с плоским шумом t_i = t_global
+    span_noise_prob = 0.35         # 35% батча со Span-Masking шумом
+    ramp_noise_prob = 0.30         # 30% батча с Prefix-to-Tail Ramp (считывание префикса для детекции длины)
+    span_block_size = 16           # Размер блока при Span-Masking шуме
+    boundary_noise_prob = 0.50     # 50% сэмплов с принудительным шумом t >= 0.75 на границе окончания ответа
+    boundary_len = 24              # Ширина зоны границы окончания ответа (в токенах)
+    boundary_min_t = 0.75          # Минимальный уровень шума на границе void
+    void_boundary_weight = 1.20    # Вес потерь на пограничных позициях перехода в void (dLLM-Var)
+    void_far_weight = 0.60         # Вес потерь в дальнем хвосте void (>= 0.50 по ADR 114, защищает середину)
+    void_penalty_margin = 0.50     # Порог отталкивания контента от void_embed
     void_penalty_weight = 0.25     # Коэффициент штрафа отталкивания от void_embed
-    tail_erasing_prob = 0.25       # Доля батча со Spurious-Tail Erasing аугментацией для устранения Exposure Bias
+    transition_loss_weight = 0.25  # Вес Transition / Bigram Cosine Loss (синтаксическая связность)
+    transition_max_t = 0.28        # Верхний порог шума для расчета transition loss (защита DProx на высоком шуме)
+    prompt_copy_weight = 0.25      # Штраф за лексическое копирование слов промпта вместо продолжения мысли
+    prompt_copy_margin = 0.05      # Запас схожести перед начислением prompt_copy_penalty
     max_resume_step = 107000       # Гарантированный возврат к проверенному чекпоинту 107000 (игнорировать шаги > 107k)
 
 args = Config()
@@ -1027,12 +1043,33 @@ class BEBLaDIIPhase6(nn.Module):
                     t_global_cpu = torch.randint(1, 26, (B,), device=cpu_dev).float() / 25.0
             else:
                 t_global_cpu = t_global.detach().to(cpu_dev).float()
-            flat_prob = getattr(args, "flat_noise_prob", 0.60)
+            flat_prob = getattr(args, "flat_noise_prob", 0.35)
+            span_prob = getattr(args, "span_noise_prob", 0.35)
+            ramp_prob = getattr(args, "ramp_noise_prob", 0.30)
             span_size = getattr(args, "span_block_size", 16)
-            t_actual_cpu = sample_token_noise_levels(t_global_cpu, T_a, flat_prob=flat_prob, span_block_size=span_size)
+            t_actual_cpu = sample_token_noise_levels(
+                t_global_cpu, T_a,
+                flat_prob=flat_prob, span_prob=span_prob, ramp_prob=ramp_prob,
+                span_block_size=span_size
+            )
             t_global = mark_fsdp_sharding(t_global_cpu.to(Z_A_clean.device))
             t_actual = mark_fsdp_sharding(t_actual_cpu.to(Z_A_clean.device))
             # ===============================
+
+            # Определение пограничной зоны окончания ответа (ADR 116 / dLLM-Var)
+            boundary_len = getattr(args, "boundary_len", 24)
+            content_pos = torch.where(shifted_attention_mask_a.bool(), seq_indices, torch.zeros_like(seq_indices))
+            last_content_idx = content_pos.max(dim=1).values
+            dist_from_content = seq_indices - last_content_idx.unsqueeze(1)
+            boundary_mask = void_mask & (dist_from_content >= 1) & (dist_from_content <= boundary_len)
+
+            # Принудительный шум границы (ADR 116): на 50% сэмплов батча t_actual >= 0.75 на границе
+            boundary_noise_prob = getattr(args, "boundary_noise_prob", 0.50)
+            boundary_min_t = getattr(args, "boundary_min_t", 0.75)
+            if self.training and boundary_noise_prob > 0.0:
+                apply_b_noise = (torch.rand((B, 1), device=cpu_dev) < boundary_noise_prob).to(Z_A_clean.device)
+                t_boundary = torch.maximum(t_actual, torch.tensor(boundary_min_t, device=t_actual.device, dtype=t_actual.dtype))
+                t_actual = torch.where(boundary_mask & apply_b_noise, t_boundary, t_actual)
 
             # Prompt Dropout: генерация маски для обучения безусловной ветки (CFG)
             if self.training and getattr(args, "prompt_dropout", 0.0) > 0.0:
@@ -1042,25 +1079,8 @@ class BEBLaDIIPhase6(nn.Module):
             else:
                 prompt_mask = None
 
-            # Spurious-Tail Erasing Augmentation (ADR 113: устранение Exposure Bias):
-            # В tail_erasing_prob (25%) батча входной источник шума для хвостовых позиций
-            # формируется из зашумленного текста ответа, в то время как целевой таргет Z_A_clean строго содержит void_embed!
-            tail_erasing_prob = getattr(args, "tail_erasing_prob", 0.25)
-            if self.training and tail_erasing_prob > 0.0:
-                erase_u = (torch.rand((B, 1, 1), device=cpu_dev) < tail_erasing_prob).float()
-                erase_u_dev = mark_fsdp_sharding(erase_u.to(Z_A_clean.device)).bool()
-                tail_pos = (shifted_attention_mask_a == 0).unsqueeze(-1)
-                high_noise_pos = (t_actual >= 0.40).unsqueeze(-1) if t_actual.dim() == 2 else (t_actual.view(B, 1, 1) >= 0.40)
-                spurious_mask = erase_u_dev & tail_pos & high_noise_pos
-                safe_orig_len = orig_len.clamp(min=1).unsqueeze(1)
-                wrap_indices = seq_indices % safe_orig_len
-                wrap_idx_3d = wrap_indices.unsqueeze(-1).expand(-1, -1, orig_Z_A_clean.shape[-1])
-                spurious_tail_tokens = torch.gather(orig_Z_A_clean, 1, wrap_idx_3d)
-                z_noisy_source = torch.where(spurious_mask, spurious_tail_tokens, Z_A_clean)
-            else:
-                z_noisy_source = Z_A_clean
-
-            z_noisy = mark_fsdp_sharding(spherical_noise(z_noisy_source, t_actual))
+            # Зашумление холста (без искажающего Spurious-Tail Erasing)
+            z_noisy = mark_fsdp_sharding(spherical_noise(Z_A_clean, t_actual))
 
             # Чанкованное вычисление RawDProx: делим latent_dict на 16 чанков по ~9.5K векторов
             # и считаем матричное умножение в bfloat16 для предотвращения OOM в HBM
@@ -1260,7 +1280,11 @@ class BEBLaDIIPhase6(nn.Module):
             "t_actual": t_actual,
             "t_global": t_global,
             "void_mask": void_mask,
-            "void_embed": void_embed
+            "boundary_mask": boundary_mask.float(),
+            "void_embed": void_embed,
+            "z_prompt": Z_prompt if not disable_ca else None,
+            "attention_mask_q": attention_mask_q if not disable_ca else None,
+            "prompt_dropout_mask": prompt_mask
         }
 
 # %% [markdown]
@@ -1317,22 +1341,60 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     loss_el = loss_el + bary_penalty
     # -------------------------
 
-    # --- Transition / Bigram Cosine Loss (ADR 111) ---
-    # Штраф за рассогласование производных соседних токенов: обучает связным переходам (биграммам)
+    # --- Transition / Bigram Cosine Loss (ADR 111 & 116) ---
+    # Штраф за рассогласование производных соседних токенов: обучает связным переходам (биграммам).
+    # Гейтирован шумом t_actual <= transition_max_t (0.28) и включает переход от последнего слова к первому void.
     diff_pred = safe_normalize(dus_final[:, 1:, :] - dus_final[:, :-1, :], dim=-1)
     diff_tgt = safe_normalize(target[:, 1:, :] - target[:, :-1, :], dim=-1)
     cos_diff = (diff_pred * diff_tgt).sum(dim=-1)
     loss_trans_raw = 1.0 - cos_diff
-    adj_content_mask = content_mask[:, 1:] * content_mask[:, :-1]
-    loss_trans = F.pad(loss_trans_raw * adj_content_mask, (0, 1), value=0.0)
-    lambda_trans = getattr(args, "transition_loss_weight", 0.0)
+
+    boundary_mask = outputs.get("boundary_mask", None)
+    if boundary_mask is None:
+        boundary_mask = torch.zeros_like(void_mask)
+
+    # Допустимые пары: контент -> контент и последний контент -> первый void границы
+    adj_content_mask = (content_mask[:, :-1] * content_mask[:, 1:]) + (content_mask[:, :-1] * boundary_mask[:, 1:])
+    adj_content_mask = adj_content_mask.clamp(0.0, 1.0)
+
+    # Строгий гейтинг по уровню шума: только когда токены сконденсировались в слова (t <= 0.28)
+    trans_max_t = getattr(args, "transition_max_t", 0.28)
+    if t_actual.dim() == 2:
+        t_gate = (t_actual[:, :-1] <= trans_max_t) & (t_actual[:, 1:] <= trans_max_t)
+    else:
+        t_gate = (t_actual <= trans_max_t)
+    loss_trans = F.pad(loss_trans_raw * adj_content_mask * t_gate.float(), (0, 1), value=0.0)
+
+    lambda_trans = getattr(args, "transition_loss_weight", 0.25)
     if lambda_trans > 0.0:
         loss_el = loss_el + lambda_trans * loss_trans
 
-    # --- Ребалансировка весов контента и VOID (ADR 111) ---
-    # PAD/VOID позиции получают пониженный вес (0.20), предотвращая доминирование 240+ пустых позиций
-    void_weight = getattr(args, "void_loss_weight", 0.75)
-    token_importance = content_mask + void_weight * void_mask
+    # --- Prompt Anti-Copy Penalty (ADR 116 / Итерация 2) ---
+    # Штраф за лексическое копирование слов промпта вместо продолжения ответа
+    copy_weight = getattr(args, "prompt_copy_weight", 0.25)
+    z_prompt = outputs.get("z_prompt", None)
+    attn_mask_q = outputs.get("attention_mask_q", None)
+    if copy_weight > 0.0 and z_prompt is not None and attn_mask_q is not None:
+        sims_pred = torch.bmm(dus_final, z_prompt.transpose(1, 2))
+        sims_tgt = torch.bmm(target, z_prompt.transpose(1, 2))
+        q_mask = attn_mask_q.unsqueeze(1).expand_as(sims_pred)
+        sims_pred = torch.where(q_mask > 0, sims_pred, torch.tensor(-2.0, device=sims_pred.device, dtype=sims_pred.dtype))
+        sims_tgt = torch.where(q_mask > 0, sims_tgt, torch.tensor(-2.0, device=sims_tgt.device, dtype=sims_tgt.dtype))
+        s_pred_max = sims_pred.max(dim=-1).values
+        s_tgt_max = sims_tgt.max(dim=-1).values
+        copy_margin = getattr(args, "prompt_copy_margin", 0.05)
+        loss_copy = F.relu(s_pred_max - (s_tgt_max + copy_margin)) * content_mask
+        prompt_drop_mask = outputs.get("prompt_dropout_mask", None)
+        if prompt_drop_mask is not None:
+            loss_copy = loss_copy * prompt_drop_mask.view(loss_copy.shape[0], 1)
+        loss_el = loss_el + copy_weight * loss_copy
+
+    # --- Граничное взвешивание VOID (ADR 116 / dLLM-Var) ---
+    # Граница перехода в void получает повышенный вес (1.20), дальний хвост сбалансирован (0.60)
+    w_b = getattr(args, "void_boundary_weight", 1.20)
+    w_far = getattr(args, "void_far_weight", 0.60)
+    far_void_mask = (void_mask - boundary_mask).clamp(min=0.0)
+    token_importance = content_mask + w_b * boundary_mask + w_far * far_void_mask
     loss_el = loss_el * token_importance
 
     # Взвешивание функции потерь по времени t
@@ -1647,7 +1709,7 @@ def main():
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath("gcp_sa.json")
     except Exception: pass
 
-    if args.wandb_project:
+    if args.wandb_project and not os.environ.get("SMOKE_TEST"):
         try:
             from kaggle_secrets import UserSecretsClient
             user_secrets = UserSecretsClient()

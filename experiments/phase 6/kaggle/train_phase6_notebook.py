@@ -111,9 +111,9 @@ def resolve_file_path(filename: str, fallback_dir="/kaggle/input") -> str:
                 return str(m)
     return filename
 
-def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step_"):
+def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step_", max_step: int = None):
     """
-    Возвращает путь к последнему чекпоинту модели в GCS и номер шага.
+    Возвращает путь к последнему чекпоинту модели в GCS и номер шага (с фильтрацией <= max_step, ADR 116).
     """
     try:
         if not gcs_dir.startswith("gs://"):
@@ -134,6 +134,12 @@ def get_latest_gcs_checkpoint(gcs_dir: str, prefix: str = "phase6_ca_layers_step
                 return int(base)
             except ValueError:
                 return -1
+
+        if max_step is not None:
+            ckpt_files = [f for f in ckpt_files if 0 <= extract_step(f) <= max_step]
+            if not ckpt_files:
+                print(f"[GCS Checkpoints] Не найдено чекпоинтов с шагом <= {max_step}")
+                return None, 0
 
         ckpt_files.sort(key=extract_step)
         latest_file = ckpt_files[-1]
@@ -208,11 +214,28 @@ class Config:
     use_gradient_checkpointing = True
     wandb_project = "BEBLaDII-Phase6-Kaggle"
 
-    # ADR 111: Параметры для устранения качественного потолка и синтаксической связности
-    flat_noise_prob = 0.60         # 60% батча с плоским шумом t_i = t_global
-    span_block_size = 16           # Размер блока при Span-Masking шуме (40% батча)
+    # ADR 116: Параметры для устранения качественного потолка и синтаксической связности
+    flat_noise_prob = 0.35         # 35% батча с плоским шумом t_i = t_global
+    span_noise_prob = 0.35         # 35% батча со Span-Masking шумом блоками по 16 токенов
+    ramp_noise_prob = 0.30         # 30% батча с прогрессивным наклоном Prefix-to-Tail Ramp
+    span_block_size = 16           # Размер блока при Span-Masking шуме
+
+    boundary_noise_prob = 0.50     # 50% батча с принудительным шумом границы t >= 0.75
+    boundary_len = 24              # Длина пограничной зоны после ответа (токенов)
+    boundary_min_t = 0.75          # Минимальный уровень шума для границы
+    void_boundary_weight = 1.20    # Повышенный вес границы перехода в войд
+    void_far_weight = 0.60         # Сбалансированный вес дальнего хвоста (ADR 116)
+
     transition_loss_weight = 0.25  # Вес Transition / Bigram Cosine Loss для связности текста
-    void_loss_weight = 0.20        # Вес потерь на PAD/VOID позициях относительно контента (предотвращает перекос градиента)
+    transition_max_t = 0.28        # Максимальный t для расчета transition loss (ADR 116)
+
+    prompt_copy_weight = 0.25      # Штраф за дословное копирование слов промпта (ADR 116)
+    prompt_copy_margin = 0.05      # Запас над эталонным сходством с промптом
+
+    void_penalty_margin = 0.50     # Мягкий порог отталкивания от полусферы войда (ADR 114/116)
+    void_penalty_weight = 0.25     # Вес штрафа за ложный войд на контенте
+
+    max_resume_step = 107000       # Точка отката обучения: защита от деградации 129k (ADR 116)
 
 args = Config()
 
@@ -314,13 +337,14 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
 
 def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0,
                               kappa_max: float = 8.0, steps: int = 25,
-                              flat_prob: float = 0.60, span_block_size: int = 16) -> torch.Tensor:
+                              flat_prob: float = 0.35, span_prob: float = 0.35,
+                              span_block_size: int = 16) -> torch.Tensor:
     """
-    ADR 111: Гибридный сэмплер шума для устранения Shortcut Learning:
-      - 60% батча (flat_prob=0.60): единый плоский шум t_i == t_global по всему холсту
-        (устраняет чистые якорные токены при t >= 0.5, вынуждая CA удерживать тему точно как на инференсе).
-      - 40% батча: блочное (Span-Masking) зашумление отрезками по span_block_size=16 токенов.
-        Внутри каждого блока уровень шума постоянен, что исключает по-токенную утечку локальных биграмм.
+    ADR 116: 3-компонентный сэмплер шума для устранения Shortcut Learning и связности:
+      - 35% батча (flat_prob=0.35): единый плоский шум t_i == t_global по всему холсту.
+      - 35% батча (span_prob=0.35): блочное (Span-Masking) зашумление блоками по span_block_size=16.
+      - 30% батча (остаток): прогрессивный Causal Ramp шум (Prefix-to-Tail), где начало холста
+        менее зашумлено, а хвост зашумлен сильнее: t_i = clamp(t_global + 0.35 * (2*i/(T-1) - 1), 0, 1).
     """
     B = t_global.shape[0]
     dev = t_global.device
@@ -328,10 +352,10 @@ def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float =
     u = torch.rand(B, device=dev)
     kappa = torch.exp(math.log(kappa_min) + u * (math.log(kappa_max) - math.log(kappa_min)))
 
-    # 1. 60% плоский шум t_i = t_global
+    # 1. 35% плоский шум t_i = t_global
     flat_t = tg.view(B, 1).expand(B, T).contiguous()
 
-    # 2. 40% блочное (Span-Masking) зашумление блоками по 16 токенов
+    # 2. 35% блочное (Span-Masking) зашумление блоками по 16 токенов
     num_blocks = math.ceil(T / span_block_size)
     a_block = (tg * kappa).view(B, 1).expand(B, num_blocks).contiguous()
     b_block = ((1.0 - tg) * kappa).view(B, 1).expand(B, num_blocks).contiguous()
@@ -346,8 +370,12 @@ def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float =
     span_t_blocks = torch.where(torch.isfinite(span_t_blocks), span_t_blocks, fallback_blocks)
     span_t = span_t_blocks.repeat_interleave(span_block_size, dim=1)[:, :T].contiguous()
 
+    # 3. 30% прогрессивный Causal Ramp (наклон от начала к хвосту)
+    pos_idx = torch.linspace(-1.0, 1.0, T, device=dev).view(1, T).expand(B, T)
+    ramp_t = (tg.view(B, 1) + 0.35 * pos_idx).clamp(0.0, 1.0)
+
     mode_u = torch.rand(B, 1, device=dev)
-    t = torch.where(mode_u < flat_prob, flat_t, span_t)
+    t = torch.where(mode_u < flat_prob, flat_t, torch.where(mode_u < (flat_prob + span_prob), span_t, ramp_t))
 
     t = torch.round(t * steps) / steps
     t = torch.where(t_global.view(B, 1) >= 1.0, torch.ones_like(t), t)
@@ -755,16 +783,35 @@ class BEBLaDIIPhase6(nn.Module):
                 t_global = torch.randint(1, 26, (B,), device=Z_A_clean.device).float() / 25.0
             else:
                 t_global = t_global.to(Z_A_clean.device).float()
-            flat_prob = getattr(args, "flat_noise_prob", 0.60)
+            flat_prob = getattr(args, "flat_noise_prob", 0.35)
+            span_prob = getattr(args, "span_noise_prob", 0.35)
             span_size = getattr(args, "span_block_size", 16)
-            t_actual = sample_token_noise_levels(t_global, T_a, flat_prob=flat_prob, span_block_size=span_size)
+            t_actual = sample_token_noise_levels(t_global, T_a, flat_prob=flat_prob, span_prob=span_prob, span_block_size=span_size)
+
+            # Выделение пограничной зоны (первые 24 токена после окончания ответа)
+            content_mask_local = 1.0 - void_mask.float()
+            boundary_mask = torch.zeros_like(void_mask, dtype=torch.float32)
+            boundary_len = getattr(args, "boundary_len", 24)
+            for b in range(B):
+                c_len = int(content_mask_local[b].sum().item())
+                if c_len < T_a:
+                    b_end = min(T_a, c_len + boundary_len)
+                    boundary_mask[b, c_len:b_end] = 1.0
+
+            # Forced Boundary Noise: на 50% сэмплов батча пограничная зона получает шум t >= 0.75
+            b_u = torch.rand((B, 1), device=Z_A_clean.device)
+            apply_b_noise = (b_u < getattr(args, "boundary_noise_prob", 0.50)).float()
+            t_boundary = torch.maximum(t_actual, torch.tensor(getattr(args, "boundary_min_t", 0.75), device=Z_A_clean.device))
+            t_actual = torch.where((apply_b_noise * boundary_mask).bool(), t_boundary, t_actual)
+
             z_noisy = spherical_noise(Z_A_clean, t_actual)
 
-
-            # 4. Вычисление RawDProx и t_reported
+            # 4. Вычисление RawDProx и t_reported (Void-Aware, ADR 115)
             # z_noisy: [B, T_a, 1024], latent_dict: [V, 1024] -> sims: [B, T_a, V]
             sims = torch.matmul(z_noisy, self.latent_dict.T)
             RawDProx, _ = sims.max(dim=-1)
+            sim_void = (z_noisy * void_embed.view(1, 1, -1)).sum(dim=-1)
+            RawDProx = torch.maximum(RawDProx, sim_void)
             t_reported = (1.0 - RawDProx).clamp(0.0, 1.0)
 
         # ==========================================
@@ -943,7 +990,10 @@ class BEBLaDIIPhase6(nn.Module):
             "t_global": t_global,
             "z_noisy": z_noisy,
             "void_mask": void_mask,
-            "void_embed": void_embed
+            "boundary_mask": boundary_mask,
+            "void_embed": void_embed,
+            "z_prompt": Z_prompt,
+            "attention_mask_q": attention_mask_q,
         }
 
 
@@ -962,17 +1012,14 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     cos_sim = (dus_final * target).sum(dim=-1)
     loss_el = 1.0 - cos_sim
 
-    # --- NEW: Dynamic Void Penalty ---
+    # --- NEW: Soft Void Penalty (ADR 114/116) ---
     cos_sim_to_void = (dus_final * void_embed.view(1, 1, -1)).sum(dim=-1)
-    cos_sim_target_to_void = (target * void_embed.view(1, 1, -1)).sum(dim=-1)
     content_mask = 1.0 - void_mask
-
-    # 80% от расстояния между void и z_clean (в терминах косинусного сходства)
-    dynamic_margin = 1.0 - 0.8 * (1.0 - cos_sim_target_to_void)
-
+    pen_margin = getattr(args, "void_penalty_margin", 0.50)
+    pen_weight = getattr(args, "void_penalty_weight", 0.25)
     import torch.nn.functional as F
-    void_penalty = F.relu(cos_sim_to_void - dynamic_margin) * content_mask
-    loss_el = loss_el + 0.5 * void_penalty
+    void_penalty = F.relu(cos_sim_to_void - pen_margin) * content_mask
+    loss_el = loss_el + pen_weight * void_penalty
 
     # --- Repulsive Anti-Barycenter & Positional Diversity Loss (ADR 108) ---
     content_mask_3d = content_mask.unsqueeze(-1)
@@ -999,21 +1046,51 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     loss_el = loss_el + bary_penalty
     # -------------------------
 
-    # --- Transition / Bigram Cosine Loss (ADR 111) ---
-    # Штраф за рассогласование производных соседних токенов: обучает связным переходам (биграммам)
+    # --- Transition / Bigram Cosine Loss (ADR 111 & 116) ---
     diff_pred = safe_normalize(dus_final[:, 1:, :] - dus_final[:, :-1, :], dim=-1)
     diff_tgt = safe_normalize(target[:, 1:, :] - target[:, :-1, :], dim=-1)
     cos_diff = (diff_pred * diff_tgt).sum(dim=-1)
     loss_trans_raw = 1.0 - cos_diff
-    adj_content_mask = content_mask[:, 1:] * content_mask[:, :-1]
-    loss_trans = F.pad(loss_trans_raw * adj_content_mask, (0, 1), value=0.0)
+
+    boundary_mask = outputs.get("boundary_mask", None)
+    if boundary_mask is None:
+        boundary_mask = torch.zeros_like(void_mask)
+
+    # Обучаем связным переходам контент-контент и последний токен ответа -> граница войда
+    adj_content_mask = (content_mask[:, :-1] * content_mask[:, 1:]) + (content_mask[:, :-1] * boundary_mask[:, 1:])
+    adj_content_mask = adj_content_mask.clamp(0.0, 1.0)
+
+    # Строгий гейтинг по шуму: t <= 0.28 (ADR 116)
+    trans_max_t = getattr(args, "transition_max_t", 0.28)
+    if t_actual.dim() == 2:
+        t_gate = (t_actual[:, :-1] <= trans_max_t) & (t_actual[:, 1:] <= trans_max_t)
+    else:
+        t_gate = (t_actual <= trans_max_t)
+    loss_trans = F.pad(loss_trans_raw * adj_content_mask * t_gate.float(), (0, 1), value=0.0)
     lambda_trans = getattr(args, "transition_loss_weight", 0.25)
     loss_el = loss_el + lambda_trans * loss_trans
 
-    # --- Ребалансировка весов контента и VOID (ADR 111) ---
-    # PAD/VOID позиции получают пониженный вес (0.20), предотвращая доминирование 240+ пустых позиций
-    void_weight = getattr(args, "void_loss_weight", 0.20)
-    token_importance = content_mask + void_weight * void_mask
+    # --- Prompt Anti-Copy Penalty (ADR 116 / Итерация 2) ---
+    z_prompt = outputs.get("z_prompt", None)
+    attn_mask_q = outputs.get("attention_mask_q", None)
+    copy_weight = getattr(args, "prompt_copy_weight", 0.25)
+    copy_margin = getattr(args, "prompt_copy_margin", 0.05)
+    if copy_weight > 0.0 and z_prompt is not None and attn_mask_q is not None:
+        sims_pred = torch.bmm(dus_final, z_prompt.transpose(1, 2))
+        sims_tgt = torch.bmm(target, z_prompt.transpose(1, 2))
+        q_mask = attn_mask_q.unsqueeze(1).expand_as(sims_pred)
+        sims_pred = torch.where(q_mask > 0, sims_pred, torch.tensor(-2.0, device=sims_pred.device, dtype=sims_pred.dtype))
+        sims_tgt = torch.where(q_mask > 0, sims_tgt, torch.tensor(-2.0, device=sims_tgt.device, dtype=sims_tgt.dtype))
+        s_pred_max = sims_pred.max(dim=-1).values
+        s_tgt_max = sims_tgt.max(dim=-1).values
+        loss_copy = F.relu(s_pred_max - (s_tgt_max + copy_margin)) * content_mask
+        loss_el = loss_el + copy_weight * loss_copy
+
+    # --- Граничное взвешивание VOID (ADR 116 / dLLM-Var) ---
+    w_b = getattr(args, "void_boundary_weight", 1.20)
+    w_far = getattr(args, "void_far_weight", 0.60)
+    far_void_mask = (void_mask - boundary_mask).clamp(min=0.0)
+    token_importance = content_mask + w_b * boundary_mask + w_far * far_void_mask
     loss_el = loss_el * token_importance
 
     # Weighting: If loss_t_power > 0 -> (1 - t_actual)^power, otherwise uniform 1.0
@@ -1070,7 +1147,8 @@ def main():
     except Exception as e:
         print(f"Kaggle secrets not available or failed to login: {e}")
 
-    wandb.init(project=args.wandb_project, config=vars(args))
+    if not os.environ.get("SMOKE_TEST"):
+        wandb.init(project=args.wandb_project, config=vars(args))
 
     tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path)
     if tokenizer.pad_token is None:
@@ -1124,7 +1202,8 @@ def main():
     metrics_history = []
 
     if getattr(args, "resume_from_checkpoint", False) and getattr(args, "gcs_checkpoint_dir", None):
-        latest_ckpt, step = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir)
+        max_step = getattr(args, "max_resume_step", None)
+        latest_ckpt, step = get_latest_gcs_checkpoint(args.gcs_checkpoint_dir, max_step=max_step)
         if latest_ckpt:
             print(f"[Resume] Found checkpoint: {latest_ckpt} at step {step}")
             local_ckpt = os.path.join(args.output_dir, "resume_ca_layers.pth")
