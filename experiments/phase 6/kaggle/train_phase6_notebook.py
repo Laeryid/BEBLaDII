@@ -338,7 +338,7 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
 def sample_token_noise_levels(t_global: torch.Tensor, T: int, kappa_min: float = 1.0,
                               kappa_max: float = 8.0, steps: int = 25,
                               flat_prob: float = 0.35, span_prob: float = 0.35,
-                              span_block_size: int = 16) -> torch.Tensor:
+                              ramp_prob: float = 0.30, span_block_size: int = 16) -> torch.Tensor:
     """
     ADR 116: 3-компонентный сэмплер шума для устранения Shortcut Learning и связности:
       - 35% батча (flat_prob=0.35): единый плоский шум t_i == t_global по всему холсту.
@@ -785,24 +785,30 @@ class BEBLaDIIPhase6(nn.Module):
                 t_global = t_global.to(Z_A_clean.device).float()
             flat_prob = getattr(args, "flat_noise_prob", 0.35)
             span_prob = getattr(args, "span_noise_prob", 0.35)
+            ramp_prob = getattr(args, "ramp_noise_prob", 0.30)
             span_size = getattr(args, "span_block_size", 16)
-            t_actual = sample_token_noise_levels(t_global, T_a, flat_prob=flat_prob, span_prob=span_prob, span_block_size=span_size)
+            t_actual = sample_token_noise_levels(
+                t_global, T_a,
+                flat_prob=flat_prob, span_prob=span_prob, ramp_prob=ramp_prob,
+                span_block_size=span_size
+            )
 
-            # Выделение пограничной зоны (первые 24 токена после окончания ответа)
-            content_mask_local = 1.0 - void_mask.float()
-            boundary_mask = torch.zeros_like(void_mask, dtype=torch.float32)
+            # Выделение пограничной зоны (первые 24 токена после окончания ответа, ADR 116 / dLLM-Var)
             boundary_len = getattr(args, "boundary_len", 24)
-            for b in range(B):
-                c_len = int(content_mask_local[b].sum().item())
-                if c_len < T_a:
-                    b_end = min(T_a, c_len + boundary_len)
-                    boundary_mask[b, c_len:b_end] = 1.0
+            content_pos = torch.where(shifted_attention_mask_a.bool(), seq_indices, torch.zeros_like(seq_indices))
+            last_content_idx = content_pos.max(dim=1).values
+            dist_from_content = seq_indices - last_content_idx.unsqueeze(1)
+            boundary_mask = (void_mask & (dist_from_content >= 1) & (dist_from_content <= boundary_len)).float()
 
-            # Forced Boundary Noise: на 50% сэмплов батча пограничная зона получает шум t >= 0.75
-            b_u = torch.rand((B, 1), device=Z_A_clean.device)
-            apply_b_noise = (b_u < getattr(args, "boundary_noise_prob", 0.50)).float()
-            t_boundary = torch.maximum(t_actual, torch.tensor(getattr(args, "boundary_min_t", 0.75), device=Z_A_clean.device))
-            t_actual = torch.where((apply_b_noise * boundary_mask).bool(), t_boundary, t_actual)
+            # Forced Boundary Noise (ADR 116): на 50% сэмплов батча пограничная зона получает шум t >= 0.75
+            # Применяется исключительно во время обучения (self.training), не искажая валидацию
+            boundary_noise_prob = getattr(args, "boundary_noise_prob", 0.50)
+            boundary_min_t = getattr(args, "boundary_min_t", 0.75)
+            if self.training and boundary_noise_prob > 0.0:
+                b_u = torch.rand((B, 1), device=Z_A_clean.device)
+                apply_b_noise = (b_u < boundary_noise_prob).float()
+                t_boundary = torch.maximum(t_actual, torch.tensor(boundary_min_t, device=Z_A_clean.device))
+                t_actual = torch.where((apply_b_noise * boundary_mask).bool(), t_boundary, t_actual)
 
             z_noisy = spherical_noise(Z_A_clean, t_actual)
 
