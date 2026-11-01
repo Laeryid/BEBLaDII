@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-19 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: Experiments
 
 ## Что это

@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-10-22 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: CLM Geometric Pooling & Hierarchical Order Cross-Attention
 
 ## Overview

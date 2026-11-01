@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-26 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: Metrics Reference (Phase 2 Distillation)
 
 Исчерпывающий справочник всех метрик, логируемых в `train_phase1_TPU_fsdp.py` и `loss.py`.

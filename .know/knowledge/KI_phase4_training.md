@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-09 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: Phase 4 Training (Alignment & Confidence)
 
 ## Overview

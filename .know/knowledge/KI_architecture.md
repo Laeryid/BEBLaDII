@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-09-21 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: Architecture (System 1 / 2)
 
 ## Основная концепция

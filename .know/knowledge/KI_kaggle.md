@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-14 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: Kaggle Integration
 
 ## Что это

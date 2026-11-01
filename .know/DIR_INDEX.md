@@ -4,80 +4,56 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~71318 (excluding excluded directories)
-**Updated:** 2026-10-31
+**Total files in project:** ~1023 (excluding excluded directories)
+**Updated:** 2026-11-01
 
 ```
 BEBLaDII/
-|-- .agent/  *(empty)*
-|-- .know/  *147 files*
-|   |-- decisions/  *115 files*
-|   `-- knowledge/  *27 files*
-|-- BEBLaDII-planB-Phase3-Data/  *9 files*
-|   `-- phase 3/  *6 files*
-|       |-- dictionaries/  *4 files*
-|       `-- train_data/  *2 files*
-|-- BEBLaDII-planB-Phase5-Data/  *3 files*
-|-- BEBLaDII-planB-Phase6-Data/  *12 files*
-|   `-- phase 6/  *11 files*
-|       `-- data/  *11 files*
+|-- .know/  *(empty)*
+|-- BEBLaDII-planB-Phase3-Data/  *2 files*
+|   `-- phase 3/  *1 files*
+|       |-- dictionaries/  *1 files*
+|       `-- train_data/  *(empty)*
+|-- BEBLaDII-planB-Phase5-Data/  *1 files*
+|-- BEBLaDII-planB-Phase6-Data/  *1 files*
+|   `-- phase 6/  *(empty)*
+|       `-- data/  *(empty)*
 |-- checkpoints/  *(empty)*
 |   `-- phase6_v2/  *(empty)*
-|-- data/  *70093 files*
-|   |-- camel_math/  *50000 files*
-|   |-- camel_physics/  *20000 files*
-|   |-- loong/  *26 files*
-|   |   |-- advanced_math/  *2 files*
-|   |   |-- advanced_physics/  *2 files*
-|   |   |-- chemistry/  *2 files*
-|   |   |-- computational_biology/  *2 files*
-|   |   |-- finance/  *2 files*
-|   |   |-- games/  *2 files*
-|   |   |-- graph_discrete_math/  *2 files*
-|   |   |-- logic/  *2 files*
-|   |   |-- mathematical_programming/  *2 files*
-|   |   |-- medicine/  *2 files*
-|   |   |-- programming/  *2 files*
-|   |   `-- security_and_safety/  *2 files*
-|   |-- magpie_reasoning/  *25 files*
-|   |   `-- data/  *12 files*
-|   |-- open_thoughts/  *37 files*
-|   |   |-- data/  *6 files*
-|   |   `-- metadata/  *12 files*
-|   `-- russian-reasoning/  *2 files*
-|-- experiments/  *544 files*
+|-- data/  *(empty)*
+|-- experiments/  *531 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
 |   |   `-- phase 3/  *7 files*
-|   |-- phase 1/  *32 files*
+|   |-- phase 1/  *31 files*
 |   |   `-- screenshots/  *15 files*
-|   |-- phase 2/  *40 files*
+|   |-- phase 2/  *35 files*
 |   |   |-- Lightning/  *2 files*
 |   |   |-- kaggle/  *9 files*
-|   |   |-- local/  *14 files*
+|   |   |-- local/  *10 files*
 |   |   `-- screenshots/  *6 files*
-|   |-- phase 3/  *196 files*
+|   |-- phase 3/  *187 files*
 |   |   |-- Lightning/  *3 files*
 |   |   |-- bad scripts/  *24 files*
-|   |   |-- kaggle/  *18 files*
+|   |   |-- kaggle/  *9 files*
 |   |   |-- local_checkpoints/  *(empty)*
 |   |   `-- screenshots/  *139 files*
-|   |-- phase 4/  *110 files*
+|   |-- phase 4/  *109 files*
 |   |   |-- kaggle/  *3 files*
-|   |   |-- local_checkpoints/  *13 files*
+|   |   |-- local_checkpoints/  *12 files*
 |   |   |-- screenshots/  *76 files*
 |   |   `-- tpu kaggle/  *8 files*
-|   |-- phase 5/  *29 files*
+|   |-- phase 5/  *26 files*
 |   |   |-- bad scripts/  *12 files*
 |   |   |-- coding theory exploration/  *5 files*
 |   |   |-- kaggle/  *(empty)*
-|   |   |-- local/  *6 files*
+|   |   |-- local/  *3 files*
 |   |   |-- local_checkpoints/  *(empty)*
 |   |   `-- screenshots/  *(empty)*
-|   `-- phase 6/  *117 files*
+|   `-- phase 6/  *123 files*
 |       |-- Demos/  *35 files*
-|       |-- checkpoints/  *3 files*
+|       |-- checkpoints/  *(empty)*
 |       |-- data/  *12 files*
 |       |-- kaggle/  *3 files*
 |       |-- scratch/  *6 files*
@@ -86,7 +62,7 @@ BEBLaDII/
 |-- hugging face/  *2 files*
 |-- ideas/  *86 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
-|-- kaggle_upload_1_2/  *2 files*
+|-- kaggle_upload_1_2/  *1 files*
 |-- posts/  *24 files*
 |-- reports/  *11 files*
 |   `-- plan_A/  *6 files*
@@ -100,21 +76,21 @@ BEBLaDII/
 |   |   |-- rag/  *1 files*
 |   |   `-- utils/  *7 files*
 |   `-- beb_la_dii.egg-info/  *5 files*
-|-- storage/  *34 files*
-|   |-- components/  *8 files*
-|   |   |-- model/  *2 files*
+|-- storage/  *22 files*
+|   |-- components/  *5 files*
+|   |   |-- model/  *1 files*
 |   |   `-- projector/  *4 files*
-|   |-- dictionaries/  *2 files*
-|   |-- experiments/  *22 files*
+|   |-- dictionaries/  *1 files*
+|   |-- experiments/  *15 files*
 |   |   |-- 20260613 Phase 3 ADR 31/  *13 files*
-|   |   `-- phase3/  *8 files*
-|   `-- prebuilt/  *2 files*
-|       `-- latentBERT/  *2 files*
+|   |   `-- phase3/  *1 files*
+|   `-- prebuilt/  *1 files*
+|       `-- latentBERT/  *1 files*
 |-- tests/  *9 files*
-|-- tmp/  *9 files*
-|   `-- test_tracker/  *3 files*
-|       `-- results/  *3 files*
-`-- wandb/  *40 files*
+|-- tmp/  *8 files*
+|   `-- test_tracker/  *2 files*
+|       `-- results/  *2 files*
+`-- wandb/  *41 files*
     |-- offline-run-20261015_194223-3jn9g1cj/  *5 files*
     |   |-- files/  *1 files*
     |   |-- logs/  *2 files*
@@ -143,9 +119,13 @@ BEBLaDII/
     |   |-- files/  *1 files*
     |   |-- logs/  *2 files*
     |   `-- tmp/  *(empty)*
-    `-- offline-run-20261029_215746-86op35sq/  *5 files*
-        |-- files/  *1 files*
-        |-- logs/  *2 files*
+    |-- offline-run-20261029_215746-86op35sq/  *5 files*
+    |   |-- files/  *1 files*
+    |   |-- logs/  *2 files*
+    |   `-- tmp/  *(empty)*
+    `-- offline-run-20261031_123759-j9e1er5t/  *1 files*
+        |-- files/  *(empty)*
+        |-- logs/  *1 files*
         `-- tmp/  *(empty)*
 ```
 

@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-10 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: Model Core
 
 ## Что это

@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-08-25 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: Hugging Face Ecosystem
 
 ## Что это

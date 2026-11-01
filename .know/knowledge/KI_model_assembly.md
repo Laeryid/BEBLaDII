@@ -1,5 +1,7 @@
 # KI: Сборка модели для инференса (Model Assembly Guide)
 
+<!-- last_verified: 2026-11-02 -->
+
 Этот документ описывает точную архитектуру, источники весов и критические нюансы реализации для корректной сборки полного пайплайна модели BEBLaDII (от токенов до диффузии и обратно в текст). 
 
 ---
@@ -22,9 +24,9 @@
    - *Архитектура*: Кастомные линейные слои и MLP, живущие *снаружи* DUS (`adaLN_attn`, `adaLN_mlp`, `t_proj_global`, `t_proj_token`, `t_joint_proj`, `sep_embed`).
    - *Источник*: Чекпоинт Фазы 4.
 5. **Слои управления промптом (CAPromptLayer - Phase 6)**: Инжектируют контекст вопроса в диффузионный холст.
-   - *Архитектура*: `CAPromptLayer` (Cross-Attention + Self-Attention + AdaLN времени) на слоях 12, 24, 36 (ModernBERT блоки 11, 23, 35) через `Phase6BlockWrapper`.
+   - *Архитектура*: `CAPromptLayer` (Cross-Attention + `GeGLUMLP` + Self-Attention + `GeGLUMLP` + AdaLN времени по ADR 117) на слоях 12, 24, 36 (ModernBERT блоки 11, 23, 35) через `Phase6BlockWrapper`. Выходные проекции `Wo` инициализированы строго нулями (`zero-init`) для исключения сдвига латентного пространства при старте.
    - *Размороженные блоки*: 4 слоя DUS после каждого CA (12–15, 24–27, 36–39) дообучаются вместе с CA.
-   - *Источник*: Чекпоинт Фазы 6 (`planB_phase6_checkpoints_phase6_ca_layers_step_*.pth`).
+   - *Источник*: Чекпоинт Фазы 6 (`planB_phase6_checkpoints_phase6_ca_layers_step_*.pth`, `sa_adapter_version: 3`).
 6. **Декодер текстов (ModernLatentDecoder - Phase 2)**: Переводит чистые латентные векторы (1024) обратно в логиты Qwen (1536 -> Vocab).
    - *Архитектура*: 3 последних слоя от `DUSModel` + Линейная проекция (1024 -> 1536) + `lm_head` от Qwen.
    - *Источник*: Скелет инициализируется через DUS (`phase4_step_85995.pth`), веса декодера из чекпоинта Фазы 2 (`planB_phase2_checkpoints_decoder_step_9000.pth`), проекция в токены через `qwen_embeddings.weight`.

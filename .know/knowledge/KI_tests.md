@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-04-10 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: Tests
 
 ## Что это

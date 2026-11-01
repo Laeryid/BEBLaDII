@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-05-13 -->
+<!-- last_verified: 2026-11-02 -->
 # KI: Knowledge Management (Методология)
 
 ## Overview
