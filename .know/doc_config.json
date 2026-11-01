@@ -1197,6 +1197,18 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 116: Phase 6 Coherence Restoration, Boundary Void Weighting, and Adaptive Inference Cropping"
+    },
+    "decisions/117_phase6_geglu_caprompt_and_anticopy_reversal.md": {
+      "description": "ADR 117: Phase 6 Non-Linear CAPromptLayer (GeGLU + AdaLN), Prompt Copy Penalty Reversal, and GPU-TPU Synchronization (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/091_global_scheduled_identity_gate.md",
+        "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md",
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 117: Phase 6 Non-Linear CAPromptLayer (GeGLU + AdaLN), Prompt Copy Penalty Reversal, and GPU-TPU Synchronization"
     }
   },
   "knowledge_system": {

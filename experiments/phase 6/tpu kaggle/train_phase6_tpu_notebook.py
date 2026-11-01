@@ -430,8 +430,6 @@ class Config:
     void_penalty_weight = 0.25     # Коэффициент штрафа отталкивания от void_embed
     transition_loss_weight = 0.25  # Вес Transition / Bigram Cosine Loss (синтаксическая связность)
     transition_max_t = 0.28        # Верхний порог шума для расчета transition loss (защита DProx на высоком шуме)
-    prompt_copy_weight = 0.25      # Штраф за лексическое копирование слов промпта вместо продолжения мысли
-    prompt_copy_margin = 0.05      # Запас схожести перед начислением prompt_copy_penalty
     max_resume_step = None         # Без ограничений: авто-продолжение с самого свежего чекпоинта
 
 args = Config()
@@ -608,8 +606,25 @@ class RotaryEmbedding(nn.Module):
 # ## CAPromptLayer
 
 # %%
+class GeGLUMLP(nn.Module):
+    """
+    Нелинейный оператор GeGLU по образцу ModernBertMLP из DUS.
+    Zero-init выходной проекции Wo обеспечивает тождественный нулевой вклад на первом шаге Resume.
+    """
+    def __init__(self, dim: int = 1024, intermediate_size: int = 2048):
+        super().__init__()
+        self.Wi = nn.Linear(dim, intermediate_size * 2, bias=False)
+        self.Wo = nn.Linear(intermediate_size, dim, bias=False)
+        nn.init.xavier_uniform_(self.Wi.weight)
+        nn.init.zeros_(self.Wo.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        u, g = self.Wi(x).chunk(2, dim=-1)
+        return self.Wo(F.gelu(u) * g)
+
+
 class CAPromptLayer(nn.Module):
-    def __init__(self, dim=1024, t_emb_dim=256):
+    def __init__(self, dim=1024, t_emb_dim=256, mlp_intermediate_size=2048):
         super().__init__()
         self._disable = False
         self.last_ca_ratio = 0.0
@@ -622,10 +637,20 @@ class CAPromptLayer(nn.Module):
         self.out_proj = nn.Linear(dim, dim, bias=False)
         self.adaln_ca = AdaLNModulation(t_emb_dim, dim)  # AdaLN для CA (модулирует A перед Q-проекцией)
 
+        # Нелинейный субблок GeGLU + AdaLN для Cross-Attention (по образцу DUS)
+        self.norm_mlp_ca = nn.RMSNorm(dim)
+        self.adaln_mlp_ca = AdaLNModulation(t_emb_dim, dim)
+        self.mlp_ca = GeGLUMLP(dim, mlp_intermediate_size)
+
         self.norm2 = nn.RMSNorm(dim)
         self.qkv_proj_sa = nn.Linear(dim, dim * 3, bias=False)
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
         self.adaln_sa = AdaLNModulation(t_emb_dim, dim)  # AdaLN для SA (модулирует холст перед Self-Attention)
+
+        # Нелинейный субблок GeGLU + AdaLN для Self-Attention / True CA-Adapter (по образцу DUS)
+        self.norm_mlp_sa = nn.RMSNorm(dim)
+        self.adaln_mlp_sa = AdaLNModulation(t_emb_dim, dim)
+        self.mlp_sa = GeGLUMLP(dim, mlp_intermediate_size)
 
         heads = 16
         head_dim = dim // heads
@@ -683,6 +708,13 @@ class CAPromptLayer(nn.Module):
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
 
+        # GeGLU MLP sub-block after Cross-Attention (DUS pattern)
+        ca_mlp_in = self.norm_mlp_ca(ca_out)
+        if t_emb is not None:
+            shift_mca, scale_mca = self.adaln_mlp_ca(t_emb)
+            ca_mlp_in = ca_mlp_in * scale_mca + shift_mca
+        ca_out = ca_out + self.mlp_ca(ca_mlp_in)
+
         # --- True CA-Adapter (Self-Attention over ca_out payload) ---
         # 1. Routing Queries & Keys: context of canvas state + extracted prompt delta
         A_mid = A + warmup_factor * ca_out
@@ -714,8 +746,14 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
-        # 3. Unified Capsule Residual
+        # 3. Unified Capsule Residual with GeGLU MLP sub-block
         delta = ca_out + sa_out
+        sa_mlp_in = self.norm_mlp_sa(delta)
+        if t_emb is not None:
+            shift_msa, scale_msa = self.adaln_mlp_sa(t_emb)
+            sa_mlp_in = sa_mlp_in * scale_msa + shift_msa
+        delta = delta + self.mlp_sa(sa_mlp_in)
+
         prompt_mask = getattr(self, '_current_prompt_mask', None)
         if prompt_mask is not None:
             delta = delta * prompt_mask
@@ -1369,26 +1407,6 @@ def compute_phase6_loss(outputs, void_margin=0.0, loss_t_power=0.0):
     if lambda_trans > 0.0:
         loss_el = loss_el + lambda_trans * loss_trans
 
-    # --- Prompt Anti-Copy Penalty (ADR 116 / Итерация 2) ---
-    # Штраф за лексическое копирование слов промпта вместо продолжения ответа
-    copy_weight = getattr(args, "prompt_copy_weight", 0.25)
-    z_prompt = outputs.get("z_prompt", None)
-    attn_mask_q = outputs.get("attention_mask_q", None)
-    if copy_weight > 0.0 and z_prompt is not None and attn_mask_q is not None:
-        sims_pred = torch.bmm(dus_final, z_prompt.transpose(1, 2))
-        sims_tgt = torch.bmm(target, z_prompt.transpose(1, 2))
-        q_mask = attn_mask_q.unsqueeze(1).expand_as(sims_pred)
-        sims_pred = torch.where(q_mask > 0, sims_pred, torch.tensor(-2.0, device=sims_pred.device, dtype=sims_pred.dtype))
-        sims_tgt = torch.where(q_mask > 0, sims_tgt, torch.tensor(-2.0, device=sims_tgt.device, dtype=sims_tgt.dtype))
-        s_pred_max = sims_pred.max(dim=-1).values
-        s_tgt_max = sims_tgt.max(dim=-1).values
-        copy_margin = getattr(args, "prompt_copy_margin", 0.05)
-        loss_copy = F.relu(s_pred_max - (s_tgt_max + copy_margin)) * content_mask
-        prompt_drop_mask = outputs.get("prompt_dropout_mask", None)
-        if prompt_drop_mask is not None:
-            loss_copy = loss_copy * prompt_drop_mask.view(loss_copy.shape[0], 1)
-        loss_el = loss_el + copy_weight * loss_copy
-
     # --- Граничное взвешивание VOID (ADR 116 / dLLM-Var) ---
     # Граница перехода в void получает повышенный вес (1.20), дальний хвост сбалансирован (0.60)
     w_b = getattr(args, "void_boundary_weight", 1.20)
@@ -1796,14 +1814,24 @@ def main():
 
                 load_info = model.load_state_dict(clean_state, strict=False)
 
+                # Проверяем версию SA/GeGLU адаптера:
+                # sa_adapter_version < 2: legacy SA (v1) -> сброс весов SA
+                # sa_adapter_version < 3: pre-GeGLU (v2, включая 107k) -> разрешаем missing keys для mlp_ca/mlp_sa
+                adapter_ver = ckpt_state.get("sa_adapter_version", 1) if isinstance(ckpt_state, dict) else 1
+                is_legacy_sa = adapter_ver < 2
+                is_pre_geglu = adapter_ver < 3
+
                 # Проверка: все ли обучаемые параметры загружены?
                 missing_trainable = [k for k in load_info.missing_keys if k in dict(model.named_parameters()) and dict(model.named_parameters())[k].requires_grad]
+                if is_pre_geglu:
+                    # Разрешаем отсутствие ключей новых GeGLU блоков при переходе со step_107000 (v2)
+                    missing_trainable = [k for k in missing_trainable if not any(mod in k for mod in ["mlp_ca", "norm_mlp_ca", "adaln_mlp_ca", "mlp_sa", "norm_mlp_sa", "adaln_mlp_sa"])]
+                    print("[Resume] Обнаружен чекпоинт до внедрения GeGLU (v2 / 107k). Новые блоки mlp_ca и mlp_sa инициализированы с нуля (Wo=0.0).")
+
                 if missing_trainable:
                     print(f"[Resume ERROR] Не загружены обучаемые веса (FSDP mismatch?): {missing_trainable[:5]}...")
                     sys.exit(1)
 
-                # Проверяем версию SA-адаптера: если переходим со старого чекпоинта (v1), сбрасываем веса SA для True CA-Adapter
-                is_legacy_sa = isinstance(ckpt_state, dict) and (ckpt_state.get("sa_adapter_version", 1) < 2)
                 if is_legacy_sa:
                     print("[Resume] Обнаружен чекпоинт с устаревшим SA (v1). Реинициализируем SA-адаптер (out_proj_sa=0.0) для True CA-Adapter...")
                     for ca in model.ca_layers.values():
@@ -1874,7 +1902,7 @@ def main():
     ca_out_params, ca_inner_params, dus_params = [], [], []
     for name, p in model.ca_layers.named_parameters():
         if p.requires_grad:
-            if "out_proj" in name or "out_proj_sa" in name:
+            if "out_proj" in name or "out_proj_sa" in name or "mlp_ca.Wo" in name or "mlp_sa.Wo" in name:
                 ca_out_params.append(p)
             else:
                 ca_inner_params.append(p)
@@ -1897,7 +1925,7 @@ def main():
             diag_batch,
             device,
             mesh,
-            ca_params=ca_out_params + ca_qkv_params + ca_other_params,
+            ca_params=ca_out_params + ca_inner_params,
             dus_params=dus_params
         )
         if getattr(args, "stop_after_diagnosis", False):
@@ -1919,7 +1947,7 @@ def main():
             if global_step >= args.max_steps or nan_state["abort"]: return
 
             session_step += 1
-            # Ступенчатый прогрев LR и архитектурного сигнала (шаг 20)
+            # Ступенчатый прогрев LR (шаг 20)
             if session_step == 1 or global_step % 20 == 0:
                 quantized_global = (global_step // 20) * 20
                 quantized_session = (session_step // 20) * 20
@@ -1935,10 +1963,9 @@ def main():
                 for group, base_lr in zip(optimizer.param_groups, base_lrs):
                     group['lr'] = base_lr * eff_lr_factor
 
-            # Демпфируем архитектурный сигнал (CA/SA) на время прогрева оптимизатора
+            # Архитектурный сигнал (CA/SA) зависит только от global_step (не глушим обученный CA при Resume)
             global_warmup_factor = min(1.0, global_step / args.warmup_steps)
-            eff_warmup_factor = min(global_warmup_factor, session_warmup)
-            warmup_factor = torch.tensor(eff_warmup_factor, dtype=torch.float32, device=device)
+            warmup_factor = torch.tensor(global_warmup_factor, dtype=torch.float32, device=device)
 
             input_ids_q = batch['input_ids_q'].to(device)
             mask_q = batch['attention_mask_q'].to(device)
@@ -2002,10 +2029,18 @@ def main():
                     op12 = _ca_inner(model.ca_layers["12"]).out_proj.weight.detach().abs().mean()
                     op36 = _ca_inner(model.ca_layers["36"]).out_proj.weight.detach().abs().mean()
                     qp36 = _ca_inner(model.ca_layers["36"]).q_proj.weight.detach().abs().mean()
+                    mca12 = _ca_inner(model.ca_layers["12"]).mlp_ca.Wo.weight.detach().abs().mean()
+                    msa12 = _ca_inner(model.ca_layers["12"]).mlp_sa.Wo.weight.detach().abs().mean()
+                    mca36 = _ca_inner(model.ca_layers["36"]).mlp_ca.Wo.weight.detach().abs().mean()
+                    msa36 = _ca_inner(model.ca_layers["36"]).mlp_sa.Wo.weight.detach().abs().mean()
                 except Exception:
                     op12 = torch.tensor(0.0)
                     op36 = torch.tensor(0.0)
                     qp36 = torch.tensor(0.0)
+                    mca12 = torch.tensor(0.0)
+                    msa12 = torch.tensor(0.0)
+                    mca36 = torch.tensor(0.0)
+                    msa36 = torch.tensor(0.0)
 
                 ratio12 = _ca_inner(model.ca_layers["12"]).last_ca_ratio
                 ratio24 = _ca_inner(model.ca_layers["24"]).last_ca_ratio
@@ -2014,7 +2049,7 @@ def main():
                 sa_ratio24 = _ca_inner(model.ca_layers["24"]).last_sa_ratio
                 sa_ratio36 = _ca_inner(model.ca_layers["36"]).last_sa_ratio
 
-                def log_step(s, l, c, vc, cc, w, o12, o36, q36, cp_t, cm_t, tg_t, r12, r24, r36, sr12, sr24, sr36, gn_t, lr_out, lr_inner, lr_dus):
+                def log_step(s, l, c, vc, cc, w, o12, o36, q36, mca12_t, msa12_t, mca36_t, msa36_t, cp_t, cm_t, tg_t, r12, r24, r36, sr12, sr24, sr36, gn_t, lr_out, lr_inner, lr_dus):
                     l_val = l.item()
                     if not math.isfinite(l_val):
                         nan_state["streak"] += 1
@@ -2038,6 +2073,10 @@ def main():
                         "out_proj_12_amp": o12.item(),
                         "out_proj_36_amp": o36.item(),
                         "q_proj_36_amp": q36.item(),
+                        "mlp_ca_12_amp": mca12_t.item(),
+                        "mlp_sa_12_amp": msa12_t.item(),
+                        "mlp_ca_36_amp": mca36_t.item(),
+                        "mlp_sa_36_amp": msa36_t.item(),
                         "ca_ratio_12": float(r12.item()) if torch.is_tensor(r12) else float(r12),
                         "ca_ratio_24": float(r24.item()) if torch.is_tensor(r24) else float(r24),
                         "ca_ratio_36": float(r36.item()) if torch.is_tensor(r36) else float(r36),
@@ -2065,7 +2104,7 @@ def main():
                 lr_out_val = optimizer.param_groups[0]['lr']
                 lr_inner_val = optimizer.param_groups[1]['lr']
                 lr_dus_val = optimizer.param_groups[2]['lr']
-                xm.add_step_closure(log_step, args=(global_step, loss.detach(), avg_cos_sim.detach(), true_void_sim.detach(), content_to_void_sim.detach(), warmup_factor.detach(), op12, op36, qp36, cp_det, cm_det, t_global_det, ratio12, ratio24, ratio36, sa_ratio12, sa_ratio24, sa_ratio36, grad_norm.detach(), lr_out_val, lr_inner_val, lr_dus_val))
+                xm.add_step_closure(log_step, args=(global_step, loss.detach(), avg_cos_sim.detach(), true_void_sim.detach(), content_to_void_sim.detach(), warmup_factor.detach(), op12, op36, qp36, mca12, msa12, mca36, msa36, cp_det, cm_det, t_global_det, ratio12, ratio24, ratio36, sa_ratio12, sa_ratio24, sa_ratio36, grad_norm.detach(), lr_out_val, lr_inner_val, lr_dus_val))
 
             if global_step <= 10 and GLOBAL_NAN_CHECKS:
                 stacked_nan = torch.stack(GLOBAL_NAN_CHECKS)
@@ -2106,7 +2145,7 @@ def main():
                     **trainable_state,
                     "step": global_step,
                     "metrics_history": metrics_history,
-                    "sa_adapter_version": 2,
+                    "sa_adapter_version": 3,
                 }
                 # Сохраняем чекпоинт:
                 xm.save(save_payload, ckpt_path)

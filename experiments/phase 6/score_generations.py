@@ -23,13 +23,16 @@ RUNS = {
 }
 
 
-def extract_final(path: Path) -> str:
+def extract_both(path: Path):
     raw = html.unescape(path.read_text(encoding="utf-8"))
-    m = re.search(r"=== FINAL ANSWER \(ModernLatentDecoder\) ===\s*(.*?)\s*=== FINAL ANSWER \(LatentDict", raw, re.S)
-    if not m:
-        raise ValueError(f"final answer not found in {path}")
-    txt = re.sub(r"<[^>]+>", "", m.group(1)) if "<div" in m.group(1) else m.group(1)
-    return txt.strip()
+    m_dec = re.search(r"=== FINAL ANSWER \(ModernLatentDecoder\) ===\s*(.*?)\s*=== FINAL ANSWER \(LatentDict", raw, re.S)
+    m_nn = re.search(r"=== FINAL ANSWER \(LatentDict NN\) ===\s*(.*?)(?:<div|<pre|===|$)", raw, re.S)
+    m_dprox = re.findall(r"DProx=([0-9.]+)", raw)
+    final_dprox = float(m_dprox[-1]) if m_dprox else None
+
+    txt_dec = re.sub(r"<[^>]+>", "", m_dec.group(1)).strip() if m_dec else ""
+    txt_nn = re.sub(r"<[^>]+>", "", m_nn.group(1)).strip() if m_nn else ""
+    return txt_dec, txt_nn, final_dprox
 
 
 def strip_void(text: str):
@@ -59,28 +62,36 @@ def main():
     pw = set(re.findall(r"\w+", PROMPT.lower()))
     res, texts = {}, {}
     for name, fn in RUNS.items():
-        full = extract_final(d / fn)
-        clean, n_void = strip_void(full)
+        fp = d / fn
+        if not fp.exists():
+            continue
+        full_dec, full_nn, dprox_val = extract_both(fp)
+        clean, n_void = strip_void(full_dec)
+        clean_nn, _ = strip_void(full_nn)
         words = re.findall(r"\w+", clean.lower())
+        words_nn = re.findall(r"\w+", clean_nn.lower())
         ids = tok(clean, return_tensors="pt", truncation=True, max_length=1024).input_ids
         with torch.no_grad():
             loss = lm(ids, labels=ids).loss.item()
         res[name] = {
             "content_words": len(words),
             "void_tokens": n_void,
+            "dprox": round(dprox_val, 3) if dprox_val is not None else None,
             "ppl_gpt2": round(float(torch.exp(torch.tensor(loss))), 1),
             "distinct1": round(distinct_n(words, 1), 3),
             "distinct2": round(distinct_n(words, 2), 3),
             "distinct3": round(distinct_n(words, 3), 3),
             "prompt_word_share": round(sum(w in pw for w in words) / max(1, len(words)), 3),
+            "nn_prompt_share": round(sum(w in pw for w in words_nn) / max(1, len(words_nn)), 3) if words_nn else 0.0,
         }
         texts[name] = clean
 
     Path(args.out).write_text(json.dumps(res, indent=2, ensure_ascii=False), encoding="utf-8")
-    print(f"{'run':12} {'words':>6} {'void':>5} {'ppl':>8} {'d1':>6} {'d2':>6} {'d3':>6} {'prompt%':>8}")
+    print(f"{'run':12} {'words':>6} {'void':>5} {'dprox':>6} {'ppl':>8} {'d1':>6} {'d2':>6} {'d3':>6} {'prompt%':>8} {'nn_p%':>6}")
     for k, v in res.items():
-        print(f"{k:12} {v['content_words']:6} {v['void_tokens']:5} {v['ppl_gpt2']:8} {v['distinct1']:6} "
-              f"{v['distinct2']:6} {v['distinct3']:6} {v['prompt_word_share']:8}")
+        dp_str = f"{v['dprox']:.3f}" if v['dprox'] is not None else " N/A "
+        print(f"{k:12} {v['content_words']:6} {v['void_tokens']:5} {dp_str:>6} {v['ppl_gpt2']:8} {v['distinct1']:6} "
+              f"{v['distinct2']:6} {v['distinct3']:6} {v['prompt_word_share']:8} {v['nn_prompt_share']:6}")
 
     names = list(texts)
     random.Random(0).shuffle(names)

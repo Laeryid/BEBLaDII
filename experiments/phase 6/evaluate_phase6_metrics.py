@@ -92,8 +92,25 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
 # =========================================================================
 # 3. CAPromptLayer & Block Wrapper (ADR 103, 104, 105)
 # =========================================================================
+class GeGLUMLP(nn.Module):
+    """
+    Нелинейный оператор GeGLU по образцу ModernBertMLP из DUS.
+    Zero-init выходной проекции Wo обеспечивает тождественный нулевой вклад на первом шаге Resume.
+    """
+    def __init__(self, dim: int = 1024, intermediate_size: int = 2048):
+        super().__init__()
+        self.Wi = nn.Linear(dim, intermediate_size * 2, bias=False)
+        self.Wo = nn.Linear(intermediate_size, dim, bias=False)
+        nn.init.xavier_uniform_(self.Wi.weight)
+        nn.init.zeros_(self.Wo.weight)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        u, g = self.Wi(x).chunk(2, dim=-1)
+        return self.Wo(F.gelu(u) * g)
+
+
 class CAPromptLayer(nn.Module):
-    def __init__(self, dim=1024, t_emb_dim=256):
+    def __init__(self, dim=1024, t_emb_dim=256, mlp_intermediate_size=2048):
         super().__init__()
         self._disable = False
         self.last_ca_ratio = 0.0
@@ -107,10 +124,20 @@ class CAPromptLayer(nn.Module):
         self.out_proj = nn.Linear(dim, dim, bias=False)
         self.adaln_ca = AdaLNModulation(t_emb_dim, dim)
 
+        # Нелинейный субблок GeGLU + AdaLN для Cross-Attention (по образцу DUS)
+        self.norm_mlp_ca = nn.RMSNorm(dim)
+        self.adaln_mlp_ca = AdaLNModulation(t_emb_dim, dim)
+        self.mlp_ca = GeGLUMLP(dim, mlp_intermediate_size)
+
         self.norm2 = nn.RMSNorm(dim)
         self.qkv_proj_sa = nn.Linear(dim, dim * 3, bias=False)
         self.out_proj_sa = nn.Linear(dim, dim, bias=False)
         self.adaln_sa = AdaLNModulation(t_emb_dim, dim)
+
+        # Нелинейный субблок GeGLU + AdaLN для Self-Attention / True CA-Adapter (по образцу DUS)
+        self.norm_mlp_sa = nn.RMSNorm(dim)
+        self.adaln_mlp_sa = AdaLNModulation(t_emb_dim, dim)
+        self.mlp_sa = GeGLUMLP(dim, mlp_intermediate_size)
 
         heads = 16
         head_dim = dim // heads
@@ -165,6 +192,13 @@ class CAPromptLayer(nn.Module):
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
 
+        # GeGLU MLP sub-block after Cross-Attention (DUS pattern)
+        ca_mlp_in = self.norm_mlp_ca(ca_out)
+        if t_emb is not None:
+            shift_mca, scale_mca = self.adaln_mlp_ca(t_emb)
+            ca_mlp_in = ca_mlp_in * scale_mca + shift_mca
+        ca_out = ca_out + self.mlp_ca(ca_mlp_in)
+
         # --- True CA-Adapter (Self-Attention over ca_out payload) ---
         # 1. Routing Queries & Keys: context of canvas state + extracted prompt delta
         A_mid = A + warmup_factor * ca_out
@@ -196,8 +230,14 @@ class CAPromptLayer(nn.Module):
         sa_out = sa_out.transpose(1, 2).reshape(B, T_a, D)
         sa_out = self.out_proj_sa(sa_out)
 
-        # 3. Unified Capsule Residual
+        # 3. Unified Capsule Residual with GeGLU MLP sub-block
         delta = ca_out + sa_out
+        sa_mlp_in = self.norm_mlp_sa(delta)
+        if t_emb is not None:
+            shift_msa, scale_msa = self.adaln_mlp_sa(t_emb)
+            sa_mlp_in = sa_mlp_in * scale_msa + shift_msa
+        delta = delta + self.mlp_sa(sa_mlp_in)
+
         prompt_mask = getattr(self, '_current_prompt_mask', None)
         if prompt_mask is not None:
             delta = delta * prompt_mask
