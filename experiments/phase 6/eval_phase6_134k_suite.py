@@ -80,7 +80,7 @@ MODES = [
 
 
 def find_latest_checkpoint(ckpt_dir: Path) -> Path | None:
-    """Ищет актуальный чекпоинт Phase 6 (предпочитает v4 или эталонный 111000 из эпохи v3)."""
+    """Ищет самый свежий чекпоинт Phase 6 по номеру шага в имени файла."""
     if not ckpt_dir.exists():
         return None
     candidates = list(ckpt_dir.glob("planB_phase6_checkpoints_phase6_ca_layers_step_*.pth"))
@@ -94,12 +94,6 @@ def find_latest_checkpoint(ckpt_dir: Path) -> Path | None:
         return int(m.group(1)) if m else -1
 
     candidates.sort(key=_extract_step, reverse=True)
-    # Если самый свежий файл попадает в деградировавший участок v3 (112k..131k), но есть 111000 — предпочитаем 111000
-    top_step = _extract_step(candidates[0])
-    if 111000 < top_step <= 131000:
-        for c in candidates:
-            if _extract_step(c) == 111000:
-                return c
     return candidates[0]
 
 

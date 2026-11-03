@@ -235,7 +235,7 @@ class Config:
     void_penalty_margin = 0.50     # Мягкий порог отталкивания от полусферы войда (ADR 114/116)
     void_penalty_weight = 0.25     # Вес штрафа за ложный войд на контенте
 
-    max_resume_step = int(os.environ.get("MAX_RESUME_STEP", 111000))  # Рекомендованный чекпоинт v3 (до спайка)
+    max_resume_step = int(os.environ["MAX_RESUME_STEP"]) if "MAX_RESUME_STEP" in os.environ else None  # None = авто-продолжение с самого свежего
 
 args = Config()
 

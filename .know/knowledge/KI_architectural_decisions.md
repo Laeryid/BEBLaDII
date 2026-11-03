@@ -1,5 +1,7 @@
-<!-- last_verified: 2026-11-02 -->
+<!-- last_verified: 2026-11-03 -->
 # KI: Architectural Decisions (ADR Archive)
+
+<!-- last_verified: 2026-11-03 -->
 
 ## Overview
 Центральный архив принятых архитектурных решений (ADR). Содержит ретроспективы и ссылки на тематические группы решений.

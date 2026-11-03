@@ -399,7 +399,7 @@ class Config:
     learning_rate = 1e-4
     epochs        = 50
     max_steps     = 2 if os.environ.get("SMOKE_TEST") else int(os.environ.get("MAX_STEPS", 300000))
-    max_resume_step = int(os.environ.get("MAX_RESUME_STEP", 111000))  # Рекомендованный чекпоинт v3 (до спайка)
+    max_resume_step = int(os.environ["MAX_RESUME_STEP"]) if "MAX_RESUME_STEP" in os.environ else None  # None = авто-продолжение с самого свежего
     log_steps     = 10
     val_steps     = 200
     save_steps    = 1000
