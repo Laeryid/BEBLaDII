@@ -1209,6 +1209,18 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 117: Phase 6 Non-Linear CAPromptLayer (GeGLU + AdaLN), Prompt Copy Penalty Reversal, and GPU-TPU Synchronization"
+    },
+    "decisions/118_phase6_caprompt_v4_contrast_sink_and_cross_gate.md": {
+      "description": "ADR 118: Phase 6 CAPromptLayer v4: Token-Centered Contrast, Cross-Gated GeGLU, and Zero-Vector Attention Sink (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "decisions/091_global_scheduled_identity_gate.md",
+        "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md",
+        "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
+      ],
+      "summary": "ADR 118: Phase 6 CAPromptLayer v4: Token-Centered Contrast, Cross-Gated GeGLU, and Zero-Vector Attention Sink"
     }
   },
   "knowledge_system": {

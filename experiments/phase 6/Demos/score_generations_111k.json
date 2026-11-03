@@ -1,0 +1,58 @@
+{
+  "baseline": {
+    "mode_desc": "baseline (SmartCrop=none, VoidDProx=ON)",
+    "time_min": 6.75,
+    "content_words": 430,
+    "void_tokens": 0,
+    "void_pct": 0.0,
+    "dprox": 0.736,
+    "ppl_gpt2": 28.3,
+    "distinct1": 0.105,
+    "distinct2": 0.256,
+    "distinct3": 0.416,
+    "prompt_word_share": 0.337,
+    "nn_prompt_share": 0.492
+  },
+  "adaptive_buf16": {
+    "mode_desc": "adaptive SmartCrop + 16 void buffer (ADR 116 default)",
+    "time_min": 5.34,
+    "content_words": 430,
+    "void_tokens": 0,
+    "void_pct": 0.0,
+    "dprox": 0.736,
+    "ppl_gpt2": 28.3,
+    "distinct1": 0.105,
+    "distinct2": 0.256,
+    "distinct3": 0.416,
+    "prompt_word_share": 0.337,
+    "nn_prompt_share": 0.492
+  },
+  "soft": {
+    "mode_desc": "soft SmartCrop (tau=0.90)",
+    "time_min": 4.58,
+    "content_words": 354,
+    "void_tokens": 99,
+    "void_pct": 19.8,
+    "dprox": 0.815,
+    "ppl_gpt2": 27.8,
+    "distinct1": 0.09,
+    "distinct2": 0.215,
+    "distinct3": 0.398,
+    "prompt_word_share": 0.331,
+    "nn_prompt_share": 0.457
+  },
+  "spec_adaptive": {
+    "mode_desc": "spec-adaptive (Specificity LR-Gated Guidance + Adaptive Crop)",
+    "time_min": 4.59,
+    "content_words": 432,
+    "void_tokens": 0,
+    "void_pct": 0.0,
+    "dprox": 0.771,
+    "ppl_gpt2": 24.9,
+    "distinct1": 0.093,
+    "distinct2": 0.209,
+    "distinct3": 0.33,
+    "prompt_word_share": 0.394,
+    "nn_prompt_share": 0.486
+  }
+}

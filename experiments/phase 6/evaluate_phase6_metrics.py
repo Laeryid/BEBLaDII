@@ -94,18 +94,25 @@ def spherical_noise(x0: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
 # =========================================================================
 class GeGLUMLP(nn.Module):
     """
-    Нелинейный оператор GeGLU по образцу ModernBertMLP из DUS.
-    Zero-init выходной проекции Wo обеспечивает тождественный нулевой вклад на первом шаге Resume.
+    Нелинейный оператор Cross-Gated GeGLU (v4) по образцу ModernBertMLP из DUS.
+    - Wi: Linear(dim, intermediate_size * 2, bias=False) — вход промпта/payload (u: gate, g: val).
+    - W_canvas_gate: Linear(dim, intermediate_size, bias=False) — проекция холста в gate (Zero-Init).
+    - Wo: Linear(intermediate_size, dim, bias=False) — выходная проекция (Zero-Init).
+    При x=0 (CFG off) val тождественно 0, гарантируя нулевой выход без прямой утечки холста.
     """
     def __init__(self, dim: int = 1024, intermediate_size: int = 2048):
         super().__init__()
         self.Wi = nn.Linear(dim, intermediate_size * 2, bias=False)
+        self.W_canvas_gate = nn.Linear(dim, intermediate_size, bias=False)
         self.Wo = nn.Linear(intermediate_size, dim, bias=False)
         nn.init.xavier_uniform_(self.Wi.weight)
+        nn.init.zeros_(self.W_canvas_gate.weight)
         nn.init.zeros_(self.Wo.weight)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, x_canvas: torch.Tensor = None) -> torch.Tensor:
         u, g = self.Wi(x).chunk(2, dim=-1)
+        if x_canvas is not None:
+            u = u + self.W_canvas_gate(x_canvas)
         return self.Wo(F.gelu(u) * g)
 
 
@@ -115,6 +122,7 @@ class CAPromptLayer(nn.Module):
         self._disable = False
         self.last_ca_ratio = 0.0
         self.last_sa_ratio = 0.0
+        self.last_sink_prob = 0.0
 
         # RMSNorm для Q-промпта и A-холста
         self.norm1 = nn.RMSNorm(dim)
@@ -141,7 +149,13 @@ class CAPromptLayer(nn.Module):
 
         heads = 16
         head_dim = dim // heads
+        self.heads = heads
+        self.head_dim = head_dim
         self.rope_sa = RotaryEmbedding(dim=head_dim)
+
+        # Zero-Vector Attention Sink (v4): обучаемый ключ-сток k_sink с нулевым значением v_sink = 0
+        self.k_sink = nn.Parameter(torch.zeros(1, heads, 1, head_dim))
+        self.has_k_sink = True
 
         nn.init.xavier_uniform_(self.q_proj.weight)
         nn.init.xavier_uniform_(self.kv_proj.weight)
@@ -155,7 +169,9 @@ class CAPromptLayer(nn.Module):
 
         # --- Cross-Attention ---
         Q_norm = self.norm_q(Q)
-        A_norm = self.norm1(A)
+        # 1. Token-Centered Contrast (устранение 97% общего конуса токенов DUS в v4; для v3 сохраняется точная совместимость)
+        A_centered = (A - A.mean(dim=1, keepdim=True)) if getattr(self, 'has_k_sink', True) else A
+        A_norm = self.norm1(A_centered)
         if t_emb is not None:
             shift_ca, scale_ca = self.adaln_ca(t_emb)
             A_norm = A_norm * scale_ca + shift_ca
@@ -165,8 +181,8 @@ class CAPromptLayer(nn.Module):
         k, v = kv.chunk(2, dim=-1)
 
         B, T_a, D = A.shape
-        heads = 16
-        head_dim = D // heads
+        heads = self.heads
+        head_dim = self.head_dim
 
         q = q.view(B, T_a, heads, head_dim).transpose(1, 2)
         k = k.view(B, -1, heads, head_dim).transpose(1, 2)
@@ -178,31 +194,61 @@ class CAPromptLayer(nn.Module):
         q = (q * cos_q) + (rotate_half(q) * sin_q)
         k = (k * cos_k) + (rotate_half(k) * sin_k)
 
-        attn_mask = None
-        if mask_Q is not None:
-            # ADR 103 / 104: Безопасная аддитивная float-маска для SDPA
-            mask_q_4d = mask_Q.view(B, 1, 1, -1).bool()
-            attn_mask = torch.where(
-                mask_q_4d,
-                torch.zeros(1, dtype=q.dtype, device=q.device),
-                torch.tensor(-10000.0, dtype=q.dtype, device=q.device)
-            )
+        # Zero-Vector Attention Sink (v4)
+        if getattr(self, 'has_k_sink', True):
+            k_sink_exp = self.k_sink.expand(B, -1, -1, -1).to(dtype=k.dtype)
+            k_ext = torch.cat([k_sink_exp, k], dim=2)  # [B, heads, 1 + T_q, head_dim]
+            scores = torch.matmul(q, k_ext.transpose(-2, -1)) * (head_dim ** -0.5)  # [B, heads, T_a, 1 + T_q]
 
-        ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+            if mask_Q is not None:
+                mask_q_4d = mask_Q.view(B, 1, 1, -1).bool()
+                sink_mask = torch.ones((B, 1, 1, 1), device=mask_Q.device, dtype=torch.bool)
+                mask_ext = torch.cat([sink_mask, mask_q_4d], dim=-1)
+                scores = torch.where(
+                    mask_ext,
+                    scores,
+                    torch.tensor(-10000.0, dtype=scores.dtype, device=scores.device)
+                )
+
+            probs = F.softmax(scores, dim=-1)
+            sink_prob = probs[:, :, :, 0:1]  # [B, heads, T_a, 1]
+            probs_prompt = probs[:, :, :, 1:]  # [B, heads, T_a, T_q]
+
+            ca_out = torch.matmul(probs_prompt, v)  # v_sink = 0, поэтому вклад стока строго 0
+            p_active = 1.0 - sink_prob.mean(dim=1)  # [B, T_a, 1]
+            with torch.no_grad():
+                self.last_sink_prob = sink_prob.mean().item()
+        else:
+            attn_mask = None
+            if mask_Q is not None:
+                mask_q_4d = mask_Q.view(B, 1, 1, -1).bool()
+                attn_mask = torch.where(
+                    mask_q_4d,
+                    torch.zeros(1, dtype=q.dtype, device=q.device),
+                    torch.tensor(-10000.0, dtype=q.dtype, device=q.device)
+                )
+            ca_out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+            p_active = 1.0
+            self.last_sink_prob = 0.0
+
         ca_out = ca_out.transpose(1, 2).reshape(B, T_a, D)
         ca_out = self.out_proj(ca_out)
 
-        # GeGLU MLP sub-block after Cross-Attention (DUS pattern)
+        # GeGLU MLP sub-block after Cross-Attention (DUS pattern + Cross-Gating)
         ca_mlp_in = self.norm_mlp_ca(ca_out)
         if t_emb is not None:
             shift_mca, scale_mca = self.adaln_mlp_ca(t_emb)
             ca_mlp_in = ca_mlp_in * scale_mca + shift_mca
-        ca_out = ca_out + self.mlp_ca(ca_mlp_in)
+        mlp_ca_out = self.mlp_ca(ca_mlp_in, x_canvas=A_norm)
+        if torch.is_tensor(p_active):
+            mlp_ca_out = mlp_ca_out * p_active
+        ca_out = ca_out + mlp_ca_out
 
         # --- True CA-Adapter (Self-Attention over ca_out payload) ---
         # 1. Routing Queries & Keys: context of canvas state + extracted prompt delta
         A_mid = A + warmup_factor * ca_out
-        A_norm2 = self.norm2(A_mid)
+        A_mid_centered = (A_mid - A_mid.mean(dim=1, keepdim=True)) if getattr(self, 'has_k_sink', True) else A_mid
+        A_norm2 = self.norm2(A_mid_centered)
         if t_emb is not None:
             shift_sa, scale_sa = self.adaln_sa(t_emb)
             A_norm2 = A_norm2 * scale_sa + shift_sa
@@ -236,7 +282,10 @@ class CAPromptLayer(nn.Module):
         if t_emb is not None:
             shift_msa, scale_msa = self.adaln_mlp_sa(t_emb)
             sa_mlp_in = sa_mlp_in * scale_msa + shift_msa
-        delta = delta + self.mlp_sa(sa_mlp_in)
+        mlp_sa_out = self.mlp_sa(sa_mlp_in, x_canvas=A_norm2)
+        if torch.is_tensor(p_active):
+            mlp_sa_out = mlp_sa_out * p_active
+        delta = delta + mlp_sa_out
 
         prompt_mask = getattr(self, '_current_prompt_mask', None)
         if prompt_mask is not None:
@@ -461,6 +510,15 @@ class BEBLaDIIPhase6Eval(nn.Module):
         dus_keys_loaded = [k for k in clean_state.keys() if "dus.layers" in k and "ca_layer" not in k]
         print(f"   -> CA weights loaded: {len(ca_keys_loaded)} tensors")
         print(f"   -> DUS unfrozen layers loaded: {len(dus_keys_loaded)} tensors")
+
+        # Если чекпоинт v3 (без k_sink), отключаем сток для обратной совместимости
+        has_k_sink_ckpt = any("k_sink" in k for k in clean_state.keys())
+        for ca in self.ca_layers.values():
+            ca.has_k_sink = has_k_sink_ckpt
+        if not has_k_sink_ckpt:
+            print("   -> [INFO] Чекпоинт не содержит k_sink (v3). Сток внимания отключен для строгой обратной совместимости.")
+        else:
+            print("   -> [INFO] Обнаружен v4 чекпоинт с Zero-Vector Attention Sink (k_sink).")
 
         # Если чекпоинт legacy SA (v1), реинициализируем SA-адаптер в out_proj_sa=0.0 для True CA-Adapter
         is_legacy_sa = isinstance(ckpt_state, dict) and (ckpt_state.get("sa_adapter_version", 1) < 2)
@@ -756,6 +814,7 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
     total_intra_sim = 0.0
     ca_ratios = {"12": [], "24": [], "36": []}
     sa_ratios = {"12": [], "24": [], "36": []}
+    sink_probs = {"12": [], "24": [], "36": []}
     routing_flips_content = {"12": [], "24": [], "36": []}
     routing_flips_void = {"12": [], "24": [], "36": []}
     within_region_cos = {"12": [], "24": [], "36": []}
@@ -828,6 +887,10 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
                 _, dus_final = model.forward_step(z_noisy, Z_prompt_12, attention_mask_q, t_actual, t_reported, t_global=t_global)
                 signs_ca = {k: v.clone() for k, v in model.last_routing_signs.items()}
                 ffn_ca = {k: v.clone() for k, v in model.last_ffn_deltas.items()}
+                for k in ["12", "24", "36"]:
+                    ca_ratios[k].append(model.ca_layers[k].last_ca_ratio)
+                    sa_ratios[k].append(model.ca_layers[k].last_sa_ratio)
+                    sink_probs[k].append(model.ca_layers[k].last_sink_prob)
 
                 # 2. Forward step без CA (абляция)
                 model.last_routing_signs.clear()
@@ -920,10 +983,6 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
                     total_intra_sim += intra_sim
                 else:
                     total_intra_sim += 1.0
-
-                for k in ["12", "24", "36"]:
-                    ca_ratios[k].append(model.ca_layers[k].last_ca_ratio)
-                    sa_ratios[k].append(model.ca_layers[k].last_sa_ratio)
     finally:
         model._capture_routing = False
         model.last_routing_signs.clear()
@@ -967,9 +1026,10 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
     print(f"  Content False Void (cos>=0.50)   : {mean_cf_void*100:5.2f}% (lower=better text preservation)")
     print(f"  Boundary Position Error (tokens) : {mean_b_err:5.2f} (lower=sharper boundary recognition)")
     print("-" * 72)
-    print("  [CA/SA Amplitude Ratios]")
-    print(f"  CA Ratio (L12 / L24 / L36)       : {sum(ca_ratios['12'])/n_samples:.4f} / {sum(ca_ratios['24'])/n_samples:.4f} / {sum(ca_ratios['36'])/n_samples:.4f}")
-    print(f"  SA Ratio (L12 / L24 / L36)       : {sum(sa_ratios['12'])/n_samples:.4f} / {sum(sa_ratios['24'])/n_samples:.4f} / {sum(sa_ratios['36'])/n_samples:.4f}")
+    print("  [CA/SA Amplitude Ratios & Attention Sink]")
+    print(f"  CA Ratio  (L12 / L24 / L36)      : {sum(ca_ratios['12'])/n_samples:.4f} / {sum(ca_ratios['24'])/n_samples:.4f} / {sum(ca_ratios['36'])/n_samples:.4f}")
+    print(f"  SA Ratio  (L12 / L24 / L36)      : {sum(sa_ratios['12'])/n_samples:.4f} / {sum(sa_ratios['24'])/n_samples:.4f} / {sum(sa_ratios['36'])/n_samples:.4f}")
+    print(f"  Sink Prob (L12 / L24 / L36)      : {sum(sink_probs['12'])/n_samples:.4f} / {sum(sink_probs['24'])/n_samples:.4f} / {sum(sink_probs['36'])/n_samples:.4f}")
     print("-" * 72)
     print("  [Intrinsic Info-Theoretic Diagnostics (arXiv:2610.36864v1)]")
     print(f"  GeGLU Routing Flip Content   (%) : L13={rf_c_12*100:5.2f}% | L25={rf_c_24*100:5.2f}% | L37={rf_c_36*100:5.2f}%")
@@ -993,6 +1053,9 @@ def evaluate_dataset_metrics(model, tokenizer, df_val, device, latent_dict=None,
         "ca_ratio_12": sum(ca_ratios['12']) / n_samples,
         "ca_ratio_24": sum(ca_ratios['24']) / n_samples,
         "ca_ratio_36": sum(ca_ratios['36']) / n_samples,
+        "sink_prob_12": sum(sink_probs['12']) / n_samples,
+        "sink_prob_24": sum(sink_probs['24']) / n_samples,
+        "sink_prob_36": sum(sink_probs['36']) / n_samples,
         "routing_flip_c_12": rf_c_12,
         "routing_flip_c_24": rf_c_24,
         "routing_flip_c_36": rf_c_36,
@@ -1138,6 +1201,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             h39, z_pred = model.forward_step(z_canvas, Z_prompt_12, q_enc.attention_mask, t_actual, t_reported, t_global=t_global)
             signs_cond = {k: v.clone() for k, v in model.last_routing_signs.items()}
             ffn_cond_36 = model.last_ffn_deltas.get("36", h39).clone()
+            step_sink_prob = sum(model.ca_layers[k].last_sink_prob for k in ["12", "24", "36"]) / 3.0
 
             # Time-scheduled CFG & Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395):
             if sampler == "impulse_hybrid":
@@ -1312,6 +1376,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                 'raw_dprox': raw_dprox[0].mean().item(),
                 'void_pct': void_pct,
                 'avg_v_cos': avg_v_cos,
+                'sink_prob': step_sink_prob,
                 'keff_c': step_keff_c,
                 'keff_v': step_keff_v,
                 'agree_c': step_agree_c,
@@ -1326,9 +1391,10 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
             run_history.append(step_entry)
 
             rf_str = f", r_flip={step_routing_flip:4.1f}%" if step_routing_flip is not None else ""
+            sink_str = f", sink={step_sink_prob*100:4.1f}%" if step_sink_prob > 0.0 else ""
             geom_str = f", keff={step_keff_c:.1f}/{step_keff_v:.1f}, agree_c={step_agree_c:.1f}%"
             step_log_str = (
-                f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%, v_cos={avg_v_cos:+.3f}{rf_str}{geom_str}, dprox={raw_dprox[0].mean().item():.3f}): "
+                f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%, v_cos={avg_v_cos:+.3f}{sink_str}{rf_str}{geom_str}, dprox={raw_dprox[0].mean().item():.3f}): "
                 f"[Dec]: {step_text[:110]}... | [NN]: {nn_text[:40]}..."
             )
             detailed_log_lines.append(step_log_str)
@@ -1338,7 +1404,7 @@ def run_generation(model, decoder, latent_dict, tokenizer, query_text, device, m
                     f", spec_gate={mean_spec_gate:.2f} (act={spec_active_pct:.0f}%, d={mean_disagreement:.4f})"
                     if mean_spec_gate is not None else ""
                 )
-                print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%{rf_str}{geom_str}{spec_str}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
+                print(f"Step {i:02d} (t={t_val:.2f}, cfg={cfg_t:.2f}, void={void_pct:4.1f}%{sink_str}{rf_str}{geom_str}{spec_str}, avg_dprox={raw_dprox[0].mean().item():.3f}):")
                 print(f"   [Phase 2 Decoder]: {step_text[:90]}...")
                 print(f"   [Latent Dict NN ]: {nn_text[:60]}...")
 

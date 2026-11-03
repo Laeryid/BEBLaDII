@@ -80,7 +80,7 @@ MODES = [
 
 
 def find_latest_checkpoint(ckpt_dir: Path) -> Path | None:
-    """Ищет самый свежий чекпоинт Phase 6 по номеру шага в имени файла."""
+    """Ищет актуальный чекпоинт Phase 6 (предпочитает v4 или эталонный 111000 из эпохи v3)."""
     if not ckpt_dir.exists():
         return None
     candidates = list(ckpt_dir.glob("planB_phase6_checkpoints_phase6_ca_layers_step_*.pth"))
@@ -94,6 +94,12 @@ def find_latest_checkpoint(ckpt_dir: Path) -> Path | None:
         return int(m.group(1)) if m else -1
 
     candidates.sort(key=_extract_step, reverse=True)
+    # Если самый свежий файл попадает в деградировавший участок v3 (112k..131k), но есть 111000 — предпочитаем 111000
+    top_step = _extract_step(candidates[0])
+    if 111000 < top_step <= 131000:
+        for c in candidates:
+            if _extract_step(c) == 111000:
+                return c
     return candidates[0]
 
 
@@ -311,10 +317,11 @@ def main():
         words = re.findall(r"\w+", clean.lower())
         words_nn = re.findall(r"\w+", clean_nn.lower())
 
-        # Финальный DProx и void_pct из истории генерации
+        # Финальный DProx, void_pct и sink_pct из истории генерации
         last_step_entry = res["history"][-1] if res.get("history") else {}
         final_dprox = last_step_entry.get("raw_dprox", None)
         final_void_pct = last_step_entry.get("void_pct", 0.0)
+        final_sink_pct = round(float(last_step_entry.get("sink_prob", 0.0)) * 100.0, 1)
 
         with torch.no_grad():
             if len(clean) > 0:
@@ -333,6 +340,7 @@ def main():
             "content_words": len(words),
             "void_tokens": n_void,
             "void_pct": round(final_void_pct, 1),
+            "sink_pct": final_sink_pct,
             "dprox": round(float(final_dprox), 3) if final_dprox is not None else None,
             "ppl_gpt2": ppl,
             "distinct1": round(distinct_n(words, 1), 3),

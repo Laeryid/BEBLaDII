@@ -1,7 +1,6 @@
 {
-  "Ответ A": "hard_v2",
-  "Ответ B": "void_dprox",
+  "Ответ A": "spec_adaptive",
+  "Ответ B": "adaptive_buf16",
   "Ответ C": "baseline",
-  "Ответ D": "soft",
-  "Ответ E": "hard_buf16"
+  "Ответ D": "soft"
 }
