@@ -1238,10 +1238,11 @@ def main():
 
         try:
             gcp_sa = user_secrets.get_secret("GCP_SA_JSON")
-            with open("gcp_sa.json", "w") as f:
+            sa_path = "/tmp/gcp_sa.json"
+            with open(sa_path, "w") as f:
                 f.write(gcp_sa)
             subprocess.run(
-                ["gcloud", "auth", "activate-service-account", "--key-file", "gcp_sa.json"],
+                ["gcloud", "auth", "activate-service-account", "--key-file", sa_path],
                 check=True,
             )
             print("[Init] GCP Authentication successful.")
@@ -1252,7 +1253,7 @@ def main():
         print(f"Kaggle secrets not available or failed to login: {e}")
 
     if not os.environ.get("SMOKE_TEST"):
-        wandb.init(project=args.wandb_project, config=vars(args))
+        wandb.init(project=args.wandb_project, config=vars(args), dir="/tmp")
 
     tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path)
     if tokenizer.pad_token is None:

@@ -6,8 +6,10 @@ torch._dynamo.disable()
 torch._dynamo.config.suppress_errors = True
 torch._dynamo.config.disable = True
 
-# Устанавливаем ключ W&B напрямую
-os.environ["WANDB_API_KEY"] = "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"
+# Ключ W&B передается через переменные окружения или Kaggle Secrets
+if "WANDB_API_KEY" not in os.environ and os.path.exists("wandb_key.txt"):
+    with open("wandb_key.txt", "r") as f:
+        os.environ["WANDB_API_KEY"] = f.read().strip()
 
 # 1. УСТАНОВКА ПЕРЕМЕННЫХ
 os.environ["PJRT_DEVICE"] = "TPU"

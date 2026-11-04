@@ -1,0 +1,6 @@
+{
+  "Ответ A": "spec_adaptive",
+  "Ответ B": "baseline",
+  "Ответ C": "soft",
+  "Ответ D": "adaptive_buf16"
+}

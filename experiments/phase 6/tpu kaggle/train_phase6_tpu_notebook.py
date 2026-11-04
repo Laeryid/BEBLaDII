@@ -1769,8 +1769,9 @@ def main():
         user_secrets = UserSecretsClient()
         gcp_sa = user_secrets.get_secret("GCP_SA_JSON")
         if gcp_sa:
-            with open("gcp_sa.json", "w") as f: f.write(gcp_sa)
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.abspath("gcp_sa.json")
+            sa_path = "/tmp/gcp_sa.json"
+            with open(sa_path, "w") as f: f.write(gcp_sa)
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa_path
     except Exception: pass
 
     if args.wandb_project and not os.environ.get("SMOKE_TEST"):
@@ -1779,7 +1780,7 @@ def main():
             user_secrets = UserSecretsClient()
             wandb.login(key=user_secrets.get_secret("WANDB_API_KEY"))
         except Exception: pass
-        wandb.init(project=args.wandb_project, config=vars(args))
+        wandb.init(project=args.wandb_project, config=vars(args), dir="/tmp")
 
     tokenizer = AutoTokenizer.from_pretrained(args.embedding_model_path, local_files_only=args.local_files_only)
     if tokenizer.pad_token is None: tokenizer.pad_token = tokenizer.eos_token
