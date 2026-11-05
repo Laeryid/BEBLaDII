@@ -1,0 +1,40 @@
+𝐁𝐄𝐁𝐋𝐚𝐃𝐈𝐈: Phase 4 — Per-Token Individual Noising & Semantic Skepticism.
+
+From the start, I envisioned text diffusion differently from how AI vibe-coded it back in Phase 3.
+
+In Phase 3, we stabilized canonical spherical diffusion. There, the noise level was uniform across the entire canvas and decayed synchronously for all tokens.
+
+What I actually wanted was for the model to first sketch out key concepts and anchor words, and only then construct the logical bridges between them — gradually refining the response from a coarse outline into fine details.
+
+To achieve this, I decoupled noise into two levels:
+• 𝐆𝐥𝐨𝐛𝐚𝐥 𝐧𝐨𝐢𝐬𝐞 (t_global), defining the generation phase across the canvas.
+• 𝐋𝐨𝐜𝐚𝐥 𝐧𝐨𝐢𝐬𝐞 (t_local), defining the uncertainty and corruption of each individual token.
+
+Here is what went into making this work:
+
+1. 𝐑𝐞𝐰𝐨𝐫𝐤𝐞𝐝 𝐀𝐝𝐚𝐋𝐍: The time-conditioning layer was overhauled to inject information about both the global phase and per-token local noise into every transformer block.
+
+2. 𝐃𝐲𝐧𝐚𝐦𝐢𝐜 𝐃𝐚𝐭𝐚𝐬𝐞𝐭 𝐍𝐨𝐢𝐬𝐢𝐧𝐠: The noise scheduling logic was upgraded so that the per-token noise formula dynamically adapts across each stage of global noise.
+
+3. '𝐋𝐢𝐚𝐫' 𝐓𝐨𝐤𝐞𝐧𝐬 & 𝐒𝐞𝐦𝐚𝐧𝐭𝐢𝐜 𝐒𝐤𝐞𝐩𝐭𝐢𝐜𝐢𝐬𝐦: Introduced artificially deceptive tokens with falsely reported low noise. If a token claims high certainty but contradicts the surrounding canvas, the model must prioritize global semantic coherence. Through bidirectional attention, the model learns to critically audit context and discard impostors.
+
+Plus plenty of low-level technical plumbing under the hood.
+
+The results at checkpoint step_85995:
+✓ Clean anchor confidence at t_global = 0.5: 0.9995
+✓ Detection & scrubbing of falsely confident tokens: 0.9996
+✓ Cosine similarity after 25 Slerp steps from 100% noise: 0.84–0.91
+
+Denoising in action:
+"The h 1 fox 1 for the lazy dog." -> "The quick red fox is over the lazy dog."
+(Clean target: "The quick brown fox jumps over the lazy dog.")
+
+Interactive noise dashboard visualizing how noise collapses across layers & steps:
+https://github.com/Laeryid/BEBLaDII/blob/main/experiments/phase%204/local_checkpoints/noise_dashboard.html
+
+Spot the catch in this approach?
+Noise levels during training are calculated because we already know the ground-truth clean state — but during real inference, that clean state is unknown!
+
+Time to start building the Diffusion Orchestrator and resolve this dilemma :)
+
+#MachineLearning #NLP #DiffusionModels #DeepLearning #PyTorch

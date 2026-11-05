@@ -55,8 +55,14 @@ html_content = f"""
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body {{ font-family: Arial, sans-serif; margin: 20px; }}
-        select, input {{ margin: 10px 0; font-size: 16px; }}
-        .slider-container {{ margin: 20px 0; }}
+        .filter-group {{ margin: 12px 0; }}
+        .filter-group label {{ display: block; font-weight: bold; margin-bottom: 4px; font-size: 14px; }}
+        .filter-group select {{ display: block; width: 100%; max-width: 600px; padding: 6px 8px; font-size: 16px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }}
+        .phrase-full-container {{ margin: 15px 0; padding: 12px 16px; background-color: #f5f7fa; border-left: 4px solid #0066cc; border-radius: 4px; max-width: 800px; }}
+        .phrase-full-container label {{ display: block; font-weight: bold; margin-bottom: 6px; font-size: 13px; text-transform: uppercase; color: #555; }}
+        #fullPhraseDisplay {{ font-size: 18px; color: #111; line-height: 1.5; }}
+        .slider-container {{ margin: 20px 0; max-width: 600px; }}
+        input[type="range"] {{ margin: 10px 0; font-size: 16px; }}
         #textDisplay {{ font-size: 20px; margin-top: 20px; line-height: 1.5; }}
         .token {{ padding: 2px 4px; border-radius: 4px; margin-right: 4px; display: inline-block; border: 1px solid #ccc; min-width: 20px; text-align: center; }}
     </style>
@@ -64,14 +70,25 @@ html_content = f"""
 <body>
     <h1>Token Noise Trajectory</h1>
     
-    <label for="dateSelect">Select Run Date:</label>
-    <select id="dateSelect" style="width: 20%;"></select>
+    <div class="filter-group">
+        <label for="dateSelect">Select Run Date:</label>
+        <select id="dateSelect"></select>
+    </div>
     
-    <label for="versionSelect">Select Model Version:</label>
-    <select id="versionSelect" style="width: 30%;"></select>
+    <div class="filter-group">
+        <label for="versionSelect">Select Model Version:</label>
+        <select id="versionSelect"></select>
+    </div>
     
-    <label for="phraseSelect">Select Phrase:</label>
-    <select id="phraseSelect" style="width: 50%;"></select>
+    <div class="filter-group">
+        <label for="phraseSelect">Select Phrase:</label>
+        <select id="phraseSelect"></select>
+    </div>
+    
+    <div class="phrase-full-container">
+        <label>Full Target Phrase:</label>
+        <div id="fullPhraseDisplay"></div>
+    </div>
     
     <div class="slider-container">
         <label for="iterSlider">Diffusion Iteration: <strong id="iterLabel">0</strong> (0 = Start, 25 = Final)</label><br>
@@ -88,27 +105,49 @@ html_content = f"""
         const dateSelect = document.getElementById('dateSelect');
         const versionSelect = document.getElementById('versionSelect');
         const phraseSelect = document.getElementById('phraseSelect');
+        const fullPhraseDisplay = document.getElementById('fullPhraseDisplay');
         const iterSlider = document.getElementById('iterSlider');
         const iterLabel = document.getElementById('iterLabel');
         const textDisplay = document.getElementById('textDisplay');
         
+        const fullPhrases = {{
+            "Phrase 0: The quick brown fox ...": "The quick brown fox jumps over the lazy dog.",
+            "Phrase 1: Мама мыла раму, а па...": "Мама мыла раму, а папа чинил телевизор.",
+            "Phrase 2: Quantum computing is...": "Quantum computing is a rapidly-emerging technology that harnesses the laws of quantum mechanics to solve problems too complex for classical computers."
+        }};
+
+        function updateFullPhrase() {{
+            const phraseKey = phraseSelect.value;
+            fullPhraseDisplay.textContent = fullPhrases[phraseKey] || phraseKey;
+        }}
+        
         let chart = null;
         
-        for (const date in trajectoryData) {{
+        const dates = Object.keys(trajectoryData);
+        for (const date of dates) {{
             const option = document.createElement('option');
             option.value = date;
             option.textContent = date;
             dateSelect.appendChild(option);
         }}
+        if (dates.length > 0) {{
+            dateSelect.value = dates[dates.length - 1];
+        }}
         
         function updateVersionSelect() {{
             const date = dateSelect.value;
             versionSelect.innerHTML = '';
-            for (const version in trajectoryData[date]) {{
+            const versions = Object.keys(trajectoryData[date] || {{}});
+            for (const version of versions) {{
                 const option = document.createElement('option');
                 option.value = version;
                 option.textContent = version;
                 versionSelect.appendChild(option);
+            }}
+            if (versions.includes('phase4_step_85995_EMA')) {{
+                versionSelect.value = 'phase4_step_85995_EMA';
+            }} else if (versions.length > 0) {{
+                versionSelect.value = versions[0];
             }}
         }}
 
@@ -122,6 +161,7 @@ html_content = f"""
                 option.textContent = phrase;
                 phraseSelect.appendChild(option);
             }}
+            updateFullPhrase();
         }}
         
         function updateView() {{
@@ -198,6 +238,7 @@ html_content = f"""
         }});
         
         phraseSelect.addEventListener('change', () => {{
+            updateFullPhrase();
             iterSlider.max = trajectoryData[dateSelect.value][versionSelect.value][phraseSelect.value].length - 1;
             iterSlider.value = 0;
             updateView();
