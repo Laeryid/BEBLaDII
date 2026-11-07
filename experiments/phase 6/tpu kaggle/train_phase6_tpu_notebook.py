@@ -1998,11 +1998,28 @@ def main():
     time_limit_seconds = 9.0 * 3600  # 9 часов для Kaggle TPU
     base_lrs = [group['lr'] for group in optimizer.param_groups]
     session_step = 0
-    nan_state = {"streak": 0, "abort": False}
+    session_start_step = global_step
+    nan_state = {"streak": 0, "abort": False, "needs_ema_rollback": False, "ema_fallback_applied": False}
 
     for epoch in range(args.epochs):
         for batch in dataloader:
             if global_step >= args.max_steps or nan_state["abort"]: return
+
+            # Обработка отката к EMA при срыве raw-весов в NaN
+            if nan_state.get("needs_ema_rollback", False) and not nan_state.get("ema_fallback_applied", False):
+                print(f"\n[Rollback] Зафиксирован не-конечный loss на raw-весах. Выполняем откат к шагу {session_start_step} с заменой live-весов на чистую тень EMA...")
+                with torch.no_grad():
+                    for name, param in model.named_parameters():
+                        if param.requires_grad and name in ema_tracker.shadow:
+                            param.copy_(ema_tracker.shadow[name].to(device=param.device, dtype=param.dtype))
+                xm.mark_step()
+                optimizer.state.clear()
+                global_step = session_start_step
+                session_step = 0
+                nan_state["streak"] = 0
+                nan_state["needs_ema_rollback"] = False
+                nan_state["ema_fallback_applied"] = True
+                print(f"[Rollback] Откат успешно выполнен. Продолжаем обучение с шага {global_step} на базе EMA с плавным прогревом warmup_factor (200 шагов).\n")
 
             session_step += 1
             # Ступенчатый прогрев LR (шаг 20)
@@ -2021,9 +2038,12 @@ def main():
                 for group, base_lr in zip(optimizer.param_groups, base_lrs):
                     group['lr'] = base_lr * eff_lr_factor
 
-            # Архитектурный сигнал (CA/SA) зависит только от global_step (не глушим обученный CA при Resume)
+            # Сессионный прогрев warmup_factor (200 шагов) для защиты CA от ударной нагрузки на старте
+            quantized_session_wf = (session_step // 10) * 10
+            session_ca_warmup = min(1.0, max(0.05, quantized_session_wf / 200.0))
             global_warmup_factor = min(1.0, global_step / args.warmup_steps)
-            warmup_factor = torch.tensor(global_warmup_factor, dtype=torch.float32, device=device)
+            eff_warmup_factor = min(global_warmup_factor, session_ca_warmup)
+            warmup_factor = torch.tensor(eff_warmup_factor, dtype=torch.float32, device=device)
 
             input_ids_q = batch['input_ids_q'].to(device)
             mask_q = batch['attention_mask_q'].to(device)
@@ -2076,6 +2096,12 @@ def main():
             # Защита от спайков AdamW (вместо 50.0 отсекаем аномальные выбросы > 2.0 для чистоты EMA/PACE)
             is_safe = is_finite & (grad_norm <= 2.0)
 
+            # Дополнительное in-graph подавление градиентов при спайках grad_norm > 2.0 или не-конечном loss
+            safe_mask_f = is_safe.to(torch.float32)
+            for p in trainable_params:
+                if p.grad is not None:
+                    p.grad.mul_(safe_mask_f.to(p.grad.dtype))
+
             # Шаг оптимизатора (градиенты уже редуцированы через xm.reduce_gradients)
             optimizer.step()
 
@@ -2114,6 +2140,10 @@ def main():
                 def log_step(s, l, c, vc, cc, w, o12, o36, q36, mca12_t, msa12_t, mca36_t, msa36_t, cp_t, cm_t, tg_t, r12, r24, r36, sr12, sr24, sr36, sk12, sk24, sk36, gn_t, lr_out, lr_inner, lr_dus):
                     l_val = l.item()
                     if not math.isfinite(l_val):
+                        if not nan_state.get("ema_fallback_applied", False):
+                            nan_state["needs_ema_rollback"] = True
+                            print(f"\n[WARN] Шаг {s}: Зафиксирован не-конечный loss на raw-весах. Запланирован откат к шагу {session_start_step} с переходом на EMA...")
+                            return
                         nan_state["streak"] += 1
                         print(f"\n[WARN] Шаг {s}: Зафиксирован не-конечный loss (streak: {nan_state['streak']}). Градиенты были занулены in-graph.")
                         if nan_state["streak"] >= 20:
