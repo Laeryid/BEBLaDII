@@ -4,8 +4,8 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~1023 (excluding excluded directories)
-**Updated:** 2026-11-01
+**Total files in project:** ~1038 (excluding excluded directories)
+**Updated:** 2026-11-10
 
 ```
 BEBLaDII/
@@ -21,49 +21,29 @@ BEBLaDII/
 |-- checkpoints/  *(empty)*
 |   `-- phase6_v2/  *(empty)*
 |-- data/  *(empty)*
-|-- experiments/  *531 files*
+|-- experiments/  *571 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
 |   |   `-- phase 3/  *7 files*
-|   |-- phase 1/  *31 files*
-|   |   `-- screenshots/  *15 files*
-|   |-- phase 2/  *35 files*
-|   |   |-- Lightning/  *2 files*
-|   |   |-- kaggle/  *9 files*
-|   |   |-- local/  *10 files*
-|   |   `-- screenshots/  *6 files*
-|   |-- phase 3/  *187 files*
-|   |   |-- Lightning/  *3 files*
-|   |   |-- bad scripts/  *24 files*
-|   |   |-- kaggle/  *9 files*
-|   |   |-- local_checkpoints/  *(empty)*
-|   |   `-- screenshots/  *139 files*
-|   |-- phase 4/  *109 files*
-|   |   |-- kaggle/  *3 files*
-|   |   |-- local_checkpoints/  *12 files*
-|   |   |-- screenshots/  *76 files*
-|   |   `-- tpu kaggle/  *8 files*
-|   |-- phase 5/  *26 files*
-|   |   |-- bad scripts/  *12 files*
-|   |   |-- coding theory exploration/  *5 files*
-|   |   |-- kaggle/  *(empty)*
-|   |   |-- local/  *3 files*
-|   |   |-- local_checkpoints/  *(empty)*
-|   |   `-- screenshots/  *(empty)*
-|   `-- phase 6/  *123 files*
-|       |-- Demos/  *35 files*
-|       |-- checkpoints/  *(empty)*
-|       |-- data/  *12 files*
-|       |-- kaggle/  *3 files*
-|       |-- scratch/  *6 files*
-|       |-- screenshots/  *25 files*
-|       `-- tpu kaggle/  *3 files*
+|   |-- Plan B/  *535 files*
+|   |   |-- phase 1/  *31 files*
+|   |   |-- phase 2/  *35 files*
+|   |   |-- phase 3/  *187 files*
+|   |   |-- phase 4/  *109 files*
+|   |   |-- phase 5/  *26 files*
+|   |   `-- phase 6/  *147 files*
+|   |-- phase 1/  *5 files*
+|   |   |-- Kaggle/  *1 files*
+|   |   |-- checkpoints/  *(empty)*
+|   |   `-- output/  *(empty)*
+|   `-- phase 2 plan C/  *9 files*
+|       `-- checkpoints/  *(empty)*
 |-- hugging face/  *2 files*
-|-- ideas/  *86 files*
+|-- ideas/  *87 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
 |-- kaggle_upload_1_2/  *1 files*
-|-- posts/  *24 files*
+|-- posts/  *30 files*
 |-- reports/  *11 files*
 |   `-- plan_A/  *6 files*
 |-- scratch/  *37 files*
@@ -76,10 +56,11 @@ BEBLaDII/
 |   |   |-- rag/  *1 files*
 |   |   `-- utils/  *7 files*
 |   `-- beb_la_dii.egg-info/  *5 files*
-|-- storage/  *22 files*
-|   |-- components/  *5 files*
+|-- storage/  *28 files*
+|   |-- components/  *11 files*
 |   |   |-- model/  *1 files*
-|   |   `-- projector/  *4 files*
+|   |   |-- projector/  *4 files*
+|   |   `-- tokenizer/  *6 files*
 |   |-- dictionaries/  *1 files*
 |   |-- experiments/  *15 files*
 |   |   |-- 20260613 Phase 3 ADR 31/  *13 files*
@@ -87,46 +68,9 @@ BEBLaDII/
 |   `-- prebuilt/  *1 files*
 |       `-- latentBERT/  *1 files*
 |-- tests/  *9 files*
-|-- tmp/  *8 files*
-|   `-- test_tracker/  *2 files*
-|       `-- results/  *2 files*
-`-- wandb/  *41 files*
-    |-- offline-run-20261015_194223-3jn9g1cj/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    |-- offline-run-20261016_090600-fnhnh67k/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    |-- offline-run-20261016_230423-f7wc28rc/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    |-- offline-run-20261019_071732-8fu5ang5/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    |-- offline-run-20261020_184014-rjq4yr1y/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    |-- offline-run-20261025_121015-7t5cszll/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    |-- offline-run-20261028_125521-t5gr3o7x/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    |-- offline-run-20261029_215746-86op35sq/  *5 files*
-    |   |-- files/  *1 files*
-    |   |-- logs/  *2 files*
-    |   `-- tmp/  *(empty)*
-    `-- offline-run-20261031_123759-j9e1er5t/  *1 files*
-        |-- files/  *(empty)*
-        |-- logs/  *1 files*
-        `-- tmp/  *(empty)*
+`-- tmp/  *8 files*
+    `-- test_tracker/  *2 files*
+        `-- results/  *2 files*
 ```
 
 ## Key Directory Purposes

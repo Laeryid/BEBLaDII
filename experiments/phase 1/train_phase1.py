@@ -1,0 +1,1563 @@
+# %% [markdown]
+# # BEBLaDII Phase 1 (Plan C) — Grassmannian Burer–Monteiro VAE & Hierarchical Decompressor
+# 
+# **Архитектура:** Plan C (Burer–Monteiro $V \in \mathbb{R}^{8 \times 128}$, $\rho = V^T V$, размер клетки $d=1024$)
+# - Токенизатор Tekken (Mistral AI, $V = 131\,072$)
+# - SVD-инициализированные Tied Word Embeddings ($131\,072 \times 1024$)
+# - 2-слойный ModernBERT Encoder ($d=1024$, RoPE-128)
+# - Grassmannian Token Normalizer (сжатие в шар $\mathbb{B}^{128}$, $\text{rk}_{\text{eff}} \ge 1.5$, Axis Dropout)
+# - Grassmannian Spectral Pooler $4 \to 1$ (Partial RoPE 112:128, Lorentzian Autograd SVD, Sign Fixing)
+# - $\mathcal{O}(8)$-инвариантный Decompressor Decoder (1 контекстный слой + Set-Cross-Attention $1 \to 4$ + 2 сглаживающих слоя + Tied LM Head)
+# - Гибридный оптимизатор: Muon (2D-веса трансформера) + AdamW (эмбеддинги, 1D, RMSNorm)
+# - Двухрежимный датасет: 85% связный текст + 15% словарный спектр `randperm(131k)`
+# - Единый запуск: CPU sanity-тест (`--smoke_test`) и полномасштабное обучение на GPU (Kaggle T4/P100/A100)
+
+# %% [markdown]
+# ## 1. Автоопределение среды (Kaggle vs Local) и конфигурация
+
+# %%
+import os
+import sys
+import re
+import math
+import time
+import glob
+import subprocess
+import argparse
+import dataclasses
+from typing import Dict, Any, Tuple, Optional, List
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch.utils.data import Dataset, DataLoader
+
+# Вывод UTF-8 для Windows консоли
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception:
+        pass
+
+
+@dataclasses.dataclass
+class EnvironmentConfig:
+    """Единая точка конфигурации путей и режимов для Kaggle и локальной среды."""
+    is_kaggle: bool
+    project_root: str
+    data_dir: str
+    output_dir: str
+    checkpoint_dir: str
+    embeddings_path: str
+    stopwords_path: str
+    gcs_checkpoints_dir: str
+    wandb_mode: str
+    device: torch.device
+    dtype: torch.dtype
+    num_workers: int
+    pin_memory: bool
+
+    @classmethod
+    def detect(cls, override_device: Optional[str] = None) -> "EnvironmentConfig":
+        is_kaggle = os.path.exists("/kaggle") or ("KAGGLE_KERNEL_RUN_TYPE" in os.environ)
+        
+        # Целевая папка в Google Cloud Storage для весов Plan C Phase 1
+        gcs_checkpoints_dir = "gs://bebladii-weigths-us/planC/Phase 1/checkpoints/"
+
+        if is_kaggle:
+            project_root = "/kaggle/working/BEBLaDII"
+            data_dir = "/kaggle/input"
+            output_dir = "/kaggle/working/output"
+            checkpoint_dir = "/kaggle/working/checkpoints"
+            embeddings_path = "/kaggle/input/bebladii-pretrained-embeddings/pretrained_embeddings_1024.pt"
+            stopwords_path = "/kaggle/input/bebladii-pretrained-embeddings/tekken_stopwords_mask.pt"
+            # Wandb в Kaggle: онлайн, если задан ключ WANDB_API_KEY, иначе offline/disabled
+            wandb_mode = "online" if "WANDB_API_KEY" in os.environ else "disabled"
+            num_workers = 2
+            pin_memory = True
+        else:
+            # Локальная среда (Windows / Linux)
+            project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+            data_dir = os.path.join(project_root, "data")
+            output_dir = os.path.join(project_root, "experiments", "phase 1", "output")
+            checkpoint_dir = os.path.join(project_root, "experiments", "phase 1", "checkpoints")
+            embeddings_path = os.path.join(data_dir, "plan C", "pretrained_embeddings_1024.pt")
+            stopwords_path = os.path.join(data_dir, "plan C", "tekken_stopwords_mask.pt")
+            wandb_mode = "disabled"
+            num_workers = 0  # 0 безопаснее для Windows
+            pin_memory = False
+
+        if override_device and override_device != "auto":
+            device = torch.device(override_device)
+        else:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # На GPU используем bfloat16 (или float16 при отсутствии bf16), на CPU - float32
+        if device.type == "cuda":
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+        else:
+            dtype = torch.float32
+
+        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+        return cls(
+            is_kaggle=is_kaggle,
+            project_root=project_root,
+            data_dir=data_dir,
+            output_dir=output_dir,
+            checkpoint_dir=checkpoint_dir,
+            embeddings_path=embeddings_path,
+            stopwords_path=stopwords_path,
+            gcs_checkpoints_dir=gcs_checkpoints_dir,
+            wandb_mode=wandb_mode,
+            device=device,
+            dtype=dtype,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+        )
+
+
+# %% [markdown]
+# ## 2. Математические примитивы Burer–Monteiro и Lorentzian SVD
+
+# %%
+class LorentzianEigh(torch.autograd.Function):
+    """
+    Спектральное разложение симметричной матрицы с лоренцевой регуляризацией градиентов (Lorentzian Broadening).
+    Устраняет деление на ноль и градиентный взрыв (NaN) в обратном проходе при близких/равных собственных числах:
+        1 / (lambda_i - lambda_j) -> (lambda_i - lambda_j) / ((lambda_i - lambda_j)^2 + eps^2).
+    Вычисления строго в float32.
+    """
+    @staticmethod
+    def forward(ctx, G: torch.Tensor, eps: float = 1e-4) -> Tuple[torch.Tensor, torch.Tensor]:
+        # G: (..., K, K) симметричная матрица
+        orig_dtype = G.dtype
+        G_f32 = G.float()
+        # eigh возвращает L (собственные числа, возрастающие), V (собственные векторы в столбцах)
+        L, V = torch.linalg.eigh(G_f32)
+        ctx.save_for_backward(L, V)
+        ctx.eps = eps
+        ctx.orig_dtype = orig_dtype
+        return L.to(orig_dtype), V.to(orig_dtype)
+
+    @staticmethod
+    def backward(ctx, grad_L: torch.Tensor, grad_V: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+        L, V = ctx.saved_tensors
+        eps = ctx.eps
+        
+        # Разность собственных значений: diff[..., i, j] = L[..., j] - L[..., i]
+        diff = L.unsqueeze(-2) - L.unsqueeze(-1)
+        # Лоренцево ядро сглаживания
+        lorentz = diff / (diff**2 + eps**2)
+        # Зануляем главную диагональ (i == j)
+        lorentz.diagonal(dim1=-2, dim2=-1).zero_()
+
+        # V^T @ grad_V
+        vt_gv = torch.matmul(V.transpose(-2, -1), grad_V.float())
+        # Промежуточный тензор: diag(grad_L) + lorentz * (V^T @ grad_V)
+        mid = torch.diag_embed(grad_L.float()) + lorentz * vt_gv
+        
+        # grad_G = V @ mid @ V^T
+        grad_G = torch.matmul(torch.matmul(V, mid), V.transpose(-2, -1))
+        # Симметризация градиента
+        grad_G = 0.5 * (grad_G + grad_G.transpose(-2, -1))
+        
+        return grad_G.to(ctx.orig_dtype), None
+
+
+def safe_lorentzian_eigh(G: torch.Tensor, eps: float = 1e-4) -> Tuple[torch.Tensor, torch.Tensor]:
+    return LorentzianEigh.apply(G, eps)
+
+
+def apply_rope_16d(x: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
+    """
+    Partial RoPE для последних 16 измерений (8 пар координат) по плотной гармонической сетке:
+    theta_k in linspace(pi/8, pi/2, 8).
+    x: (..., L, K, 16)
+    positions: (L,) целые числа позиций [0, 1, ..., L-1]
+    """
+    L = positions.shape[0]
+    # 8 частот
+    thetas = torch.linspace(math.pi / 8.0, math.pi / 2.0, steps=8, device=x.device, dtype=x.dtype)
+    # углы: (L, 8)
+    angles = positions.unsqueeze(-1).to(x.dtype) * thetas.unsqueeze(0)  # (L, 8)
+    # Форма (L, 1, 8) для корректного бродкастинга по K осям
+    sin = torch.sin(angles).unsqueeze(-2)  # (L, 1, 8)
+    cos = torch.cos(angles).unsqueeze(-2)  # (L, 1, 8)
+
+    # Решейпим x в 8 пар: (..., L, K, 8, 2)
+    shape_prefix = x.shape[:-1]
+    x_pairs = x.view(*shape_prefix, 8, 2)
+    x0 = x_pairs[..., 0]  # (..., L, K, 8)
+    x1 = x_pairs[..., 1]  # (..., L, K, 8)
+
+    # Двумерный поворот каждой пары
+    x0_rot = x0 * cos - x1 * sin
+    x1_rot = x0 * sin + x1 * cos
+
+    x_rot = torch.stack([x0_rot, x1_rot], dim=-1).view(*shape_prefix, 16)
+    return x_rot
+
+
+# %% [markdown]
+# ## 3. Архитектурные блоки Burer–Monteiro (Plan C)
+
+# %%
+class RMSNorm(nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-5):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        var = torch.mean(x.float() ** 2, dim=-1, keepdim=True)
+        normed = x * torch.rsqrt(var + self.eps).to(x.dtype)
+        return normed * self.weight
+
+
+class RotaryEmbedding128(nn.Module):
+    """Стандартный RoPE для ModernBERT attention (head_dim=128)."""
+    def __init__(self, dim: int = 128, max_seq_len: int = 2048, base: float = 10000.0):
+        super().__init__()
+        self.dim = dim
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
+
+    def forward(self, x: torch.Tensor, seq_len: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.cos_cached[:seq_len].to(x.dtype), self.sin_cached[:seq_len].to(x.dtype)
+
+
+def rotate_half(x: torch.Tensor) -> torch.Tensor:
+    x1 = x[..., : x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2 :]
+    return torch.cat((-x2, x1), dim=-1)
+
+
+def apply_rotary_pos_emb(q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    # q, k: (B, H, T, D)
+    cos = cos.unsqueeze(0).unsqueeze(0)  # (1, 1, T, D)
+    sin = sin.unsqueeze(0).unsqueeze(0)
+    q_embed = (q * cos) + (rotate_half(q) * sin)
+    k_embed = (k * cos) + (rotate_half(k) * sin)
+    return q_embed, k_embed
+
+
+class ModernBERTLayer(nn.Module):
+    """
+    Легкий слой трансформера архитектуры ModernBERT:
+    - Pre-RMSNorm
+    - Multi-Head Attention (d=1024, 8 heads, head_dim=128) с RoPE
+    - SwiGLU MLP (1024 -> 2048 -> 1024)
+    """
+    def __init__(self, hidden_size: int = 1024, intermediate_size: int = 2048, num_heads: int = 8):
+        super().__init__()
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = hidden_size // num_heads
+
+        self.attn_norm = RMSNorm(hidden_size)
+        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+
+        self.mlp_norm = RMSNorm(hidden_size)
+        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, 
+                attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        B, T, C = x.shape
+        # Pre-Norm Attention
+        normed_x = self.attn_norm(x)
+        q = self.q_proj(normed_x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(normed_x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(normed_x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+
+        q, k = apply_rotary_pos_emb(q, k, cos, sin)
+
+        # PyTorch SDPA (Scaled Dot-Product Attention)
+        attn_out = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
+        )
+        attn_out = attn_out.transpose(1, 2).contiguous().view(B, T, C)
+        x = x + self.o_proj(attn_out)
+
+        # SwiGLU MLP
+        normed_mlp = self.mlp_norm(x)
+        gate = F.silu(self.gate_proj(normed_mlp))
+        up = self.up_proj(normed_mlp)
+        mlp_out = self.down_proj(gate * up)
+        x = x + mlp_out
+        return x
+
+
+class LexicalCoreMLP(nn.Module):
+    """
+    Ветка 1: Точечный (Token-wise) 2-слойный SwiGLU MLP.
+    Работает строго по изолированному статическому эмбеддингу токена E[tok] (БЕЗ внимания к соседям).
+    Нелинейно раскладывает 1D-вектор d=1024 на 8 ортогональных смысловых осей:
+    - Первые 96 координат на ось (0:96) -> чистое семантическое ядро (v_sem).
+    - Последние 16 координат на ось (112:128) -> сцепленный хвост под RoPE (v_pos).
+    Всего выходов: 8 осей * (96 + 16) = 8 * 112 = 896.
+    """
+    def __init__(self, hidden_size: int = 1024, intermediate_size: int = 2048, num_axes: int = 8):
+        super().__init__()
+        self.num_axes = num_axes
+        self.out_dim = num_axes * (96 + 16)  # 8 * 112 = 896
+        
+        self.norm = RMSNorm(hidden_size)
+        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = nn.Linear(intermediate_size, self.out_dim, bias=False)
+        self.out_norm = RMSNorm(self.out_dim)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # x: (B, T, 1024)
+        normed = self.norm(x)
+        gate = F.silu(self.gate_proj(normed))
+        up = self.up_proj(normed)
+        h = self.out_norm(self.down_proj(gate * up))  # (B, T, 896)
+        
+        B, T, _ = h.shape
+        h = h.view(B, T, self.num_axes, 112)
+        h_sem = h[..., :96]  # (B, T, 8, 96) — лексическая семантика
+        h_pos = h[..., 96:]  # (B, T, 8, 16) — сцепленный хвост для RoPE
+        return h_sem, h_pos
+
+
+class ContextSyntaxEncoder(nn.Module):
+    """
+    Ветка 2: Контекстный синтаксический энкодер (2 слоя ModernBERT с RoPE).
+    Окно внимания видит соседние слова, предлоги и падежные согласования фразы.
+    Выдает 16 координат контекстного синтаксиса на ось: v_syn in R^{8 x 16}.
+    """
+    def __init__(self, hidden_size: int = 1024, intermediate_size: int = 2048, num_axes: int = 8):
+        super().__init__()
+        self.num_axes = num_axes
+        self.layers = nn.ModuleList([
+            ModernBERTLayer(hidden_size, intermediate_size) for _ in range(2)
+        ])
+        self.final_norm = RMSNorm(hidden_size)
+        self.syntax_proj = nn.Linear(hidden_size, num_axes * 16, bias=False)  # 1024 -> 128
+        self.syntax_norm = RMSNorm(num_axes * 16)
+
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
+        # x: (B, T, 1024)
+        for layer in self.layers:
+            x = layer(x, cos, sin)
+        x = self.final_norm(x)
+        h_syn = self.syntax_norm(self.syntax_proj(x))  # (B, T, 128)
+        B, T, _ = h_syn.shape
+        return h_syn.view(B, T, self.num_axes, 16)  # (B, T, 8, 16)
+
+
+class BlockDiagonalVAEHead(nn.Module):
+    """
+    Блочно-диагональный mu-VAE проектор, гарантирующий абсолютную изолированность
+    сегментов осей (0:96 семантика, 96:112 синтаксис, 112:128 RoPE-хвост) от перекрестной утечки:
+    - 96 каналов семантики проецируются независимо (Linear(96, 96))
+    - 16 каналов синтаксиса проецируются независимо (Linear(16, 16))
+    - 16 каналов позиции проецируются независимо (Linear(16, 16))
+    """
+    def __init__(self, num_axes: int = 8):
+        super().__init__()
+        self.num_axes = num_axes
+        
+        # mu проекторы
+        self.mu_sem = nn.Linear(96, 96)
+        self.mu_syn = nn.Linear(16, 16)
+        self.mu_pos = nn.Linear(16, 16)
+
+        # logvar проекторы
+        self.logvar_sem = nn.Linear(96, 96)
+        self.logvar_syn = nn.Linear(16, 16)
+        self.logvar_pos = nn.Linear(16, 16)
+
+    def forward(self, h_sem: torch.Tensor, h_syn: torch.Tensor, h_pos: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # h_sem: (B, T, 8, 96), h_syn: (B, T, 8, 16), h_pos: (B, T, 8, 16)
+        mu = torch.cat([self.mu_sem(h_sem), self.mu_syn(h_syn), self.mu_pos(h_pos)], dim=-1)  # (B, T, 8, 128)
+        logvar = torch.cat([self.logvar_sem(h_sem), self.logvar_syn(h_syn), self.logvar_pos(h_pos)], dim=-1)  # (B, T, 8, 128)
+        return mu, logvar
+
+
+class GrassmannianTokenNormalizer(nn.Module):
+    """
+    Нормализатор токенов Бурера–Монтейро:
+    1. Сжатие в единичный шар B^{128}: v_i = safe_squash(z_i), ||v_i||_2 in [0, 1).
+    2. Расчет эффективного ранга: rk_eff(V) = ||V||_F^4 / ||V V^T||_F^2 >= 1.5.
+    3. Axis Dropout: в training mode с вероятностью 20% зануляется главная собственная мода Gram(V).
+    """
+    def __init__(self, axis_dim: int = 128, num_axes: int = 8, rank_floor: float = 1.5, dropout_prob: float = 0.20):
+        super().__init__()
+        self.axis_dim = axis_dim
+        self.num_axes = num_axes
+        self.rank_floor = rank_floor
+        self.dropout_prob = dropout_prob
+        self.alpha = 1.0 / math.sqrt(axis_dim)
+
+    def safe_squash(self, z: torch.Tensor) -> torch.Tensor:
+        # z: (..., num_axes, axis_dim)
+        norms = torch.norm(z, p=2, dim=-1, keepdim=True)
+        # v_i = (z_i / (||z_i|| + eps)) * tanh(alpha * ||z_i||)
+        direction = z / (norms + 1e-7)
+        scale = torch.tanh(self.alpha * norms)
+        return direction * scale
+
+    def compute_rank_eff(self, V: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        V: (..., 8, 128)
+        rk_eff = ||V||_F^4 / ||V V^T||_F^2
+        """
+        # Матрица Грама по 8 осям: G = V @ V^T in R^{8 x 8}
+        G = torch.matmul(V, V.transpose(-2, -1))  # (..., 8, 8)
+        # ||V||_F^2 = Tr(G)
+        frob_sq = torch.diagonal(G, dim1=-2, dim2=-1).sum(dim=-1)  # (...)
+        frob_4 = frob_sq ** 2
+        # ||V V^T||_F^2 = Tr(G @ G) = sum(G_ij^2)
+        gram_frob_sq = (G ** 2).sum(dim=[-2, -1])  # (...)
+        rk_eff = frob_4 / (gram_frob_sq + 1e-7)
+        return rk_eff, G
+
+    def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        # z: (B, T, 8, 128)
+        V = self.safe_squash(z)
+        rk_eff, G = self.compute_rank_eff(V)
+        
+        # Функция штрафа за ранг: ReLU(1.5 - rk_eff)^2
+        rank_loss = F.relu(self.rank_floor - rk_eff) ** 2
+        rank_loss = rank_loss.mean()
+
+        # Axis Dropout: в 20% батчей зануляем проекцию на главную моду Грама
+        if self.training and self.dropout_prob > 0.0:
+            if torch.rand(1).item() < self.dropout_prob:
+                # Находим главный собственный вектор матрицы Грама G
+                with torch.no_grad():
+                    # G: (B, T, 8, 8) -> берем средний или батчевый вектор
+                    L, Q = torch.linalg.eigh(G.float())
+                    q_top = Q[..., -1:].to(V.dtype)  # (B, T, 8, 1) - главная компонента осей
+                # Проекция на главную ось: (q_top^T V) * q_top
+                proj = torch.matmul(q_top.transpose(-2, -1), V)  # (B, T, 1, 128)
+                V = V - torch.matmul(q_top, proj)  # Зануление проекции главной моды
+
+        return V, rk_eff, rank_loss
+
+
+class GrassmannianSpectralPooler(nn.Module):
+    """
+    Адаптивный спектральный пулинг окна 4 -> 1 по теореме Эккарта–Янга:
+    - Partial RoPE в хвосте 112:128 (8 пар координат)
+    - Взвешенное окно W_tilde in R^{32 x 128} (sum w_m = 1)
+    - Матрица Грама окна G_win in R^{32 x 32} в float32 с Lorentzian Autograd
+    - Топ-8 осей: V_cell = U_{[:, :8]}^T W_tilde in R^{8 x 128} (d=1024)
+    - Sign Fixing: u_{k, argmax(|u_k|)} > 0
+    """
+    def __init__(self, chunk_size: int = 4, num_axes_per_tok: int = 8, out_axes: int = 8, axis_dim: int = 128):
+        super().__init__()
+        self.chunk_size = chunk_size
+        self.num_axes_per_tok = num_axes_per_tok
+        self.out_axes = out_axes
+        self.axis_dim = axis_dim
+        # Позиции токенов внутри окна: [0, 1, 2, 3]
+        self.register_buffer("positions", torch.arange(chunk_size), persistent=False)
+
+    def forward(self, V: torch.Tensor, weights: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        V: (B, N_cells, 4, 8, 128)
+        weights: (B, N_cells, 4) неотрицательные веса аттенюации (по умолчанию равномерные 1.0)
+        Возвращает:
+            V_cell: (B, N_cells, 8, 128)
+            singular_vals: (B, N_cells, 8)
+        """
+        B, N_cells, L, K, D = V.shape
+        assert L == self.chunk_size and K == self.num_axes_per_tok and D == self.axis_dim
+
+        # 1. Partial RoPE в хвосте 112:128
+        v_sem = V[..., :112]  # (B, N_cells, 4, 8, 112)
+        v_pos = V[..., 112:]  # (B, N_cells, 4, 8, 16)
+        
+        # Применяем RoPE к v_pos по позициям m in {0, 1, 2, 3}
+        v_pos_rot = apply_rope_16d(v_pos, self.positions)
+        V_tagged = torch.cat([v_sem, v_pos_rot], dim=-1)  # (B, N_cells, 4, 8, 128)
+
+        # 2. Взвешивание окна
+        if weights is None:
+            # Равномерные веса 1/4
+            w_norm = torch.full((B, N_cells, L, 1, 1), 1.0 / math.sqrt(L), device=V.device, dtype=V.dtype)
+        else:
+            # weights: (B, N_cells, 4)
+            w_sum = weights.sum(dim=-1, keepdim=True).clamp(min=1e-5)
+            w_norm = torch.sqrt(weights / w_sum).unsqueeze(-1).unsqueeze(-1)  # (B, N_cells, 4, 1, 1)
+
+        V_weighted = V_tagged * w_norm  # (B, N_cells, 4, 8, 128)
+        # Разворачиваем окно 4 токена * 8 осей = 32 вектора:
+        W_tilde = V_weighted.view(B, N_cells, L * K, D)  # (B, N_cells, 32, 128)
+
+        # 3. Матрица Грама окна 32 x 32 в float32
+        # G_win = W_tilde @ W_tilde^T in R^{32 x 32}
+        G_win = torch.matmul(W_tilde.float(), W_tilde.float().transpose(-2, -1))  # (B, N_cells, 32, 32)
+        # Симметризация для численной устойчивости
+        G_win = 0.5 * (G_win + G_win.transpose(-2, -1))
+
+        # 4. Lorentzian Eigh (дифференцируемый без NaN)
+        eigvals, eigvecs = safe_lorentzian_eigh(G_win, eps=1e-4)  # eigvals: (..., 32), eigvecs: (..., 32, 32)
+
+        # eigh возвращает собственные значения по возрастанию: берем топ-8 наибольших (хвост [-8:])
+        top_eigvals = torch.flip(eigvals[..., -self.out_axes:], dims=[-1])  # (B, N_cells, 8)
+        top_eigvecs = torch.flip(eigvecs[..., -self.out_axes:], dims=[-1])  # (B, N_cells, 32, 8)
+        
+        # Защита от отрицательных собственных чисел из-за численной погрешности
+        top_eigvals = F.relu(top_eigvals)
+
+        # 5. Sign Fixing Convention: u_{k, argmax(|u_k|)} > 0
+        # top_eigvecs: (B, N_cells, 32, 8) -> транспонируем в (B, N_cells, 8, 32)
+        u = top_eigvecs.transpose(-2, -1)  # (B, N_cells, 8, 32)
+        max_idx = torch.argmax(torch.abs(u), dim=-1, keepdim=True)  # (B, N_cells, 8, 1)
+        max_vals = torch.gather(u, dim=-1, index=max_idx)  # (B, N_cells, 8, 1)
+        signs = torch.sign(max_vals)
+        signs = torch.where(signs == 0.0, torch.ones_like(signs), signs)
+        u_fixed = u * signs  # (B, N_cells, 8, 32)
+
+        # 6. Базис клетки Эккарта–Янга: V_cell = u_fixed @ W_tilde in R^{8 x 128}
+        # Математически v_k = u_k^T W_tilde уже взвешен собственным числом sqrt(lambda_k)!
+        V_cell = torch.matmul(u_fixed.to(V.dtype), W_tilde)  # (B, N_cells, 8, 128)
+
+        singular_vals = torch.sqrt(top_eigvals).to(V.dtype)
+        return V_cell, singular_vals
+
+
+class SetCrossAttentionUnpacker(nn.Module):
+    """
+    Архитектурно O(8)-инвариантный узел распаковки клетки 1 -> 4:
+    - 4 обучаемых вектора-запроса Q in R^{4 x 128}
+    - 8 осей клетки V in R^{8 x 128} как неупорядоченное множество
+    - Cross-Attention: Softmax(Q V^T / sqrt(128)) V in R^{4 x 128}
+    - Инъекция матрицы Грама G = V V^T in R^{8 x 8} (квадратичные спектральные инварианты клетки)
+    - Проекция (128 + 128) -> 1024 + RMSNorm
+    """
+    def __init__(self, axis_dim: int = 128, num_slots: int = 4, hidden_size: int = 1024):
+        super().__init__()
+        self.axis_dim = axis_dim
+        self.num_slots = num_slots
+        self.hidden_size = hidden_size
+
+        # 4 обучаемых слота распаковки
+        self.query_slots = nn.Parameter(torch.randn(num_slots, axis_dim) * 0.02)
+        self.q_norm = RMSNorm(axis_dim)
+        self.k_norm = RMSNorm(axis_dim)
+
+        # MLP для инъекции матрицы Грама 8 x 8 = 64
+        self.gram_mlp = nn.Sequential(
+            nn.Linear(64, 128),
+            nn.SiLU(),
+            nn.Linear(128, 128),
+            RMSNorm(128),
+        )
+
+        # Проектор в скрытое состояние трансформера (128 + 128 -> 1024)
+        self.out_proj = nn.Linear(axis_dim + 128, hidden_size)
+        self.out_norm = RMSNorm(hidden_size)
+
+    def forward(self, V_cell: torch.Tensor) -> torch.Tensor:
+        """
+        V_cell: (B, N_cells, 8, 128)
+        Возвращает:
+            H_unpacked: (B, N_cells * 4, 1024)
+        """
+        B, N, K, D = V_cell.shape
+        # Q: (1, 1, 4, 128)
+        Q = self.q_norm(self.query_slots).unsqueeze(0).unsqueeze(0).expand(B, N, self.num_slots, D)
+        # K, V: (B, N, 8, 128)
+        K_mat = self.k_norm(V_cell)
+        V_mat = V_cell
+
+        # Внимание: (B, N, 4, 8)
+        scores = torch.matmul(Q, K_mat.transpose(-2, -1)) / math.sqrt(D)
+        attn = F.softmax(scores, dim=-1)
+        h_attn = torch.matmul(attn, V_mat)  # (B, N, 4, 128)
+
+        # Матрица Грама клетки: G = V @ V^T in R^{8 x 8}
+        G = torch.matmul(V_cell, V_cell.transpose(-2, -1))  # (B, N, 8, 8)
+        G_flat = G.view(B, N, 64)
+        h_gram = self.gram_mlp(G_flat).unsqueeze(2).expand(B, N, self.num_slots, 128)  # (B, N, 4, 128)
+
+        # Конкатенация внимания и квадратичных инвариантов
+        h_comb = torch.cat([h_attn, h_gram], dim=-1)  # (B, N, 4, 256)
+        h_out = self.out_norm(self.out_proj(h_comb))  # (B, N, 4, 1024)
+
+        # Разворачиваем в плоскую последовательность длины 4N: (B, 4N, 1024)
+        return h_out.view(B, N * self.num_slots, self.hidden_size)
+
+
+# %% [markdown]
+# ## 4. Полная модель GrassmannianPhase1Model
+
+# %%
+class GrassmannianPhase1Model(nn.Module):
+    """
+    Полная архитектура автоэнкодера Фазы 1 Plan C:
+    - Shared Word Embeddings E in R^{131072 x 1024} (tied с головой)
+    - 2-слойный ModernBERT Encoder (d=1024)
+    - mu-VAE Head -> сэмплирование z_raw in R^{8 x 128}
+    - Grassmannian Token Normalizer (safe_squash, rank_floor >= 1.5, axis dropout)
+    - Grassmannian Spectral Pooler (Partial RoPE, Lorentzian eigh 4 -> 1)
+    - Декомпрессор:
+      - Этап 1: 1 контекстный слой ModernBERT по N клеткам
+      - Узел распаковки: SetCrossAttentionUnpacker 1 -> 4
+      - Этап 2: 2 сглаживающих слоя ModernBERT по 4N токенам
+    - Tied Output Head E^T -> logits (B, 4N, 131072)
+    """
+    def __init__(
+        self,
+        vocab_size: int = 131072,
+        hidden_size: int = 1024,
+        intermediate_size: int = 2048,
+        num_axes: int = 8,
+        axis_dim: int = 128,
+        chunk_size: int = 4,
+    ):
+        super().__init__()
+        self.vocab_size = vocab_size
+        self.hidden_size = hidden_size
+        self.num_axes = num_axes
+        self.axis_dim = axis_dim
+        self.chunk_size = chunk_size
+
+        # 1. Tied Word Embeddings
+        self.embeddings = nn.Embedding(vocab_size, hidden_size)
+        self.embed_norm = RMSNorm(hidden_size)
+
+        # RoPE генератор для слоев трансформера
+        self.rope = RotaryEmbedding128(dim=128, max_seq_len=4096)
+
+        # 2. Split-Subspace Residual Encoder (Разделение семантики и синтаксиса)
+        # Ветка 1: Точечный SwiGLU MLP (Лексическое ядро 0:96 + RoPE хвост 112:128)
+        self.lexical_mlp = LexicalCoreMLP(hidden_size, intermediate_size, num_axes)
+        # Ветка 2: Контекстный синтаксический энкодер (2 слоя ModernBERT для 96:112)
+        self.context_encoder = ContextSyntaxEncoder(hidden_size, intermediate_size, num_axes)
+
+        # 3. Блочно-диагональный mu-VAE Head (изолированные проекторы для 96, 16 и 16 каналов)
+        self.vae_head = BlockDiagonalVAEHead(num_axes=num_axes)
+
+        # 4. Нормализатор и Пулер
+        self.normalizer = GrassmannianTokenNormalizer(axis_dim=axis_dim, num_axes=num_axes)
+        self.pooler = GrassmannianSpectralPooler(chunk_size=chunk_size, num_axes_per_tok=num_axes)
+
+        # 5. Декомпрессор Декодер:
+        # Проектор клетки V_cell (8x128 = 1024) в контекстный слой холста
+        self.cell_in_norm = RMSNorm(hidden_size)
+        # Этап 1: 1 контекстный слой трансформера по холсту N
+        self.dec_context_layer = ModernBERTLayer(hidden_size, intermediate_size)
+        # Узел распаковки Set-Cross-Attention 1 -> 4
+        self.unpacker = SetCrossAttentionUnpacker(axis_dim=axis_dim, num_slots=chunk_size, hidden_size=hidden_size)
+        # Этап 2: 2 синтаксических сглаживающих слоя трансформера по полной длине 4N
+        self.dec_smooth_layers = nn.ModuleList([
+            ModernBERTLayer(hidden_size, intermediate_size) for _ in range(2)
+        ])
+        self.dec_final_norm = RMSNorm(hidden_size)
+
+    def get_tied_head_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        # Линейная проекция через транспонированную матрицу эмбеддингов
+        return F.linear(hidden_states, self.embeddings.weight)
+
+    def encode_and_pool(
+        self, input_ids: torch.Tensor, weights: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Прямой проход энкодера и пулинга.
+        input_ids: (B, 4N)
+        Возвращает:
+            V_cell: (B, N, 8, 128)
+            kl_loss: скаляр
+            rank_loss: скаляр
+            rk_eff: (B, 4N)
+        """
+        B, seq_len = input_ids.shape
+        assert seq_len % self.chunk_size == 0, f"Seq len {seq_len} must be divisible by {self.chunk_size}"
+        num_cells = seq_len // self.chunk_size
+
+        # 1. Эмбеддинги
+        x_embed = self.embed_norm(self.embeddings(input_ids))
+        cos, sin = self.rope(x_embed, seq_len)
+
+        # 2. Split-Subspace Residual Encoder:
+        # ВЕТКА 1: Лексическое ядро и RoPE-хвост (Token-wise, БЕЗ внимания к соседям)
+        h_sem, h_pos = self.lexical_mlp(x_embed)  # (B, 4N, 8, 96), (B, 4N, 8, 16)
+
+        # ВЕТКА 2: Контекстный синтаксис (2 слоя ModernBERT с окном внимания)
+        h_syn = self.context_encoder(x_embed, cos, sin)  # (B, 4N, 8, 16)
+
+        # 3. Блочно-диагональный mu-VAE Head (полная изоляция подпространств)
+        mu, logvar = self.vae_head(h_sem, h_syn, h_pos)  # (B, 4N, 8, 128)
+        
+        # Variance-Only KL Divergence (ADR 039):
+        # -0.5 * clamp(1 + logvar - exp(logvar), min=0.2)
+        var = torch.exp(logvar)
+        kl_raw = -0.5 * (1.0 + logvar - var)
+        kl_loss = torch.clamp(kl_raw, min=0.2).mean()
+
+        if self.training:
+            eps = torch.randn_like(mu)
+            z_raw = mu + eps * torch.exp(0.5 * logvar)
+        else:
+            z_raw = mu
+
+        # 4. Нормализатор токенов (сжатие в шар, rank floor)
+        V_tok, rk_eff, rank_loss = self.normalizer(z_raw)  # (B, 4N, 8, 128)
+
+        # 5. Спектральный пулинг 4 -> 1
+        V_tok_windows = V_tok.view(B, num_cells, self.chunk_size, self.num_axes, self.axis_dim)
+        if weights is not None:
+            weights_windows = weights.view(B, num_cells, self.chunk_size)
+        else:
+            weights_windows = None
+
+        V_cell, _ = self.pooler(V_tok_windows, weights_windows)  # (B, N, 8, 128)
+
+        return V_cell, kl_loss, rank_loss, rk_eff
+
+    def decode(self, V_cell: torch.Tensor) -> torch.Tensor:
+        """
+        Декомпрессия латентных концепт-клеток в токены текста:
+        V_cell: (B, N, 8, 128)
+        Возвращает:
+            logits: (B, 4N, 131072)
+        """
+        B, N, K, D = V_cell.shape
+        # Превращаем клетку 8x128 в вектор d=1024 для контекстного слоя
+        cell_vec = self.cell_in_norm(V_cell.view(B, N, K * D))
+        cos_N, sin_N = self.rope(cell_vec, N)
+
+        # Этап 1: 1 контекстный слой ModernBERT по холсту концептов N
+        h_cell = self.dec_context_layer(cell_vec, cos_N, sin_N)
+        # Модулируем клетку контекстом холста
+        V_cell_mod = V_cell + h_cell.view(B, N, K, D)
+
+        # Узел распаковки Set-Cross-Attention 1 -> 4
+        h_unpacked = self.unpacker(V_cell_mod)  # (B, 4N, 1024)
+
+        # Этап 2: 2 сглаживающих слоя трансформера по полной длине 4N
+        full_len = N * self.chunk_size
+        cos_full, sin_full = self.rope(h_unpacked, full_len)
+        x = h_unpacked
+        for layer in self.dec_smooth_layers:
+            x = layer(x, cos_full, sin_full)
+        x = self.dec_final_norm(x)
+
+        # Tied Output Head
+        logits = self.get_tied_head_logits(x)  # (B, 4N, 131072)
+        return logits
+
+    def forward(
+        self, input_ids: torch.Tensor, weights: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        V_cell, kl_loss, rank_loss, rk_eff = self.encode_and_pool(input_ids, weights)
+        logits = self.decode(V_cell)
+        return logits, V_cell, kl_loss, rank_loss, rk_eff
+
+
+# %% [markdown]
+# ## 5. Функции потерь Фазы 1 Plan C
+
+# %%
+def compute_prior_loss(V_cell: torch.Tensor) -> torch.Tensor:
+    """
+    Взвешенный Prior Loss (Изотропия 128 каналов):
+    bar_rho_batch = (1 / (sum ||V||_F^2 + eps)) * sum V^T V in R^{128 x 128}.
+    Штраф Huber на недиагональные элементы:
+    L_prior = (2 / 128) * sum_{i < j} Huber(bar_rho_batch_{ij}, delta=0.01).
+    """
+    # V_cell: (B, N, 8, 128) -> объединяем строки осей: (B * N * 8, 128)
+    axes = V_cell.view(-1, 128).float()
+    frob_total = (axes ** 2).sum() + 1e-6
+    # bar_rho: (128, 128)
+    bar_rho = torch.matmul(axes.transpose(0, 1), axes) / frob_total
+
+    # Верхний треугольник без диагонали
+    triu_indices = torch.triu_indices(128, 128, offset=1, device=V_cell.device)
+    off_diag = bar_rho[triu_indices[0], triu_indices[1]]
+    
+    # Huber loss с delta=0.01
+    prior_loss = F.huber_loss(off_diag, torch.zeros_like(off_diag), delta=0.01, reduction="sum")
+    prior_loss = (2.0 / 128.0) * prior_loss
+    return prior_loss
+
+
+def compute_grassmann_uniformity_loss(V_cell: torch.Tensor, t: float = 2.0) -> torch.Tensor:
+    """
+    Grassmannian Uniformity Loss (Расталкивание концепт-клеток):
+    Tr(rho_A rho_B) = ||V_A V_B^T||_F^2.
+    L_uniformity = log E_{A != B} [ exp(2t * ||V_A V_B^T||_F^2) ].
+    """
+    # V_cell: (B, N, 8, 128) -> собираем все клетки батча: (M, 8, 128)
+    cells = V_cell.view(-1, 8, 128).float()
+    M = cells.shape[0]
+    if M <= 1:
+        return torch.tensor(0.0, device=V_cell.device, dtype=V_cell.dtype)
+
+    # Ограничиваем случайной подвыборкой для экономии памяти, если батч слишком велик
+    max_m = 64
+    if M > max_m:
+        idx = torch.randperm(M, device=V_cell.device)[:max_m]
+        cells = cells[idx]
+        M = max_m
+
+    # Взаимные скалярные произведения: M_AB = V_A @ V_B^T in R^{8 x 8}
+    # cells: (M, 8, 128)
+    # Tr(rho_A rho_B) = sum_{i,j} <v_{A,i}, v_{B,j}>^2
+    # Вычисляем через матричное умножение:
+    # dot_prods: (M, M, 8, 8)
+    dot_prods = torch.einsum("mik,njk->mnij", cells, cells)
+    frob_sq = (dot_prods ** 2).sum(dim=[-2, -1])  # (M, M)
+
+    # Исключаем диагональ A == B
+    mask = ~torch.eye(M, dtype=torch.bool, device=V_cell.device)
+    off_diag_frob = frob_sq[mask]
+
+    # LogSumExp для устойчивости
+    uniformity_loss = torch.logsumexp(2.0 * t * off_diag_frob, dim=0) - math.log(off_diag_frob.numel())
+    return uniformity_loss.to(V_cell.dtype)
+
+
+def compute_phase1_loss(
+    logits: torch.Tensor,
+    targets: torch.Tensor,
+    V_cell: torch.Tensor,
+    kl_loss: torch.Tensor,
+    rank_loss: torch.Tensor,
+    beta: float = 0.005,
+    gamma: float = 0.05,
+    delta: float = 0.05,
+    eta: float = 0.01,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
+    """
+    L_Phase1 = L_recon + beta * L_var_kl + gamma * L_rank_floor + delta * L_prior + eta * L_uniformity
+    """
+    # 1. Recon Loss (CrossEntropy)
+    recon_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
+
+    # 2. Prior Loss
+    prior_loss = compute_prior_loss(V_cell)
+
+    # 3. Uniformity Loss
+    uniformity_loss = compute_grassmann_uniformity_loss(V_cell)
+
+    # Суммарный лосс
+    total_loss = (
+        recon_loss
+        + beta * kl_loss
+        + gamma * rank_loss
+        + delta * prior_loss
+        + eta * uniformity_loss
+    )
+
+    metrics = {
+        "loss/total": total_loss.item(),
+        "loss/recon": recon_loss.item(),
+        "loss/kl": kl_loss.item(),
+        "loss/rank_floor": rank_loss.item(),
+        "loss/prior": prior_loss.item(),
+        "loss/uniformity": uniformity_loss.item(),
+    }
+    return total_loss, metrics
+
+
+# %% [markdown]
+# ## 6. Оптимизатор Muon + AdamW
+
+# %%
+def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
+    """
+    Ортогонализация градиента алгоритмом Ньютона–Шульца 5-го порядка (ядро оптимизатора Muon).
+    G: 2D тензор весов (M, N).
+    """
+    orig_dtype = G.dtype
+    X = G.bfloat16() if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else G.float()
+    M, N = X.shape
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    
+    # Нормировка спектральной нормы
+    norm = X.norm() + eps
+    X = X / norm
+
+    if M > N:
+        X = X.T
+
+    for _ in range(steps):
+        A = X @ X.T
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+
+    if M > N:
+        X = X.T
+
+    return X.to(orig_dtype)
+
+
+class Muon(torch.optim.Optimizer):
+    """
+    Muon (Momentum Orthogonalized by Newton-Schulz) для 2D-параметров трансформера.
+    """
+    def __init__(self, params, lr: float = 0.02, momentum: float = 0.95, nesterov: bool = True, ns_steps: int = 5):
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
+        super().__init__(params, defaults)
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            lr = group["lr"]
+            momentum = group["momentum"]
+            nesterov = group["nesterov"]
+            ns_steps = group["ns_steps"]
+
+            for p in group["params"]:
+                if p.grad is None:
+                    continue
+                g = p.grad
+                if g.ndim != 2:
+                    raise ValueError(f"Muon optimizer accepts only 2D parameters! Got shape {p.shape}")
+
+                state = self.state[p]
+                if "momentum_buffer" not in state:
+                    state["momentum_buffer"] = torch.zeros_like(g)
+                buf = state["momentum_buffer"]
+                buf.mul_(momentum).add_(g)
+
+                update = g.add(buf, alpha=momentum) if nesterov else buf
+                update_ortho = zeropower_via_newtonschulz5(update, steps=ns_steps)
+                
+                # Масштабирование обновления с учетом геометрии параметров
+                scale = max(1.0, p.size(0) / p.size(1)) ** 0.5
+                p.data.add_(update_ortho, alpha=-lr * scale)
+
+
+def create_hybrid_optimizers(
+    model: GrassmannianPhase1Model,
+    muon_lr: float = 0.02,
+    adamw_lr: float = 3e-4,
+    weight_decay: float = 0.01,
+) -> Tuple[Muon, torch.optim.AdamW]:
+    """
+    Разделение параметров по ADR и плану эксперимента:
+    - 2D-веса Attention и MLP -> Muon
+    - Эмбеддинги, RMSNorm, bias, 1D-параметры, mu-VAE Head -> AdamW
+    """
+    muon_params = []
+    adamw_params = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+        # Эмбеддинги всегда в AdamW
+        if "embeddings" in name:
+            adamw_params.append(param)
+        elif "vae_" in name:
+            adamw_params.append(param)
+        elif "norm" in name or param.ndim < 2:
+            adamw_params.append(param)
+        elif param.ndim == 2:
+            # 2D веса слоев трансформера
+            muon_params.append(param)
+        else:
+            adamw_params.append(param)
+
+    opt_muon = Muon(muon_params, lr=muon_lr) if muon_params else None
+    opt_adamw = torch.optim.AdamW(adamw_params, lr=adamw_lr, weight_decay=weight_decay)
+
+    return opt_muon, opt_adamw
+
+
+# %% [markdown]
+# ## 7. Двухрежимный датасет (Dual-Regime Dataset) с шаблонами Режима Б и взвешиванием стоп-слов
+
+# %%
+REGIME_B_TEMPLATES = [
+    # 1. Русские словарные связки:
+    [29, 28705, 1205],     # ":", " ", "это"
+    [3412, 1102, 1205],    # "слово", "—", "это"
+    [5123, 3412, 29],      # "значение", "слова", ":"
+    [1050, 412, 3412],     # "термин", "в", "контексте"
+    [28725, 1205, 1102],   # ",", "это", "—"
+    # 2. Кавычки и знаки препинания:
+    [171, 187, 28723],     # "«", "»", "."
+    [187, 28723, 13],      # "»", ".", "\n"
+    [28725, 171, 187],     # ",", "«", "»"
+    [28723, 13, 13],       # ".", "\n", "\n"
+    # 3. Английский словарный контекст:
+    [415, 264, 1820],      # "is", "a", "term"
+    [456, 304, 415],       # "The", "meaning", "is"
+    [395, 412, 456],       # "defined", "as", "the"
+    [264, 3412, 29],       # "a", "word", ":"
+    # 4. Код / форматирование:
+    [28, 120, 26],         # "=", "value", ";"
+    [105, 29, 28725],      # "id", ":", ","
+    [512, 28723, 15],      # "item", ".", "\n"
+]
+
+
+class DualRegimeDataset(Dataset):
+    """
+    Двухрежимный датасет:
+    - 85% Режим А: Связный текст с аттенюацией связок (eps_stop = 0.02) и нормировкой по окну:
+      - 1 смысловое + 3 связки -> смысловое получает ~94.3% энергии, связки по 1.9%.
+      - Чисто служебное окно (0 смысловых) -> веса автоматически выравниваются по 25% каждому.
+    - 15% Режим Б: Словарный спектр (набор разнообразных шаблонов):
+      - Словарный токен ставится на разные позиции k in {0, 1, 2, 3}.
+      - 50% энергии на словарный токен и по 16.7% (50%/3) на каждый служебный токен шаблона.
+    """
+    def __init__(
+        self,
+        token_data: Optional[torch.Tensor] = None,
+        seq_len: int = 128,
+        vocab_size: int = 131072,
+        chunk_size: int = 4,
+        regime_b_ratio: float = 0.15,
+        eps_stop: float = 0.02,
+        stopword_mask: Optional[torch.Tensor] = None,
+        virtual_length: int = 10000,
+    ):
+        assert seq_len % chunk_size == 0, f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}"
+        self.seq_len = seq_len
+        self.chunk_size = chunk_size
+        self.num_chunks = seq_len // chunk_size
+        self.vocab_size = vocab_size
+        self.regime_b_ratio = regime_b_ratio
+        self.eps_stop = eps_stop
+        self.virtual_length = virtual_length
+
+        if token_data is not None:
+            self.tokens = token_data.view(-1)
+            self.total_tokens = len(self.tokens)
+            self.has_real_data = True
+        else:
+            self.has_real_data = False
+
+        # Маска стоп-слов / связок
+        if stopword_mask is not None:
+            self.stopword_mask = stopword_mask.bool()
+        else:
+            # Базовая встроенная маска стоп-слов (пунктуация, спецтокены, частые служебные id < 64)
+            self.stopword_mask = torch.zeros(vocab_size, dtype=torch.bool)
+            safe_limit = min(64, vocab_size)
+            self.stopword_mask[:safe_limit] = True
+
+        self.templates = REGIME_B_TEMPLATES
+
+    def __len__(self) -> int:
+        if self.has_real_data:
+            return max(1, (self.total_tokens - self.seq_len) // self.seq_len)
+        return self.virtual_length
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        is_regime_b = torch.rand(1).item() < self.regime_b_ratio
+
+        if is_regime_b:
+            # === РЕЖИМ Б: Словарный спектр (набор шаблонов, случайные позиции, веса 50% / 16.7%) ===
+            input_ids = torch.zeros(self.seq_len, dtype=torch.long)
+            weights = torch.zeros(self.seq_len, dtype=torch.float32)
+
+            for chunk_idx in range(self.num_chunks):
+                start = chunk_idx * self.chunk_size
+                # 1. Случайная позиция словарного токена внутри окна: 0, 1, 2 или 3
+                dict_pos = torch.randint(0, self.chunk_size, (1,)).item()
+                # 2. Случайный токен из всего словаря
+                dict_token = torch.randint(0, self.vocab_size, (1,)).item()
+                # 3. Случайный шаблон обвязки
+                tmpl_idx = torch.randint(0, len(self.templates), (1,)).item()
+                tmpl = self.templates[tmpl_idx]
+
+                # Заполняем словарный токен: 50% веса
+                input_ids[start + dict_pos] = dict_token
+                weights[start + dict_pos] = 0.50
+
+                # Заполняем остальные 3 позиции токенами шаблона: по 50%/3 ~ 16.67% веса
+                tmpl_t_idx = 0
+                for offset in range(self.chunk_size):
+                    if offset != dict_pos:
+                        t_val = tmpl[tmpl_t_idx] % self.vocab_size
+                        input_ids[start + offset] = t_val
+                        weights[start + offset] = 0.50 / (self.chunk_size - 1)
+                        tmpl_t_idx += 1
+
+        else:
+            # === РЕЖИМ А: Связный текст (аттенюация связок с порогом eps_stop = 0.02) ===
+            if self.has_real_data:
+                start = (idx * self.seq_len) % (self.total_tokens - self.seq_len)
+                input_ids = self.tokens[start : start + self.seq_len].long()
+            else:
+                # Синтетический связный текст для smoke-test
+                max_tok = min(self.vocab_size, 5000)
+                min_tok = min(10, max_tok - 1)
+                input_ids = torch.randint(min_tok, max_tok, (self.seq_len,), dtype=torch.long)
+
+            # Вычисление нормированных весов по окнам 4 токена
+            weights = torch.zeros(self.seq_len, dtype=torch.float32)
+            for chunk_idx in range(self.num_chunks):
+                start = chunk_idx * self.chunk_size
+                window_tokens = input_ids[start : start + self.chunk_size]
+                
+                # Маска стоп-слов окна
+                is_stop = self.stopword_mask[window_tokens]
+                # Сырой вес: 1.0 для смысловых, 0.02 для стоп-слов
+                raw_w = torch.where(
+                    is_stop,
+                    torch.tensor(self.eps_stop, dtype=torch.float32),
+                    torch.tensor(1.0, dtype=torch.float32),
+                )
+                # Нормировка окна: sum(w_window) = 1.0
+                # Если все 4 токена стоп-слова: raw_w = [0.02, 0.02, 0.02, 0.02] -> sum = 0.08 -> w = 0.25 каждому!
+                w_window = raw_w / raw_w.sum()
+                weights[start : start + self.chunk_size] = w_window
+
+        return {
+            "input_ids": input_ids,
+            "targets": input_ids.clone(),
+            "weights": weights,
+            "is_regime_b": torch.tensor(1.0 if is_regime_b else 0.0),
+        }
+
+
+# %% [markdown]
+# ## 8. Главный цикл обучения (Engine)
+
+# %%
+def init_embeddings(model: GrassmannianPhase1Model, env: EnvironmentConfig):
+    """Инициализация эмбеддингов весами Truncated SVD (5120 -> 1024) из Mistral NeMo."""
+    if os.path.exists(env.embeddings_path):
+        print(f"[Init] Загрузка SVD-эмбеддингов из: {env.embeddings_path}")
+        emb_weights = torch.load(env.embeddings_path, map_location="cpu", weights_only=True)
+        if isinstance(emb_weights, dict) and "weight" in emb_weights:
+            emb_weights = emb_weights["weight"]
+        with torch.no_grad():
+            model.embeddings.weight.copy_(emb_weights)
+        print("   -> SVD-эмбеддинги успешно применены.")
+    else:
+        print(f"[Init] Предобученный файл эмбеддингов не найден по пути: {env.embeddings_path}")
+        print("   -> Инициализация эмбеддингов с дисперсией 1/sqrt(d)...")
+        nn.init.normal_(model.embeddings.weight, mean=0.0, std=1.0 / math.sqrt(model.hidden_size))
+
+
+def sync_to_gcs(local_path: str, gcs_dir: str) -> bool:
+    """
+    Синхронизация чекпоинта с Google Cloud Storage (gsutil / gcloud storage).
+    Возвращает True только при успешном завершении передачи.
+    """
+    if not os.path.exists(local_path):
+        return False
+    filename = os.path.basename(local_path)
+    # Нормализуем путь в GCS (с учетом завершающего слэша)
+    target_gcs = gcs_dir.rstrip("/") + "/" + filename
+
+    # 1. Попытка через gsutil cp
+    try:
+        res = subprocess.run(["gsutil", "cp", local_path, target_gcs], capture_output=True, text=True)
+        if res.returncode == 0:
+            print(f"[GCS] Успешно синхронизирован чекпоинт в: {target_gcs}", flush=True)
+            return True
+    except Exception:
+        pass
+
+    # 2. Fallback через gcloud storage cp
+    try:
+        res = subprocess.run(["gcloud", "storage", "cp", local_path, target_gcs], capture_output=True, text=True)
+        if res.returncode == 0:
+            print(f"[GCS] Успешно синхронизирован через gcloud в: {target_gcs}", flush=True)
+            return True
+    except Exception:
+        pass
+
+    print(f"[GCS Warning] Не удалось скопировать {filename} в {target_gcs}. Локальный файл сохранен.", flush=True)
+    return False
+
+
+def find_latest_checkpoint(checkpoint_dir: str, gcs_dir: Optional[str] = None) -> Optional[str]:
+    """Поиск последнего доступного чекпоинта локально или в GCS."""
+    # 1. Локальный поиск
+    local_files = glob.glob(os.path.join(checkpoint_dir, "phase1_step_*.pt"))
+    if local_files:
+        def extract_step(f):
+            nums = [int(s) for s in re.findall(r"\d+", os.path.basename(f))]
+            return nums[-1] if nums else 0
+        local_files.sort(key=extract_step)
+        return local_files[-1]
+
+    # 2. Поиск в GCS, если локально не найдено
+    if gcs_dir:
+        try:
+            target_pattern = gcs_dir.rstrip("/") + "/phase1_step_*.pt"
+            res = subprocess.run(["gsutil", "ls", target_pattern], capture_output=True, text=True)
+            if res.returncode == 0 and res.stdout.strip():
+                gcs_lines = [line.strip() for line in res.stdout.strip().split("\n") if line.strip()]
+                if gcs_lines:
+                    def extract_step_gcs(f):
+                        nums = [int(s) for s in re.findall(r"\d+", os.path.basename(f))]
+                        return nums[-1] if nums else 0
+                    gcs_lines.sort(key=extract_step_gcs)
+                    latest_gcs = gcs_lines[-1]
+                    local_dest = os.path.join(checkpoint_dir, os.path.basename(latest_gcs))
+                    print(f"[GCS] Скачивание последнего чекпоинта из {latest_gcs} в {local_dest}...", flush=True)
+                    dl_res = subprocess.run(["gsutil", "cp", latest_gcs, local_dest], capture_output=True, text=True)
+                    if dl_res.returncode == 0 and os.path.exists(local_dest):
+                        return local_dest
+        except Exception as e:
+            print(f"[GCS] Ошибка при проверке удаленных чекпоинтов: {e}", flush=True)
+
+    return None
+
+
+def save_checkpoint(
+    model: GrassmannianPhase1Model,
+    opt_muon: Optional[Muon],
+    opt_adamw: torch.optim.AdamW,
+    step: int,
+    metrics: Dict[str, float],
+    path: str,
+    sync_gcs: bool = False,
+    gcs_dir: str = "",
+):
+    checkpoint = {
+        "step": step,
+        "model_state_dict": model.state_dict(),
+        "opt_adamw_state_dict": opt_adamw.state_dict(),
+        "metrics": metrics,
+    }
+    if opt_muon is not None:
+        checkpoint["opt_muon_state_dict"] = opt_muon.state_dict()
+    torch.save(checkpoint, path)
+    print(f"[Checkpoint] Сохранено состояние на шаге {step} в: {path}", flush=True)
+
+    if sync_gcs and gcs_dir:
+        success = sync_to_gcs(path, gcs_dir)
+        if success:
+            try:
+                os.remove(path)
+                print(f"[Storage Cleanup] Локальный файл {os.path.basename(path)} удален после выгрузки на GCP для экономии диска Kaggle.", flush=True)
+            except Exception as e:
+                print(f"[Storage Warning] Не удалось удалить локальный файл {path}: {e}", flush=True)
+
+
+def load_checkpoint(
+    path: str,
+    model: GrassmannianPhase1Model,
+    opt_muon: Optional[Muon],
+    opt_adamw: torch.optim.AdamW,
+    device: torch.device,
+) -> int:
+    """Восстановление состояния модели и оптимизаторов из чекпоинта."""
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"[Resume] Файл чекпоинта не найден: {path}")
+
+    print(f"[Resume] Загрузка чекпоинта из: {path} ...", flush=True)
+    checkpoint = torch.load(path, map_location=device)
+
+    model.load_state_dict(checkpoint["model_state_dict"])
+    opt_adamw.load_state_dict(checkpoint["opt_adamw_state_dict"])
+
+    if opt_muon is not None and "opt_muon_state_dict" in checkpoint:
+        try:
+            opt_muon.load_state_dict(checkpoint["opt_muon_state_dict"])
+        except Exception as e:
+            print(f"[Resume Warning] Не удалось полностью восстановить состояние Muon: {e}", flush=True)
+
+    start_step = checkpoint.get("step", 0)
+    print(f"[Resume] Успешно восстановлено состояние с шага {start_step}!", flush=True)
+    return start_step
+
+
+def train(
+    model: GrassmannianPhase1Model,
+    dataloader: DataLoader,
+    env: EnvironmentConfig,
+    opt_muon: Optional[Muon] = None,
+    opt_adamw: Optional[torch.optim.AdamW] = None,
+    start_step: int = 0,
+    max_steps: int = 5000,
+    muon_lr: float = 0.02,
+    adamw_lr: float = 3e-4,
+    log_every: int = 20,
+    save_every: int = 500,
+    sync_gcs: bool = False,
+    use_wandb: bool = False,
+):
+    model.to(env.device)
+    model.train()
+
+    if opt_adamw is None:
+        opt_muon, opt_adamw = create_hybrid_optimizers(
+            model, muon_lr=muon_lr, adamw_lr=adamw_lr
+        )
+
+    print(f"=== Запуск обучения Phase 1 Plan C на устройстве: {env.device} (Dtype: {env.dtype}) ===", flush=True)
+    print(f"    - Muon параметров: {sum(p.numel() for g in opt_muon.param_groups for p in g['params']) if opt_muon else 0:,}", flush=True)
+    print(f"    - AdamW параметров: {sum(p.numel() for g in opt_adamw.param_groups for p in g['params']):,}", flush=True)
+    print(f"    - Начальный шаг: {start_step} | Целевой шаг: {max_steps}", flush=True)
+    if sync_gcs:
+        print(f"    - Синхронизация с GCS: {env.gcs_checkpoints_dir}", flush=True)
+
+    step = start_step
+    data_iter = iter(dataloader)
+    start_time = time.time()
+
+    while step < max_steps:
+        try:
+            batch = next(data_iter)
+        except StopIteration:
+            data_iter = iter(dataloader)
+            batch = next(data_iter)
+
+        input_ids = batch["input_ids"].to(env.device)
+        targets = batch["targets"].to(env.device)
+        weights = batch["weights"].to(env.device)
+
+        if opt_muon is not None:
+            opt_muon.zero_grad()
+        opt_adamw.zero_grad()
+
+        # Mixed Precision Autocast для GPU
+        use_amp = (env.device.type == "cuda")
+        with torch.autocast(device_type=env.device.type, dtype=env.dtype, enabled=use_amp):
+            logits, V_cell, kl_loss, rank_loss, rk_eff = model(input_ids, weights)
+            total_loss, metrics = compute_phase1_loss(
+                logits=logits,
+                targets=targets,
+                V_cell=V_cell,
+                kl_loss=kl_loss,
+                rank_loss=rank_loss,
+            )
+
+        total_loss.backward()
+
+        # Градиентный клиппинг
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+        if opt_muon is not None:
+            opt_muon.step()
+        opt_adamw.step()
+
+        step += 1
+
+        # Логирование
+        if step % log_every == 0 or step == 1 or step == max_steps:
+            elapsed = time.time() - start_time
+            steps_per_sec = step / max(1e-5, elapsed)
+            mean_rk = rk_eff.mean().item()
+            
+            log_str = (
+                f"Step {step:05d}/{max_steps:05d} | "
+                f"Loss: {total_loss.item():.4f} | "
+                f"Recon: {metrics['loss/recon']:.4f} | "
+                f"RankFloor: {metrics['loss/rank_floor']:.4f} | "
+                f"rk_eff: {mean_rk:.2f} | "
+                f"Speed: {steps_per_sec:.2f} step/s"
+            )
+            print(log_str, flush=True)
+
+            if use_wandb:
+                import wandb
+                metrics.update({
+                    "step": step,
+                    "metrics/rk_eff": mean_rk,
+                    "train/speed_step_per_sec": steps_per_sec,
+                })
+                wandb.log(metrics, step=step)
+
+        # Сохранение чекпоинта
+        if step % save_every == 0 or step == max_steps:
+            ckpt_path = os.path.join(env.checkpoint_dir, f"phase1_step_{step}.pt")
+            save_checkpoint(
+                model=model,
+                opt_muon=opt_muon,
+                opt_adamw=opt_adamw,
+                step=step,
+                metrics=metrics,
+                path=ckpt_path,
+                sync_gcs=sync_gcs,
+                gcs_dir=env.gcs_checkpoints_dir,
+            )
+
+    print("=== Обучение успешно завершено ===", flush=True)
+
+
+# %% [markdown]
+# ## 9. Точка входа CLI
+
+# %%
+def parse_args():
+    parser = argparse.ArgumentParser(description="BEBLaDII Phase 1 Plan C Training Script")
+    parser.add_argument("--smoke_test", action="store_true", help="Быстрый запуск на микро-масштабе для проверки целостности")
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Устройство исполнения")
+    parser.add_argument("--batch_size", type=int, default=4, help="Размер батча")
+    parser.add_argument("--seq_len", type=int, default=128, help="Длина последовательности (кратно 4)")
+    parser.add_argument("--max_steps", type=int, default=5000, help="Количество шагов обучения")
+    parser.add_argument("--muon_lr", type=float, default=0.02, help="Learning rate для Muon")
+    parser.add_argument("--adamw_lr", type=float, default=3e-4, help="Learning rate для AdamW")
+    parser.add_argument("--log_every", type=int, default=20, help="Периодичность логирования")
+    parser.add_argument("--save_every", type=int, default=500, help="Периодичность сохранения чекпоинтов")
+    parser.add_argument("--resume_ckpt", type=str, default="", help="Путь к чекпоинту для возобновления или 'auto' для поиска последнего")
+    parser.add_argument("--gcs_dir", type=str, default="", help="Переопределение пути директории в Google Cloud Storage")
+    parser.add_argument("--no_gcs", action="store_true", help="Отключить выгрузку чекпоинтов на Google Cloud Storage")
+    parser.add_argument("--wandb", type=str, default="auto", choices=["auto", "online", "disabled"], help="Режим WandB")
+    return parser.parse_args()
+
+
+def main():
+    args = parse_args()
+
+    # 1. Автоопределение окружения по единому признаку (IS_KAGGLE)
+    env = EnvironmentConfig.detect(override_device=args.device)
+    if args.gcs_dir:
+        env.gcs_checkpoints_dir = args.gcs_dir
+
+    # Синхронизация с GCS активна по умолчанию на Kaggle, если не отключена явно
+    sync_gcs = (env.is_kaggle and not args.no_gcs) or (not args.no_gcs and args.gcs_dir != "")
+
+    # При smoke_test масштабируем параметры для мгновенной проверки без нагрузки на CPU
+    vocab_size = 131072
+    if args.smoke_test:
+        print("=== РЕЖИМ SMOKE TEST АКТИВИРОВАН ===", flush=True)
+        args.max_steps = 3
+        args.batch_size = 2
+        args.seq_len = 16  # 4 клетки по 4 токена
+        args.log_every = 1
+        args.save_every = 3
+        args.wandb = "disabled"
+        sync_gcs = False
+        # Если локально нет весов Mistral-Nemo, уменьшаем словарь для мгновенного выполнения
+        if not os.path.exists(env.embeddings_path):
+            vocab_size = 2048
+            print(f"[SmokeTest] Использован микро-словарь {vocab_size} токенов для экономии CPU.", flush=True)
+
+    # WandB инициализация
+    use_wandb = False
+    wandb_mode = args.wandb if args.wandb != "auto" else env.wandb_mode
+    if wandb_mode == "online":
+        try:
+            import wandb
+            wandb.init(
+                project="BEBLaDII-Phase1-PlanC",
+                name=f"run-{'kaggle' if env.is_kaggle else 'local'}-{int(time.time())}",
+                config=vars(args),
+            )
+            use_wandb = True
+            print("[WandB] Логирование активно.", flush=True)
+        except Exception as e:
+            print(f"[WandB] Ошибка инициализации, отключаем: {e}", flush=True)
+
+    # 2. Инициализация модели
+    print(f"Создание модели GrassmannianPhase1Model (vocab_size={vocab_size})...", flush=True)
+    model = GrassmannianPhase1Model(
+        vocab_size=vocab_size,
+        hidden_size=1024,
+        intermediate_size=2048,
+        num_axes=8,
+        axis_dim=128,
+        chunk_size=4,
+    )
+    init_embeddings(model, env)
+
+    # 3. Восстановление из чекпоинта (Resume)
+    start_step = 0
+    resume_path = None
+    if args.resume_ckpt:
+        if args.resume_ckpt == "auto":
+            resume_path = find_latest_checkpoint(env.checkpoint_dir, env.gcs_checkpoints_dir if sync_gcs else None)
+            if resume_path:
+                print(f"[Resume] Найден последний доступный чекпоинт: {resume_path}", flush=True)
+            else:
+                print("[Resume Warning] Чекпоинтов для возобновления не найдено. Обучение начнется с нуля.", flush=True)
+        else:
+            resume_path = args.resume_ckpt
+
+    # Создаем оптимизаторы заранее для возможности восстановления их состояния
+    opt_muon, opt_adamw = create_hybrid_optimizers(
+        model, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr
+    )
+
+    if resume_path and os.path.exists(resume_path):
+        start_step = load_checkpoint(
+            path=resume_path,
+            model=model,
+            opt_muon=opt_muon,
+            opt_adamw=opt_adamw,
+            device=env.device,
+        )
+
+    # 4. Загрузка маски стоп-слов и подготовка DualRegimeDataset
+    stopword_mask = None
+    if os.path.exists(env.stopwords_path):
+        try:
+            print(f"[Init] Загрузка маски стоп-слов из: {env.stopwords_path}", flush=True)
+            loaded_mask = torch.load(env.stopwords_path, map_location="cpu", weights_only=False)
+            if isinstance(loaded_mask, dict) and "mask" in loaded_mask:
+                loaded_mask = loaded_mask["mask"]
+            if loaded_mask.shape[0] < vocab_size:
+                padded = torch.zeros(vocab_size, dtype=torch.bool)
+                padded[:loaded_mask.shape[0]] = loaded_mask.bool()
+                stopword_mask = padded
+            else:
+                stopword_mask = loaded_mask[:vocab_size].bool()
+            print("   -> Маска стоп-слов успешно применена.", flush=True)
+        except Exception as e:
+            print(f"[Init Warning] Не удалось загрузить маску стоп-слов: {e}", flush=True)
+
+    print("Подготовка DualRegimeDataset (Режим А: eps_stop=0.02 | Режим Б: 16 шаблонов, 50%/16.7% веса)...", flush=True)
+    dataset = DualRegimeDataset(
+        token_data=None,  # При наличии токенизированного тензора передается сюда
+        seq_len=args.seq_len,
+        vocab_size=vocab_size,
+        chunk_size=4,
+        regime_b_ratio=0.15,
+        eps_stop=0.02,
+        stopword_mask=stopword_mask,
+        virtual_length=100 if args.smoke_test else 50000,
+    )
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=True,
+        num_workers=env.num_workers,
+        pin_memory=env.pin_memory,
+    )
+
+    # 5. Запуск тренировочного конвейера с перехватом прерывания (Emergency Save)
+    try:
+        train(
+            model=model,
+            dataloader=dataloader,
+            env=env,
+            opt_muon=opt_muon,
+            opt_adamw=opt_adamw,
+            start_step=start_step,
+            max_steps=args.max_steps,
+            muon_lr=args.muon_lr,
+            adamw_lr=args.adamw_lr,
+            log_every=args.log_every,
+            save_every=args.save_every,
+            sync_gcs=sync_gcs,
+            use_wandb=use_wandb,
+        )
+    except KeyboardInterrupt:
+        print("\n[Emergency] Получен сигнал прерывания (KeyboardInterrupt)!", flush=True)
+        emergency_path = os.path.join(env.checkpoint_dir, f"phase1_emergency_step_{start_step}.pt")
+        save_checkpoint(
+            model=model,
+            opt_muon=opt_muon,
+            opt_adamw=opt_adamw,
+            step=start_step,
+            metrics={},
+            path=emergency_path,
+            sync_gcs=sync_gcs,
+            gcs_dir=env.gcs_checkpoints_dir,
+        )
+        print(f"[Emergency] Аварийный чекпоинт успешно сохранен в: {emergency_path}", flush=True)
+
+
+if __name__ == "__main__":
+    main()

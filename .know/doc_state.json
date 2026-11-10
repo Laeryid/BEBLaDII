@@ -260,8 +260,8 @@
         "mtime": 1793744173.4922578
     },
     ".know\\doc_config.json": {
-        "hash": "487152dd2c6afce9643b42c93fa9165c05e9e8ae6354d1292345705cd59c8b5e",
-        "mtime": 1793743156.3501258
+        "hash": "cfceefda8ab88d84a867122723a2fff84392bb7822b39890a09c9a7ee5a90f5a",
+        "mtime": 1794333771.306684
     },
     "ideas\\Architecture.md": {
         "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
@@ -435,14 +435,6 @@
         "hash": "94a90914dda5c448639398f2da000f3afc57d231230bec2d82a5026774ecbe07",
         "mtime": 1780509686.1352856
     },
-    "experiments\\phase 1\\train_phase1_vae_fsdp.py": {
-        "hash": "fb5298b67f5e98d8007c7896a3a564139a11c37be29ab952da39f40eff88ee2f",
-        "mtime": 1781951327.077084
-    },
-    "experiments\\phase 2\\train_phase2_decoder.py": {
-        "hash": "b46330dd82c2c444f65df3fe383ee107e42c07bca99d5ec5e371cb53d468aa28",
-        "mtime": 1782076893.2600079
-    },
     ".know\\decisions\\055_pretrained_modernbert_large_decoder_transition.md": {
         "hash": "55560f8affb5b7382b123a028734c6cee3170f9b16e0d78221a99b2daee829d1",
         "mtime": 1783793685.9075046
@@ -479,32 +471,12 @@
         "hash": "ec7f3dec2543d62d26183f014ff50e8666148b2844635e460fc6caf2301f37c9",
         "mtime": 1779900329.8353047
     },
-    "experiments\\phase 4\\kaggle\\train_phase4_notebook.py": {
-        "hash": "2da0df78e2c68c066e6cce6f299387908f25fd9935700991715eeabc35dfb2f7",
-        "mtime": 1789303304.4972217
-    },
-    "experiments\\phase 4\\ideas.md": {
-        "hash": "429fbe4e156d918ddd068ce37675af4c1164de740650a3cb49b9c45d222d0038",
-        "mtime": 1788902397.5075426
-    },
     "hugging face\\upload_weights.py": {
         "hash": "53525a6827b2c9e4b6a518f54acbb9812b9061cf9daa3540fad3d7f4c8eab0a7",
         "mtime": 1790018229.7123277
     },
-    "experiments\\phase 6\\kaggle\\train_phase6_notebook.py": {
-        "hash": "917ab234c5b28c3f35512865964b1a53c6b179884343ee6db7932245b43db29c",
-        "mtime": 1793744153.1342955
-    },
-    "experiments\\phase 6\\plan.md": {
-        "hash": "4bc26f9a5f03f8ccb6d7c4e15d755a00ca1881732e14ccbb3d8b66ce5bd20e8b",
-        "mtime": 1790712010.4094634
-    },
     ".know\\decisions\\092_phase6_void_token_and_canvas_unmasking.md": {
         "hash": "eb6f998814bd3d0c14bad54a202bb67190166392a4304c5172d263863ae6f384",
         "mtime": 1790709807.0369856
-    },
-    "experiments\\phase 6\\tpu kaggle\\train_phase6_tpu_notebook.py": {
-        "hash": "0570d807ad5dbbea1f55de9dcb3aa5c661f238c50dc6ebf3bb060db6a23ff01e",
-        "mtime": 1793744151.4390306
     }
 }

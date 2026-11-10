@@ -1,0 +1,23 @@
+𝐁𝐄𝐁𝐋𝐚𝐃𝐈𝐈: Plan B has also been declared a failure.
+
+It's not all bad — this time I got significantly further. Diffusion as denoising actually started working.
+
+My mistake was severely underestimating the AI warnings: "Generating grammar is beyond diffusion's reach."
+
+Take a look at the Phase 6 results:
+𝐏𝐫𝐨𝐦𝐩𝐭: How does your generation mechanism contrast with traditional next-token prediction models?
+𝐎𝐮𝐭𝐩𝐮𝐭 (𝐩𝐚𝐫𝐭𝐢𝐚𝐥): The1 generation model nextD model traditional next movement doesNext prediction. model does diffusionNext traditional._step traditionalNext digital Model the Model Model prediction Model the prediction. TheNext floral generation transformation the next generation with Model prediction models model the next next movement.Next floral model, prediction generation the generation Model the difficulty traditional traditional generation, the next Does the transformation traditional generation, does the model model the movement. Model theNext. The model model prediction the models. Do traditional traditional model the movement, model.
+
+Alas, diffusion couldn't manage to produce coherent text out of empty, uninformative noise.
+
+Fortunately, I have plenty of ideas on what to do next! But for speed, I decided to scale the model down by several times and lay an even more solid foundation than a spherical latent space.
+
+Drawing inspiration from Grassmannians, I decided to encode meanings as 8-dimensional subspaces!
+
+If Phase 1 converges, I'll share the details, but for now you can marvel at the math — honestly, I only understand about 30% of it myself: https://github.com/Laeryid/BEBLaDII/blob/main/experiments/plan_C_math_foundations.md
+
+I'll tidy up the repo and commit the failed attempt a bit later — it's just too tedious.
+
+P.S. I have no clue how I'm going to visualize this now.
+
+#BEBLaDII #MachineLearning #DiffusionModels #DeepLearning #PyTorch
