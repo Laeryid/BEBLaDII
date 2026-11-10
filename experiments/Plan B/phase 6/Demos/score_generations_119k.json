@@ -1,0 +1,62 @@
+{
+  "baseline": {
+    "mode_desc": "baseline (SmartCrop=none, VoidDProx=ON)",
+    "time_min": 5.61,
+    "content_words": 396,
+    "void_tokens": 13,
+    "void_pct": 2.6,
+    "sink_pct": 13.0,
+    "dprox": 0.739,
+    "ppl_gpt2": 148.2,
+    "distinct1": 0.159,
+    "distinct2": 0.522,
+    "distinct3": 0.873,
+    "prompt_word_share": 0.505,
+    "nn_prompt_share": 0.789
+  },
+  "adaptive_buf16": {
+    "mode_desc": "adaptive SmartCrop + 16 void buffer (ADR 116 default)",
+    "time_min": 5.45,
+    "content_words": 396,
+    "void_tokens": 13,
+    "void_pct": 2.6,
+    "sink_pct": 13.0,
+    "dprox": 0.739,
+    "ppl_gpt2": 148.2,
+    "distinct1": 0.159,
+    "distinct2": 0.522,
+    "distinct3": 0.873,
+    "prompt_word_share": 0.505,
+    "nn_prompt_share": 0.789
+  },
+  "soft": {
+    "mode_desc": "soft SmartCrop (tau=0.90)",
+    "time_min": 5.19,
+    "content_words": 242,
+    "void_tokens": 212,
+    "void_pct": 42.4,
+    "sink_pct": 11.6,
+    "dprox": 0.843,
+    "ppl_gpt2": 125.6,
+    "distinct1": 0.145,
+    "distinct2": 0.527,
+    "distinct3": 0.892,
+    "prompt_word_share": 0.517,
+    "nn_prompt_share": 0.784
+  },
+  "spec_adaptive": {
+    "mode_desc": "spec-adaptive (Specificity LR-Gated Guidance + Adaptive Crop)",
+    "time_min": 5.23,
+    "content_words": 401,
+    "void_tokens": 12,
+    "void_pct": 2.4,
+    "sink_pct": 12.9,
+    "dprox": 0.795,
+    "ppl_gpt2": 55.6,
+    "distinct1": 0.092,
+    "distinct2": 0.37,
+    "distinct3": 0.712,
+    "prompt_word_share": 0.526,
+    "nn_prompt_share": 0.715
+  }
+}

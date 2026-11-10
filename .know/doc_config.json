@@ -1221,6 +1221,14 @@
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
       "summary": "ADR 118: Phase 6 CAPromptLayer v4: Token-Centered Contrast, Cross-Gated GeGLU, and Zero-Vector Attention Sink"
+    },
+    "decisions/119_plan_b_retrospective_and_transition_to_plan_c.md": {
+      "description": "ADR 119: Ретроспектива и завершение Плана Б: Пределы поточечной BPE-диффузии на холсте (Demos 107k–134k) и переход к Плану С (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 119: Ретроспектива и завершение Плана Б: Пределы поточечной BPE-диффузии на холсте (Demos 107k–134k) и переход к Плану С"
     }
   },
   "knowledge_system": {
