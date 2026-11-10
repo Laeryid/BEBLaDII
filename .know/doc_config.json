@@ -1229,6 +1229,16 @@
       ],
       "depends_on": [],
       "summary": "ADR 119: Ретроспектива и завершение Плана Б: Пределы поточечной BPE-диффузии на холсте (Demos 107k–134k) и переход к Плану С"
+    },
+    "decisions/120_plan_c_tekken_tokenizer_for_cyrillic.md": {
+      "description": "ADR 120: Выбор токенизатора Tekken (Mistral AI) для кириллицы и Plan C (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "KI_knowledge_infrastructure.md"
+      ],
+      "summary": "ADR 120: Выбор токенизатора Tekken (Mistral AI) для кириллицы и Plan C"
     }
   },
   "knowledge_system": {
