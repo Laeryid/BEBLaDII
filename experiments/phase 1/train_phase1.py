@@ -69,8 +69,15 @@ class EnvironmentConfig:
             data_dir = "/kaggle/input"
             output_dir = "/kaggle/working/output"
             checkpoint_dir = "/kaggle/working/checkpoints"
-            embeddings_path = "/kaggle/input/bebladii-pretrained-embeddings/pretrained_embeddings_1024.pt"
-            stopwords_path = "/kaggle/input/bebladii-pretrained-embeddings/tekken_stopwords_mask.pt"
+            embeddings_path = "/kaggle/input/bebladii-planc-phase1-data/data/pretrained_embeddings_1024.pt"
+            stopwords_path = "/kaggle/input/bebladii-planc-phase1-data/data/tekken_stopwords_mask.pt"
+            # Динамический автопоиск в /kaggle/input на случай изменения структуры датасета
+            if os.path.exists(data_dir):
+                for root, _, files in os.walk(data_dir):
+                    if "pretrained_embeddings_1024.pt" in files:
+                        embeddings_path = os.path.join(root, "pretrained_embeddings_1024.pt")
+                    if "tekken_stopwords_mask.pt" in files:
+                        stopwords_path = os.path.join(root, "tekken_stopwords_mask.pt")
             # Wandb в Kaggle: онлайн, если задан ключ WANDB_API_KEY, иначе offline/disabled
             wandb_mode = "online" if "WANDB_API_KEY" in os.environ else "disabled"
             num_workers = 2
