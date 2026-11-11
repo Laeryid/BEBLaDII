@@ -40,6 +40,48 @@ if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
         pass
 
 
+def setup_kaggle_secrets(is_kaggle: bool):
+    """Извлечение секретов WANDB_API_KEY и GCP_SA_JSON через Kaggle Secrets API."""
+    if not is_kaggle:
+        return
+    try:
+        from kaggle_secrets import UserSecretsClient
+        user_secrets = UserSecretsClient()
+        
+        # 1. Извлечение ключа WandB
+        try:
+            wandb_key = user_secrets.get_secret("WANDB_API_KEY")
+            if wandb_key:
+                os.environ["WANDB_API_KEY"] = wandb_key.strip()
+                print("[Kaggle Secrets] Секрет WANDB_API_KEY успешно получен из Kaggle Secrets.", flush=True)
+        except Exception as e:
+            print(f"[Kaggle Secrets Info] Секрет WANDB_API_KEY не найден в Kaggle Secrets ({e}).", flush=True)
+
+        # 2. Извлечение сервисного аккаунта GCP для выгрузки чекпоинтов
+        try:
+            gcp_json = user_secrets.get_secret("GCP_SA_JSON")
+            if gcp_json:
+                key_path = "/tmp/gcp_sa_key.json"
+                with open(key_path, "w", encoding="utf-8") as f:
+                    f.write(gcp_json.strip())
+                res = subprocess.run(
+                    ["gcloud", "auth", "activate-service-account", f"--key-file={key_path}"],
+                    capture_output=True,
+                    text=True,
+                )
+                if res.returncode == 0:
+                    print("[Kaggle Secrets] Авторизация GCP через GCP_SA_JSON успешно активирована.", flush=True)
+                else:
+                    print(f"[Kaggle Secrets Warning] Ошибка авторизации gcloud: {res.stderr.strip()}", flush=True)
+        except Exception as e:
+            print(f"[Kaggle Secrets Info] Секрет GCP_SA_JSON не найден или пропущен ({e}).", flush=True)
+
+    except ImportError:
+        pass
+    except Exception as e:
+        print(f"[Kaggle Secrets Warning] Ошибка при работе с UserSecretsClient: {e}", flush=True)
+
+
 @dataclasses.dataclass
 class EnvironmentConfig:
     """Единая точка конфигурации путей и режимов для Kaggle и локальной среды."""
@@ -62,6 +104,9 @@ class EnvironmentConfig:
     def detect(cls, override_device: Optional[str] = None) -> "EnvironmentConfig":
         is_kaggle = os.path.exists("/kaggle") or ("KAGGLE_KERNEL_RUN_TYPE" in os.environ)
         
+        # Подключаем секреты Kaggle при их наличии
+        setup_kaggle_secrets(is_kaggle)
+
         # Целевая папка в Google Cloud Storage для весов Plan C Phase 1
         gcs_checkpoints_dir = "gs://bebladii-weigths-us/planC/Phase 1/checkpoints/"
 
@@ -1153,6 +1198,64 @@ class DualRegimeDataset(Dataset):
 
         self.templates = REGIME_B_TEMPLATES
 
+        # Инспекция первого сэмпла при инициализации
+        self.inspect_first_sample()
+
+    def inspect_first_sample(self):
+        """Инспекция и подробное логирование первого сэмпла датасета для контроля качества данных."""
+        if not self.has_real_data:
+            print("[Dataset Inspection] Используются синтетические данные (Режим А/Б).", flush=True)
+            return
+
+        print("\n" + "=" * 80, flush=True)
+        print("=== ИНСПЕКЦИЯ ПЕРВОГО СЭМПЛА ДАТАСЕТА (SAMPLE #0) ===", flush=True)
+        raw_text = self.texts[0]
+        preview = (raw_text[:250] + "...") if len(raw_text) > 250 else raw_text
+        print(f"1. Исходный текст ({len(raw_text)} символов):\n   \"{preview}\"", flush=True)
+
+        if self.tokenizer is not None:
+            enc = self.tokenizer.encode(raw_text)
+            total_tokens = len(enc.ids)
+            sample_tokens = enc.ids[: self.seq_len]
+            print(f"2. Токенизация: всего токенов в тексте = {total_tokens}, окно для анализа = {len(sample_tokens)} токенов.", flush=True)
+
+            last_dot = -1
+            for i in range(len(sample_tokens) - 1, -1, -1):
+                if sample_tokens[i] in self.punct_ids:
+                    last_dot = i
+                    break
+
+            cut_len = (last_dot + 1) if last_dot != -1 else len(sample_tokens)
+            pad_len = self.seq_len - cut_len
+            print(f"3. Обрезка по последней точке: позиция точки = {last_dot}, длина сэмпла L_cut = {cut_len}, PAD токенов в хвосте = {pad_len}.", flush=True)
+
+            first_8_decoded = [self.tokenizer.decode([t]) for t in sample_tokens[:8]]
+            print(f"4. Первые 8 токенов текста: {first_8_decoded}", flush=True)
+
+            # Получаем реальный сэмпл через __getitem__ в Режиме А
+            saved_ratio = self.regime_b_ratio
+            self.regime_b_ratio = 0.0  # принудительно Режим А для инспекции
+            sample_item = self.__getitem__(0)
+            self.regime_b_ratio = saved_ratio
+
+            inp = sample_item["input_ids"]
+            w = sample_item["weights"]
+            tgt = sample_item["targets"]
+
+            if cut_len >= 4:
+                last_win_idx = max(0, (cut_len // 4 - 1) * 4)
+                last_win_tokens = inp[last_win_idx : last_win_idx + 4].tolist()
+                last_win_w = [round(x, 4) for x in w[last_win_idx : last_win_idx + 4].tolist()]
+                print(f"5. Окно текста перед PAD (токены {last_win_idx}..{last_win_idx+3}): id={last_win_tokens}, веса={last_win_w}, сумма={sum(last_win_w):.4f}", flush=True)
+
+            if pad_len >= 4:
+                pad_win_idx = self.seq_len - 4
+                pad_win_tokens = inp[pad_win_idx : pad_win_idx + 4].tolist()
+                pad_win_w = [round(x, 4) for x in w[pad_win_idx : pad_win_idx + 4].tolist()]
+                print(f"6. Окно чистого PAD (токены {pad_win_idx}..{pad_win_idx+3}): id={pad_win_tokens}, веса={pad_win_w}, сумма={sum(pad_win_w):.4f} (цель={tgt[pad_win_idx].item()})", flush=True)
+
+        print("=" * 80 + "\n", flush=True)
+
     def __len__(self) -> int:
         if self.has_real_data:
             return len(self.texts)
@@ -1348,6 +1451,7 @@ def save_checkpoint(
     step: int,
     metrics: Dict[str, float],
     path: str,
+    metrics_history: Optional[List[Dict[str, Any]]] = None,
     sync_gcs: bool = False,
     gcs_dir: str = "",
 ):
@@ -1356,11 +1460,13 @@ def save_checkpoint(
         "model_state_dict": model.state_dict(),
         "opt_adamw_state_dict": opt_adamw.state_dict(),
         "metrics": metrics,
+        "metrics_history": metrics_history or [],
     }
     if opt_muon is not None:
         checkpoint["opt_muon_state_dict"] = opt_muon.state_dict()
     torch.save(checkpoint, path)
-    print(f"[Checkpoint] Сохранено состояние на шаге {step} в: {path}", flush=True)
+    hist_len = len(checkpoint["metrics_history"])
+    print(f"[Checkpoint] Сохранено состояние на шаге {step} в: {path} (история: {hist_len} записей)", flush=True)
 
     if sync_gcs and gcs_dir:
         success = sync_to_gcs(path, gcs_dir)
@@ -1378,16 +1484,28 @@ def load_checkpoint(
     opt_muon: Optional[Muon],
     opt_adamw: torch.optim.AdamW,
     device: torch.device,
-) -> int:
-    """Восстановление состояния модели и оптимизаторов из чекпоинта."""
+) -> Tuple[int, List[Dict[str, Any]]]:
+    """Восстановление состояния модели, оптимизаторов и истории метрик из чекпоинта."""
     if not os.path.exists(path):
         raise FileNotFoundError(f"[Resume] Файл чекпоинта не найден: {path}")
 
     print(f"[Resume] Загрузка чекпоинта из: {path} ...", flush=True)
     checkpoint = torch.load(path, map_location=device)
 
-    model.load_state_dict(checkpoint["model_state_dict"])
-    opt_adamw.load_state_dict(checkpoint["opt_adamw_state_dict"])
+    # Проверка совпадения словаря эмбеддингов
+    ckpt_sd = checkpoint["model_state_dict"]
+    ckpt_embed = ckpt_sd.get("embeddings.weight", None)
+    if ckpt_embed is not None and ckpt_embed.shape != model.embeddings.weight.shape:
+        print(f"[Resume Warning] Несовпадение словаря эмбеддингов: чекпоинт {ckpt_embed.shape} != модель {model.embeddings.weight.shape}. Пропускаем embeddings.", flush=True)
+        del ckpt_sd["embeddings.weight"]
+        model.load_state_dict(ckpt_sd, strict=False)
+    else:
+        model.load_state_dict(ckpt_sd)
+
+    try:
+        opt_adamw.load_state_dict(checkpoint["opt_adamw_state_dict"])
+    except Exception as e:
+        print(f"[Resume Warning] Не удалось восстановить состояние AdamW: {e}", flush=True)
 
     if opt_muon is not None and "opt_muon_state_dict" in checkpoint:
         try:
@@ -1396,8 +1514,9 @@ def load_checkpoint(
             print(f"[Resume Warning] Не удалось полностью восстановить состояние Muon: {e}", flush=True)
 
     start_step = checkpoint.get("step", 0)
-    print(f"[Resume] Успешно восстановлено состояние с шага {start_step}!", flush=True)
-    return start_step
+    metrics_history = checkpoint.get("metrics_history", [])
+    print(f"[Resume] Успешно восстановлено состояние с шага {start_step} (история: {len(metrics_history)} записей)!", flush=True)
+    return start_step, metrics_history
 
 
 def train(
@@ -1407,6 +1526,7 @@ def train(
     opt_muon: Optional[Muon] = None,
     opt_adamw: Optional[torch.optim.AdamW] = None,
     start_step: int = 0,
+    metrics_history: Optional[List[Dict[str, Any]]] = None,
     max_steps: int = 5000,
     muon_lr: float = 0.02,
     adamw_lr: float = 3e-4,
@@ -1417,6 +1537,9 @@ def train(
 ):
     model.to(env.device)
     model.train()
+
+    if metrics_history is None:
+        metrics_history = []
 
     if opt_adamw is None:
         opt_muon, opt_adamw = create_hybrid_optimizers(
@@ -1488,6 +1611,16 @@ def train(
             )
             print(log_str, flush=True)
 
+            # Сохранение записи в историю метрик
+            history_entry = {
+                "step": step,
+                "elapsed_sec": round(elapsed, 2),
+                "speed_step_per_sec": round(steps_per_sec, 2),
+                "mean_rk_eff": round(mean_rk, 4),
+                **{k: round(v, 6) if isinstance(v, float) else v for k, v in metrics.items()}
+            }
+            metrics_history.append(history_entry)
+
             if use_wandb:
                 import wandb
                 metrics.update({
@@ -1506,6 +1639,7 @@ def train(
                 opt_adamw=opt_adamw,
                 step=step,
                 metrics=metrics,
+                metrics_history=metrics_history,
                 path=ckpt_path,
                 sync_gcs=sync_gcs,
                 gcs_dir=env.gcs_checkpoints_dir,
@@ -1573,17 +1707,26 @@ def main(args=None):
     use_wandb = False
     wandb_mode = args.wandb if args.wandb != "auto" else env.wandb_mode
     if wandb_mode == "online":
-        try:
-            import wandb
-            wandb.init(
-                project="BEBLaDII-Phase1-PlanC",
-                name=f"run-{'kaggle' if env.is_kaggle else 'local'}-{int(time.time())}",
-                config=vars(args),
-            )
-            use_wandb = True
-            print("[WandB] Логирование активно.", flush=True)
-        except Exception as e:
-            print(f"[WandB] Ошибка инициализации, отключаем: {e}", flush=True)
+        api_key = os.environ.get("WANDB_API_KEY", "").strip()
+        if api_key:
+            try:
+                import wandb
+                wandb.login(key=api_key)
+                cfg_dict = vars(args) if hasattr(args, "__dict__") else (args if isinstance(args, dict) else {})
+                run = wandb.init(
+                    project="BEBLaDII-Phase1-PlanC",
+                    name=f"run-{'kaggle' if env.is_kaggle else 'local'}-{int(time.time())}",
+                    config=cfg_dict,
+                )
+                use_wandb = True
+                run_url = getattr(run, "url", None) or (run.get_url() if hasattr(run, "get_url") else "active")
+                print(f"[WandB] Логирование активно! Run URL: {run_url}", flush=True)
+            except Exception as e:
+                print(f"[WandB Warning] Ошибка инициализации wandb.init(): {e}", flush=True)
+        else:
+            print("[WandB Info] Ключ WANDB_API_KEY не обнаружен (ни в os.environ, ни в Kaggle Secrets). WandB отключен.", flush=True)
+    else:
+        print(f"[WandB Info] Режим WandB: {wandb_mode}", flush=True)
 
     # 2. Инициализация токенизатора и модели
     tokenizer = load_tekken_tokenizer(env)
@@ -1602,6 +1745,7 @@ def main(args=None):
 
     # 3. Восстановление из чекпоинта (Resume)
     start_step = 0
+    metrics_history = []
     resume_path = None
     if args.resume_ckpt:
         if args.resume_ckpt == "auto":
@@ -1619,7 +1763,7 @@ def main(args=None):
     )
 
     if resume_path and os.path.exists(resume_path):
-        start_step = load_checkpoint(
+        start_step, metrics_history = load_checkpoint(
             path=resume_path,
             model=model,
             opt_muon=opt_muon,
@@ -1676,6 +1820,7 @@ def main(args=None):
             opt_muon=opt_muon,
             opt_adamw=opt_adamw,
             start_step=start_step,
+            metrics_history=metrics_history,
             max_steps=args.max_steps,
             muon_lr=args.muon_lr,
             adamw_lr=args.adamw_lr,
@@ -1693,6 +1838,7 @@ def main(args=None):
             opt_adamw=opt_adamw,
             step=start_step,
             metrics={},
+            metrics_history=metrics_history,
             path=emergency_path,
             sync_gcs=sync_gcs,
             gcs_dir=env.gcs_checkpoints_dir,
