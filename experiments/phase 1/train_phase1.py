@@ -93,6 +93,7 @@ class EnvironmentConfig:
     embeddings_path: str
     stopwords_path: str
     data_path: str
+    val_data_path: str
     gcs_checkpoints_dir: str
     wandb_mode: str
     device: torch.device
@@ -118,6 +119,7 @@ class EnvironmentConfig:
             embeddings_path = "/kaggle/input/bebladii-planc-phase1-data/data/pretrained_embeddings_1024.pt"
             stopwords_path = "/kaggle/input/bebladii-planc-phase1-data/data/tekken_stopwords_mask.pt"
             data_path = "/kaggle/input/bebladii-planb-phase3-data/phase 3/train_data/data/train.parquet"
+            val_data_path = "/kaggle/input/bebladii-planb-phase3-data/phase 3/train_data/data/val.parquet"
             # Динамический автопоиск в /kaggle/input на случай изменения структуры датасета
             if os.path.exists(data_dir):
                 for root, _, files in os.walk(data_dir):
@@ -127,6 +129,12 @@ class EnvironmentConfig:
                         stopwords_path = os.path.join(root, "tekken_stopwords_mask.pt")
                     if "train.parquet" in files and ("phase3" in root.lower() or "phase 3" in root.lower() or not os.path.exists(data_path)):
                         data_path = os.path.join(root, "train.parquet")
+                    if "val.parquet" in files and ("phase3" in root.lower() or "phase 3" in root.lower() or not os.path.exists(val_data_path)):
+                        val_data_path = os.path.join(root, "val.parquet")
+            if not os.path.exists(val_data_path) and os.path.exists(data_path):
+                alt_val = data_path.replace("train.parquet", "val.parquet")
+                if os.path.exists(alt_val):
+                    val_data_path = alt_val
             # Wandb в Kaggle: онлайн, если задан ключ WANDB_API_KEY, иначе offline/disabled
             wandb_mode = "online" if "WANDB_API_KEY" in os.environ else "disabled"
             num_workers = 2
@@ -140,6 +148,7 @@ class EnvironmentConfig:
             embeddings_path = os.path.join(data_dir, "plan C", "pretrained_embeddings_1024.pt")
             stopwords_path = os.path.join(data_dir, "plan C", "tekken_stopwords_mask.pt")
             data_path = os.path.join(project_root, "BEBLaDII-planB-Phase3-Data", "phase 3", "train_data", "data", "train.parquet")
+            val_data_path = os.path.join(project_root, "BEBLaDII-planB-Phase3-Data", "phase 3", "train_data", "data", "val.parquet")
             wandb_mode = "disabled"
             num_workers = 0  # 0 безопаснее для Windows
             pin_memory = False
@@ -167,6 +176,7 @@ class EnvironmentConfig:
             embeddings_path=embeddings_path,
             stopwords_path=stopwords_path,
             data_path=data_path,
+            val_data_path=val_data_path,
             gcs_checkpoints_dir=gcs_checkpoints_dir,
             wandb_mode=wandb_mode,
             device=device,
@@ -1052,6 +1062,53 @@ def create_hybrid_optimizers(
     return opt_muon, opt_adamw
 
 
+class EMAModel:
+    """
+    Экспоненциальное скользящее среднее (EMA) параметров модели.
+    Хранит теневые копии обучаемых параметров строго в FP32 (ADR 045, ADR 057)
+    для предотвращения накопления ошибок округления при decay=0.999.
+    """
+    def __init__(self, model: nn.Module, decay: float = 0.999):
+        self.decay = decay
+        self.shadow = {
+            name: param.detach().clone().float()
+            for name, param in model.named_parameters()
+            if param.requires_grad
+        }
+        self.backup = {}
+
+    @torch.no_grad()
+    def update(self, model: nn.Module):
+        """Обновление теневых весов: shadow = decay * shadow + (1 - decay) * param."""
+        one_minus_decay = 1.0 - self.decay
+        for name, param in model.named_parameters():
+            if param.requires_grad and name in self.shadow:
+                self.shadow[name].lerp_(param.detach().float(), one_minus_decay)
+
+    def apply_shadow(self, model: nn.Module):
+        """Подменяет веса модели на теневые EMA перед валидацией или сохранением."""
+        self.backup = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad and name in self.shadow:
+                self.backup[name] = param.detach().clone()
+                param.data.copy_(self.shadow[name].to(param.dtype))
+
+    def restore(self, model: nn.Module):
+        """Восстанавливает горячие обучаемые веса модели."""
+        for name, param in model.named_parameters():
+            if name in self.backup:
+                param.data.copy_(self.backup[name])
+        self.backup = {}
+
+    def state_dict(self) -> Dict[str, torch.Tensor]:
+        return {k: v.cpu() for k, v in self.shadow.items()}
+
+    def load_state_dict(self, state_dict: Dict[str, torch.Tensor]):
+        for k, v in state_dict.items():
+            if k in self.shadow:
+                self.shadow[k].copy_(v.to(self.shadow[k].device))
+
+
 # %% [markdown]
 # ## 7. Двухрежимный датасет (Dual-Regime Dataset) с шаблонами Режима Б и взвешиванием стоп-слов
 
@@ -1160,6 +1217,7 @@ class DualRegimeDataset(Dataset):
         pad_token_id: int = 10,
         stopword_mask: Optional[torch.Tensor] = None,
         virtual_length: int = 50000,
+        is_validation: bool = False,
     ):
         assert seq_len % chunk_size == 0, f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}"
         self.seq_len = seq_len
@@ -1172,16 +1230,18 @@ class DualRegimeDataset(Dataset):
         self.pad_token_id = pad_token_id
         self.virtual_length = virtual_length
         self.tokenizer = tokenizer
+        self.is_validation = is_validation
 
         # Загрузка текстов из Parquet
         self.texts = []
         if parquet_path and os.path.exists(parquet_path):
             try:
                 import pandas as pd
-                print(f"[Dataset] Загрузка текстов из: {parquet_path} ...", flush=True)
+                prefix = "[Val Dataset]" if is_validation else "[Dataset]"
+                print(f"{prefix} Загрузка текстов из: {parquet_path} ...", flush=True)
                 df = pd.read_parquet(parquet_path, columns=["text"])
                 self.texts = df["text"].dropna().tolist()
-                print(f"[Dataset] Загружено {len(self.texts)} строк текста.", flush=True)
+                print(f"{prefix} Загружено {len(self.texts)} строк текста.", flush=True)
             except Exception as e:
                 print(f"[Dataset Warning] Ошибка чтения {parquet_path}: {e}", flush=True)
 
@@ -1198,8 +1258,9 @@ class DualRegimeDataset(Dataset):
 
         self.templates = REGIME_B_TEMPLATES
 
-        # Инспекция первого сэмпла при инициализации
-        self.inspect_first_sample()
+        # Инспекция первого сэмпла при инициализации обучающего датасета
+        if not is_validation:
+            self.inspect_first_sample()
 
     def inspect_first_sample(self):
         """Инспекция и подробное логирование первого сэмпла датасета для контроля качества данных."""
@@ -1452,8 +1513,10 @@ def save_checkpoint(
     metrics: Dict[str, float],
     path: str,
     metrics_history: Optional[List[Dict[str, Any]]] = None,
+    ema: Optional[EMAModel] = None,
     sync_gcs: bool = False,
     gcs_dir: str = "",
+    keep_local: bool = False,
 ):
     checkpoint = {
         "step": step,
@@ -1461,16 +1524,17 @@ def save_checkpoint(
         "opt_adamw_state_dict": opt_adamw.state_dict(),
         "metrics": metrics,
         "metrics_history": metrics_history or [],
+        "ema_state_dict": ema.state_dict() if ema is not None else None,
     }
     if opt_muon is not None:
         checkpoint["opt_muon_state_dict"] = opt_muon.state_dict()
     torch.save(checkpoint, path)
     hist_len = len(checkpoint["metrics_history"])
-    print(f"[Checkpoint] Сохранено состояние на шаге {step} в: {path} (история: {hist_len} записей)", flush=True)
+    print(f"[Checkpoint] Сохранено состояние на шаге {step} в: {path} (история: {hist_len} записей, EMA: {'Да' if ema is not None else 'Нет'})", flush=True)
 
     if sync_gcs and gcs_dir:
         success = sync_to_gcs(path, gcs_dir)
-        if success:
+        if success and not keep_local:
             try:
                 os.remove(path)
                 print(f"[Storage Cleanup] Локальный файл {os.path.basename(path)} удален после выгрузки на GCP для экономии диска Kaggle.", flush=True)
@@ -1484,6 +1548,7 @@ def load_checkpoint(
     opt_muon: Optional[Muon],
     opt_adamw: torch.optim.AdamW,
     device: torch.device,
+    ema: Optional[EMAModel] = None,
 ) -> Tuple[int, List[Dict[str, Any]]]:
     """Восстановление состояния модели, оптимизаторов и истории метрик из чекпоинта."""
     if not os.path.exists(path):
@@ -1513,10 +1578,85 @@ def load_checkpoint(
         except Exception as e:
             print(f"[Resume Warning] Не удалось полностью восстановить состояние Muon: {e}", flush=True)
 
+    if ema is not None and "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
+        try:
+            ema.load_state_dict(checkpoint["ema_state_dict"])
+            print("[Resume] Успешно восстановлены теневые веса EMA!", flush=True)
+        except Exception as e:
+            print(f"[Resume Warning] Не удалось восстановить EMA веса: {e}", flush=True)
+
     start_step = checkpoint.get("step", 0)
     metrics_history = checkpoint.get("metrics_history", [])
     print(f"[Resume] Успешно восстановлено состояние с шага {start_step} (история: {len(metrics_history)} записей)!", flush=True)
     return start_step, metrics_history
+
+
+def evaluate(
+    model: GrassmannianPhase1Model,
+    val_dataloader: DataLoader,
+    env: EnvironmentConfig,
+    eval_batches: int = 20,
+    ema: Optional[EMAModel] = None,
+) -> Dict[str, float]:
+    """
+    Прогон валидации на отложенном датасете (val.parquet) в режиме eval() и no_grad().
+    При наличии EMA валидация выполняется строго на теневых весах EMA (ADR 045).
+    """
+    if ema is not None:
+        ema.apply_shadow(model)
+    model.eval()
+
+    total_loss_accum = 0.0
+    recon_accum = 0.0
+    kl_accum = 0.0
+    prior_accum = 0.0
+    rank_floor_accum = 0.0
+    uniformity_accum = 0.0
+    rk_eff_accum = 0.0
+    batches_counted = 0
+
+    use_amp = (env.device.type == "cuda")
+    with torch.no_grad():
+        for i, batch in enumerate(val_dataloader):
+            if i >= eval_batches:
+                break
+            input_ids = batch["input_ids"].to(env.device)
+            targets = batch["targets"].to(env.device)
+            weights = batch["weights"].to(env.device)
+
+            with torch.autocast(device_type=env.device.type, dtype=env.dtype, enabled=use_amp):
+                logits, V_cell, kl_loss, rank_loss, rk_eff = model(input_ids, weights)
+                loss, metrics = compute_phase1_loss(
+                    logits=logits,
+                    targets=targets,
+                    V_cell=V_cell,
+                    kl_loss=kl_loss,
+                    rank_loss=rank_loss,
+                )
+
+            total_loss_accum += loss.item()
+            recon_accum += metrics.get("loss/recon", 0.0)
+            kl_accum += metrics.get("loss/kl", 0.0)
+            prior_accum += metrics.get("loss/prior", 0.0)
+            rank_floor_accum += metrics.get("loss/rank_floor", 0.0)
+            uniformity_accum += metrics.get("loss/uniformity", 0.0)
+            rk_eff_accum += rk_eff.mean().item()
+            batches_counted += 1
+
+    if ema is not None:
+        ema.restore(model)
+    model.train()
+
+    count = max(1, batches_counted)
+    return {
+        "val/loss": total_loss_accum / count,
+        "val/recon": recon_accum / count,
+        "val/kl": kl_accum / count,
+        "val/prior": prior_accum / count,
+        "val/rank_floor": rank_floor_accum / count,
+        "val/uniformity": uniformity_accum / count,
+        "val/rk_eff": rk_eff_accum / count,
+    }
 
 
 def train(
@@ -1532,6 +1672,10 @@ def train(
     adamw_lr: float = 3e-4,
     log_every: int = 20,
     save_every: int = 500,
+    eval_every: int = 200,
+    eval_batches: int = 20,
+    val_dataloader: Optional[DataLoader] = None,
+    ema: Optional[EMAModel] = None,
     sync_gcs: bool = False,
     use_wandb: bool = False,
 ):
@@ -1541,6 +1685,12 @@ def train(
     if metrics_history is None:
         metrics_history = []
 
+    # Восстанавливаем лучший val_loss из истории, если он есть
+    best_val_loss = float("inf")
+    for entry in metrics_history:
+        if "val/loss" in entry and entry["val/loss"] < best_val_loss:
+            best_val_loss = entry["val/loss"]
+
     if opt_adamw is None:
         opt_muon, opt_adamw = create_hybrid_optimizers(
             model, muon_lr=muon_lr, adamw_lr=adamw_lr
@@ -1549,6 +1699,8 @@ def train(
     print(f"=== Запуск обучения Phase 1 Plan C на устройстве: {env.device} (Dtype: {env.dtype}) ===", flush=True)
     print(f"    - Muon параметров: {sum(p.numel() for g in opt_muon.param_groups for p in g['params']) if opt_muon else 0:,}", flush=True)
     print(f"    - AdamW параметров: {sum(p.numel() for g in opt_adamw.param_groups for p in g['params']):,}", flush=True)
+    print(f"    - EMA: {'Включен (decay=' + str(ema.decay) + ')' if ema else 'Отключен'}", flush=True)
+    print(f"    - Валидация: {'Каждые ' + str(eval_every) + ' шагов (' + str(eval_batches) + ' батчей)' if val_dataloader else 'Отключена'}", flush=True)
     print(f"    - Начальный шаг: {start_step} | Целевой шаг: {max_steps}", flush=True)
     if sync_gcs:
         print(f"    - Синхронизация с GCS: {env.gcs_checkpoints_dir}", flush=True)
@@ -1593,6 +1745,9 @@ def train(
             opt_muon.step()
         opt_adamw.step()
 
+        if ema is not None:
+            ema.update(model)
+
         step += 1
 
         # Логирование
@@ -1614,6 +1769,7 @@ def train(
             # Сохранение записи в историю метрик
             history_entry = {
                 "step": step,
+                "type": "train",
                 "elapsed_sec": round(elapsed, 2),
                 "speed_step_per_sec": round(steps_per_sec, 2),
                 "mean_rk_eff": round(mean_rk, 4),
@@ -1630,7 +1786,58 @@ def train(
                 })
                 wandb.log(metrics, step=step)
 
-        # Сохранение чекпоинта
+        # Валидация модели
+        if val_dataloader is not None and (step % eval_every == 0 or step == max_steps):
+            val_metrics = evaluate(
+                model=model,
+                val_dataloader=val_dataloader,
+                env=env,
+                eval_batches=eval_batches,
+                ema=ema,
+            )
+            v_loss = val_metrics["val/loss"]
+            v_recon = val_metrics["val/recon"]
+            v_rk = val_metrics["val/rk_eff"]
+            v_kl = val_metrics["val/kl"]
+
+            print(
+                f"\n{'='*75}\n"
+                f"  [Validation Step {step:05d}] Val Loss: {v_loss:.4f} | Recon: {v_recon:.4f} | rk_eff: {v_rk:.2f} | KL: {v_kl:.4f}"
+                f"\n{'='*75}\n",
+                flush=True,
+            )
+
+            val_entry = {
+                "step": step,
+                "type": "val",
+                **{k: round(v, 6) if isinstance(v, float) else v for k, v in val_metrics.items()}
+            }
+            metrics_history.append(val_entry)
+
+            if use_wandb:
+                import wandb
+                wandb.log(val_metrics, step=step)
+
+            # Сохранение лучшей модели (Best Checkpoint)
+            if v_loss < best_val_loss:
+                best_val_loss = v_loss
+                best_ckpt_path = os.path.join(env.checkpoint_dir, "phase1_best_model.pt")
+                save_checkpoint(
+                    model=model,
+                    opt_muon=opt_muon,
+                    opt_adamw=opt_adamw,
+                    step=step,
+                    metrics=val_metrics,
+                    metrics_history=metrics_history,
+                    path=best_ckpt_path,
+                    ema=ema,
+                    sync_gcs=sync_gcs,
+                    gcs_dir=env.gcs_checkpoints_dir,
+                    keep_local=True,
+                )
+                print(f"[Best Model] Зафиксирован новый рекорд val_loss = {best_val_loss:.4f} на шаге {step}!", flush=True)
+
+        # Сохранение периодического чекпоинта
         if step % save_every == 0 or step == max_steps:
             ckpt_path = os.path.join(env.checkpoint_dir, f"phase1_step_{step}.pt")
             save_checkpoint(
@@ -1641,6 +1848,7 @@ def train(
                 metrics=metrics,
                 metrics_history=metrics_history,
                 path=ckpt_path,
+                ema=ema,
                 sync_gcs=sync_gcs,
                 gcs_dir=env.gcs_checkpoints_dir,
             )
@@ -1657,6 +1865,12 @@ def parse_args():
     parser.add_argument("--smoke_test", action="store_true", help="Быстрый запуск на микро-масштабе для проверки целостности")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Устройство исполнения")
     parser.add_argument("--data_path", type=str, default="auto", help="Путь к train.parquet (BEBLaDII-planB-Phase3-Data) или 'auto'")
+    parser.add_argument("--val_data_path", type=str, default="auto", help="Путь к val.parquet (BEBLaDII-planB-Phase3-Data) или 'auto'")
+    parser.add_argument("--use_ema", action="store_true", default=True, help="Использовать EMA весов")
+    parser.add_argument("--no_ema", action="store_true", help="Отключить EMA весов")
+    parser.add_argument("--ema_decay", type=float, default=0.999, help="Коэффициент сглаживания EMA")
+    parser.add_argument("--eval_every", type=int, default=200, help="Периодичность валидации (шагов)")
+    parser.add_argument("--eval_batches", type=int, default=20, help="Количество батчей для валидации")
     parser.add_argument("--batch_size", type=int, default=4, help="Размер батча")
     parser.add_argument("--seq_len", type=int, default=256, help="Длина последовательности (кратно 4)")
     parser.add_argument("--max_steps", type=int, default=5000, help="Количество шагов обучения")
@@ -1681,11 +1895,15 @@ def main(args=None):
     if args.gcs_dir:
         env.gcs_checkpoints_dir = args.gcs_dir
 
-    # Датасет train.parquet
+    # Датасеты train.parquet и val.parquet
     data_path = args.data_path if args.data_path != "auto" else env.data_path
+    val_data_path = args.val_data_path if args.val_data_path != "auto" else env.val_data_path
 
     # Синхронизация с GCS активна по умолчанию на Kaggle, если не отключена явно
     sync_gcs = (env.is_kaggle and not args.no_gcs) or (not args.no_gcs and args.gcs_dir != "")
+
+    # EMA флаг
+    use_ema = args.use_ema and not getattr(args, "no_ema", False)
 
     # При smoke_test масштабируем параметры для мгновенной проверки без нагрузки на CPU
     vocab_size = 131072
@@ -1696,6 +1914,8 @@ def main(args=None):
         args.seq_len = 16  # 4 клетки по 4 токена
         args.log_every = 1
         args.save_every = 3
+        args.eval_every = 2
+        args.eval_batches = 2
         args.wandb = "disabled"
         sync_gcs = False
         # Если локально нет весов Mistral-Nemo, уменьшаем словарь для мгновенного выполнения
@@ -1743,6 +1963,9 @@ def main(args=None):
     )
     init_embeddings(model, env)
 
+    # Инициализация EMA
+    ema = EMAModel(model, decay=args.ema_decay) if use_ema else None
+
     # 3. Восстановление из чекпоинта (Resume)
     start_step = 0
     metrics_history = []
@@ -1769,6 +1992,7 @@ def main(args=None):
             opt_muon=opt_muon,
             opt_adamw=opt_adamw,
             device=env.device,
+            ema=ema,
         )
 
     # 4. Загрузка маски стоп-слов и подготовка DualRegimeDataset
@@ -1802,6 +2026,7 @@ def main(args=None):
         pad_token_id=10,
         stopword_mask=stopword_mask,
         virtual_length=100 if args.smoke_test else 50000,
+        is_validation=False,
     )
     dataloader = DataLoader(
         dataset,
@@ -1810,6 +2035,34 @@ def main(args=None):
         num_workers=env.num_workers,
         pin_memory=env.pin_memory,
     )
+
+    # Подготовка валидационного датасета из val.parquet
+    val_dataloader = None
+    if val_data_path and os.path.exists(val_data_path):
+        print(f"Подготовка валидационного датасета из: {val_data_path}...", flush=True)
+        val_dataset = DualRegimeDataset(
+            parquet_path=val_data_path if not args.smoke_test else None,
+            tokenizer=tokenizer,
+            seq_len=args.seq_len,
+            vocab_size=vocab_size,
+            chunk_size=4,
+            regime_b_ratio=0.0,  # 100% чистый текст без шаблонов Режима Б
+            eps_stop=0.02,
+            eps_pad=0.001,
+            pad_token_id=10,
+            stopword_mask=stopword_mask,
+            virtual_length=100 if args.smoke_test else 1000,
+            is_validation=True,
+        )
+        val_dataloader = DataLoader(
+            val_dataset,
+            batch_size=args.batch_size,
+            shuffle=False,
+            num_workers=env.num_workers,
+            pin_memory=env.pin_memory,
+        )
+    else:
+        print(f"[Validation Info] Валидационный файл не найден ({val_data_path}). Валидация отключена.", flush=True)
 
     # 5. Запуск тренировочного конвейера с перехватом прерывания (Emergency Save)
     try:
@@ -1826,6 +2079,10 @@ def main(args=None):
             adamw_lr=args.adamw_lr,
             log_every=args.log_every,
             save_every=args.save_every,
+            eval_every=args.eval_every,
+            eval_batches=args.eval_batches,
+            val_dataloader=val_dataloader,
+            ema=ema,
             sync_gcs=sync_gcs,
             use_wandb=use_wandb,
         )
@@ -1840,8 +2097,10 @@ def main(args=None):
             metrics={},
             metrics_history=metrics_history,
             path=emergency_path,
+            ema=ema,
             sync_gcs=sync_gcs,
             gcs_dir=env.gcs_checkpoints_dir,
+            keep_local=True,
         )
         print(f"[Emergency] Аварийный чекпоинт успешно сохранен в: {emergency_path}", flush=True)
 
@@ -1858,6 +2117,11 @@ TRAINING_CONFIG = {
     "smoke_test": False,       # True: быстрый микро-тест на 3 шага для проверки
     "device": "auto",          # "auto" (GPU при наличии, иначе CPU), "cuda", "cpu"
     "data_path": "auto",       # "auto": автопоиск train.parquet в BEBLaDII-planB-Phase3-Data
+    "val_data_path": "auto",   # "auto": автопоиск val.parquet в BEBLaDII-planB-Phase3-Data
+    "use_ema": True,           # Использовать экспоненциальное скользящее среднее (EMA) весов
+    "ema_decay": 0.999,        # Decay фактор EMA (0.999 для сглаживания градиентного шума)
+    "eval_every": 200,         # Проводить валидацию каждые N шагов
+    "eval_batches": 20,        # Количество батчей для валидации (20 батчей * batch_size)
     "batch_size": 4,           # Размер батча (4 для T4 GPU, 8-16 для A100/H100)
     "seq_len": 256,            # Длина последовательности (256 токенов = 64 клетки по 4)
     "max_steps": 5000,         # Общее число шагов обучения
