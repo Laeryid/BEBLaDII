@@ -82,6 +82,25 @@ def setup_kaggle_secrets(is_kaggle: bool):
         print(f"[Kaggle Secrets Warning] Ошибка при работе с UserSecretsClient: {e}", flush=True)
 
 
+def warmup_linalg_backends() -> None:
+    """
+    Последовательный прогрев диспетчеров линейной алгебры (torch.linalg.eigh)
+    на всех доступных GPU в главном потоке до запуска DataParallel.
+    Устраняет race condition: 'RuntimeError: lazy wrapper should be called at most once'.
+    """
+    if torch.cuda.is_available():
+        num_devices = torch.cuda.device_count()
+        print(f"[Linalg Warmup] Последовательный прогрев cuSOLVER на {num_devices} GPU...", flush=True)
+        for dev_idx in range(num_devices):
+            dev = torch.device(f"cuda:{dev_idx}")
+            dummy = torch.eye(32, device=dev, dtype=torch.float32)
+            try:
+                _ = torch.linalg.eigh(dummy)
+            except Exception as e:
+                print(f"[Linalg Warmup Warning] GPU {dev_idx}: {e}", flush=True)
+        print("[Linalg Warmup] cuSOLVER успешно инициализирован на всех GPU.", flush=True)
+
+
 @dataclasses.dataclass
 class EnvironmentConfig:
     """Единая точка конфигурации путей и режимов для Kaggle и локальной среды."""
@@ -173,6 +192,7 @@ class EnvironmentConfig:
         # На GPU используем bfloat16 (или float16 при отсутствии bf16), на CPU - float32
         if device.type == "cuda":
             dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            warmup_linalg_backends()
         else:
             dtype = torch.float32
 
@@ -2139,6 +2159,7 @@ def main(args=None):
     # 4.5. Подключение DataParallel при наличии нескольких GPU
     use_dataparallel = getattr(args, "use_dataparallel", True) and not getattr(args, "no_dataparallel", False)
     if env.device.type == "cuda" and torch.cuda.device_count() > 1 and use_dataparallel:
+        warmup_linalg_backends()
         print(f"[DataParallel] Обнаружено {torch.cuda.device_count()} GPU (акселератор T4 x2)! Включение torch.nn.DataParallel...", flush=True)
         model = nn.DataParallel(model)
 
