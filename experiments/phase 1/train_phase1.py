@@ -50,6 +50,7 @@ class EnvironmentConfig:
     checkpoint_dir: str
     embeddings_path: str
     stopwords_path: str
+    data_path: str
     gcs_checkpoints_dir: str
     wandb_mode: str
     device: torch.device
@@ -71,6 +72,7 @@ class EnvironmentConfig:
             checkpoint_dir = "/kaggle/working/checkpoints"
             embeddings_path = "/kaggle/input/bebladii-planc-phase1-data/data/pretrained_embeddings_1024.pt"
             stopwords_path = "/kaggle/input/bebladii-planc-phase1-data/data/tekken_stopwords_mask.pt"
+            data_path = "/kaggle/input/bebladii-planb-phase3-data/phase 3/train_data/data/train.parquet"
             # Динамический автопоиск в /kaggle/input на случай изменения структуры датасета
             if os.path.exists(data_dir):
                 for root, _, files in os.walk(data_dir):
@@ -78,6 +80,8 @@ class EnvironmentConfig:
                         embeddings_path = os.path.join(root, "pretrained_embeddings_1024.pt")
                     if "tekken_stopwords_mask.pt" in files:
                         stopwords_path = os.path.join(root, "tekken_stopwords_mask.pt")
+                    if "train.parquet" in files and ("phase3" in root.lower() or "phase 3" in root.lower() or not os.path.exists(data_path)):
+                        data_path = os.path.join(root, "train.parquet")
             # Wandb в Kaggle: онлайн, если задан ключ WANDB_API_KEY, иначе offline/disabled
             wandb_mode = "online" if "WANDB_API_KEY" in os.environ else "disabled"
             num_workers = 2
@@ -90,6 +94,7 @@ class EnvironmentConfig:
             checkpoint_dir = os.path.join(project_root, "experiments", "phase 1", "checkpoints")
             embeddings_path = os.path.join(data_dir, "plan C", "pretrained_embeddings_1024.pt")
             stopwords_path = os.path.join(data_dir, "plan C", "tekken_stopwords_mask.pt")
+            data_path = os.path.join(project_root, "BEBLaDII-planB-Phase3-Data", "phase 3", "train_data", "data", "train.parquet")
             wandb_mode = "disabled"
             num_workers = 0  # 0 безопаснее для Windows
             pin_memory = False
@@ -116,6 +121,7 @@ class EnvironmentConfig:
             checkpoint_dir=checkpoint_dir,
             embeddings_path=embeddings_path,
             stopwords_path=stopwords_path,
+            data_path=data_path,
             gcs_checkpoints_dir=gcs_checkpoints_dir,
             wandb_mode=wandb_mode,
             device=device,
@@ -433,14 +439,20 @@ class GrassmannianTokenNormalizer(nn.Module):
         rk_eff = frob_4 / (gram_frob_sq + 1e-7)
         return rk_eff, G
 
-    def forward(self, z: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self, z: torch.Tensor, non_pad_mask: Optional[torch.Tensor] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         # z: (B, T, 8, 128)
         V = self.safe_squash(z)
         rk_eff, G = self.compute_rank_eff(V)
         
-        # Функция штрафа за ранг: ReLU(1.5 - rk_eff)^2
-        rank_loss = F.relu(self.rank_floor - rk_eff) ** 2
-        rank_loss = rank_loss.mean()
+        # Функция штрафа за ранг: ReLU(1.5 - rk_eff)^2 (только для реальных не-PAD токенов)
+        rank_loss_elem = F.relu(self.rank_floor - rk_eff) ** 2
+        if non_pad_mask is not None:
+            mask_f = non_pad_mask.float()
+            rank_loss = (rank_loss_elem * mask_f).sum() / mask_f.sum().clamp(min=1.0)
+        else:
+            rank_loss = rank_loss_elem.mean()
 
         # Axis Dropout: в 20% батчей зануляем проекцию на главную моду Грама
         if self.training and self.dropout_prob > 0.0:
@@ -629,6 +641,7 @@ class GrassmannianPhase1Model(nn.Module):
         num_axes: int = 8,
         axis_dim: int = 128,
         chunk_size: int = 4,
+        pad_token_id: int = 10,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -636,6 +649,7 @@ class GrassmannianPhase1Model(nn.Module):
         self.num_axes = num_axes
         self.axis_dim = axis_dim
         self.chunk_size = chunk_size
+        self.pad_token_id = pad_token_id
 
         # 1. Tied Word Embeddings
         self.embeddings = nn.Embedding(vocab_size, hidden_size)
@@ -716,8 +730,20 @@ class GrassmannianPhase1Model(nn.Module):
         else:
             z_raw = mu
 
-        # 4. Нормализатор токенов (сжатие в шар, rank floor)
-        V_tok, rk_eff, rank_loss = self.normalizer(z_raw)  # (B, 4N, 8, 128)
+        # 4. Нормализатор токенов (сжатие в шар, rank floor с маскированием PAD)
+        non_pad_mask = (input_ids != self.pad_token_id)
+        V_tok, rk_eff, rank_loss = self.normalizer(z_raw, non_pad_mask=non_pad_mask)  # (B, 4N, 8, 128)
+
+        # Канонический репер VOID для PAD токенов:
+        # Для PAD: v_sem = 0, v_syn[0, 15] = sqrt(0.02), v_pos = 0, остальные 7 осей = 0
+        is_pad = ~non_pad_mask  # (B, 4N)
+        if is_pad.any():
+            V_pad = torch.zeros(self.num_axes, self.axis_dim, device=V_tok.device, dtype=V_tok.dtype)
+            # Координата 111 (синтаксический карман [96:112])
+            V_pad[0, 111] = math.sqrt(0.02)
+            pad_expanded = is_pad.unsqueeze(-1).unsqueeze(-1)  # (B, 4N, 1, 1)
+            V_tok = torch.where(pad_expanded, V_pad, V_tok)
+            rk_eff = torch.where(is_pad, torch.ones_like(rk_eff), rk_eff)
 
         # 5. Спектральный пулинг 4 -> 1
         V_tok_windows = V_tok.view(B, num_cells, self.chunk_size, self.num_axes, self.axis_dim)
@@ -1009,26 +1035,86 @@ REGIME_B_TEMPLATES = [
 ]
 
 
+def load_tekken_tokenizer(env: EnvironmentConfig) -> Optional[Any]:
+    """Загрузка токенизатора Tekken из локального файла, кэша или Hugging Face Hub."""
+    candidates = [
+        os.path.join(env.project_root, "data", "plan C", "tokenizer.json"),
+        os.path.join(env.data_dir, "bebladii-planc-phase1-data", "tokenizer.json"),
+        os.path.join(env.data_dir, "tokenizer.json"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            try:
+                from tokenizers import Tokenizer
+                print(f"[Tokenizer] Загрузка токенизатора из локального пути: {c}", flush=True)
+                return Tokenizer.from_file(c)
+            except Exception:
+                pass
+
+    if os.path.exists(env.data_dir):
+        for root, _, files in os.walk(env.data_dir):
+            if "tokenizer.json" in files:
+                try:
+                    from tokenizers import Tokenizer
+                    p = os.path.join(root, "tokenizer.json")
+                    print(f"[Tokenizer] Найден токенизатор в датасете: {p}", flush=True)
+                    return Tokenizer.from_file(p)
+                except Exception:
+                    pass
+
+    try:
+        from huggingface_hub import hf_hub_download
+        from tokenizers import Tokenizer
+        p = hf_hub_download(repo_id="mistralai/Mistral-Nemo-Base-2407", filename="tokenizer.json")
+        print(f"[Tokenizer] Загружен токенизатор из кэша HF: {p}", flush=True)
+        return Tokenizer.from_file(p)
+    except Exception as e:
+        print(f"[Tokenizer Warning] Не удалось загрузить Tekken tokenizer.json: {e}", flush=True)
+        return None
+
+
+def build_punctuation_id_set(tokenizer: Optional[Any]) -> set:
+    """Множество token_id, содержащих знаки завершения предложений (. ! ? \\n)."""
+    punct_ids = set()
+    if tokenizer is not None:
+        try:
+            vocab = tokenizer.get_vocab()
+            for text, tid in vocab.items():
+                if any(p in text for p in [".", "!", "?", "\n"]):
+                    punct_ids.add(tid)
+        except Exception:
+            pass
+    # Базовые ID знаков препинания Tekken по умолчанию
+    default_puncts = {1046, 2247, 1063, 1047, 13, 28723, 28725, 120, 26, 29}
+    punct_ids.update(default_puncts)
+    return punct_ids
+
+
 class DualRegimeDataset(Dataset):
     """
-    Двухрежимный датасет:
-    - 85% Режим А: Связный текст с аттенюацией связок (eps_stop = 0.02) и нормировкой по окну:
-      - 1 смысловое + 3 связки -> смысловое получает ~94.3% энергии, связки по 1.9%.
-      - Чисто служебное окно (0 смысловых) -> веса автоматически выравниваются по 25% каждому.
-    - 15% Режим Б: Словарный спектр (набор разнообразных шаблонов):
-      - Словарный токен ставится на разные позиции k in {0, 1, 2, 3}.
-      - 50% энергии на словарный токен и по 16.7% (50%/3) на каждый служебный токен шаблона.
+    Двухрежимный датасет Фазы 1 Plan C:
+    - 85% Режим А: Связный текст из train.parquet (BEBLaDII-planB-Phase3-Data).
+      - Обрезка по последней точке/знаку препинания до границы seq_len (256 токенов).
+      - Дозаполнение до seq_len токенами PAD (pad_token_id = 10).
+      - Двухуровневое взвешивание:
+        - Уровень 1 (смешанное окно): w_content = 1.0, w_stop = 0.02, w_pad = 0.001 -> вклад PAD < 0.1% энергии.
+        - Уровень 2 (окно чистого PAD): веса по 0.25 каждому -> чистая VOID-клетка без деления на ноль.
+      - Цели: targets[is_pad] = -100 (маскирование в CrossEntropy).
+    - 15% Режим Б: Словарный спектр (16 разнообразных шаблонов, 50% вес на редкий токен, по 16.7% на связки).
     """
     def __init__(
         self,
-        token_data: Optional[torch.Tensor] = None,
-        seq_len: int = 128,
+        parquet_path: Optional[str] = None,
+        tokenizer: Optional[Any] = None,
+        seq_len: int = 256,
         vocab_size: int = 131072,
         chunk_size: int = 4,
         regime_b_ratio: float = 0.15,
         eps_stop: float = 0.02,
+        eps_pad: float = 0.001,
+        pad_token_id: int = 10,
         stopword_mask: Optional[torch.Tensor] = None,
-        virtual_length: int = 10000,
+        virtual_length: int = 50000,
     ):
         assert seq_len % chunk_size == 0, f"seq_len {seq_len} must be divisible by chunk_size {chunk_size}"
         self.seq_len = seq_len
@@ -1037,20 +1123,30 @@ class DualRegimeDataset(Dataset):
         self.vocab_size = vocab_size
         self.regime_b_ratio = regime_b_ratio
         self.eps_stop = eps_stop
+        self.eps_pad = eps_pad
+        self.pad_token_id = pad_token_id
         self.virtual_length = virtual_length
+        self.tokenizer = tokenizer
 
-        if token_data is not None:
-            self.tokens = token_data.view(-1)
-            self.total_tokens = len(self.tokens)
-            self.has_real_data = True
-        else:
-            self.has_real_data = False
+        # Загрузка текстов из Parquet
+        self.texts = []
+        if parquet_path and os.path.exists(parquet_path):
+            try:
+                import pandas as pd
+                print(f"[Dataset] Загрузка текстов из: {parquet_path} ...", flush=True)
+                df = pd.read_parquet(parquet_path, columns=["text"])
+                self.texts = df["text"].dropna().tolist()
+                print(f"[Dataset] Загружено {len(self.texts)} строк текста.", flush=True)
+            except Exception as e:
+                print(f"[Dataset Warning] Ошибка чтения {parquet_path}: {e}", flush=True)
+
+        self.has_real_data = len(self.texts) > 0
+        self.punct_ids = build_punctuation_id_set(self.tokenizer)
 
         # Маска стоп-слов / связок
         if stopword_mask is not None:
             self.stopword_mask = stopword_mask.bool()
         else:
-            # Базовая встроенная маска стоп-слов (пунктуация, спецтокены, частые служебные id < 64)
             self.stopword_mask = torch.zeros(vocab_size, dtype=torch.bool)
             safe_limit = min(64, vocab_size)
             self.stopword_mask[:safe_limit] = True
@@ -1059,32 +1155,27 @@ class DualRegimeDataset(Dataset):
 
     def __len__(self) -> int:
         if self.has_real_data:
-            return max(1, (self.total_tokens - self.seq_len) // self.seq_len)
+            return len(self.texts)
         return self.virtual_length
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         is_regime_b = torch.rand(1).item() < self.regime_b_ratio
 
         if is_regime_b:
-            # === РЕЖИМ Б: Словарный спектр (набор шаблонов, случайные позиции, веса 50% / 16.7%) ===
+            # === РЕЖИМ Б: Словарный спектр (шаблоны, веса 50% / 16.7%) ===
             input_ids = torch.zeros(self.seq_len, dtype=torch.long)
             weights = torch.zeros(self.seq_len, dtype=torch.float32)
 
             for chunk_idx in range(self.num_chunks):
                 start = chunk_idx * self.chunk_size
-                # 1. Случайная позиция словарного токена внутри окна: 0, 1, 2 или 3
                 dict_pos = torch.randint(0, self.chunk_size, (1,)).item()
-                # 2. Случайный токен из всего словаря
                 dict_token = torch.randint(0, self.vocab_size, (1,)).item()
-                # 3. Случайный шаблон обвязки
                 tmpl_idx = torch.randint(0, len(self.templates), (1,)).item()
                 tmpl = self.templates[tmpl_idx]
 
-                # Заполняем словарный токен: 50% веса
                 input_ids[start + dict_pos] = dict_token
                 weights[start + dict_pos] = 0.50
 
-                # Заполняем остальные 3 позиции токенами шаблона: по 50%/3 ~ 16.67% веса
                 tmpl_t_idx = 0
                 for offset in range(self.chunk_size):
                     if offset != dict_pos:
@@ -1093,39 +1184,70 @@ class DualRegimeDataset(Dataset):
                         weights[start + offset] = 0.50 / (self.chunk_size - 1)
                         tmpl_t_idx += 1
 
+            targets = input_ids.clone()
+
         else:
-            # === РЕЖИМ А: Связный текст (аттенюация связок с порогом eps_stop = 0.02) ===
-            if self.has_real_data:
-                start = (idx * self.seq_len) % (self.total_tokens - self.seq_len)
-                input_ids = self.tokens[start : start + self.seq_len].long()
+            # === РЕЖИМ А: Связный текст с обрезкой по последней точке и двухуровневой PAD-маской ===
+            if self.has_real_data and self.tokenizer is not None:
+                text = self.texts[idx % len(self.texts)]
+                enc = self.tokenizer.encode(text)
+                raw_token_ids = enc.ids
             else:
-                # Синтетический связный текст для smoke-test
                 max_tok = min(self.vocab_size, 5000)
                 min_tok = min(10, max_tok - 1)
-                input_ids = torch.randint(min_tok, max_tok, (self.seq_len,), dtype=torch.long)
+                raw_token_ids = torch.randint(min_tok, max_tok, (self.seq_len,)).tolist()
 
-            # Вычисление нормированных весов по окнам 4 токена
+            # 1. Берем срез до границы seq_len
+            sample_tokens = raw_token_ids[: self.seq_len]
+
+            # 2. Ищем позицию последней точки/знака завершения
+            last_dot = -1
+            for i in range(len(sample_tokens) - 1, -1, -1):
+                if sample_tokens[i] in self.punct_ids:
+                    last_dot = i
+                    break
+
+            if last_dot != -1:
+                cut_tokens = sample_tokens[: last_dot + 1]
+            else:
+                cut_tokens = sample_tokens
+
+            # 3. Дополняем до seq_len токенами PAD
+            n_real = len(cut_tokens)
+            input_ids = torch.full((self.seq_len,), self.pad_token_id, dtype=torch.long)
+            if n_real > 0:
+                input_ids[:n_real] = torch.tensor(cut_tokens, dtype=torch.long)
+
+            # Цели: для PAD выставляем -100 (маскирование в CrossEntropy)
+            targets = input_ids.clone()
+            targets[n_real:] = -100
+
+            # 4. Двухуровневое взвешивание окон по 4 токена
             weights = torch.zeros(self.seq_len, dtype=torch.float32)
             for chunk_idx in range(self.num_chunks):
                 start = chunk_idx * self.chunk_size
                 window_tokens = input_ids[start : start + self.chunk_size]
-                
-                # Маска стоп-слов окна
-                is_stop = self.stopword_mask[window_tokens]
-                # Сырой вес: 1.0 для смысловых, 0.02 для стоп-слов
+
+                is_pad = (window_tokens == self.pad_token_id)
+                valid_mask_idx = torch.clamp(window_tokens, 0, len(self.stopword_mask) - 1)
+                is_stop = self.stopword_mask[valid_mask_idx] & (~is_pad)
+
+                # Базовые сырые веса: 1.0 смысловые, 0.02 стоп-слова, 0.001 PAD
                 raw_w = torch.where(
-                    is_stop,
-                    torch.tensor(self.eps_stop, dtype=torch.float32),
-                    torch.tensor(1.0, dtype=torch.float32),
+                    is_pad,
+                    torch.tensor(self.eps_pad, dtype=torch.float32),
+                    torch.where(
+                        is_stop,
+                        torch.tensor(self.eps_stop, dtype=torch.float32),
+                        torch.tensor(1.0, dtype=torch.float32),
+                    ),
                 )
-                # Нормировка окна: sum(w_window) = 1.0
-                # Если все 4 токена стоп-слова: raw_w = [0.02, 0.02, 0.02, 0.02] -> sum = 0.08 -> w = 0.25 каждому!
-                w_window = raw_w / raw_w.sum()
-                weights[start : start + self.chunk_size] = w_window
+                # Нормировка окна (sum(w) = 1.0)
+                weights[start : start + self.chunk_size] = raw_w / raw_w.sum()
 
         return {
             "input_ids": input_ids,
-            "targets": input_ids.clone(),
+            "targets": targets,
             "weights": weights,
             "is_regime_b": torch.tensor(1.0 if is_regime_b else 0.0),
         }
@@ -1400,8 +1522,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="BEBLaDII Phase 1 Plan C Training Script")
     parser.add_argument("--smoke_test", action="store_true", help="Быстрый запуск на микро-масштабе для проверки целостности")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Устройство исполнения")
+    parser.add_argument("--data_path", type=str, default="auto", help="Путь к train.parquet (BEBLaDII-planB-Phase3-Data) или 'auto'")
     parser.add_argument("--batch_size", type=int, default=4, help="Размер батча")
-    parser.add_argument("--seq_len", type=int, default=128, help="Длина последовательности (кратно 4)")
+    parser.add_argument("--seq_len", type=int, default=256, help="Длина последовательности (кратно 4)")
     parser.add_argument("--max_steps", type=int, default=5000, help="Количество шагов обучения")
     parser.add_argument("--muon_lr", type=float, default=0.02, help="Learning rate для Muon")
     parser.add_argument("--adamw_lr", type=float, default=3e-4, help="Learning rate для AdamW")
@@ -1421,6 +1544,9 @@ def main():
     env = EnvironmentConfig.detect(override_device=args.device)
     if args.gcs_dir:
         env.gcs_checkpoints_dir = args.gcs_dir
+
+    # Датасет train.parquet
+    data_path = args.data_path if args.data_path != "auto" else env.data_path
 
     # Синхронизация с GCS активна по умолчанию на Kaggle, если не отключена явно
     sync_gcs = (env.is_kaggle and not args.no_gcs) or (not args.no_gcs and args.gcs_dir != "")
@@ -1457,8 +1583,10 @@ def main():
         except Exception as e:
             print(f"[WandB] Ошибка инициализации, отключаем: {e}", flush=True)
 
-    # 2. Инициализация модели
-    print(f"Создание модели GrassmannianPhase1Model (vocab_size={vocab_size})...", flush=True)
+    # 2. Инициализация токенизатора и модели
+    tokenizer = load_tekken_tokenizer(env)
+
+    print(f"Создание модели GrassmannianPhase1Model (vocab_size={vocab_size}, pad_token_id=10)...", flush=True)
     model = GrassmannianPhase1Model(
         vocab_size=vocab_size,
         hidden_size=1024,
@@ -1466,6 +1594,7 @@ def main():
         num_axes=8,
         axis_dim=128,
         chunk_size=4,
+        pad_token_id=10,
     )
     init_embeddings(model, env)
 
@@ -1514,14 +1643,17 @@ def main():
         except Exception as e:
             print(f"[Init Warning] Не удалось загрузить маску стоп-слов: {e}", flush=True)
 
-    print("Подготовка DualRegimeDataset (Режим А: eps_stop=0.02 | Режим Б: 16 шаблонов, 50%/16.7% веса)...", flush=True)
+    print(f"Подготовка DualRegimeDataset (seq_len={args.seq_len}, Режим А: обрезка предложений + двухуровневый PAD, Режим Б: шаблоны)...", flush=True)
     dataset = DualRegimeDataset(
-        token_data=None,  # При наличии токенизированного тензора передается сюда
+        parquet_path=data_path if not args.smoke_test else None,
+        tokenizer=tokenizer,
         seq_len=args.seq_len,
         vocab_size=vocab_size,
         chunk_size=4,
         regime_b_ratio=0.15,
         eps_stop=0.02,
+        eps_pad=0.001,
+        pad_token_id=10,
         stopword_mask=stopword_mask,
         virtual_length=100 if args.smoke_test else 50000,
     )
