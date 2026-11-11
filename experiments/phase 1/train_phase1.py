@@ -204,72 +204,47 @@ class EnvironmentConfig:
 # %%
 class LorentzianEigh(torch.autograd.Function):
     """
-    Спектральное разложение симметричной матрицы с лоренцевой регуляризацией градиентов (Lorentzian Broadening).
-    Устраняет деление на ноль и градиентный взрыв (NaN) в обратном проходе при близких/равных собственных числах:
-        1 / (lambda_i - lambda_j) -> (lambda_i - lambda_j) / ((lambda_i - lambda_j)^2 + eps^2).
-    Вычисления строго в float32 с Тихоновской регуляризацией диагонали для гарантированной сходимости cuSOLVER.
+    Спектральное разложение симметричной матрицы с анизотропным сдвигом спектра
+    и лоренцевой регуляризацией градиентов. Гарантирует отсутствие кратных корней в cuSOLVER на GPU.
     """
     @staticmethod
     def forward(ctx, G: torch.Tensor, eps: float = 1e-4) -> Tuple[torch.Tensor, torch.Tensor]:
-        # G: (..., K, K) симметричная матрица
         orig_dtype = G.dtype
-        G_f32 = G.float()
+        G_f32 = 0.5 * (G.float() + G.float().transpose(-2, -1))
         K = G_f32.size(-1)
-        eye = torch.eye(K, device=G_f32.device, dtype=G_f32.dtype)
-        jitter = 1e-5
 
-        # Регуляризация Тихонова: сдвиг спектра на jitter * I гарантирует отсутствие нулевых кратных корней
-        # и сохраняет инвариантность собственных векторов (G v = lambda v <=> (G + eps*I) v = (lambda + eps) v)
-        G_reg = G_f32 + eye * jitter
-        try:
-            L, V = torch.linalg.eigh(G_reg)
-        except Exception:
-            # Fallback 1: Повышенный джиттер 1e-4
-            try:
-                G_reg_high = G_f32 + eye * 1e-4
-                L, V = torch.linalg.eigh(G_reg_high)
-                jitter = 1e-4
-            except Exception:
-                # Fallback 2: Вычисление через CPU LAPACK (dsyevd абсолютно устойчив к кратным корням)
-                G_cpu = G_reg.detach().cpu()
-                L_cpu, V_cpu = torch.linalg.eigh(G_cpu)
-                L = L_cpu.to(G_f32.device)
-                V = V_cpu.to(G_f32.device)
+        # Строго монотонный диагональный сдвиг спектра: снимает любое вырождение (даже при G = 0)
+        # и гарантирует отсутствие кратных корней для GPU cuSOLVER без CPU fallback
+        diag_shift = torch.arange(1, K + 1, device=G_f32.device, dtype=torch.float32) * 1e-6
+        G_reg = G_f32 + torch.diag(diag_shift)
 
-        # Вычитаем добавленный джиттер из собственных чисел и клипаем в 0
-        L = torch.clamp(L - jitter, min=0.0)
+        L_reg, V = torch.linalg.eigh(G_reg)
 
-        ctx.save_for_backward(L, V)
+        # Сохраняем L_reg (со сдвигом!) для backward, чтобы разности L_i - L_j никогда не были строго нулевыми
+        ctx.save_for_backward(L_reg, V)
         ctx.eps = eps
         ctx.orig_dtype = orig_dtype
-        return L.to(orig_dtype), V.to(orig_dtype)
+
+        # Для прямого прохода возвращаем очищенные неотрицательные собственные числа
+        L_clean = torch.clamp(L_reg - diag_shift, min=1e-8)
+        return L_clean.to(orig_dtype), V.to(orig_dtype)
 
     @staticmethod
     def backward(ctx, grad_L: torch.Tensor, grad_V: torch.Tensor) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        L, V = ctx.saved_tensors
+        L_reg, V = ctx.saved_tensors
         eps = ctx.eps
-        
-        # Разность собственных значений: diff[..., i, j] = L[..., j] - L[..., i]
-        diff = L.unsqueeze(-2) - L.unsqueeze(-1)
-        # Лоренцево ядро сглаживания
-        lorentz = diff / (diff**2 + eps**2)
-        # Зануляем главную диагональ (i == j)
+
+        diff = L_reg.unsqueeze(-2) - L_reg.unsqueeze(-1)
+        lorentz = diff / (diff ** 2 + eps ** 2)
         lorentz.diagonal(dim1=-2, dim2=-1).zero_()
 
-        # V^T @ grad_V
         vt_gv = torch.matmul(V.transpose(-2, -1), grad_V.float())
-        # Антисимметризация проекции градиента (исключает симметричный численный шум)
         vt_gv_skew = 0.5 * (vt_gv - vt_gv.transpose(-2, -1))
-        # Промежуточный тензор: diag(grad_L) + lorentz * vt_gv_skew
         mid = torch.diag_embed(grad_L.float()) + lorentz * vt_gv_skew
-        
-        # grad_G = V @ mid @ V^T
+
         grad_G = torch.matmul(torch.matmul(V, mid), V.transpose(-2, -1))
-        # Симметризация градиента
         grad_G = 0.5 * (grad_G + grad_G.transpose(-2, -1))
-        # Защита от нечисловых значений
         grad_G = torch.nan_to_num(grad_G, nan=0.0, posinf=0.0, neginf=0.0)
-        
         return grad_G.to(ctx.orig_dtype), None
 
 
@@ -551,14 +526,14 @@ class GrassmannianTokenNormalizer(nn.Module):
         # Axis Dropout: в 20% батчей зануляем проекцию на главную моду Грама
         if self.training and self.dropout_prob > 0.0:
             if torch.rand(1).item() < self.dropout_prob:
-                # Находим главный собственный вектор матрицы Грама G
                 with torch.no_grad():
-                    # G: (B, T, 8, 8) -> берем средний или батчевый вектор
-                    L, Q = torch.linalg.eigh(G.float())
-                    q_top = Q[..., -1:].to(V.dtype)  # (B, T, 8, 1) - главная компонента осей
-                # Проекция на главную ось: (q_top^T V) * q_top
-                proj = torch.matmul(q_top.transpose(-2, -1), V)  # (B, T, 1, 128)
-                V = V - torch.matmul(q_top, proj)  # Зануление проекции главной моды
+                    # Используем стабилизированный сдвиг диагонали вместо голого eigh
+                    K = G.size(-1)
+                    shift = torch.arange(1, K + 1, device=G.device, dtype=torch.float32) * 1e-6
+                    _, Q = torch.linalg.eigh(G.float() + torch.diag(shift))
+                    q_top = Q[..., -1:].to(V.dtype)
+                proj = torch.matmul(q_top.transpose(-2, -1), V)
+                V = V - torch.matmul(q_top, proj)
 
         return V, rk_eff, rank_loss
 
@@ -642,7 +617,7 @@ class GrassmannianSpectralPooler(nn.Module):
         # Математически v_k = u_k^T W_tilde уже взвешен собственным числом sqrt(lambda_k)!
         V_cell = torch.matmul(u_fixed.to(V.dtype), W_tilde)  # (B, N_cells, 8, 128)
 
-        singular_vals = torch.sqrt(top_eigvals).to(V.dtype)
+        singular_vals = torch.sqrt(top_eigvals.clamp(min=1e-8)).to(V.dtype)
         return V_cell, singular_vals
 
 
@@ -812,32 +787,37 @@ class GrassmannianPhase1Model(nn.Module):
         # 3. Блочно-диагональный mu-VAE Head (полная изоляция подпространств)
         mu, logvar = self.vae_head(h_sem, h_syn, h_pos)  # (B, 4N, 8, 128)
         
-        # Variance-Only KL Divergence (ADR 039):
-        # -0.5 * clamp(1 + logvar - exp(logvar), min=0.2)
-        var = torch.exp(logvar)
+        non_pad_mask = (input_ids != self.pad_token_id)  # (B, 4N)
+        mask_4d = non_pad_mask.unsqueeze(-1).unsqueeze(-1).float()
+
+        # Variance-Only KL считаем только по реальным (не-PAD) токенам
+        var = torch.exp(torch.clamp(logvar, min=-10.0, max=10.0))
         kl_raw = -0.5 * (1.0 + logvar - var)
-        kl_loss = torch.clamp(kl_raw, min=0.2).mean()
+        kl_elem = torch.clamp(kl_raw, min=0.2) * mask_4d
+        kl_loss = kl_elem.sum() / (mask_4d.sum() * self.num_axes * self.axis_dim).clamp(min=1.0)
 
         if self.training:
             eps = torch.randn_like(mu)
-            z_raw = mu + eps * torch.exp(0.5 * logvar)
+            z_raw = mu + eps * torch.sqrt(var)
         else:
             z_raw = mu
 
         # 4. Нормализатор токенов (сжатие в шар, rank floor с маскированием PAD)
-        non_pad_mask = (input_ids != self.pad_token_id)
         V_tok, rk_eff, rank_loss = self.normalizer(z_raw, non_pad_mask=non_pad_mask)  # (B, 4N, 8, 128)
 
-        # Канонический репер VOID для PAD токенов:
-        # Для PAD: v_sem = 0, v_syn[0, 15] = sqrt(0.02), v_pos = 0, остальные 7 осей = 0
+        # Канонический невырожденный репер VOID для PAD токенов:
+        # 8 взаимно ортогональных осей в синтаксическом/позиционном хвосте [104:120]
+        # со строго убывающим спектром lambda_k = 0.01 * (0.6^k) -> нет кратных нулей в eigh!
         is_pad = ~non_pad_mask  # (B, 4N)
         if is_pad.any():
             V_pad = torch.zeros(self.num_axes, self.axis_dim, device=V_tok.device, dtype=V_tok.dtype)
-            # Координата 111 (синтаксический карман [96:112])
-            V_pad[0, 111] = math.sqrt(0.02)
+            for k in range(self.num_axes):
+                amp = math.sqrt(0.01 * (0.6 ** k))
+                V_pad[k, 104 + k] = amp      # синтаксический карман [96:112]
+                V_pad[k, 112 + k] = amp      # RoPE хвост [112:128] (снимает вырождение между 4 позициями окна!)
             pad_expanded = is_pad.unsqueeze(-1).unsqueeze(-1)  # (B, 4N, 1, 1)
             V_tok = torch.where(pad_expanded, V_pad, V_tok)
-            rk_eff = torch.where(is_pad, torch.ones_like(rk_eff), rk_eff)
+            rk_eff = torch.where(is_pad, torch.full_like(rk_eff, 2.0), rk_eff)
 
         # 5. Спектральный пулинг 4 -> 1
         V_tok_windows = V_tok.view(B, num_cells, self.chunk_size, self.num_axes, self.axis_dim)
@@ -974,7 +954,11 @@ def compute_phase1_loss(
         rank_loss = rank_loss.mean()
 
     # 1. Recon Loss (CrossEntropy)
-    recon_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
+    valid_targets = (targets != -100).sum()
+    if valid_targets > 0:
+        recon_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
+    else:
+        recon_loss = logits.sum() * 0.0
 
     # 2. Prior Loss
     prior_loss = compute_prior_loss(V_cell)
@@ -1351,7 +1335,7 @@ class DualRegimeDataset(Dataset):
                     last_dot = i
                     break
 
-            cut_len = (last_dot + 1) if last_dot != -1 else len(sample_tokens)
+            cut_len = (last_dot + 1) if last_dot >= 4 else len(sample_tokens)
             pad_len = self.seq_len - cut_len
             print(f"3. Обрезка по последней точке: позиция точки = {last_dot}, длина сэмпла L_cut = {cut_len}, PAD токенов в хвосте = {pad_len}.", flush=True)
 
@@ -1436,7 +1420,7 @@ class DualRegimeDataset(Dataset):
                     last_dot = i
                     break
 
-            if last_dot != -1:
+            if last_dot >= 4:
                 cut_tokens = sample_tokens[: last_dot + 1]
             else:
                 cut_tokens = sample_tokens
