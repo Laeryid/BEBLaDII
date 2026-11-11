@@ -4,20 +4,12 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~1038 (excluding excluded directories)
-**Updated:** 2026-11-10
+**Total files in project:** ~1034 (excluding excluded directories)
+**Updated:** 2026-11-11
 
 ```
 BEBLaDII/
 |-- .know/  *(empty)*
-|-- BEBLaDII-planB-Phase3-Data/  *2 files*
-|   `-- phase 3/  *1 files*
-|       |-- dictionaries/  *1 files*
-|       `-- train_data/  *(empty)*
-|-- BEBLaDII-planB-Phase5-Data/  *1 files*
-|-- BEBLaDII-planB-Phase6-Data/  *1 files*
-|   `-- phase 6/  *(empty)*
-|       `-- data/  *(empty)*
 |-- checkpoints/  *(empty)*
 |   `-- phase6_v2/  *(empty)*
 |-- data/  *(empty)*

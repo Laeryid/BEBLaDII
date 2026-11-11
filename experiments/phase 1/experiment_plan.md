@@ -133,13 +133,19 @@ $$\mathbb{R}^{128} = \underbrace{\mathbb{R}^{96}}_{0:96 \text{ (Lexical Core)}} 
 1. **Сжатие в евклидов шар $\mathbb{B}^{128}$:**
    $$v_i = \frac{z_i}{\|z_i\|_2 + \epsilon} \cdot \tanh(\alpha \|z_i\|_2), \quad \alpha = 1.0 / \sqrt{128}.$$
    Норма каждой строки строго $\|v_i\|_2 \in [0, 1)$, что гарантирует $0 \preceq \rho_{\text{tok}} \preceq I_{128}$.
-2. **Эффективный ранг токена ($\text{rk}_{\text{eff}} \ge 1.5$):**
+2. **Канонический репер «Тишины» (VOID) для PAD:**
+   Для токенов `<pad>` (`pad_token_id = 10` Tekken) матрица $V_{\text{tok}} \in \mathbb{R}^{8 \times 128}$ фиксируется аналитически:
+   - $v_{\text{sem}} \in \mathbb{R}^{96} = \mathbf{0}$ (ортогонален всем лексическим концептам в CLM);
+   - $v_{\text{syn}} \in \mathbb{R}^{16}$: активна ровно 1 ось (строка 0), координата 111 равна $\sqrt{\lambda_1} = \sqrt{0.02} \approx 0.14142$, остальные строки $1\dots7$ и координаты $96\dots110$ строго $\mathbf{0}$;
+   - $v_{\text{pos}} \in \mathbb{R}^{16} = \mathbf{0}$.
+   - Свойства: $\text{rk}_{\text{eff}} = 1.0$, $c_{\text{spec}} = 1.0$, полная энергия $\|V\|_F^2 = 0.02 \ll \tau$.
+3. **Эффективный ранг токена ($\text{rk}_{\text{eff}} \ge 1.5$):**
    $$\text{rk}_{\text{eff}}(V) = \frac{\|V\|_F^4}{\|V V^T\|_F^2} = \frac{\left(\sum_{i=1}^8 \|v_i\|_2^2\right)^2}{\sum_{i,j=1}^8 \langle v_i, v_j \rangle^2}.$$
    - Формула не требует SVD и считается за одно умножение матриц $8 \times 8$.
    - **Неуязвимость к читерству:** если модель попытается выдать коллинеарные векторы ($v_1 \approx v_2$), скалярное произведение $\langle v_1, v_2 \rangle^2$ раздует знаменатель, и $\text{rk}_{\text{eff}}$ упадет до $1.0$. Чтобы преодолеть порог $1.5$, модель **обязана делать активные оси взаимно ортогональными** ($\langle v_i, v_j \rangle \to 0$).
-   - Функция потерь:
-     $$\mathcal{L}_{\text{rank\_floor}} = \frac{1}{B \cdot T} \sum \text{ReLU}\left(1.5 - \text{rk}_{\text{eff}}(V)\right)^2.$$
-3. **Axis Dropout:** В 20% шагов обучения вычисляется главная собственная мода матрицы Грама $G = V V^T$ и зануляется её проекция, стимулируя распределенное кодирование смысла.
+   - Функция потерь с маскированием PAD:
+     $$\mathcal{L}_{\text{rank\_floor}} = \frac{1}{\sum M_{\text{real}}} \sum M_{\text{real}} \cdot \text{ReLU}\left(1.5 - \text{rk}_{\text{eff}}(V)\right)^2, \quad M_{\text{real}} = (\text{tok} \neq \text{pad\_id}).$$
+4. **Axis Dropout:** В 20% шагов обучения вычисляется главная собственная мода матрицы Грама $G = V V^T$ и зануляется её проекция, стимулируя распределенное кодирование смысла.
 
 ### 3.2. Спектральный пулинг $4 \to 1$ с Partial RoPE
 Прямо перед сборкой окна:
@@ -152,7 +158,11 @@ v_pos = V[..., 112:]   # 8 пар координат для позиции m in 
 v_pos_rot = apply_rope_16d(v_pos, positions=torch.arange(4, device=V.device))
 V_tagged = torch.cat([v_sem, v_pos_rot], dim=-1)  # (B, N_cells, 4, 8, 128)
 ```
-1. **Нормировка окна:** Веса окна нормализуются: $\tilde{w}_m = w_m / \sum_{j=1}^4 w_j$ ($\sum \tilde{w}_m = 1$). По теореме Вейля это гарантирует спектр клетки $\lambda_i \le 1$.
+1. **Двухуровневая нормировка окна:**
+   Сырые веса токенов окна: $\hat{w}_{\text{content}} = 1.0$ (смысловое слово), $\hat{w}_{\text{stop}} = 0.02$ (связка), $\hat{w}_{\text{pad}} = 0.001$ (PAD).
+   Нормированные веса: $\tilde{w}_m = \hat{w}_m / \sum_{j=1}^4 \hat{w}_j$ ($\sum \tilde{w}_m = 1$).
+   - В смешанном окне (`[Word, ., PAD, PAD]`) вклад PAD $< 0.1\%$ (не искажает семантику).
+   - В полностью пустом окне (`[PAD, PAD, PAD, PAD]`) веса равны ровно $\frac{0.001}{4 \times 0.001} = 0.25$, порождая чистую VOID-клетку с энергией $0.02$ в 111-й координате без деления на ноль. По теореме Вейля спектр клетки строго $\lambda_i \le 1$.
 2. **Lorentzian Broadening для SVD/Eig (Защита от NaN):**
    При вычислении градиентов множители $\frac{1}{\sigma_i^2 - \sigma_j^2}$ регуляризуются лоренцевым ядром:
    $$\frac{1}{\sigma_i^2 - \sigma_j^2} \longrightarrow \frac{\sigma_i^2 - \sigma_j^2}{(\sigma_i^2 - \sigma_j^2)^2 + \epsilon_{\text{svd}}^2}, \quad \epsilon_{\text{svd}} = 10^{-4}.$$
