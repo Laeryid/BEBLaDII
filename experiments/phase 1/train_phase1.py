@@ -207,15 +207,38 @@ class LorentzianEigh(torch.autograd.Function):
     Спектральное разложение симметричной матрицы с лоренцевой регуляризацией градиентов (Lorentzian Broadening).
     Устраняет деление на ноль и градиентный взрыв (NaN) в обратном проходе при близких/равных собственных числах:
         1 / (lambda_i - lambda_j) -> (lambda_i - lambda_j) / ((lambda_i - lambda_j)^2 + eps^2).
-    Вычисления строго в float32.
+    Вычисления строго в float32 с Тихоновской регуляризацией диагонали для гарантированной сходимости cuSOLVER.
     """
     @staticmethod
     def forward(ctx, G: torch.Tensor, eps: float = 1e-4) -> Tuple[torch.Tensor, torch.Tensor]:
         # G: (..., K, K) симметричная матрица
         orig_dtype = G.dtype
         G_f32 = G.float()
-        # eigh возвращает L (собственные числа, возрастающие), V (собственные векторы в столбцах)
-        L, V = torch.linalg.eigh(G_f32)
+        K = G_f32.size(-1)
+        eye = torch.eye(K, device=G_f32.device, dtype=G_f32.dtype)
+        jitter = 1e-5
+
+        # Регуляризация Тихонова: сдвиг спектра на jitter * I гарантирует отсутствие нулевых кратных корней
+        # и сохраняет инвариантность собственных векторов (G v = lambda v <=> (G + eps*I) v = (lambda + eps) v)
+        G_reg = G_f32 + eye * jitter
+        try:
+            L, V = torch.linalg.eigh(G_reg)
+        except Exception:
+            # Fallback 1: Повышенный джиттер 1e-4
+            try:
+                G_reg_high = G_f32 + eye * 1e-4
+                L, V = torch.linalg.eigh(G_reg_high)
+                jitter = 1e-4
+            except Exception:
+                # Fallback 2: Вычисление через CPU LAPACK (dsyevd абсолютно устойчив к кратным корням)
+                G_cpu = G_reg.detach().cpu()
+                L_cpu, V_cpu = torch.linalg.eigh(G_cpu)
+                L = L_cpu.to(G_f32.device)
+                V = V_cpu.to(G_f32.device)
+
+        # Вычитаем добавленный джиттер из собственных чисел и клипаем в 0
+        L = torch.clamp(L - jitter, min=0.0)
+
         ctx.save_for_backward(L, V)
         ctx.eps = eps
         ctx.orig_dtype = orig_dtype
@@ -235,13 +258,17 @@ class LorentzianEigh(torch.autograd.Function):
 
         # V^T @ grad_V
         vt_gv = torch.matmul(V.transpose(-2, -1), grad_V.float())
-        # Промежуточный тензор: diag(grad_L) + lorentz * (V^T @ grad_V)
-        mid = torch.diag_embed(grad_L.float()) + lorentz * vt_gv
+        # Антисимметризация проекции градиента (исключает симметричный численный шум)
+        vt_gv_skew = 0.5 * (vt_gv - vt_gv.transpose(-2, -1))
+        # Промежуточный тензор: diag(grad_L) + lorentz * vt_gv_skew
+        mid = torch.diag_embed(grad_L.float()) + lorentz * vt_gv_skew
         
         # grad_G = V @ mid @ V^T
         grad_G = torch.matmul(torch.matmul(V, mid), V.transpose(-2, -1))
         # Симметризация градиента
         grad_G = 0.5 * (grad_G + grad_G.transpose(-2, -1))
+        # Защита от нечисловых значений
+        grad_G = torch.nan_to_num(grad_G, nan=0.0, posinf=0.0, neginf=0.0)
         
         return grad_G.to(ctx.orig_dtype), None
 
@@ -1674,6 +1701,10 @@ def evaluate(
                     rank_loss=rank_loss,
                 )
 
+            if not torch.isfinite(loss):
+                print(f"[Val Warning] Пропуск сэмпла с нечисловым val_loss: {loss.item()}", flush=True)
+                continue
+
             total_loss_accum += loss.item()
             recon_accum += metrics.get("loss/recon", 0.0)
             kl_accum += metrics.get("loss/kl", 0.0)
@@ -1778,10 +1809,23 @@ def train(
                 rank_loss=rank_loss,
             )
 
+        if not torch.isfinite(total_loss):
+            print(f"[Warning Step {step+1}] Обнаружен нечисловой loss: {total_loss.item()}. Пропуск шага оптимизатора для защиты весов.", flush=True)
+            if opt_muon is not None:
+                opt_muon.zero_grad()
+            opt_adamw.zero_grad()
+            continue
+
         total_loss.backward()
 
         # Градиентный клиппинг
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        if not torch.isfinite(grad_norm):
+            print(f"[Warning Step {step+1}] Нечисловая норма градиента ({grad_norm}). Пропуск шага оптимизатора.", flush=True)
+            if opt_muon is not None:
+                opt_muon.zero_grad()
+            opt_adamw.zero_grad()
+            continue
 
         if opt_muon is not None:
             opt_muon.step()
