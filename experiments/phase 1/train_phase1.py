@@ -238,7 +238,22 @@ class LorentzianEigh(torch.autograd.Function):
         diag_shift = torch.arange(1, K + 1, device=G_f32.device, dtype=torch.float32) * 1e-6
         G_reg = G_f32 + torch.diag(diag_shift)
 
-        L_reg, V = torch.linalg.eigh(G_reg)
+        try:
+            L_reg, V = torch.linalg.eigh(G_reg)
+            is_valid = torch.isfinite(L_reg).all() and torch.isfinite(V).all()
+        except Exception:
+            is_valid = False
+
+        if not is_valid:
+            # Страховка на GPU: cuSOLVER в float64 (с машинной точностью 10^-16)
+            try:
+                L_64, V_64 = torch.linalg.eigh(G_reg.double())
+                L_reg = L_64.float()
+                V = V_64.float()
+            except Exception:
+                pass
+            L_reg = torch.nan_to_num(L_reg, nan=1e-5, posinf=1.0, neginf=1e-5)
+            V = torch.nan_to_num(V, nan=0.0, posinf=0.0, neginf=0.0)
 
         # Сохраняем L_reg (со сдвигом!) для backward, чтобы разности L_i - L_j никогда не были строго нулевыми
         ctx.save_for_backward(L_reg, V)
@@ -547,11 +562,15 @@ class GrassmannianTokenNormalizer(nn.Module):
         if self.training and self.dropout_prob > 0.0:
             if torch.rand(1).item() < self.dropout_prob:
                 with torch.no_grad():
-                    # Используем стабилизированный сдвиг диагонали вместо голого eigh
-                    K = G.size(-1)
-                    shift = torch.arange(1, K + 1, device=G.device, dtype=torch.float32) * 1e-6
-                    _, Q = torch.linalg.eigh(G.float() + torch.diag(shift))
-                    q_top = Q[..., -1:].to(V.dtype)
+                    # Быстрый и 100% стабильный степенной метод (Power Iteration, 5 шагов)
+                    # Исключает вызовы cuSOLVER/eigh на 2048 матрицах 8x8, гарантируя отсутствие NaN
+                    q = G.new_ones(*G.shape[:-1], 1)
+                    q = q / (torch.norm(q, dim=-2, keepdim=True) + 1e-7)
+                    for _ in range(5):
+                        q = torch.matmul(G, q)
+                        q = q / (torch.norm(q, dim=-2, keepdim=True) + 1e-7)
+                    q = torch.nan_to_num(q, nan=0.0, posinf=0.0, neginf=0.0)
+                    q_top = q.to(V.dtype)
                 proj = torch.matmul(q_top.transpose(-2, -1), V)
                 V = V - torch.matmul(q_top, proj)
 
@@ -848,6 +867,15 @@ class GrassmannianPhase1Model(nn.Module):
 
         V_cell, _ = self.pooler(V_tok_windows, weights_windows)  # (B, N, 8, 128)
 
+        # Stage-wise диагностика
+        if self.training:
+            if not torch.isfinite(z_raw).all():
+                print("[STAGE-WISE NaN] 'z_raw' в VAE Head содержит нечисловые значения!", flush=True)
+            if not torch.isfinite(V_tok).all():
+                print("[STAGE-WISE NaN] 'V_tok' после normalizer содержит нечисловые значения!", flush=True)
+            if not torch.isfinite(V_cell).all():
+                print("[STAGE-WISE NaN] 'V_cell' после pooler содержит нечисловые значения!", flush=True)
+
         return V_cell, kl_loss, rank_loss, rk_eff
 
     def decode(self, V_cell: torch.Tensor) -> torch.Tensor:
@@ -880,6 +908,8 @@ class GrassmannianPhase1Model(nn.Module):
 
         # Tied Output Head
         logits = self.get_tied_head_logits(x)  # (B, 4N, 131072)
+        if self.training and not torch.isfinite(logits).all():
+            print("[STAGE-WISE NaN] 'logits' в decode содержит нечисловые значения!", flush=True)
         return logits
 
     def forward(
@@ -1814,7 +1844,12 @@ def train(
             )
 
         if not torch.isfinite(total_loss):
-            print(f"[Warning Step {step+1}] Обнаружен нечисловой loss: {total_loss.item()}. Пропуск шага оптимизатора для защиты весов.", flush=True)
+            diag_losses = ", ".join([f"{k}={round(v, 6) if isinstance(v, float) else v}" for k, v in metrics.items()])
+            t_diag = []
+            for t_name, t_val in [("V_cell", V_cell), ("logits", logits), ("rk_eff", rk_eff)]:
+                if t_val is not None:
+                    t_diag.append(f"{t_name}_finite={torch.isfinite(t_val).all().item()}")
+            print(f"[Warning Step {step+1}] Нечисловой loss: {total_loss.item()}! [{diag_losses}] | [{', '.join(t_diag)}]. Пропуск шага оптимизатора.", flush=True)
             if opt_muon is not None:
                 opt_muon.zero_grad()
             opt_adamw.zero_grad()
