@@ -1,7 +1,7 @@
-<!-- last_verified: 2026-11-03 -->
+<!-- last_verified: 2026-11-11 -->
 # KI: Hugging Face Ecosystem
 
-<!-- last_verified: 2026-11-03 -->
+<!-- last_verified: 2026-11-11 -->
 
 ## Что это
 Описание работы со скриптами в папке `hugging face/`, правила загрузки весов проекта в Hub и маппинг названий файлов.

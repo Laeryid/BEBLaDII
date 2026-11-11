@@ -1,7 +1,7 @@
-<!-- last_verified: 2026-11-03 -->
+<!-- last_verified: 2026-11-11 -->
 # KI: Model Inspection & Loading
 
-<!-- last_verified: 2026-11-03 -->
+<!-- last_verified: 2026-11-11 -->
 
 ## Overview
 Инструменты для глубокого анализа структуры весов, сверки ключей и обеспечения стабильной загрузки компонентов системы (Vect, Proj, Student).

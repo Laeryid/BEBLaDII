@@ -1,7 +1,7 @@
-<!-- last_verified: 2026-11-03 -->
+<!-- last_verified: 2026-11-11 -->
 # KI: Training Infrastructure
 
-<!-- last_verified: 2026-11-03 -->
+<!-- last_verified: 2026-11-11 -->
 
 ## Overview
 Инфраструктура для обучения моделей в распределенной среде. Основной упор сделан на работу с TPU v6e через PyTorch XLA, использование SPMD и FSDP для эффективного шардирования весов.

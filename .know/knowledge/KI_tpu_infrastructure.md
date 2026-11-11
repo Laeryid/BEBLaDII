@@ -1,7 +1,7 @@
-<!-- last_verified: 2026-11-03 -->
+<!-- last_verified: 2026-11-11 -->
 # KI: TPU Infrastructure & FSDP
 
-<!-- last_verified: 2026-11-03 -->
+<!-- last_verified: 2026-11-11 -->
 
 ## Overview
 Архив технических решений и ограничений, связанных с обучением на TPU v6e с использованием стратегий SPMD и FSDP.
