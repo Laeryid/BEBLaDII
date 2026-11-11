@@ -1,13 +1,13 @@
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 # KI: Knowledge Infrastructure (Техническая реализация)
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
 ## Overview
 Техническое ядро системы управления знаниями: сбор метрик, отслеживание хешей и предоставление MCP-интерфейса.

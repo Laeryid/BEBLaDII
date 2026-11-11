@@ -1,13 +1,13 @@
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 # KI: Kaggle Operations
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
 ## Overview
 Инструменты и процедуры для работы в среде Kaggle: синхронизация кода, управление датасетами и экстренное сохранение состояния.

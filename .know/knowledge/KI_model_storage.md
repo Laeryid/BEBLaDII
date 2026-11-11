@@ -1,13 +1,13 @@
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 # KI: Model Storage & Lifecycle
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
 ## Что это
 Рекомендации и правила хранения весов моделей (внешних и собственных), управления кэшем и стратегии работы в разных окружениях (Local vs Kaggle).

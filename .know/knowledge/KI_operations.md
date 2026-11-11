@@ -1,13 +1,13 @@
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 # KI: Operations & Smoke Tests
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
 ## Overview
 Общие операционные скрипты и Smoke-тесты для быстрой проверки работоспособности системы BEBLaDII.

@@ -1,13 +1,13 @@
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 # KI: RAG Engine
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
-<!-- last_verified: 2026-11-11 -->
+<!-- last_verified: 2026-11-12 -->
 
 ## Что это
 Retrieval-Augmented Reasoning (RAG) / Complementary Latent Memory (CLM) — система внешней памяти, работающая напрямую в латентных координатах диффузионного пространства. Позволяет модели динамически извлекать факты и семантические аттракторы в процессе итеративного рассуждения.
