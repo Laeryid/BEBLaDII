@@ -1107,6 +1107,8 @@ class Muon(torch.optim.Optimizer):
                 state = self.state[p]
                 if "momentum_buffer" not in state:
                     state["momentum_buffer"] = torch.zeros_like(g)
+                elif state["momentum_buffer"].device != g.device:
+                    state["momentum_buffer"] = state["momentum_buffer"].to(g.device)
                 buf = state["momentum_buffer"]
                 buf.mul_(momentum).add_(g)
 
@@ -1683,12 +1685,20 @@ def load_checkpoint(
 
     try:
         opt_adamw.load_state_dict(checkpoint["opt_adamw_state_dict"])
+        for state in opt_adamw.state.values():
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    state[k] = v.to(device)
     except Exception as e:
         print(f"[Resume Warning] Не удалось восстановить состояние AdamW: {e}", flush=True)
 
     if opt_muon is not None and "opt_muon_state_dict" in checkpoint:
         try:
             opt_muon.load_state_dict(checkpoint["opt_muon_state_dict"])
+            for state in opt_muon.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(device)
         except Exception as e:
             print(f"[Resume Warning] Не удалось полностью восстановить состояние Muon: {e}", flush=True)
 
@@ -1800,6 +1810,12 @@ def train(
     model.to(env.device)
     if ema is not None:
         ema.to(env.device)
+    for opt in [opt_muon, opt_adamw]:
+        if opt is not None:
+            for state in opt.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.to(env.device)
     model.train()
 
     if metrics_history is None:
