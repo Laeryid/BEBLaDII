@@ -1530,15 +1530,17 @@ def parse_args():
     parser.add_argument("--adamw_lr", type=float, default=3e-4, help="Learning rate для AdamW")
     parser.add_argument("--log_every", type=int, default=20, help="Периодичность логирования")
     parser.add_argument("--save_every", type=int, default=500, help="Периодичность сохранения чекпоинтов")
-    parser.add_argument("--resume_ckpt", type=str, default="", help="Путь к чекпоинту для возобновления или 'auto' для поиска последнего")
+    parser.add_argument("--resume_ckpt", type=str, default="auto", help="Путь к чекпоинту для возобновления или 'auto' для поиска последнего")
     parser.add_argument("--gcs_dir", type=str, default="", help="Переопределение пути директории в Google Cloud Storage")
     parser.add_argument("--no_gcs", action="store_true", help="Отключить выгрузку чекпоинтов на Google Cloud Storage")
     parser.add_argument("--wandb", type=str, default="auto", choices=["auto", "online", "disabled"], help="Режим WandB")
-    return parser.parse_args()
+    args, _ = parser.parse_known_args()
+    return args
 
 
-def main():
-    args = parse_args()
+def main(args=None):
+    if args is None:
+        args = parse_args()
 
     # 1. Автоопределение окружения по единому признаку (IS_KAGGLE)
     env = EnvironmentConfig.detect(override_device=args.device)
@@ -1698,5 +1700,41 @@ def main():
         print(f"[Emergency] Аварийный чекпоинт успешно сохранен в: {emergency_path}", flush=True)
 
 
+# %% [markdown]
+# ## 10. Запуск обучения (User Training Config)
+# Настройте параметры ниже и запустите ячейку.
+
+# %%
+# ==============================================================================
+# ПАРАМЕТРЫ ЗАПУСКА ОБУЧЕНИЯ (CONFIG ДЛЯ KAGGLE / ЛОКАЛЬНО)
+# ==============================================================================
+TRAINING_CONFIG = {
+    "smoke_test": False,       # True: быстрый микро-тест на 3 шага для проверки
+    "device": "auto",          # "auto" (GPU при наличии, иначе CPU), "cuda", "cpu"
+    "data_path": "auto",       # "auto": автопоиск train.parquet в BEBLaDII-planB-Phase3-Data
+    "batch_size": 4,           # Размер батча (4 для T4 GPU, 8-16 для A100/H100)
+    "seq_len": 256,            # Длина последовательности (256 токенов = 64 клетки по 4)
+    "max_steps": 5000,         # Общее число шагов обучения
+    "muon_lr": 0.02,           # Learning Rate для Muon (2D веса Attention и MLP)
+    "adamw_lr": 3e-4,          # Learning Rate для AdamW (эмбеддинги, RMSNorm, VAE Head)
+    "log_every": 20,           # Логирование каждые N шагов
+    "save_every": 500,         # Сохранение чекпоинта каждые N шагов
+    "resume_ckpt": "auto",     # "auto": продолжить с последнего чекпоинта из GCS, "" - с нуля
+    "gcs_dir": "",             # Переопределение gs://bebladii-weigths-us/planC/Phase 1/checkpoints/
+    "no_gcs": False,           # False: выгружать чекпоинты на GCS и удалять с диска Kaggle
+    "wandb": "auto",           # "auto": online если есть WANDB_API_KEY в Secrets, иначе disabled
+}
+
 if __name__ == "__main__":
-    main()
+    # Парсим системные CLI аргументы, если они переданы
+    cli_args = parse_args()
+    
+    # Применяем значения из TRAINING_CONFIG, если они не переопределены явно через CLI
+    for key, val in TRAINING_CONFIG.items():
+        if hasattr(cli_args, key):
+            # Если аргумент остался дефолтным или запуск идет из блокнота Jupyter
+            is_notebook = any("ipykernel" in m for m in sys.modules) or not sys.argv[1:]
+            if is_notebook:
+                setattr(cli_args, key, val)
+
+    main(cli_args)
