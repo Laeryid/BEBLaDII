@@ -1068,14 +1068,24 @@ class EMAModel:
     Хранит теневые копии обучаемых параметров строго в FP32 (ADR 045, ADR 057)
     для предотвращения накопления ошибок округления при decay=0.999.
     """
-    def __init__(self, model: nn.Module, decay: float = 0.999):
+    def __init__(self, model: nn.Module, decay: float = 0.999, device: Optional[torch.device] = None):
         self.decay = decay
-        self.shadow = {
-            name: param.detach().clone().float()
-            for name, param in model.named_parameters()
-            if param.requires_grad
-        }
+        self.device = device
+        self.shadow = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                t = param.detach().clone().float()
+                if device is not None:
+                    t = t.to(device)
+                self.shadow[name] = t
         self.backup = {}
+
+    def to(self, device: torch.device):
+        """Перемещение всех теневых весов на целевое устройство."""
+        self.device = device
+        for k in self.shadow:
+            self.shadow[k] = self.shadow[k].to(device)
+        return self
 
     @torch.no_grad()
     def update(self, model: nn.Module):
@@ -1083,7 +1093,11 @@ class EMAModel:
         one_minus_decay = 1.0 - self.decay
         for name, param in model.named_parameters():
             if param.requires_grad and name in self.shadow:
-                self.shadow[name].lerp_(param.detach().float(), one_minus_decay)
+                s = self.shadow[name]
+                if s.device != param.device:
+                    s = s.to(param.device)
+                    self.shadow[name] = s
+                s.lerp_(param.detach().float(), one_minus_decay)
 
     def apply_shadow(self, model: nn.Module):
         """Подменяет веса модели на теневые EMA перед валидацией или сохранением."""
@@ -1091,7 +1105,7 @@ class EMAModel:
         for name, param in model.named_parameters():
             if param.requires_grad and name in self.shadow:
                 self.backup[name] = param.detach().clone()
-                param.data.copy_(self.shadow[name].to(param.dtype))
+                param.data.copy_(self.shadow[name].to(device=param.device, dtype=param.dtype))
 
     def restore(self, model: nn.Module):
         """Восстанавливает горячие обучаемые веса модели."""
@@ -1106,7 +1120,8 @@ class EMAModel:
     def load_state_dict(self, state_dict: Dict[str, torch.Tensor]):
         for k, v in state_dict.items():
             if k in self.shadow:
-                self.shadow[k].copy_(v.to(self.shadow[k].device))
+                target_dev = self.shadow[k].device
+                self.shadow[k].copy_(v.to(target_dev))
 
 
 # %% [markdown]
@@ -1680,6 +1695,8 @@ def train(
     use_wandb: bool = False,
 ):
     model.to(env.device)
+    if ema is not None:
+        ema.to(env.device)
     model.train()
 
     if metrics_history is None:
@@ -1963,8 +1980,8 @@ def main(args=None):
     )
     init_embeddings(model, env)
 
-    # Инициализация EMA
-    ema = EMAModel(model, decay=args.ema_decay) if use_ema else None
+    # Инициализация EMA на целевом устройстве
+    ema = EMAModel(model, decay=args.ema_decay, device=env.device) if use_ema else None
 
     # 3. Восстановление из чекпоинта (Resume)
     start_step = 0
