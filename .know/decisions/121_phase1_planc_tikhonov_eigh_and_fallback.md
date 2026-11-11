@@ -1,8 +1,11 @@
 <!-- created: 2026-11-11 -->
-<!-- status: Accepted -->
+<!-- status: Superseded by ADR 122 -->
 # ADR 121: Устранение несходимости cuSOLVER (error 18) через Тихоновскую регуляризацию и двухуровневый fallback в Grassmannian Spectral Pooling (Phase 1 Plan C)
 
-**Status**: Accepted  
+> [!WARNING]
+> **This ADR is superseded by [ADR 122: Системное устранение вырождения PAD и градиентных сингулярностей (Phase 1 Plan C)](./122_phase1_planc_systemic_nan_prevention.md).**
+
+**Status**: Superseded by [ADR 122](./122_phase1_planc_systemic_nan_prevention.md)
 **Date**: 2026-11-11  
 **Git Commit**: `70d3875` (branch: `main`)  
 **Author**: Bogdan Buliakov  

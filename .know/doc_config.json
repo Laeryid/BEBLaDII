@@ -1241,12 +1241,20 @@
       "summary": "ADR 120: Выбор токенизатора Tekken (Mistral AI) для кириллицы и Plan C"
     },
     "decisions/121_phase1_planc_tikhonov_eigh_and_fallback.md": {
-      "description": "ADR 121: Устранение несходимости cuSOLVER (error 18) через Тихоновскую регуляризацию и двухуровневый fallback в Grassmannian Spectral Pooling (Phase 1 Plan C) (Accepted)",
+      "description": "ADR 121: Устранение несходимости cuSOLVER (error 18) через Тихоновскую регуляризацию и двухуровневый fallback в Grassmannian Spectral Pooling (Phase 1 Plan C) (Superseded by ADR 122)",
       "covers": [
         "Architecture Decisions"
       ],
       "depends_on": [],
       "summary": "ADR 121: Устранение несходимости cuSOLVER (error 18) через Тихоновскую регуляризацию и двухуровневый fallback в Grassmannian Spectral Pooling (Phase 1 Plan C)"
+    },
+    "decisions/122_phase1_planc_systemic_nan_prevention.md": {
+      "description": "ADR 122: Системное устранение вырождения PAD и градиентных сингулярностей (Phase 1 Plan C) (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 122: Системное устранение вырождения PAD и градиентных сингулярностей (Phase 1 Plan C)"
     }
   },
   "knowledge_system": {
