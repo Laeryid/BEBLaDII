@@ -700,20 +700,33 @@ class SetCrossAttentionUnpacker(nn.Module):
         """
         B, N, K, D = V_cell.shape
         # Q: (1, 1, 4, 128)
-        Q = self.q_norm(self.query_slots).unsqueeze(0).unsqueeze(0).expand(B, N, self.num_slots, D)
+        Q = self.q_norm(self.query_slots).unsqueeze(0).unsqueeze(0).expand(B, N, self.num_slots, D).to(V_cell.dtype)
         # K, V: (B, N, 8, 128)
         K_mat = self.k_norm(V_cell)
         V_mat = V_cell
 
         # Внимание: (B, N, 4, 8)
         scores = torch.matmul(Q, K_mat.transpose(-2, -1)) / math.sqrt(D)
-        attn = F.softmax(scores, dim=-1)
+        attn = F.softmax(scores.float(), dim=-1).to(V_mat.dtype)
         h_attn = torch.matmul(attn, V_mat)  # (B, N, 4, 128)
 
-        # Матрица Грама клетки: G = V @ V^T in R^{8 x 8}
-        G = torch.matmul(V_cell, V_cell.transpose(-2, -1))  # (B, N, 8, 8)
-        G_flat = G.view(B, N, 64)
-        h_gram = self.gram_mlp(G_flat).unsqueeze(2).expand(B, N, self.num_slots, 128)  # (B, N, 4, 128)
+        # Матрица Грама клетки: расчет G и gram_mlp строго в float32 во избежание переполнения FP16 (>65504)
+        target_dtype = V_cell.dtype
+        V_f32 = V_cell.float()
+        G_f32 = torch.matmul(V_f32, V_f32.transpose(-2, -1))  # (B, N, 8, 8)
+        G_flat_f32 = G_f32.view(B, N, 64)
+
+        # Выполняем проекцию gram_mlp строго в float32 (независимо от autocast/половинной точности весов)
+        mlp_w0 = self.gram_mlp[0].weight.float()
+        mlp_b0 = self.gram_mlp[0].bias.float() if self.gram_mlp[0].bias is not None else None
+        h1 = F.silu(F.linear(G_flat_f32, mlp_w0, mlp_b0))
+        mlp_w2 = self.gram_mlp[2].weight.float()
+        mlp_b2 = self.gram_mlp[2].bias.float() if self.gram_mlp[2].bias is not None else None
+        h2 = F.linear(h1, mlp_w2, mlp_b2)
+        norm_w = self.gram_mlp[3].weight.float()
+        variance = h2.pow(2).mean(-1, keepdim=True)
+        h_normed = h2 * torch.rsqrt(variance + 1e-6) * norm_w
+        h_gram = h_normed.to(target_dtype).unsqueeze(2).expand(B, N, self.num_slots, 128)
 
         # Конкатенация внимания и квадратичных инвариантов
         h_comb = torch.cat([h_attn, h_gram], dim=-1)  # (B, N, 4, 256)
