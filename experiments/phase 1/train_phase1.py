@@ -113,6 +113,18 @@ class EnvironmentConfig:
 
         if is_kaggle:
             project_root = "/kaggle/working/BEBLaDII"
+            repo_url = "https://github.com/Laeryid/BEBLaDII.git"
+            try:
+                if not os.path.exists(project_root):
+                    subprocess.run(["git", "clone", repo_url, project_root], check=False)
+                else:
+                    subprocess.run(["git", "-C", project_root, "pull"], check=False)
+            except Exception as e:
+                print(f"[Repo Sync Info] Не удалось выполнить git clone/pull: {e}", flush=True)
+
+            if project_root not in sys.path:
+                sys.path.insert(0, project_root)
+
             data_dir = "/kaggle/input"
             output_dir = "/kaggle/working/output"
             checkpoint_dir = "/kaggle/working/checkpoints"
@@ -928,6 +940,12 @@ def compute_phase1_loss(
     """
     L_Phase1 = L_recon + beta * L_var_kl + gamma * L_rank_floor + delta * L_prior + eta * L_uniformity
     """
+    # Гарантируем скалярность для сбора выходов DataParallel (тензоры размерности [num_gpus] -> скаляр)
+    if kl_loss.ndim > 0:
+        kl_loss = kl_loss.mean()
+    if rank_loss.ndim > 0:
+        rank_loss = rank_loss.mean()
+
     # 1. Recon Loss (CrossEntropy)
     recon_loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-100)
 
@@ -1067,12 +1085,14 @@ class EMAModel:
     Экспоненциальное скользящее среднее (EMA) параметров модели.
     Хранит теневые копии обучаемых параметров строго в FP32 (ADR 045, ADR 057)
     для предотвращения накопления ошибок округления при decay=0.999.
+    Поддерживает как единичные модели, так и обертки DataParallel (через unwrap model.module).
     """
     def __init__(self, model: nn.Module, decay: float = 0.999, device: Optional[torch.device] = None):
         self.decay = decay
         self.device = device
         self.shadow = {}
-        for name, param in model.named_parameters():
+        raw_model = getattr(model, "module", model)
+        for name, param in raw_model.named_parameters():
             if param.requires_grad:
                 t = param.detach().clone().float()
                 if device is not None:
@@ -1091,7 +1111,8 @@ class EMAModel:
     def update(self, model: nn.Module):
         """Обновление теневых весов: shadow = decay * shadow + (1 - decay) * param."""
         one_minus_decay = 1.0 - self.decay
-        for name, param in model.named_parameters():
+        raw_model = getattr(model, "module", model)
+        for name, param in raw_model.named_parameters():
             if param.requires_grad and name in self.shadow:
                 s = self.shadow[name]
                 if s.device != param.device:
@@ -1102,14 +1123,16 @@ class EMAModel:
     def apply_shadow(self, model: nn.Module):
         """Подменяет веса модели на теневые EMA перед валидацией или сохранением."""
         self.backup = {}
-        for name, param in model.named_parameters():
+        raw_model = getattr(model, "module", model)
+        for name, param in raw_model.named_parameters():
             if param.requires_grad and name in self.shadow:
                 self.backup[name] = param.detach().clone()
                 param.data.copy_(self.shadow[name].to(device=param.device, dtype=param.dtype))
 
     def restore(self, model: nn.Module):
         """Восстанавливает горячие обучаемые веса модели."""
-        for name, param in model.named_parameters():
+        raw_model = getattr(model, "module", model)
+        for name, param in raw_model.named_parameters():
             if name in self.backup:
                 param.data.copy_(self.backup[name])
         self.backup = {}
@@ -1521,7 +1544,7 @@ def find_latest_checkpoint(checkpoint_dir: str, gcs_dir: Optional[str] = None) -
 
 
 def save_checkpoint(
-    model: GrassmannianPhase1Model,
+    model: nn.Module,
     opt_muon: Optional[Muon],
     opt_adamw: torch.optim.AdamW,
     step: int,
@@ -1533,9 +1556,10 @@ def save_checkpoint(
     gcs_dir: str = "",
     keep_local: bool = False,
 ):
+    raw_model = getattr(model, "module", model)
     checkpoint = {
         "step": step,
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": raw_model.state_dict(),
         "opt_adamw_state_dict": opt_adamw.state_dict(),
         "metrics": metrics,
         "metrics_history": metrics_history or [],
@@ -1559,7 +1583,7 @@ def save_checkpoint(
 
 def load_checkpoint(
     path: str,
-    model: GrassmannianPhase1Model,
+    model: nn.Module,
     opt_muon: Optional[Muon],
     opt_adamw: torch.optim.AdamW,
     device: torch.device,
@@ -1572,15 +1596,16 @@ def load_checkpoint(
     print(f"[Resume] Загрузка чекпоинта из: {path} ...", flush=True)
     checkpoint = torch.load(path, map_location=device)
 
+    raw_model = getattr(model, "module", model)
     # Проверка совпадения словаря эмбеддингов
     ckpt_sd = checkpoint["model_state_dict"]
     ckpt_embed = ckpt_sd.get("embeddings.weight", None)
-    if ckpt_embed is not None and ckpt_embed.shape != model.embeddings.weight.shape:
-        print(f"[Resume Warning] Несовпадение словаря эмбеддингов: чекпоинт {ckpt_embed.shape} != модель {model.embeddings.weight.shape}. Пропускаем embeddings.", flush=True)
+    if ckpt_embed is not None and ckpt_embed.shape != raw_model.embeddings.weight.shape:
+        print(f"[Resume Warning] Несовпадение словаря эмбеддингов: чекпоинт {ckpt_embed.shape} != модель {raw_model.embeddings.weight.shape}. Пропускаем embeddings.", flush=True)
         del ckpt_sd["embeddings.weight"]
-        model.load_state_dict(ckpt_sd, strict=False)
+        raw_model.load_state_dict(ckpt_sd, strict=False)
     else:
-        model.load_state_dict(ckpt_sd)
+        raw_model.load_state_dict(ckpt_sd)
 
     try:
         opt_adamw.load_state_dict(checkpoint["opt_adamw_state_dict"])
@@ -1607,7 +1632,7 @@ def load_checkpoint(
 
 
 def evaluate(
-    model: GrassmannianPhase1Model,
+    model: nn.Module,
     val_dataloader: DataLoader,
     env: EnvironmentConfig,
     eval_batches: int = 20,
@@ -1675,7 +1700,7 @@ def evaluate(
 
 
 def train(
-    model: GrassmannianPhase1Model,
+    model: nn.Module,
     dataloader: DataLoader,
     env: EnvironmentConfig,
     opt_muon: Optional[Muon] = None,
@@ -1888,6 +1913,8 @@ def parse_args():
     parser.add_argument("--ema_decay", type=float, default=0.999, help="Коэффициент сглаживания EMA")
     parser.add_argument("--eval_every", type=int, default=200, help="Периодичность валидации (шагов)")
     parser.add_argument("--eval_batches", type=int, default=20, help="Количество батчей для валидации")
+    parser.add_argument("--use_dataparallel", action="store_true", default=True, help="Использовать DataParallel при нескольких GPU")
+    parser.add_argument("--no_dataparallel", action="store_true", help="Отключить DataParallel")
     parser.add_argument("--batch_size", type=int, default=4, help="Размер батча")
     parser.add_argument("--seq_len", type=int, default=256, help="Длина последовательности (кратно 4)")
     parser.add_argument("--max_steps", type=int, default=5000, help="Количество шагов обучения")
@@ -2081,6 +2108,12 @@ def main(args=None):
     else:
         print(f"[Validation Info] Валидационный файл не найден ({val_data_path}). Валидация отключена.", flush=True)
 
+    # 4.5. Подключение DataParallel при наличии нескольких GPU
+    use_dataparallel = getattr(args, "use_dataparallel", True) and not getattr(args, "no_dataparallel", False)
+    if env.device.type == "cuda" and torch.cuda.device_count() > 1 and use_dataparallel:
+        print(f"[DataParallel] Обнаружено {torch.cuda.device_count()} GPU (акселератор T4 x2)! Включение torch.nn.DataParallel...", flush=True)
+        model = nn.DataParallel(model)
+
     # 5. Запуск тренировочного конвейера с перехватом прерывания (Emergency Save)
     try:
         train(
@@ -2133,13 +2166,14 @@ def main(args=None):
 TRAINING_CONFIG = {
     "smoke_test": False,       # True: быстрый микро-тест на 3 шага для проверки
     "device": "auto",          # "auto" (GPU при наличии, иначе CPU), "cuda", "cpu"
+    "use_dataparallel": True,  # Использовать оба GPU (DataParallel) при наличии T4 x2
     "data_path": "auto",       # "auto": автопоиск train.parquet в BEBLaDII-planB-Phase3-Data
     "val_data_path": "auto",   # "auto": автопоиск val.parquet в BEBLaDII-planB-Phase3-Data
     "use_ema": True,           # Использовать экспоненциальное скользящее среднее (EMA) весов
     "ema_decay": 0.999,        # Decay фактор EMA (0.999 для сглаживания градиентного шума)
     "eval_every": 200,         # Проводить валидацию каждые N шагов
     "eval_batches": 20,        # Количество батчей для валидации (20 батчей * batch_size)
-    "batch_size": 4,           # Размер батча (4 для T4 GPU, 8-16 для A100/H100)
+    "batch_size": 16,          # Общий размер батча (по 8 на каждый из 2 GPU при DataParallel)
     "seq_len": 256,            # Длина последовательности (256 токенов = 64 клетки по 4)
     "max_steps": 5000,         # Общее число шагов обучения
     "muon_lr": 0.02,           # Learning Rate для Muon (2D веса Attention и MLP)

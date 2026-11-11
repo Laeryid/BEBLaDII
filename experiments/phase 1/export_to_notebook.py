@@ -17,10 +17,26 @@ def py_percent_to_notebook(py_path: str, ipynb_path: str):
     current_cell_type = None
     current_cell_lines = []
 
-    # Добавляем в начало блокнота служебную ячейку для Kaggle с установкой пакетов и клонированием при необходимости
+    # Добавляем в начало блокнота служебную ячейку для Kaggle с установкой пакетов и синхронизацией репозитория
     setup_code = [
-        "# Установка необходимых пакетов на Kaggle\n",
+        "# 1. Установка необходимых пакетов на Kaggle\n",
         "!pip install -q einops wandb\n",
+        "\n",
+        "# 2. Синхронизация репозитория BEBLaDII (git clone / git pull)\n",
+        "import os, sys, subprocess\n",
+        "REPO_URL = 'https://github.com/Laeryid/BEBLaDII.git'\n",
+        "PROJECT_ROOT = '/kaggle/working/BEBLaDII'\n",
+        "\n",
+        "if os.path.exists('/kaggle'):\n",
+        "    if not os.path.exists(PROJECT_ROOT):\n",
+        "        print(f'Клонирование репозитория из {REPO_URL}...')\n",
+        "        subprocess.run(['git', 'clone', REPO_URL, PROJECT_ROOT], check=False)\n",
+        "    else:\n",
+        "        print('Репозиторий уже существует. Выполняю git pull...')\n",
+        "        subprocess.run(['git', '-C', PROJECT_ROOT, 'pull'], check=False)\n",
+        "    if PROJECT_ROOT not in sys.path:\n",
+        "        sys.path.insert(0, PROJECT_ROOT)\n",
+        "    print('[Repo Sync] Репозиторий актуализирован и добавлен в sys.path.')\n",
     ]
     cells.append({
         "cell_type": "code",
