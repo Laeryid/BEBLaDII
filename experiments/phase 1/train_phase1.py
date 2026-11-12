@@ -1900,6 +1900,8 @@ def train(
     step = start_step
     data_iter = iter(dataloader)
     start_time = time.time()
+    last_log_time = time.time()
+    last_log_step = start_step
 
     while step < max_steps:
         try:
@@ -1944,8 +1946,9 @@ def train(
 
         # Градиентный клиппинг
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        grad_norm_val = grad_norm.item() if isinstance(grad_norm, torch.Tensor) else float(grad_norm)
         if not torch.isfinite(grad_norm):
-            print(f"[Warning Step {step+1}] Нечисловая норма градиента ({grad_norm}). Пропуск шага оптимизатора.", flush=True)
+            print(f"[Warning Step {step+1}] Нечисловая норма градиента ({grad_norm_val}). Пропуск шага оптимизатора.", flush=True)
             if opt_muon is not None:
                 opt_muon.zero_grad()
             opt_adamw.zero_grad()
@@ -1976,8 +1979,14 @@ def train(
 
         # Логирование
         if step % log_every == 0 or step == 1 or step == max_steps:
-            elapsed = time.time() - start_time
-            steps_per_sec = step / max(1e-5, elapsed)
+            now = time.time()
+            elapsed = now - start_time
+            interval_elapsed = now - last_log_time
+            interval_steps = step - last_log_step
+            steps_per_sec = interval_steps / max(1e-5, interval_elapsed) if interval_steps > 0 else 0.0
+            last_log_time = now
+            last_log_step = step
+
             mean_rk = rk_eff.mean().item()
             
             log_str = (
@@ -1985,6 +1994,7 @@ def train(
                 f"Loss: {total_loss.item():.4f} | "
                 f"Recon: {metrics['loss/recon']:.4f} | "
                 f"rk_eff: {mean_rk:.2f} | "
+                f"GradNorm: {grad_norm_val:.3f} | "
                 f"MuonLR: {curr_muon_lr:.4f} | "
                 f"Speed: {steps_per_sec:.2f} step/s"
             )
@@ -1997,6 +2007,7 @@ def train(
                 "elapsed_sec": round(elapsed, 2),
                 "speed_step_per_sec": round(steps_per_sec, 2),
                 "mean_rk_eff": round(mean_rk, 4),
+                "grad_norm": round(grad_norm_val, 4),
                 "muon_lr": round(curr_muon_lr, 6),
                 "adamw_lr": round(curr_adamw_lr, 6),
                 **{k: round(v, 6) if isinstance(v, float) else v for k, v in metrics.items()}
@@ -2008,6 +2019,7 @@ def train(
                 metrics.update({
                     "step": step,
                     "metrics/rk_eff": mean_rk,
+                    "train/grad_norm": grad_norm_val,
                     "train/speed_step_per_sec": steps_per_sec,
                     "lr/muon": curr_muon_lr,
                     "lr/adamw": curr_adamw_lr,

@@ -39,7 +39,8 @@ def load_model_and_tokenizer(
 
     checkpoint = torch.load(ckpt_path, map_location="cpu", weights_only=False)
     step = checkpoint.get("step", 0)
-    best_val_loss = checkpoint.get("val_loss", None)
+    metrics = checkpoint.get("metrics", {})
+    best_val_loss = metrics.get("val/loss", checkpoint.get("val_loss", None))
     print(f"      -> Чекпоинт шага: {step} | val_loss: {best_val_loss}", flush=True)
 
     # Инициализация модели
@@ -54,9 +55,11 @@ def load_model_and_tokenizer(
     )
 
     # Приоритет отдаем теневым весам EMA
-    if "ema_state_dict" in checkpoint and "shadow" in checkpoint["ema_state_dict"]:
+    if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
         print("      -> Применяем сглаженные EMA shadow веса.", flush=True)
-        raw_sd = checkpoint["ema_state_dict"]["shadow"]
+        raw_sd = checkpoint["ema_state_dict"]
+        if isinstance(raw_sd, dict) and "shadow" in raw_sd:
+            raw_sd = raw_sd["shadow"]
     else:
         print("      -> Применяем стандартные веса модели.", flush=True)
         raw_sd = checkpoint.get("model_state_dict", checkpoint)
