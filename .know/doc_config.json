@@ -1279,6 +1279,14 @@
       ],
       "depends_on": [],
       "summary": "ADR 125: Точечный перевод Tied Head проектора в float32 для устранения FP16-переполнения логитов в decode (Phase 1 Plan C)"
+    },
+    "decisions/126_phase1_planc_unpacker_autocast_disabled.md": {
+      "description": "ADR 126: Изоляция вычисления матрицы Грама в SetCrossAttentionUnpacker с явным отключением autocast и фиксация FP16 для Turing GPU (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 126: Изоляция вычисления матрицы Грама в SetCrossAttentionUnpacker с явным отключением autocast и фиксация FP16 для Turing GPU"
     }
   },
   "knowledge_system": {

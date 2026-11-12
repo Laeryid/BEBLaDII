@@ -189,9 +189,10 @@ class EnvironmentConfig:
         else:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # На GPU используем bfloat16 (или float16 при отсутствии bf16), на CPU - float32
+        # На GPU используем bfloat16 (для Ampere CC>=8.0) или float16 (для Turing T4 CC=7.5), на CPU - float32
         if device.type == "cuda":
-            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            major, _ = torch.cuda.get_device_capability()
+            dtype = torch.bfloat16 if (major >= 8 and torch.cuda.is_bf16_supported()) else torch.float16
             warmup_linalg_backends()
         else:
             dtype = torch.float32
@@ -710,23 +711,27 @@ class SetCrossAttentionUnpacker(nn.Module):
         attn = F.softmax(scores.float(), dim=-1).to(V_mat.dtype)
         h_attn = torch.matmul(attn, V_mat)  # (B, N, 4, 128)
 
-        # Матрица Грама клетки: расчет G и gram_mlp строго в float32 во избежание переполнения FP16 (>65504)
+        # Матрица Грама клетки: расчет G и gram_mlp строго в float32 с явным отключением autocast!
+        # Без enabled=False PyTorch autocast принудительно даункастит torch.matmul и F.linear обратно в FP16,
+        # вызывая переполнение G > 65504 (+inf) и inf - inf = NaN.
+        device_type = V_cell.device.type
         target_dtype = V_cell.dtype
-        V_f32 = V_cell.float()
-        G_f32 = torch.matmul(V_f32, V_f32.transpose(-2, -1))  # (B, N, 8, 8)
-        G_flat_f32 = G_f32.view(B, N, 64)
+        with torch.autocast(device_type=device_type, enabled=False):
+            V_f32 = V_cell.float()
+            G_f32 = torch.matmul(V_f32, V_f32.transpose(-2, -1))  # (B, N, 8, 8)
+            G_flat_f32 = G_f32.view(B, N, 64)
 
-        # Выполняем проекцию gram_mlp строго в float32 (независимо от autocast/половинной точности весов)
-        mlp_w0 = self.gram_mlp[0].weight.float()
-        mlp_b0 = self.gram_mlp[0].bias.float() if self.gram_mlp[0].bias is not None else None
-        h1 = F.silu(F.linear(G_flat_f32, mlp_w0, mlp_b0))
-        mlp_w2 = self.gram_mlp[2].weight.float()
-        mlp_b2 = self.gram_mlp[2].bias.float() if self.gram_mlp[2].bias is not None else None
-        h2 = F.linear(h1, mlp_w2, mlp_b2)
-        norm_w = self.gram_mlp[3].weight.float()
-        variance = h2.pow(2).mean(-1, keepdim=True)
-        h_normed = h2 * torch.rsqrt(variance + 1e-6) * norm_w
-        h_gram = h_normed.to(target_dtype).unsqueeze(2).expand(B, N, self.num_slots, 128)
+            # Выполняем проекцию gram_mlp строго в float32 (независимо от autocast/половинной точности весов)
+            mlp_w0 = self.gram_mlp[0].weight.float()
+            mlp_b0 = self.gram_mlp[0].bias.float() if self.gram_mlp[0].bias is not None else None
+            h1 = F.silu(F.linear(G_flat_f32, mlp_w0, mlp_b0))
+            mlp_w2 = self.gram_mlp[2].weight.float()
+            mlp_b2 = self.gram_mlp[2].bias.float() if self.gram_mlp[2].bias is not None else None
+            h2 = F.linear(h1, mlp_w2, mlp_b2)
+            norm_w = self.gram_mlp[3].weight.float()
+            variance = h2.pow(2).mean(-1, keepdim=True)
+            h_normed = h2 * torch.rsqrt(variance + 1e-6) * norm_w
+            h_gram = h_normed.to(target_dtype).unsqueeze(2).expand(B, N, self.num_slots, 128)
 
         # Конкатенация внимания и квадратичных инвариантов
         h_comb = torch.cat([h_attn, h_gram], dim=-1)  # (B, N, 4, 256)
@@ -926,6 +931,15 @@ class GrassmannianPhase1Model(nn.Module):
         for layer in self.dec_smooth_layers:
             x = layer(x, cos_full, sin_full)
         x = self.dec_final_norm(x)
+
+        # Stage-wise диагностика декомпрессора
+        if self.training:
+            if not torch.isfinite(h_cell).all():
+                print("[STAGE-WISE NaN] 'h_cell' в decode содержит нечисловые значения!", flush=True)
+            if not torch.isfinite(h_unpacked).all():
+                print("[STAGE-WISE NaN] 'h_unpacked' после unpacker содержит нечисловые значения!", flush=True)
+            if not torch.isfinite(x).all():
+                print("[STAGE-WISE NaN] 'x' после dec_smooth_layers содержит нечисловые значения!", flush=True)
 
         # Tied Output Head
         logits = self.get_tied_head_logits(x)  # (B, 4N, 131072)
