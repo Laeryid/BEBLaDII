@@ -264,4 +264,7 @@ $$\mathcal{L}_{\text{Phase1}} = \mathcal{L}_{\text{recon}} + \beta \mathcal{L}_{
 
 В локальном терминале можно проверить любой произвольный текст:
 
-  .venv\Scripts\python.exe "experiments/phase 1/inspect_phase1_latent.py" --ckpt "experiments\phase 1\checkpoints\planC_Phase 1_checkpoints_phase1_step_1500.pt" --custom-text "Любая фраза для проверки автоэнкодера"
+  .venv\Scripts\python.exe "experiments/phase 1/inspect_phase1_latent.py" --ckpt "experiments\phase 1\checkpoints\planC_Phase 1_checkpoints_phase1_step_5000.pt" --custom-text "Любая фраза для проверки автоэнкодера"
+
+
+.venv\Scripts\python.exe "experiments/phase 1/inspect_manifold_and_logic.py" --ckpt  "experiments\phase 1\checkpoints\planC_Phase 1_checkpoints_phase1_step_5000.pt"

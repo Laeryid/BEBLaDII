@@ -1,6 +1,6 @@
 # %% [markdown]
 # # BEBLaDII Phase 1 (Plan C) — Grassmannian Burer–Monteiro VAE & Hierarchical Decompressor
-# 
+#
 # **Архитектура:** Plan C (Burer–Monteiro $V \in \mathbb{R}^{8 \times 128}$, $\rho = V^T V$, размер клетки $d=1024$)
 # - Токенизатор Tekken (Mistral AI, $V = 131\,072$)
 # - SVD-инициализированные Tied Word Embeddings ($131\,072 \times 1024$)
@@ -47,7 +47,7 @@ def setup_kaggle_secrets(is_kaggle: bool):
     try:
         from kaggle_secrets import UserSecretsClient
         user_secrets = UserSecretsClient()
-        
+
         # 1. Извлечение ключа WandB
         try:
             wandb_key = user_secrets.get_secret("WANDB_API_KEY")
@@ -123,7 +123,7 @@ class EnvironmentConfig:
     @classmethod
     def detect(cls, override_device: Optional[str] = None) -> "EnvironmentConfig":
         is_kaggle = os.path.exists("/kaggle") or ("KAGGLE_KERNEL_RUN_TYPE" in os.environ)
-        
+
         # Подключаем секреты Kaggle при их наличии
         setup_kaggle_secrets(is_kaggle)
 
@@ -391,7 +391,7 @@ class ModernBERTLayer(nn.Module):
         self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
         self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
 
-    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor, 
+    def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         B, T, C = x.shape
         # Pre-Norm Attention
@@ -432,7 +432,7 @@ class LexicalCoreMLP(nn.Module):
         super().__init__()
         self.num_axes = num_axes
         self.out_dim = num_axes * (96 + 16)  # 8 * 112 = 896
-        
+
         self.norm = RMSNorm(hidden_size)
         self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
         self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
@@ -445,7 +445,7 @@ class LexicalCoreMLP(nn.Module):
         gate = F.silu(self.gate_proj(normed))
         up = self.up_proj(normed)
         h = self.out_norm(self.down_proj(gate * up))  # (B, T, 896)
-        
+
         B, T, _ = h.shape
         h = h.view(B, T, self.num_axes, 112)
         h_sem = h[..., :96]  # (B, T, 8, 96) — лексическая семантика
@@ -490,7 +490,7 @@ class BlockDiagonalVAEHead(nn.Module):
     def __init__(self, num_axes: int = 8):
         super().__init__()
         self.num_axes = num_axes
-        
+
         # mu проекторы
         self.mu_sem = nn.Linear(96, 96)
         self.mu_syn = nn.Linear(16, 16)
@@ -552,7 +552,7 @@ class GrassmannianTokenNormalizer(nn.Module):
         # z: (B, T, 8, 128)
         V = self.safe_squash(z)
         rk_eff, G = self.compute_rank_eff(V)
-        
+
         # Функция штрафа за ранг: ReLU(1.5 - rk_eff)^2 (только для реальных не-PAD токенов)
         rank_loss_elem = F.relu(self.rank_floor - rk_eff) ** 2
         if non_pad_mask is not None:
@@ -612,7 +612,7 @@ class GrassmannianSpectralPooler(nn.Module):
         # 1. Partial RoPE в хвосте 112:128
         v_sem = V[..., :112]  # (B, N_cells, 4, 8, 112)
         v_pos = V[..., 112:]  # (B, N_cells, 4, 8, 16)
-        
+
         # Применяем RoPE к v_pos по позициям m in {0, 1, 2, 3}
         v_pos_rot = apply_rope_16d(v_pos, self.positions)
         V_tagged = torch.cat([v_sem, v_pos_rot], dim=-1)  # (B, N_cells, 4, 8, 128)
@@ -642,7 +642,7 @@ class GrassmannianSpectralPooler(nn.Module):
         # eigh возвращает собственные значения по возрастанию: берем топ-8 наибольших (хвост [-8:])
         top_eigvals = torch.flip(eigvals[..., -self.out_axes:], dims=[-1])  # (B, N_cells, 8)
         top_eigvecs = torch.flip(eigvecs[..., -self.out_axes:], dims=[-1])  # (B, N_cells, 32, 8)
-        
+
         # Защита от отрицательных собственных чисел из-за численной погрешности
         top_eigvals = F.relu(top_eigvals)
 
@@ -770,6 +770,7 @@ class GrassmannianPhase1Model(nn.Module):
         axis_dim: int = 128,
         chunk_size: int = 4,
         pad_token_id: int = 10,
+        cell_jitter_std: float = 0.035,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -778,6 +779,7 @@ class GrassmannianPhase1Model(nn.Module):
         self.axis_dim = axis_dim
         self.chunk_size = chunk_size
         self.pad_token_id = pad_token_id
+        self.cell_jitter_std = cell_jitter_std
 
         # 1. Tied Word Embeddings
         self.embeddings = nn.Embedding(vocab_size, hidden_size)
@@ -853,15 +855,18 @@ class GrassmannianPhase1Model(nn.Module):
 
         # 3. Блочно-диагональный mu-VAE Head (полная изоляция подпространств)
         mu, logvar = self.vae_head(h_sem, h_syn, h_pos)  # (B, 4N, 8, 128)
-        
+
         non_pad_mask = (input_ids != self.pad_token_id)  # (B, 4N)
         mask_4d = non_pad_mask.unsqueeze(-1).unsqueeze(-1).float()
 
         # Variance-Only KL считаем только по реальным (не-PAD) токенам
         var = torch.exp(torch.clamp(logvar, min=-10.0, max=10.0))
         kl_raw = -0.5 * (1.0 + logvar - var)
-        kl_elem = torch.clamp(kl_raw, min=0.2) * mask_4d
-        kl_loss = kl_elem.sum() / (mask_4d.sum() * self.num_axes * self.axis_dim).clamp(min=1.0)
+        kl_elem = torch.clamp(kl_raw, min=0.0) * mask_4d
+
+        # Variance Floor: штраф если дисперсия падает ниже 0.05 (ADR 029)
+        var_floor = F.relu(0.05 - var).pow(2) * mask_4d
+        kl_loss = (kl_elem + 2.0 * var_floor).sum() / (mask_4d.sum() * self.num_axes * self.axis_dim).clamp(min=1.0)
 
         if self.training:
             eps = torch.randn_like(mu)
@@ -914,15 +919,23 @@ class GrassmannianPhase1Model(nn.Module):
             logits: (B, 4N, 131072)
         """
         B, N, K, D = V_cell.shape
-        # Превращаем клетку 8x128 в вектор d=1024 для контекстного слоя
-        cell_vec = self.cell_in_norm(V_cell.view(B, N, K * D))
+        # Инъекция шума при обучении для формирования бассейнов притяжения (Denoising Autoencoder)
+        if self.training and getattr(self, "cell_jitter_std", 0.0) > 0.0:
+            noise_scale = torch.rand(1, device=V_cell.device, dtype=V_cell.dtype) * self.cell_jitter_std
+            jitter = torch.randn_like(V_cell) * noise_scale
+            V_cell_in = self.normalizer.safe_squash(V_cell + jitter)
+        else:
+            V_cell_in = V_cell
+
+        # Превращаем клетку 8x128 в вектор d=1024 для контекстного слоя (через reshape для безопасности stride)
+        cell_vec = self.cell_in_norm(V_cell_in.reshape(B, N, K * D))
         cos_N, sin_N = self.rope(cell_vec, N)
 
         # Этап 1: 1 контекстный слой ModernBERT по холсту концептов N
         h_cell = self.dec_context_layer(cell_vec, cos_N, sin_N)
         # Модулируем клетку контекстом холста с безопасным масштабированием 0.1,
         # чтобы нормы трансформера не подавляли компактный базис клетки Грассманиана
-        V_cell_mod = V_cell + 0.1 * h_cell.view(B, N, K, D)
+        V_cell_mod = V_cell_in + 0.1 * h_cell.reshape(B, N, K, D)
 
         # Узел распаковки Set-Cross-Attention 1 -> 4
         h_unpacked = self.unpacker(V_cell_mod)  # (B, 4N, 1024)
@@ -966,8 +979,10 @@ def compute_prior_loss(V_cell: torch.Tensor) -> torch.Tensor:
     """
     Взвешенный Prior Loss (Изотропия 128 каналов):
     bar_rho_batch = (1 / (sum ||V||_F^2 + eps)) * sum V^T V in R^{128 x 128}.
-    Штраф Huber на недиагональные элементы:
-    L_prior = (2 / 128) * sum_{i < j} Huber(bar_rho_batch_{ij}, delta=0.01).
+    1. Штраф Huber на недиагональные элементы (ортогональность осей):
+       L_off = (2 / 128) * sum_{i < j} Huber(bar_rho_batch_{ij}, delta=0.01).
+    2. Штраф Huber на диагональные элементы (равномерное распределение дисперсии по каналам к 1/128):
+       L_diag = sum_i Huber(bar_rho_batch_{ii} - 1/128, delta=0.005).
     """
     # V_cell: (B, N, 8, 128) -> объединяем строки осей: (B * N * 8, 128)
     axes = V_cell.view(-1, 128).float()
@@ -975,14 +990,19 @@ def compute_prior_loss(V_cell: torch.Tensor) -> torch.Tensor:
     # bar_rho: (128, 128)
     bar_rho = torch.matmul(axes.transpose(0, 1), axes) / frob_total
 
-    # Верхний треугольник без диагонали
+    # 1. Недиагональные элементы (ортогонализация)
     triu_indices = torch.triu_indices(128, 128, offset=1, device=V_cell.device)
     off_diag = bar_rho[triu_indices[0], triu_indices[1]]
-    
-    # Huber loss с delta=0.01
-    prior_loss = F.huber_loss(off_diag, torch.zeros_like(off_diag), delta=0.01, reduction="sum")
-    prior_loss = (2.0 / 128.0) * prior_loss
-    return prior_loss
+    off_diag_loss = F.huber_loss(off_diag, torch.zeros_like(off_diag), delta=0.01, reduction="sum")
+    off_diag_loss = (2.0 / 128.0) * off_diag_loss
+
+    # 2. Диагональные элементы (изотропия дисперсии)
+    diag_elements = torch.diagonal(bar_rho, 0)
+    target_diag = torch.full_like(diag_elements, 1.0 / 128.0)
+    diag_loss = F.huber_loss(diag_elements, target_diag, delta=0.005, reduction="sum")
+
+    # Итоговый лосс изотропии
+    return off_diag_loss + diag_loss
 
 
 def compute_grassmann_uniformity_loss(V_cell: torch.Tensor, t: float = 2.0) -> torch.Tensor:
@@ -1027,7 +1047,7 @@ def compute_phase1_loss(
     V_cell: torch.Tensor,
     kl_loss: torch.Tensor,
     rank_loss: torch.Tensor,
-    beta: float = 0.005,
+    beta: float = 0.015,
     gamma: float = 0.05,
     delta: float = 0.05,
     eta: float = 0.01,
@@ -1087,7 +1107,7 @@ def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e
     X = G.bfloat16() if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else G.float()
     M, N = X.shape
     a, b, c = (3.4445, -4.7750, 2.0315)
-    
+
     # Нормировка спектральной нормы
     norm = X.norm() + eps
     X = X / norm
@@ -1140,7 +1160,7 @@ class Muon(torch.optim.Optimizer):
 
                 update = g.add(buf, alpha=momentum) if nesterov else buf
                 update_ortho = zeropower_via_newtonschulz5(update, steps=ns_steps)
-                
+
                 # Масштабирование обновления с учетом геометрии параметров и регуляризация весов
                 scale = max(1.0, p.size(0) / p.size(1)) ** 0.5
                 if wd > 0:
@@ -1988,7 +2008,7 @@ def train(
             last_log_step = step
 
             mean_rk = rk_eff.mean().item()
-            
+
             log_str = (
                 f"Step {step:05d}/{max_steps:05d} | "
                 f"Loss: {total_loss.item():.4f} | "
@@ -2382,7 +2402,7 @@ TRAINING_CONFIG = {
     "eval_batches": 20,        # Количество батчей для валидации (20 батчей * batch_size)
     "batch_size": 16,          # Общий размер батча (по 8 на каждый из 2 GPU при DataParallel)
     "seq_len": 256,            # Длина последовательности (256 токенов = 64 клетки по 4)
-    "max_steps": 5000,         # Общее число шагов обучения
+    "max_steps": 50000,         # Общее число шагов обучения
     "muon_lr": 0.02,           # Стартовый Learning Rate для Muon (2D веса Attention и MLP)
     "adamw_lr": 3e-4,          # Стартовый Learning Rate для AdamW (эмбеддинги, RMSNorm, VAE Head)
     "muon_min_lr": 0.008,      # Минимальный LR для Muon при мягком косинусном спаде (0.02 -> 0.008)
@@ -2400,7 +2420,7 @@ TRAINING_CONFIG = {
 if __name__ == "__main__":
     # Парсим системные CLI аргументы, если они переданы
     cli_args = parse_args()
-    
+
     # Применяем значения из TRAINING_CONFIG, если они не переопределены явно через CLI
     for key, val in TRAINING_CONFIG.items():
         if hasattr(cli_args, key):
