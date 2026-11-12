@@ -920,8 +920,9 @@ class GrassmannianPhase1Model(nn.Module):
 
         # Этап 1: 1 контекстный слой ModernBERT по холсту концептов N
         h_cell = self.dec_context_layer(cell_vec, cos_N, sin_N)
-        # Модулируем клетку контекстом холста
-        V_cell_mod = V_cell + h_cell.view(B, N, K, D)
+        # Модулируем клетку контекстом холста с безопасным масштабированием 0.1,
+        # чтобы нормы трансформера не подавляли компактный базис клетки Грассманиана
+        V_cell_mod = V_cell + 0.1 * h_cell.view(B, N, K, D)
 
         # Узел распаковки Set-Cross-Attention 1 -> 4
         h_unpacked = self.unpacker(V_cell_mod)  # (B, 4N, 1024)
@@ -1211,8 +1212,18 @@ class EMAModel:
         return self
 
     @torch.no_grad()
-    def update(self, model: nn.Module):
-        """Обновление теневых весов: shadow = decay * shadow + (1 - decay) * param."""
+    def update(
+        self,
+        model: nn.Module,
+        pullback_muon: float = 0.0,
+        pullback_adamw: float = 0.0,
+    ):
+        """
+        Обновление теневых весов: shadow = decay * shadow + (1 - decay) * param.
+        При pullback > 0 активируется механика PACE (Pullback Averaging Control, ADR 077, ADR 081):
+        живые веса модели стягиваются обратно к стабильному центру масс EMA:
+        param = param.lerp(shadow, alpha).
+        """
         one_minus_decay = 1.0 - self.decay
         raw_model = getattr(model, "module", model)
         for name, param in raw_model.named_parameters():
@@ -1221,7 +1232,13 @@ class EMAModel:
                 if s.device != param.device:
                     s = s.to(param.device)
                     self.shadow[name] = s
+                # 1. Накопление теневой копии EMA строго в FP32
                 s.lerp_(param.detach().float(), one_minus_decay)
+
+                # 2. PACE Pullback: притяжение живого веса к теневой копии
+                alpha = pullback_muon if (param.ndim == 2 and "embeddings" not in name and "vae_" not in name) else pullback_adamw
+                if alpha > 0.0:
+                    param.data.lerp_(s.to(device=param.device, dtype=param.dtype), alpha)
 
     def apply_shadow(self, model: nn.Module):
         """Подменяет веса модели на теневые EMA перед валидацией или сохранением."""
@@ -1814,6 +1831,14 @@ def evaluate(
     }
 
 
+def get_cosine_lr(initial_lr: float, min_lr: float, step: int, max_steps: int) -> float:
+    """Мягкий косинусный спад LR от initial_lr до min_lr."""
+    if step >= max_steps:
+        return min_lr
+    progress = step / max(1, max_steps)
+    return min_lr + 0.5 * (initial_lr - min_lr) * (1.0 + math.cos(math.pi * progress))
+
+
 def train(
     model: nn.Module,
     dataloader: DataLoader,
@@ -1825,6 +1850,10 @@ def train(
     max_steps: int = 5000,
     muon_lr: float = 0.02,
     adamw_lr: float = 3e-4,
+    muon_min_lr: float = 0.008,
+    adamw_min_lr: float = 1e-4,
+    pullback_muon: float = 0.005,
+    pullback_adamw: float = 0.002,
     log_every: int = 20,
     save_every: int = 500,
     eval_every: int = 200,
@@ -1922,12 +1951,26 @@ def train(
             opt_adamw.zero_grad()
             continue
 
+        # Динамический косинусный спад LR
+        curr_muon_lr = get_cosine_lr(muon_lr, muon_min_lr, step, max_steps)
+        curr_adamw_lr = get_cosine_lr(adamw_lr, adamw_min_lr, step, max_steps)
+        if opt_muon is not None:
+            for g in opt_muon.param_groups:
+                g["lr"] = curr_muon_lr
+        for g in opt_adamw.param_groups:
+            g["lr"] = curr_adamw_lr
+
         if opt_muon is not None:
             opt_muon.step()
         opt_adamw.step()
 
+        # Обновление EMA и стягивание PACE Pullback
         if ema is not None:
-            ema.update(model)
+            ema.update(
+                model,
+                pullback_muon=pullback_muon,
+                pullback_adamw=pullback_adamw,
+            )
 
         step += 1
 
@@ -1941,8 +1984,8 @@ def train(
                 f"Step {step:05d}/{max_steps:05d} | "
                 f"Loss: {total_loss.item():.4f} | "
                 f"Recon: {metrics['loss/recon']:.4f} | "
-                f"RankFloor: {metrics['loss/rank_floor']:.4f} | "
                 f"rk_eff: {mean_rk:.2f} | "
+                f"MuonLR: {curr_muon_lr:.4f} | "
                 f"Speed: {steps_per_sec:.2f} step/s"
             )
             print(log_str, flush=True)
@@ -1954,6 +1997,8 @@ def train(
                 "elapsed_sec": round(elapsed, 2),
                 "speed_step_per_sec": round(steps_per_sec, 2),
                 "mean_rk_eff": round(mean_rk, 4),
+                "muon_lr": round(curr_muon_lr, 6),
+                "adamw_lr": round(curr_adamw_lr, 6),
                 **{k: round(v, 6) if isinstance(v, float) else v for k, v in metrics.items()}
             }
             metrics_history.append(history_entry)
@@ -1964,6 +2009,8 @@ def train(
                     "step": step,
                     "metrics/rk_eff": mean_rk,
                     "train/speed_step_per_sec": steps_per_sec,
+                    "lr/muon": curr_muon_lr,
+                    "lr/adamw": curr_adamw_lr,
                 })
                 wandb.log(metrics, step=step)
 
@@ -2059,6 +2106,10 @@ def parse_args():
     parser.add_argument("--max_steps", type=int, default=5000, help="Количество шагов обучения")
     parser.add_argument("--muon_lr", type=float, default=0.02, help="Learning rate для Muon")
     parser.add_argument("--adamw_lr", type=float, default=3e-4, help="Learning rate для AdamW")
+    parser.add_argument("--muon_min_lr", type=float, default=0.008, help="Минимальный LR для Muon при косинусном спаде")
+    parser.add_argument("--adamw_min_lr", type=float, default=1e-4, help="Минимальный LR для AdamW при косинусном спаде")
+    parser.add_argument("--pullback_muon", type=float, default=0.005, help="Коэффициент PACE pullback для весов Muon")
+    parser.add_argument("--pullback_adamw", type=float, default=0.002, help="Коэффициент PACE pullback для весов AdamW")
     parser.add_argument("--log_every", type=int, default=20, help="Периодичность логирования")
     parser.add_argument("--save_every", type=int, default=500, help="Периодичность сохранения чекпоинтов")
     parser.add_argument("--resume_ckpt", type=str, default="auto", help="Путь к чекпоинту для возобновления или 'auto' для поиска последнего")
@@ -2267,6 +2318,10 @@ def main(args=None):
             max_steps=args.max_steps,
             muon_lr=args.muon_lr,
             adamw_lr=args.adamw_lr,
+            muon_min_lr=args.muon_min_lr,
+            adamw_min_lr=args.adamw_min_lr,
+            pullback_muon=args.pullback_muon,
+            pullback_adamw=args.pullback_adamw,
             log_every=args.log_every,
             save_every=args.save_every,
             eval_every=args.eval_every,
@@ -2316,8 +2371,12 @@ TRAINING_CONFIG = {
     "batch_size": 16,          # Общий размер батча (по 8 на каждый из 2 GPU при DataParallel)
     "seq_len": 256,            # Длина последовательности (256 токенов = 64 клетки по 4)
     "max_steps": 5000,         # Общее число шагов обучения
-    "muon_lr": 0.02,           # Learning Rate для Muon (2D веса Attention и MLP)
-    "adamw_lr": 3e-4,          # Learning Rate для AdamW (эмбеддинги, RMSNorm, VAE Head)
+    "muon_lr": 0.02,           # Стартовый Learning Rate для Muon (2D веса Attention и MLP)
+    "adamw_lr": 3e-4,          # Стартовый Learning Rate для AdamW (эмбеддинги, RMSNorm, VAE Head)
+    "muon_min_lr": 0.008,      # Минимальный LR для Muon при мягком косинусном спаде (0.02 -> 0.008)
+    "adamw_min_lr": 1e-4,      # Минимальный LR для AdamW при мягком косинусном спаде (3e-4 -> 1e-4)
+    "pullback_muon": 0.005,    # Коэффициент PACE pullback для весов Muon (ADR 077, ADR 081)
+    "pullback_adamw": 0.002,   # Коэффициент PACE pullback для весов AdamW
     "log_every": 20,           # Логирование каждые N шагов
     "save_every": 500,         # Сохранение чекпоинта каждые N шагов
     "resume_ckpt": "auto",     # "auto": продолжить с последнего чекпоинта из GCS, "" - с нуля
