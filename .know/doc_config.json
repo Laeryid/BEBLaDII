@@ -1303,6 +1303,14 @@
       ],
       "depends_on": [],
       "summary": "ADR 128: Диагональная регуляризация матрицы Грама, Denoising Jittering декомпрессора и квантовая проекция булевой логики в многообразии Грассманиана (Phase 1 Plan C)"
+    },
+    "decisions/129_phase1_planc_clamp_ball_diag_loss_effdim.md": {
+      "description": "ADR 129: Исправление масштаба clamp_to_unit_ball после Denoising Jittering, выделение loss/prior_diag и метрика val/effective_dim (уточнение ADR 128) (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 129: Исправление масштаба clamp_to_unit_ball после Denoising Jittering, выделение loss/prior_diag и метрика val/effective_dim (уточнение ADR 128)"
     }
   },
   "knowledge_system": {
