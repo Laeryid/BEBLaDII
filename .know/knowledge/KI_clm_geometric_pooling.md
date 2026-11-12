@@ -19,6 +19,8 @@
 
 <!-- last_verified: 2026-11-12 -->
 
+<!-- last_verified: 2026-11-12 -->
+
 ## Overview
 Архитектурный дизайн сжатия латентных чанков и последовательностей в **Complementary Latent Memory (CLM)** и **RAG-pooling** (`src/beb_la_dii/rag/pooling.py`) на основе формализма геометрических пространств знаний и билинейных спариваний (*Shang Xu, "Geometric knowledge spaces, Attention pairing and Architectures", arXiv:2610.29526*). Решает проблему потери порядка токенов при сжатии памяти и объединяет микро-порядок внутри сжатого куска с макро-порядком RoPE в `CA_Memory`.
 
