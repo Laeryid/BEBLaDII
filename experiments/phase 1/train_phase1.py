@@ -531,6 +531,15 @@ class GrassmannianTokenNormalizer(nn.Module):
         scale = torch.tanh(self.alpha * norms)
         return direction * scale
 
+    def clamp_to_unit_ball(self, V: torch.Tensor) -> torch.Tensor:
+        """
+        Радиальная проекция в единичный шар B^{128}:
+        не сжимает векторы, уже находящиеся внутри шара (||v_i||_2 <= 1),
+        и нормирует только выходящие за границу 1.0 после аддитивного шума.
+        """
+        norms = torch.norm(V, p=2, dim=-1, keepdim=True)
+        return V / norms.clamp(min=1.0)
+
     def compute_rank_eff(self, V: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         V: (..., 8, 128)
@@ -923,7 +932,7 @@ class GrassmannianPhase1Model(nn.Module):
         if self.training and getattr(self, "cell_jitter_std", 0.0) > 0.0:
             noise_scale = torch.rand(1, device=V_cell.device, dtype=V_cell.dtype) * self.cell_jitter_std
             jitter = torch.randn_like(V_cell) * noise_scale
-            V_cell_in = self.normalizer.safe_squash(V_cell + jitter)
+            V_cell_in = self.normalizer.clamp_to_unit_ball(V_cell + jitter)
         else:
             V_cell_in = V_cell
 
@@ -975,14 +984,15 @@ class GrassmannianPhase1Model(nn.Module):
 # ## 5. Функции потерь Фазы 1 Plan C
 
 # %%
-def compute_prior_loss(V_cell: torch.Tensor) -> torch.Tensor:
+def compute_prior_loss(V_cell: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Взвешенный Prior Loss (Изотропия 128 каналов):
     bar_rho_batch = (1 / (sum ||V||_F^2 + eps)) * sum V^T V in R^{128 x 128}.
-    1. Штраф Huber на недиагональные элементы (ортогональность осей):
+    Возвращает два раздельных слагаемых:
+    1. off_diag_loss: Штраф Huber на недиагональные элементы (ортогонализация осей):
        L_off = (2 / 128) * sum_{i < j} Huber(bar_rho_batch_{ij}, delta=0.01).
-    2. Штраф Huber на диагональные элементы (равномерное распределение дисперсии по каналам к 1/128):
-       L_diag = sum_i Huber(bar_rho_batch_{ii} - 1/128, delta=0.005).
+    2. diag_loss: Дисперсия диагональных элементов (равномерное распределение энергии по 128 каналам к 1/128):
+       L_diag = mean_i Huber(128 * bar_rho_batch_{ii} - 1.0, delta=0.5).
     """
     # V_cell: (B, N, 8, 128) -> объединяем строки осей: (B * N * 8, 128)
     axes = V_cell.view(-1, 128).float()
@@ -996,13 +1006,11 @@ def compute_prior_loss(V_cell: torch.Tensor) -> torch.Tensor:
     off_diag_loss = F.huber_loss(off_diag, torch.zeros_like(off_diag), delta=0.01, reduction="sum")
     off_diag_loss = (2.0 / 128.0) * off_diag_loss
 
-    # 2. Диагональные элементы (изотропия дисперсии)
-    diag_elements = torch.diagonal(bar_rho, 0)
-    target_diag = torch.full_like(diag_elements, 1.0 / 128.0)
-    diag_loss = F.huber_loss(diag_elements, target_diag, delta=0.005, reduction="sum")
+    # 2. Диагональные элементы (дисперсия диагонали к равномерному уровню 1/128, масштаб O(1))
+    diag_scaled = torch.diagonal(bar_rho, 0) * 128.0
+    diag_loss = F.huber_loss(diag_scaled, torch.ones_like(diag_scaled), delta=0.5, reduction="mean")
 
-    # Итоговый лосс изотропии
-    return off_diag_loss + diag_loss
+    return off_diag_loss, diag_loss
 
 
 def compute_grassmann_uniformity_loss(V_cell: torch.Tensor, t: float = 2.0) -> torch.Tensor:
@@ -1050,10 +1058,11 @@ def compute_phase1_loss(
     beta: float = 0.015,
     gamma: float = 0.05,
     delta: float = 0.05,
+    delta_diag: float = 0.05,
     eta: float = 0.01,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
-    L_Phase1 = L_recon + beta * L_var_kl + gamma * L_rank_floor + delta * L_prior + eta * L_uniformity
+    L_Phase1 = L_recon + beta * L_var_kl + gamma * L_rank_floor + delta * L_prior_off + delta_diag * L_prior_diag + eta * L_uniformity
     """
     # Гарантируем скалярность для сбора выходов DataParallel (тензоры размерности [num_gpus] -> скаляр)
     if kl_loss.ndim > 0:
@@ -1068,8 +1077,8 @@ def compute_phase1_loss(
     else:
         recon_loss = logits.sum() * 0.0
 
-    # 2. Prior Loss
-    prior_loss = compute_prior_loss(V_cell)
+    # 2. Prior Loss (раздельно: ортогональность вне диагонали и дисперсия диагонали)
+    prior_off_loss, prior_diag_loss = compute_prior_loss(V_cell)
 
     # 3. Uniformity Loss
     uniformity_loss = compute_grassmann_uniformity_loss(V_cell)
@@ -1079,7 +1088,8 @@ def compute_phase1_loss(
         recon_loss
         + beta * kl_loss
         + gamma * rank_loss
-        + delta * prior_loss
+        + delta * prior_off_loss
+        + delta_diag * prior_diag_loss
         + eta * uniformity_loss
     )
 
@@ -1088,7 +1098,8 @@ def compute_phase1_loss(
         "loss/recon": recon_loss.item(),
         "loss/kl": kl_loss.item(),
         "loss/rank_floor": rank_loss.item(),
-        "loss/prior": prior_loss.item(),
+        "loss/prior_off": prior_off_loss.item(),
+        "loss/prior_diag": prior_diag_loss.item(),
         "loss/uniformity": uniformity_loss.item(),
     }
     return total_loss, metrics
@@ -1797,11 +1808,17 @@ def evaluate(
     total_loss_accum = 0.0
     recon_accum = 0.0
     kl_accum = 0.0
-    prior_accum = 0.0
+    prior_off_accum = 0.0
+    prior_diag_accum = 0.0
     rank_floor_accum = 0.0
     uniformity_accum = 0.0
     rk_eff_accum = 0.0
     batches_counted = 0
+
+    # Статистика ковариации для точного расчета эффективной размерности (Participation Ratio)
+    sum_axes = torch.zeros(128, dtype=torch.float64)
+    sum_outer = torch.zeros(128, 128, dtype=torch.float64)
+    total_axes_count = 0
 
     use_amp = (env.device.type == "cuda")
     with torch.no_grad():
@@ -1829,25 +1846,47 @@ def evaluate(
             total_loss_accum += loss.item()
             recon_accum += metrics.get("loss/recon", 0.0)
             kl_accum += metrics.get("loss/kl", 0.0)
-            prior_accum += metrics.get("loss/prior", 0.0)
+            prior_off_accum += metrics.get("loss/prior_off", 0.0)
+            prior_diag_accum += metrics.get("loss/prior_diag", 0.0)
             rank_floor_accum += metrics.get("loss/rank_floor", 0.0)
             uniformity_accum += metrics.get("loss/uniformity", 0.0)
             rk_eff_accum += rk_eff.mean().item()
             batches_counted += 1
 
+            # Накопление ковариации только по непустым (не чисто PAD) клеткам
+            non_pad_cells = (targets.view(targets.shape[0], V_cell.shape[1], -1) != -100).any(dim=-1)
+            active_axes = V_cell.detach()[non_pad_cells].view(-1, 128).to(torch.float64).cpu()
+            if active_axes.shape[0] > 0:
+                sum_axes += active_axes.sum(dim=0)
+                sum_outer += torch.matmul(active_axes.T, active_axes)
+                total_axes_count += active_axes.shape[0]
+
     if ema is not None:
         ema.restore(model)
     model.train()
+
+    if total_axes_count > 1:
+        mean_ax = sum_axes / total_axes_count
+        cov = (sum_outer - total_axes_count * torch.outer(mean_ax, mean_ax)) / (total_axes_count - 1)
+        cov = 0.5 * (cov + cov.T)
+        eigs = torch.linalg.eigvalsh(cov).clamp(min=1e-12)
+        sum_eigs = eigs.sum().item()
+        sum_sq_eigs = (eigs ** 2).sum().item()
+        effective_dim = (sum_eigs ** 2) / (sum_sq_eigs + 1e-12)
+    else:
+        effective_dim = 0.0
 
     count = max(1, batches_counted)
     return {
         "val/loss": total_loss_accum / count,
         "val/recon": recon_accum / count,
         "val/kl": kl_accum / count,
-        "val/prior": prior_accum / count,
+        "val/prior_off": prior_off_accum / count,
+        "val/prior_diag": prior_diag_accum / count,
         "val/rank_floor": rank_floor_accum / count,
         "val/uniformity": uniformity_accum / count,
         "val/rk_eff": rk_eff_accum / count,
+        "val/effective_dim": effective_dim,
     }
 
 
@@ -2013,6 +2052,7 @@ def train(
                 f"Step {step:05d}/{max_steps:05d} | "
                 f"Loss: {total_loss.item():.4f} | "
                 f"Recon: {metrics['loss/recon']:.4f} | "
+                f"Diag: {metrics['loss/prior_diag']:.4f} | "
                 f"rk_eff: {mean_rk:.2f} | "
                 f"GradNorm: {grad_norm_val:.3f} | "
                 f"MuonLR: {curr_muon_lr:.4f} | "
@@ -2059,11 +2099,14 @@ def train(
             v_recon = val_metrics["val/recon"]
             v_rk = val_metrics["val/rk_eff"]
             v_kl = val_metrics["val/kl"]
+            v_eff_dim = val_metrics["val/effective_dim"]
+            v_prior_diag = val_metrics["val/prior_diag"]
 
             print(
-                f"\n{'='*75}\n"
-                f"  [Validation Step {step:05d}] Val Loss: {v_loss:.4f} | Recon: {v_recon:.4f} | rk_eff: {v_rk:.2f} | KL: {v_kl:.4f}"
-                f"\n{'='*75}\n",
+                f"\n{'='*85}\n"
+                f"  [Validation Step {step:05d}] Val Loss: {v_loss:.4f} | Recon: {v_recon:.4f} | "
+                f"rk_eff: {v_rk:.2f} | EffDim: {v_eff_dim:.2f}/128 | PriorDiag: {v_prior_diag:.4f} | KL: {v_kl:.4f}"
+                f"\n{'='*85}\n",
                 flush=True,
             )
 

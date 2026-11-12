@@ -145,11 +145,17 @@ def decode_cell_to_tokens(V_cell: torch.Tensor, model: GrassmannianPhase1Model, 
 
 
 def safe_squash_np(V: torch.Tensor, alpha: float = 1.0 / math.sqrt(128)) -> torch.Tensor:
-    """Проекция строк матрицы в единичный шар B^128."""
+    """Сжатие сырых неограниченных векторов (например, N(0, I)) в шар B^128."""
     norms = torch.norm(V, p=2, dim=-1, keepdim=True).clamp(min=1e-7)
     direction = V / norms
     scale = torch.tanh(alpha * norms)
     return (direction * scale).contiguous()
+
+
+def clamp_to_unit_ball(V: torch.Tensor) -> torch.Tensor:
+    """Радиальная проекция в единичный шар B^128 без сжатия векторов с нормой <= 1."""
+    norms = torch.norm(V, p=2, dim=-1, keepdim=True)
+    return (V / norms.clamp(min=1.0)).contiguous()
 
 
 # ==============================================================================
@@ -202,6 +208,26 @@ def grassmann_similarity(V_A: torch.Tensor, V_B: torch.Tensor) -> Tuple[float, L
     return sim_gr, cos_thetas
 
 
+def project_onto_concept(V_res: torch.Tensor, V_base: torch.Tensor) -> float:
+    """
+    Квантовая проекция (доля энергии состояния V_res в подпространстве V_base):
+    p(Base | Res) = ||V_res @ Q_base||_F^2 / (||V_res||_F^2 + 1e-7) in [0, 1].
+    Где Q_base — ортонормированный базис подпространства Base (128 x 8).
+    Если V_res аннигилирован в VOID (||V_res||_F^2 < 1e-6), возвращает 0.0.
+    """
+    v_res = V_res[0, 0].float()
+    v_base = V_base[0, 0].float()
+
+    frob_res_sq = (v_res ** 2).sum()
+    if frob_res_sq < 1e-6:
+        return 0.0
+
+    Q_base, _ = get_orthonormal_basis(v_base)  # (128, 8)
+    projected = torch.matmul(v_res, Q_base)    # (8, 8)
+    proj_energy = (projected ** 2).sum()
+    return (proj_energy / frob_res_sq).clamp(0.0, 1.0).item()
+
+
 def concept_compose(V_A: torch.Tensor, V_B: torch.Tensor, w_a: float = 0.5, w_b: float = 0.5) -> torch.Tensor:
     """
     Аддитивная спектральная композиция понятий A и B (по пулингу Эккарта–Янга):
@@ -213,7 +239,7 @@ def concept_compose(V_A: torch.Tensor, V_B: torch.Tensor, w_a: float = 0.5, w_b:
     combined = torch.cat([v_a, v_b], dim=0)  # (16, 128)
     U, S, Vh = torch.linalg.svd(combined, full_matrices=False)
     top_axes = Vh[:8] * S[:8, None]
-    res_cell = safe_squash_np(top_axes)
+    res_cell = clamp_to_unit_ball(top_axes)
     return res_cell.unsqueeze(0).unsqueeze(0).to(V_A.dtype)
 
 
@@ -229,7 +255,7 @@ def concept_or(V_A: torch.Tensor, V_B: torch.Tensor) -> torch.Tensor:
     # SVD по теореме Эккарта-Янга
     U, S, Vh = torch.linalg.svd(combined, full_matrices=False)
     top_axes = Vh[:8] * S[:8, None]
-    res_cell = safe_squash_np(top_axes)
+    res_cell = clamp_to_unit_ball(top_axes)
     return res_cell.unsqueeze(0).unsqueeze(0).to(V_A.dtype)
 
 
@@ -255,7 +281,7 @@ def concept_and(V_A: torch.Tensor, V_B: torch.Tensor) -> Tuple[torch.Tensor, Lis
     Consensus = 0.5 * (X + Y) * S_m[None, :]  # (128, 8)
     top_axes = Consensus.T  # (8, 128)
 
-    res_cell = safe_squash_np(top_axes)
+    res_cell = clamp_to_unit_ball(top_axes)
     return res_cell.unsqueeze(0).unsqueeze(0).to(V_A.dtype), cos_thetas
 
 
@@ -276,7 +302,7 @@ def concept_not_relative(V_Universe: torch.Tensor, V_Exclude: torch.Tensor) -> t
     projected = torch.matmul(v_u, P_perp)  # (8, 128)
     U, S, Vh = torch.linalg.svd(projected, full_matrices=False)
     top_axes = Vh[:8] * S[:8, None]
-    res_cell = safe_squash_np(top_axes)
+    res_cell = clamp_to_unit_ball(top_axes)
     return res_cell.unsqueeze(0).unsqueeze(0).to(V_Universe.dtype)
 
 
@@ -339,6 +365,16 @@ def run_logic_experiments(model: GrassmannianPhase1Model, tokenizer: Any, device
     print(f"  B [Синий]:   \"{rec_blue.strip()}\"")
     print(f"  C [Белый]:   \"{rec_white.strip()}\"")
 
+    def print_projections(c_res: torch.Tensor):
+        p_r = project_onto_concept(c_res, c_red)
+        p_b = project_onto_concept(c_res, c_blue)
+        p_w = project_onto_concept(c_res, c_white)
+        s_r, _ = grassmann_similarity(c_res, c_red)
+        s_b, _ = grassmann_similarity(c_res, c_blue)
+        s_w, _ = grassmann_similarity(c_res, c_white)
+        print(f"      * Доля энергии проекции [Красный, Синий, Белый]: [{p_r:.3f}, {p_b:.3f}, {p_w:.3f}]")
+        print(f"      * Корреляция Грассманиана Sim_Gr [Красный, Синий, Белый]: [{s_r:.3f}, {s_b:.3f}, {s_w:.3f}]")
+
     # 1. (Кр И С) И (Кр И Б)
     print("\n1. Формула: (Красный AND Синий) AND (Красный AND Белый)")
     c_rb, _ = concept_and(c_red, c_blue)
@@ -346,6 +382,7 @@ def run_logic_experiments(model: GrassmannianPhase1Model, tokenizer: Any, device
     c_res1, angles1 = concept_and(c_rb, c_rw)
     rec1, _ = decode_cell_to_tokens(c_res1, model, tokenizer)
     print(f"   -> Результат декодирования: \"{rec1.strip()}\" | Главные углы: {[round(c, 3) for c in angles1[:4]]}")
+    print_projections(c_res1)
 
     # 2. Дистрибутивность: (Красный OR Синий) AND (Красный OR Белый) -> должно сходиться к Красному
     print("\n2. Формула дистрибутивности: (Красный OR Синий) AND (Красный OR Белый) [теория = Красный]")
@@ -355,6 +392,7 @@ def run_logic_experiments(model: GrassmannianPhase1Model, tokenizer: Any, device
     rec2, _ = decode_cell_to_tokens(c_res2, model, tokenizer)
     sim_distrib, _ = grassmann_similarity(c_res2, c_red)
     print(f"   -> Результат декодирования: \"{rec2.strip()}\" | Sim_Gr с Красным: {sim_distrib:.4f}")
+    print_projections(c_res2)
 
     # 3. Закон противоречия: Красный AND NOT(Красный) -> пустота (VOID)
     print("\n3. Закон противоречия: Красный AND NOT(Красный) [теория = Пустое множество / VOID]")
@@ -362,6 +400,7 @@ def run_logic_experiments(model: GrassmannianPhase1Model, tokenizer: Any, device
     rec3, _ = decode_cell_to_tokens(c_annihilate, model, tokenizer)
     energy_annihilate = torch.norm(c_annihilate).item()
     print(f"   -> Результат декодирования: \"{rec3.strip()}\" | Остаточная энергия: {energy_annihilate:.6f}")
+    print_projections(c_annihilate)
 
     # 4. Закон исключения: (Красный OR Белый) AND NOT(Белый) -> Красный
     print("\n4. Закон исключения: (Красный OR Белый) AND NOT(Белый) [теория = Красный]")
@@ -370,6 +409,7 @@ def run_logic_experiments(model: GrassmannianPhase1Model, tokenizer: Any, device
     rec4, _ = decode_cell_to_tokens(c_recovered_red, model, tokenizer)
     sim_excl, _ = grassmann_similarity(c_recovered_red, c_red)
     print(f"   -> Результат декодирования: \"{rec4.strip()}\" | Sim_Gr с Красным: {sim_excl:.4f}")
+    print_projections(c_recovered_red)
 
 
 # ==============================================================================
@@ -405,7 +445,9 @@ def run_manifold_coverage_scan(model: GrassmannianPhase1Model, tokenizer: Any, d
         if len(tokens) == 0:
             continue
         inp = torch.tensor([tokens], dtype=torch.long, device=device)
-        w = torch.ones(1, len(tokens), dtype=torch.float32, device=device)
+        # Честные веса: 1.0 для реальных токенов, 0.001 для PAD (нормировка по окнам по 4 токена)
+        raw_w = torch.where(inp == pad_id, 0.001, 1.0).view(1, -1, 4)
+        w = (raw_w / raw_w.sum(dim=-1, keepdim=True)).view(1, -1)
         with torch.no_grad():
             V_c, _, _, _ = model.encode_and_pool(inp, w)
             collected_cells.append(V_c.view(-1, 128).float().cpu())
@@ -464,7 +506,7 @@ def run_perturbation_and_prior_tests(model: GrassmannianPhase1Model, tokenizer: 
     print("\n1. Инъекция изотропного гауссова шума V_cell + sigma * N(0, I):")
     for s in sigmas:
         noise = torch.randn_like(c_base) * s
-        c_noisy = safe_squash_np(c_base + noise)
+        c_noisy = clamp_to_unit_ball(c_base + noise)
         rec_noisy, _ = decode_cell_to_tokens(c_noisy, model, tokenizer)
         print(f"   * Шум sigma = {s:4.2f} -> Декодирование: \"{rec_noisy.strip()}\"")
 
@@ -487,9 +529,11 @@ def run_vocabulary_distribution_scan(model: GrassmannianPhase1Model, tokenizer: 
     en_ids = []
     other_ids = []
 
-    # Быстро классифицируем первые 20 000 токенов через decode
-    max_scan = min(len(vocab), 25000)
-    for tid in range(max_scan):
+    # Равномерно сканируем 30 000 токенов по всему диапазону словаря [0, vocab_size)
+    total_vocab = min(len(vocab), model.vocab_size)
+    scan_step = max(1, total_vocab // 30000)
+    scan_ids = list(range(0, total_vocab, scan_step))
+    for tid in scan_ids:
         text = tokenizer.decode([tid]).strip()
         if not text:
             other_ids.append(tid)
@@ -503,7 +547,7 @@ def run_vocabulary_distribution_scan(model: GrassmannianPhase1Model, tokenizer: 
         else:
             other_ids.append(tid)
 
-    print(f"Разбиение первых {max_scan} токенов Tekken:")
+    print(f"Разбиение равномерной выборки {len(scan_ids)} из {total_vocab} токенов Tekken:")
     print(f"  * Русские токены (кириллица): {len(ru_ids)}")
     print(f"  * Английские токены (латиница): {len(en_ids)}")
     print(f"  * Служебные/символы/числа: {len(other_ids)}")

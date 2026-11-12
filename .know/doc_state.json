@@ -152,116 +152,116 @@
         "mtime": 1776536520.7468991
     },
     ".know\\knowledge\\KI_architectural_decisions.md": {
-        "hash": "e384686268ab9001cb1c72040fef1b6b8f3a388daf0b073dd609688a2b287be3",
-        "mtime": 1794468682.9400606
+        "hash": "3cfffb7ecc9a10988e969324754df00f5aa0ddc8865ea6fd56567a083968d708",
+        "mtime": 1794521951.5978465
     },
     ".know\\knowledge\\KI_architecture.md": {
-        "hash": "7c7e612f28fde1354719d09ac35f7c9f0897e9ff144c21accc187da2f2967344",
-        "mtime": 1794468682.9456232
+        "hash": "c926cfb26be567897e723c7e98ffdb60e1ca7694ff9b80a1f319432db32374d8",
+        "mtime": 1794521951.6304119
     },
     ".know\\knowledge\\KI_clm_geometric_pooling.md": {
-        "hash": "7f6518ec59e5c56570a9d7f8ef8dfe3df55293d3c4653f1d81fff0b869273b14",
-        "mtime": 1794468682.959185
+        "hash": "09ddb2f93ad43cc09bdc951d8b75ed3ca787f401e3a7205cfc58ea209ec50333",
+        "mtime": 1794521951.6511526
     },
     ".know\\knowledge\\KI_datasets.md": {
-        "hash": "87d5ce635cf4d4308c4587425a591b09a75f62ae7c9b0acd64e34d511c536b3d",
-        "mtime": 1794468682.9670844
+        "hash": "055edfb4daf09124430cec26de2d7009a67e36b832f9de48bbe538043fb26f17",
+        "mtime": 1794521951.6670706
     },
     ".know\\knowledge\\KI_data_preparation.md": {
-        "hash": "62aaecea088361bb1e960407b7ab6a5ac5cd97cf422da113947e3917995d5687",
-        "mtime": 1794468682.97462
+        "hash": "63598ba98cf66c068ebac195d457b2c38bdb12dc75280073eadb6e3ea0550716",
+        "mtime": 1794521951.6917927
     },
     ".know\\knowledge\\KI_experiments.md": {
-        "hash": "61f39128853113296548d770c79b493b39243ebc07f234cc89e8ae11f1783a49",
-        "mtime": 1794468682.980265
+        "hash": "47973009e6a6bd665f747819401f430760f555afc1806810ff795610642e7699",
+        "mtime": 1794521951.7326486
     },
     ".know\\knowledge\\KI_huggingface_ecosystem.md": {
-        "hash": "46e57b77819d48ebe9a481eee9531e90a2721adc4de517f42ed5b1fbb5761e1e",
-        "mtime": 1794468683.0021026
+        "hash": "20c0df3a638ad475a17ae56a3a2633ccb17f63c0bc05a5019fac6418e47bf8fa",
+        "mtime": 1794521951.7498994
     },
     ".know\\knowledge\\KI_kaggle.md": {
-        "hash": "101e9fef1fae733adc60b9b6a51db3d0faaa62d239662c58e913342165904475",
-        "mtime": 1794468683.0080588
+        "hash": "af5cb790962c71fc8ff24fbab98cf10fe5eb204e2e3c386c4b5ce2f356cc6634",
+        "mtime": 1794521951.7761736
     },
     ".know\\knowledge\\KI_kaggle_ops.md": {
-        "hash": "2037eb40a5a38f43090ea8873f5b279dd9389466f01d55f02c592ee0e5c1de68",
-        "mtime": 1794468683.013331
+        "hash": "85d4ad3eb9a69d55fd9f105136ef2fddd8b505646b33d9ad3814deb3dfaf5c03",
+        "mtime": 1794521951.8006406
     },
     ".know\\knowledge\\KI_knowledge_infrastructure.md": {
-        "hash": "e9233b7497cbd450d00c8744db2cd7a369d9295c254d6bcb4d093497d05164be",
-        "mtime": 1794468683.0246668
+        "hash": "29970b33d6144ea38a1d6d775f7848e7fcf477027e2565518502c3a2ebc742fd",
+        "mtime": 1794521951.8108356
     },
     ".know\\knowledge\\KI_knowledge_management.md": {
-        "hash": "62d3c1f6261ba5f59c1c9c09179fe27f9d1c97f78d336f72c135294077d51b26",
-        "mtime": 1794468683.0290864
+        "hash": "c5c6fd76fb2a31b3a4c5528a0c87a1e747084462d1a9e013c7b18debb5c04094",
+        "mtime": 1794521951.8389583
     },
     ".know\\knowledge\\KI_knowledge_testing.md": {
-        "hash": "78f78ba2d327765b45aced70c88fbc6ba33e8ddd6f60eddd05caa8d2d4f5b8e9",
-        "mtime": 1794468683.032287
+        "hash": "1c75ce49ff412782d64fce0394b409d04d9b37463ac3784ff7e6e75f2cfdea3a",
+        "mtime": 1794521951.8591821
     },
     ".know\\knowledge\\KI_knowledge_workflows.md": {
-        "hash": "5000d82e36fcf6bb513fa1b123f8405fd2d25b0435e6acf5646d9dd2bb667b61",
-        "mtime": 1794468683.0357263
+        "hash": "10655ae3f7f43ee8139b43028e3e467ce357363076579fe1439491495c3fed18",
+        "mtime": 1794521951.8710337
     },
     ".know\\knowledge\\KI_metrics_reference.md": {
-        "hash": "d65610d4bca1de314833bcc2659a7e820f08941d65fd88ee2ecff2605bf4a256",
-        "mtime": 1794468683.0405293
+        "hash": "fe42e0d2744d9b128c0cc5cbe883655dd3357bd3e06c4f7dbfad2fc6578502f7",
+        "mtime": 1794521951.8907235
     },
     ".know\\knowledge\\KI_model_assembly.md": {
-        "hash": "f9b363504234122debc912aa4f5aae649009c0ff48e2efab4db61fab154f1079",
-        "mtime": 1794468683.0465307
+        "hash": "fd3c849df0a628f8191f6e0489583b8f276b5b745a2bde9964f22be3b9f71814",
+        "mtime": 1794521951.9164956
     },
     ".know\\knowledge\\KI_model_core.md": {
-        "hash": "f710068ed584189bb6efd84b7f44796dfc0ed5bc73ac9e421aeeb7260a8b302b",
-        "mtime": 1794468683.0511997
+        "hash": "2594b722bb15188133010ad4bbe48ccb9ab7a7fb0a58e5064410108b0786f578",
+        "mtime": 1794521951.9503586
     },
     ".know\\knowledge\\KI_model_inspection.md": {
-        "hash": "7de42e1a575132603991ddc019c8c23f8365ce50eab05c4885774a18dcbb2e51",
-        "mtime": 1794468683.0554793
+        "hash": "11e7b29b512b3550b49d12e5844fd49f0a4b1250703865e178cefa04cf4f8114",
+        "mtime": 1794521951.9713397
     },
     ".know\\knowledge\\KI_model_storage.md": {
-        "hash": "ba724b4ad607ca8fa702fde0a62ea7cec18ccec8d7218bbc34870a37ff58094b",
-        "mtime": 1794468683.0595593
+        "hash": "e1188bc3d293ec7058608a77f945f72ed619d9258357d54c55aba982aed5995e",
+        "mtime": 1794521951.987636
     },
     ".know\\knowledge\\KI_operations.md": {
-        "hash": "2492a66d9f7761a4f3e05bc9d9819c2d41172c91a9313fffe32af2998914c0cb",
-        "mtime": 1794468683.0637627
+        "hash": "15ce28534d2b2f4d573010603cd20ef87356f0fda53df4e201007d9281ed989e",
+        "mtime": 1794521952.024758
     },
     ".know\\knowledge\\KI_pace_optimizer.md": {
-        "hash": "886b0591c173f024183f99ca69084e28eeb597355d4a1c8607cb741301f220a0",
-        "mtime": 1794468683.0687602
+        "hash": "4738722cca9263ed24a1773f9871ce97fb5041110be3c8c35d7e9e0d202725c0",
+        "mtime": 1794521952.0715375
     },
     ".know\\knowledge\\KI_phase4_training.md": {
-        "hash": "8d6e612139ada80435e2838535248d6d231ddab6efd6937bfa3fb39bbcace24f",
-        "mtime": 1794468683.0722995
+        "hash": "b9a161e8b8261cd6aab69ba6173ba6dd83435c7500f4dd8829fa64f5482bb06c",
+        "mtime": 1794521952.149779
     },
     ".know\\knowledge\\KI_rag_engine.md": {
-        "hash": "29e1a87f3abded553a985220a1f714cc8ff26187a7aef03e83843cbf6e56ff87",
-        "mtime": 1794468683.0802345
+        "hash": "855301f202d6a4238f4142559da0df1ccfdd2f4606485e0098333763d1274385",
+        "mtime": 1794521952.238706
     },
     ".know\\knowledge\\KI_tests.md": {
-        "hash": "b0d134478b4ac090b5ad2f4b8f8b832f8e6bff14668b0f00897f913ebe305883",
-        "mtime": 1794468683.0856757
+        "hash": "5bec708770e19088e2c38e5f1fb4891480cd1d5bdfa6d51a96cc926f8371e71b",
+        "mtime": 1794521952.267632
     },
     ".know\\knowledge\\KI_tpu_infrastructure.md": {
-        "hash": "c25ffddae68c1b8b4cd26ecc1032da4f8b6d10d8115df92d76d2b92735532971",
-        "mtime": 1794468683.0907004
+        "hash": "af22ecf57e3d5346ac5cfeedf37dbf5b3e84ca2726d0d5bb9336023d0197f9ad",
+        "mtime": 1794521952.2749138
     },
     ".know\\knowledge\\KI_training_infrastructure.md": {
-        "hash": "6e0c4126375dd646a3163bc6be9da8977d6669630419e17ff8184d00b0b95cf6",
-        "mtime": 1794468683.096649
+        "hash": "acd15088f8edcc14f0cbeed2bf7e72e8e841903e35691a3ffcbd1c5cf9fa5046",
+        "mtime": 1794521952.2799149
     },
     ".know\\knowledge\\KI_training_optimization.md": {
-        "hash": "9bb9dbd2d4942f9a68eb3b0ca428f15fded5f56c8833f746a74923f5f4c52909",
-        "mtime": 1794468683.101678
+        "hash": "2e88129e85d25b32aa8d854b72e826d4b39023afcd085ce98614f964b1ce70dc",
+        "mtime": 1794521952.2844365
     },
     ".know\\knowledge\\KI_utilities.md": {
-        "hash": "a9e6068191ef782add08f2343822076dc28ee481b3694e5db2a532999455326b",
-        "mtime": 1794468683.1036901
+        "hash": "46d7573f8d36f603d5eec6532333316fc4d4630422b88b35764d4dbf5ccd4e83",
+        "mtime": 1794521952.2907426
     },
     ".know\\doc_config.json": {
-        "hash": "7b5074b5dc08eafc3c88d6beb820e386754c7d291c87d947c26ecc8e8d609110",
-        "mtime": 1794468672.9075494
+        "hash": "bfdf498cd09774eb085d99398459de30a7ff56dbf19027f6c3ded131c057910c",
+        "mtime": 1794521927.446446
     },
     "ideas\\Architecture.md": {
         "hash": "b477eed0171fbe322265e0674d5ebcd7a34269af1d189595001f022fc28fa1e7",
