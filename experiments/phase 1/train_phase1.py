@@ -930,7 +930,7 @@ class GrassmannianPhase1Model(nn.Module):
         B, N, K, D = V_cell.shape
         # Инъекция шума при обучении для формирования бассейнов притяжения (Denoising Autoencoder)
         if self.training and getattr(self, "cell_jitter_std", 0.0) > 0.0:
-            noise_scale = torch.rand(1, device=V_cell.device, dtype=V_cell.dtype) * self.cell_jitter_std
+            noise_scale = torch.rand(B, N, 1, 1, device=V_cell.device, dtype=V_cell.dtype) * self.cell_jitter_std
             jitter = torch.randn_like(V_cell) * noise_scale
             V_cell_in = self.normalizer.clamp_to_unit_ball(V_cell + jitter)
         else:
@@ -1898,6 +1898,23 @@ def get_cosine_lr(initial_lr: float, min_lr: float, step: int, max_steps: int) -
     return min_lr + 0.5 * (initial_lr - min_lr) * (1.0 + math.cos(math.pi * progress))
 
 
+def get_jitter_std(
+    target_std: float,
+    step: int,
+    warmup_start_step: int = 5000,
+    warmup_steps: int = 2000,
+) -> float:
+    """Линейный прогрев амплитуды шума декодера от 0.0 до target_std."""
+    if target_std <= 0.0:
+        return 0.0
+    if warmup_steps <= 0 or step >= warmup_start_step + warmup_steps:
+        return target_std
+    if step <= warmup_start_step:
+        return 0.0
+    progress = (step - warmup_start_step) / float(warmup_steps)
+    return target_std * progress
+
+
 def train(
     model: nn.Module,
     dataloader: DataLoader,
@@ -1913,6 +1930,9 @@ def train(
     adamw_min_lr: float = 1e-4,
     pullback_muon: float = 0.005,
     pullback_adamw: float = 0.002,
+    cell_jitter_std: float = 0.035,
+    jitter_warmup_start_step: int = 5000,
+    jitter_warmup_steps: int = 2000,
     log_every: int = 20,
     save_every: int = 500,
     eval_every: int = 200,
@@ -1951,11 +1971,13 @@ def train(
     print(f"    - Muon параметров: {sum(p.numel() for g in opt_muon.param_groups for p in g['params']) if opt_muon else 0:,}", flush=True)
     print(f"    - AdamW параметров: {sum(p.numel() for g in opt_adamw.param_groups for p in g['params']):,}", flush=True)
     print(f"    - EMA: {'Включен (decay=' + str(ema.decay) + ')' if ema else 'Отключен'}", flush=True)
+    print(f"    - Jitter: target={cell_jitter_std:.4f}, warmup=[{jitter_warmup_start_step} -> {jitter_warmup_start_step + jitter_warmup_steps}]", flush=True)
     print(f"    - Валидация: {'Каждые ' + str(eval_every) + ' шагов (' + str(eval_batches) + ' батчей)' if val_dataloader else 'Отключена'}", flush=True)
     print(f"    - Начальный шаг: {start_step} | Целевой шаг: {max_steps}", flush=True)
     if sync_gcs:
         print(f"    - Синхронизация с GCS: {env.gcs_checkpoints_dir}", flush=True)
 
+    raw_model = getattr(model, "module", model)
     step = start_step
     data_iter = iter(dataloader)
     start_time = time.time()
@@ -1963,6 +1985,11 @@ def train(
     last_log_step = start_step
 
     while step < max_steps:
+        curr_jitter_std = get_jitter_std(
+            cell_jitter_std, step, jitter_warmup_start_step, jitter_warmup_steps
+        )
+        raw_model.cell_jitter_std = curr_jitter_std
+
         try:
             batch = next(data_iter)
         except StopIteration:
@@ -2054,6 +2081,7 @@ def train(
                 f"Recon: {metrics['loss/recon']:.4f} | "
                 f"Diag: {metrics['loss/prior_diag']:.4f} | "
                 f"rk_eff: {mean_rk:.2f} | "
+                f"Jitter: {curr_jitter_std:.4f} | "
                 f"GradNorm: {grad_norm_val:.3f} | "
                 f"MuonLR: {curr_muon_lr:.4f} | "
                 f"Speed: {steps_per_sec:.2f} step/s"
@@ -2067,6 +2095,7 @@ def train(
                 "elapsed_sec": round(elapsed, 2),
                 "speed_step_per_sec": round(steps_per_sec, 2),
                 "mean_rk_eff": round(mean_rk, 4),
+                "jitter_std": round(curr_jitter_std, 6),
                 "grad_norm": round(grad_norm_val, 4),
                 "muon_lr": round(curr_muon_lr, 6),
                 "adamw_lr": round(curr_adamw_lr, 6),
@@ -2079,6 +2108,7 @@ def train(
                 metrics.update({
                     "step": step,
                     "metrics/rk_eff": mean_rk,
+                    "train/jitter_std": curr_jitter_std,
                     "train/grad_norm": grad_norm_val,
                     "train/speed_step_per_sec": steps_per_sec,
                     "lr/muon": curr_muon_lr,
@@ -2185,6 +2215,9 @@ def parse_args():
     parser.add_argument("--adamw_min_lr", type=float, default=1e-4, help="Минимальный LR для AdamW при косинусном спаде")
     parser.add_argument("--pullback_muon", type=float, default=0.005, help="Коэффициент PACE pullback для весов Muon")
     parser.add_argument("--pullback_adamw", type=float, default=0.002, help="Коэффициент PACE pullback для весов AdamW")
+    parser.add_argument("--cell_jitter_std", type=float, default=0.035, help="Целевая амплитуда шума декодера V_cell")
+    parser.add_argument("--jitter_warmup_start_step", type=int, default=5000, help="Шаг начала прогрева шума декодера")
+    parser.add_argument("--jitter_warmup_steps", type=int, default=2000, help="Длительность линейного прогрева шума декодера")
     parser.add_argument("--log_every", type=int, default=20, help="Периодичность логирования")
     parser.add_argument("--save_every", type=int, default=500, help="Периодичность сохранения чекпоинтов")
     parser.add_argument("--resume_ckpt", type=str, default="auto", help="Путь к чекпоинту для возобновления или 'auto' для поиска последнего")
@@ -2225,6 +2258,8 @@ def main(args=None):
         args.save_every = 3
         args.eval_every = 2
         args.eval_batches = 2
+        args.jitter_warmup_start_step = 0
+        args.jitter_warmup_steps = 2
         args.wandb = "disabled"
         sync_gcs = False
         # Если локально нет весов Mistral-Nemo, уменьшаем словарь для мгновенного выполнения
@@ -2269,6 +2304,7 @@ def main(args=None):
         axis_dim=128,
         chunk_size=4,
         pad_token_id=10,
+        cell_jitter_std=args.cell_jitter_std,
     )
     init_embeddings(model, env)
 
@@ -2397,6 +2433,9 @@ def main(args=None):
             adamw_min_lr=args.adamw_min_lr,
             pullback_muon=args.pullback_muon,
             pullback_adamw=args.pullback_adamw,
+            cell_jitter_std=args.cell_jitter_std,
+            jitter_warmup_start_step=args.jitter_warmup_start_step,
+            jitter_warmup_steps=args.jitter_warmup_steps,
             log_every=args.log_every,
             save_every=args.save_every,
             eval_every=args.eval_every,
@@ -2452,6 +2491,9 @@ TRAINING_CONFIG = {
     "adamw_min_lr": 1e-4,      # Минимальный LR для AdamW при мягком косинусном спаде (3e-4 -> 1e-4)
     "pullback_muon": 0.005,    # Коэффициент PACE pullback для весов Muon (ADR 077, ADR 081)
     "pullback_adamw": 0.002,   # Коэффициент PACE pullback для весов AdamW
+    "cell_jitter_std": 0.035,  # Целевая амплитуда Denoising Jittering декодера
+    "jitter_warmup_start_step": 5000,  # Шаг старта прогрева jitter (0 при обучении с нуля)
+    "jitter_warmup_steps": 2000,       # Число шагов линейного прогрева jitter 0 -> 0.035
     "log_every": 20,           # Логирование каждые N шагов
     "save_every": 500,         # Сохранение чекпоинта каждые N шагов
     "resume_ckpt": "auto",     # "auto": продолжить с последнего чекпоинта из GCS, "" - с нуля
