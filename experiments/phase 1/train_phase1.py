@@ -806,8 +806,16 @@ class GrassmannianPhase1Model(nn.Module):
         self.dec_final_norm = RMSNorm(hidden_size)
 
     def get_tied_head_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        # Линейная проекция через транспонированную матрицу эмбеддингов
-        return F.linear(hidden_states, self.embeddings.weight)
+        """
+        Линейная проекция через транспонированную матрицу эмбеддингов.
+        Вычисляется строго в float32 (с временным отключением autocast) для исключения
+        переполнения FP16 (>65504) при проекции на 131 072 токена.
+        """
+        device_type = hidden_states.device.type
+        with torch.autocast(device_type=device_type, enabled=False):
+            h_f32 = hidden_states.float()
+            w_f32 = self.embeddings.weight.float()
+            return F.linear(h_f32, w_f32)
 
     def encode_and_pool(
         self, input_ids: torch.Tensor, weights: Optional[torch.Tensor] = None
