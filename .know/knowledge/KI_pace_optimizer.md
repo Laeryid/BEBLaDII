@@ -18,6 +18,8 @@
 
 <!-- last_verified: 2026-11-12 -->
 
+<!-- last_verified: 2026-11-12 -->
+
 ## Общая информация
 *   **Статья:** "PACE: A Pullback Averaging Control for Efficient Optimization"
 *   **arXiv ID:** 2606.25086 (или поиск по названию "Pullback Averaging Control for Efficient Optimization")

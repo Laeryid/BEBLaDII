@@ -189,10 +189,9 @@ class EnvironmentConfig:
         else:
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # На GPU используем bfloat16 (для Ampere CC>=8.0) или float16 (для Turing T4 CC=7.5), на CPU - float32
+        # На GPU используем bfloat16 (при наличии поддержки) или float16, на CPU - float32
         if device.type == "cuda":
-            major, _ = torch.cuda.get_device_capability()
-            dtype = torch.bfloat16 if (major >= 8 and torch.cuda.is_bf16_supported()) else torch.float16
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
             warmup_linalg_backends()
         else:
             dtype = torch.float32
@@ -329,9 +328,11 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        var = torch.mean(x.float() ** 2, dim=-1, keepdim=True)
-        normed = x * torch.rsqrt(var + self.eps).to(x.dtype)
-        return normed * self.weight
+        # Расчет нормализации строго в float32 с безопасной защитой от превращения inf в NaN
+        x_f = torch.nan_to_num(x.float(), nan=0.0, posinf=65000.0, neginf=-65000.0)
+        var = torch.mean(x_f ** 2, dim=-1, keepdim=True)
+        normed = x_f * torch.rsqrt(var + self.eps)
+        return (normed * self.weight.float()).to(x.dtype)
 
 
 class RotaryEmbedding128(nn.Module):
@@ -408,11 +409,12 @@ class ModernBERTLayer(nn.Module):
         attn_out = attn_out.transpose(1, 2).contiguous().view(B, T, C)
         x = x + self.o_proj(attn_out)
 
-        # SwiGLU MLP
+        # SwiGLU MLP: промежуточное вычисление произведения в float32 для исключения переполнения FP16
         normed_mlp = self.mlp_norm(x)
-        gate = F.silu(self.gate_proj(normed_mlp))
-        up = self.up_proj(normed_mlp)
-        mlp_out = self.down_proj(gate * up)
+        gate = F.silu(self.gate_proj(normed_mlp).float())
+        up = self.up_proj(normed_mlp).float()
+        gate_up = (gate * up).clamp(-65000.0, 65000.0).to(x.dtype)
+        mlp_out = self.down_proj(gate_up)
         x = x + mlp_out
         return x
 
@@ -1107,8 +1109,8 @@ class Muon(torch.optim.Optimizer):
     """
     Muon (Momentum Orthogonalized by Newton-Schulz) для 2D-параметров трансформера.
     """
-    def __init__(self, params, lr: float = 0.02, momentum: float = 0.95, nesterov: bool = True, ns_steps: int = 5):
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps)
+    def __init__(self, params, lr: float = 0.02, momentum: float = 0.95, nesterov: bool = True, ns_steps: int = 5, weight_decay: float = 0.01):
+        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps, weight_decay=weight_decay)
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -1118,6 +1120,7 @@ class Muon(torch.optim.Optimizer):
             momentum = group["momentum"]
             nesterov = group["nesterov"]
             ns_steps = group["ns_steps"]
+            wd = group.get("weight_decay", 0.0)
 
             for p in group["params"]:
                 if p.grad is None:
@@ -1137,8 +1140,10 @@ class Muon(torch.optim.Optimizer):
                 update = g.add(buf, alpha=momentum) if nesterov else buf
                 update_ortho = zeropower_via_newtonschulz5(update, steps=ns_steps)
                 
-                # Масштабирование обновления с учетом геометрии параметров
+                # Масштабирование обновления с учетом геометрии параметров и регуляризация весов
                 scale = max(1.0, p.size(0) / p.size(1)) ** 0.5
+                if wd > 0:
+                    p.data.mul_(1.0 - lr * wd)
                 p.data.add_(update_ortho, alpha=-lr * scale)
 
 
@@ -1172,7 +1177,7 @@ def create_hybrid_optimizers(
         else:
             adamw_params.append(param)
 
-    opt_muon = Muon(muon_params, lr=muon_lr) if muon_params else None
+    opt_muon = Muon(muon_params, lr=muon_lr, weight_decay=weight_decay) if muon_params else None
     opt_adamw = torch.optim.AdamW(adamw_params, lr=adamw_lr, weight_decay=weight_decay)
 
     return opt_muon, opt_adamw

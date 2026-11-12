@@ -1287,6 +1287,14 @@
       ],
       "depends_on": [],
       "summary": "ADR 126: Изоляция вычисления матрицы Грама в SetCrossAttentionUnpacker с явным отключением autocast и фиксация FP16 для Turing GPU"
+    },
+    "decisions/127_phase1_planc_smooth_layers_overflow_fix.md": {
+      "description": "ADR 127: Устранение переполнения residual stream в декомпрессоре (Phase 1 Plan C): Robust RMSNorm, SwiGLU FP32, Muon Weight Decay и возврат bfloat16 (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 127: Устранение переполнения residual stream в декомпрессоре (Phase 1 Plan C): Robust RMSNorm, SwiGLU FP32, Muon Weight Decay и возврат bfloat16"
     }
   },
   "knowledge_system": {
