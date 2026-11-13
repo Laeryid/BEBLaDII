@@ -32,6 +32,7 @@ from train_phase1 import (
     GrassmannianPhase1Model,
     EnvironmentConfig,
     load_tekken_tokenizer,
+    adapt_state_dict_to_sphere,
 )
 
 
@@ -69,7 +70,9 @@ def load_model_and_tokenizer(ckpt_path: str, device: torch.device) -> Tuple[Gras
         print("      -> Применяем стандартные веса модели.", flush=True)
         raw_sd = checkpoint.get("model_state_dict", checkpoint)
 
-    cleaned_sd = {k.replace("module.", ""): v for k, v in raw_sd.items()}
+    cleaned_sd, converted = adapt_state_dict_to_sphere(raw_sd, model)
+    if converted:
+        print("      -> Старый плотный чекпоинт адаптирован к SphereLinear + QK-norm.", flush=True)
     model.load_state_dict(cleaned_sd, strict=True)
     model.to(device)
     model.eval()

@@ -1311,6 +1311,24 @@
       ],
       "depends_on": [],
       "summary": "ADR 129: Исправление масштаба clamp_to_unit_ball после Denoising Jittering, выделение loss/prior_diag и метрика val/effective_dim (уточнение ADR 128)"
+    },
+    "decisions/130_phase1_planc_prior_off_scaling_and_isotropy_rebalance.md": {
+      "description": "ADR 130: Масштабирование prior_off и ребалансировка prior_diag после спектральной диагностики step_28500 (уточнение ADR 129) (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 130: Масштабирование prior_off и ребалансировка prior_diag после спектральной диагностики step_28500 (уточнение ADR 129)"
+    },
+    "decisions/131_orthmuon_d1_sphere_and_qknorm.md": {
+      "description": "ADR 131: Переход на сферическую оптимизацию весов OrthMuon (d=1) и QK-norm в трансформере (по статье Hu et al., 2026) (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "KI_knowledge_infrastructure.md"
+      ],
+      "summary": "ADR 131: Переход на сферическую оптимизацию весов OrthMuon (d=1) и QK-norm в трансформере (по статье Hu et al., 2026)"
     }
   },
   "knowledge_system": {

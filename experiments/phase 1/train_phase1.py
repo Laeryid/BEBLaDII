@@ -8,7 +8,7 @@
 # - Grassmannian Token Normalizer (сжатие в шар $\mathbb{B}^{128}$, $\text{rk}_{\text{eff}} \ge 1.5$, Axis Dropout)
 # - Grassmannian Spectral Pooler $4 \to 1$ (Partial RoPE 112:128, Lorentzian Autograd SVD, Sign Fixing)
 # - $\mathcal{O}(8)$-инвариантный Decompressor Decoder (1 контекстный слой + Set-Cross-Attention $1 \to 4$ + 2 сглаживающих слоя + Tied LM Head)
-# - Гибридный оптимизатор: Muon (2D-веса трансформера) + AdamW (эмбеддинги, 1D, RMSNorm)
+# - Гибридный оптимизатор: OrthMuon d=1 (сферические 2D-веса Attention/MLP) + AdamW (row_scale x4 LR, эмбеддинги, 1D, RMSNorm)
 # - Двухрежимный датасет: 85% связный текст + 15% словарный спектр `randperm(131k)`
 # - Единый запуск: CPU sanity-тест (`--smoke_test`) и полномасштабное обучение на GPU (Kaggle T4/P100/A100)
 
@@ -335,6 +335,37 @@ class RMSNorm(nn.Module):
         return (normed * self.weight.float()).to(x.dtype)
 
 
+class SphereLinear(nn.Module):
+    """
+    Линейный слой со сферической параметризацией направлений строк (ADR 131, Hu et al. 2026):
+    W = diag(row_scale) @ q_weight, где ||q_weight[i]||_2 = 1.
+    В forward() нормализация НЕ выполняется (чтобы не превращаться в Forward-normalized Muon);
+    единичная норма строк поддерживается сферическим шагом и ренормализацией в OrthMuon.
+    """
+    def __init__(self, in_features: int, out_features: int, bias: bool = False):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+
+        w_init = torch.empty(out_features, in_features)
+        nn.init.kaiming_uniform_(w_init, a=math.sqrt(5))
+        row_norms = w_init.norm(p=2, dim=-1).clamp(min=1e-7)
+
+        self.q_weight = nn.Parameter(w_init / row_norms.unsqueeze(-1))
+        self.row_scale = nn.Parameter(row_norms)
+        if bias:
+            self.bias = nn.Parameter(torch.zeros(out_features))
+        else:
+            self.register_parameter("bias", None)
+
+    def merged_weight(self) -> torch.Tensor:
+        """Собирает эффективную плотную матрицу весов W = diag(row_scale) @ q_weight."""
+        return self.q_weight * self.row_scale.unsqueeze(-1).to(self.q_weight.dtype)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return F.linear(x, self.merged_weight(), self.bias)
+
+
 class RotaryEmbedding128(nn.Module):
     """Стандартный RoPE для ModernBERT attention (head_dim=128)."""
     def __init__(self, dim: int = 128, max_seq_len: int = 2048, base: float = 10000.0):
@@ -371,8 +402,8 @@ class ModernBERTLayer(nn.Module):
     """
     Легкий слой трансформера архитектуры ModernBERT:
     - Pre-RMSNorm
-    - Multi-Head Attention (d=1024, 8 heads, head_dim=128) с RoPE
-    - SwiGLU MLP (1024 -> 2048 -> 1024)
+    - Multi-Head Attention (d=1024, 8 heads, head_dim=128) с per-head QK-norm (ADR 131) и RoPE
+    - SwiGLU MLP (1024 -> 2048 -> 1024) со сферической параметризацией SphereLinear
     """
     def __init__(self, hidden_size: int = 1024, intermediate_size: int = 2048, num_heads: int = 8):
         super().__init__()
@@ -381,23 +412,25 @@ class ModernBERTLayer(nn.Module):
         self.head_dim = hidden_size // num_heads
 
         self.attn_norm = RMSNorm(hidden_size)
-        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
-        self.o_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.q_proj = SphereLinear(hidden_size, hidden_size, bias=False)
+        self.k_proj = SphereLinear(hidden_size, hidden_size, bias=False)
+        self.v_proj = SphereLinear(hidden_size, hidden_size, bias=False)
+        self.o_proj = SphereLinear(hidden_size, hidden_size, bias=False)
+        self.q_norm = RMSNorm(self.head_dim)
+        self.k_norm = RMSNorm(self.head_dim)
 
         self.mlp_norm = RMSNorm(hidden_size)
-        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.down_proj = nn.Linear(intermediate_size, hidden_size, bias=False)
+        self.gate_proj = SphereLinear(hidden_size, intermediate_size, bias=False)
+        self.up_proj = SphereLinear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = SphereLinear(intermediate_size, hidden_size, bias=False)
 
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor,
                 attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         B, T, C = x.shape
-        # Pre-Norm Attention
+        # Pre-Norm Attention + per-head QK-norm перед RoPE (ADR 131)
         normed_x = self.attn_norm(x)
-        q = self.q_proj(normed_x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
-        k = self.k_proj(normed_x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
+        q = self.q_norm(self.q_proj(normed_x).view(B, T, self.num_heads, self.head_dim)).transpose(1, 2)
+        k = self.k_norm(self.k_proj(normed_x).view(B, T, self.num_heads, self.head_dim)).transpose(1, 2)
         v = self.v_proj(normed_x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
 
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
@@ -434,9 +467,9 @@ class LexicalCoreMLP(nn.Module):
         self.out_dim = num_axes * (96 + 16)  # 8 * 112 = 896
 
         self.norm = RMSNorm(hidden_size)
-        self.gate_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.up_proj = nn.Linear(hidden_size, intermediate_size, bias=False)
-        self.down_proj = nn.Linear(intermediate_size, self.out_dim, bias=False)
+        self.gate_proj = SphereLinear(hidden_size, intermediate_size, bias=False)
+        self.up_proj = SphereLinear(hidden_size, intermediate_size, bias=False)
+        self.down_proj = SphereLinear(intermediate_size, self.out_dim, bias=False)
         self.out_norm = RMSNorm(self.out_dim)
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -1105,7 +1138,7 @@ def compute_phase1_loss(
 
 
 # %% [markdown]
-# ## 6. Оптимизатор Muon + AdamW
+# ## 6. Оптимизатор OrthMuon (d=1) + AdamW
 
 # %%
 def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e-7) -> torch.Tensor:
@@ -1136,12 +1169,31 @@ def zeropower_via_newtonschulz5(G: torch.Tensor, steps: int = 5, eps: float = 1e
     return X.to(orig_dtype)
 
 
-class Muon(torch.optim.Optimizer):
+class OrthMuon(torch.optim.Optimizer):
     """
-    Muon (Momentum Orthogonalized by Newton-Schulz) для 2D-параметров трансформера.
+    OrthMuon (d=1, сферическая оптимизация направлений строк по Hu et al. 2026 / ADR 131):
+    - В режиме sphere=True каждая строка матрицы Q лежит на единичной сфере ||q_i||_2 = 1.
+    - Направление обновления Muon проецируется в касательное пространство сферы по строкам
+      и ретрагируется прямой ренормализацией строк в float32 (без weight_decay на Q).
     """
-    def __init__(self, params, lr: float = 0.02, momentum: float = 0.95, nesterov: bool = True, ns_steps: int = 5, weight_decay: float = 0.01):
-        defaults = dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps, weight_decay=weight_decay)
+    def __init__(
+        self,
+        params,
+        lr: float = 0.02,
+        momentum: float = 0.95,
+        nesterov: bool = True,
+        ns_steps: int = 5,
+        weight_decay: float = 0.0,
+        sphere: bool = True,
+    ):
+        defaults = dict(
+            lr=lr,
+            momentum=momentum,
+            nesterov=nesterov,
+            ns_steps=ns_steps,
+            weight_decay=weight_decay,
+            sphere=sphere,
+        )
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -1152,13 +1204,14 @@ class Muon(torch.optim.Optimizer):
             nesterov = group["nesterov"]
             ns_steps = group["ns_steps"]
             wd = group.get("weight_decay", 0.0)
+            sphere = group.get("sphere", True)
 
             for p in group["params"]:
                 if p.grad is None:
                     continue
                 g = p.grad
                 if g.ndim != 2:
-                    raise ValueError(f"Muon optimizer accepts only 2D parameters! Got shape {p.shape}")
+                    raise ValueError(f"OrthMuon optimizer accepts only 2D parameters! Got shape {p.shape}")
 
                 state = self.state[p]
                 if "momentum_buffer" not in state:
@@ -1171,11 +1224,22 @@ class Muon(torch.optim.Optimizer):
                 update = g.add(buf, alpha=momentum) if nesterov else buf
                 update_ortho = zeropower_via_newtonschulz5(update, steps=ns_steps)
 
-                # Масштабирование обновления с учетом геометрии параметров и регуляризация весов
                 scale = max(1.0, p.size(0) / p.size(1)) ** 0.5
-                if wd > 0:
-                    p.data.mul_(1.0 - lr * wd)
-                p.data.add_(update_ortho, alpha=-lr * scale)
+                if sphere:
+                    # Касательный шаг по строкам и прямая сферическая ретракция в float32 (ADR 131)
+                    q_f32 = p.data.float()
+                    u_f32 = update_ortho.float()
+                    u_tan = u_f32 - (u_f32 * q_f32).sum(dim=-1, keepdim=True) * q_f32
+                    a_f32 = q_f32 - (lr * scale) * u_tan
+                    q_next = F.normalize(a_f32, p=2, dim=-1, eps=1e-8)
+                    p.data.copy_(q_next.to(p.dtype))
+                else:
+                    if wd > 0:
+                        p.data.mul_(1.0 - lr * wd)
+                    p.data.add_(update_ortho, alpha=-lr * scale)
+
+
+Muon = OrthMuon
 
 
 def create_hybrid_optimizers(
@@ -1183,34 +1247,62 @@ def create_hybrid_optimizers(
     muon_lr: float = 0.02,
     adamw_lr: float = 3e-4,
     weight_decay: float = 0.01,
-) -> Tuple[Muon, torch.optim.AdamW]:
+    row_scale_lr_mult: float = 4.0,
+) -> Tuple[Optional[OrthMuon], torch.optim.AdamW]:
     """
-    Разделение параметров по ADR и плану эксперимента:
-    - 2D-веса Attention и MLP -> Muon
-    - Эмбеддинги, RMSNorm, bias, 1D-параметры, mu-VAE Head -> AdamW
+    Разделение параметров по ADR 131 (Hu et al., 2026):
+    - q_weight (SphereLinear Attention/MLP) -> OrthMuon d=1 (weight_decay=0.0)
+    - row_scale (SphereLinear) -> AdamW (weight_decay=0.0, lr_mult=4.0)
+    - RMSNorm (вкл. q_norm, k_norm), bias, 1D-параметры -> AdamW (weight_decay=0.0)
+    - Эмбеддинги, mu-VAE Head, прочие 2D-проекторы -> AdamW (weight_decay=weight_decay)
     """
-    muon_params = []
-    adamw_params = []
+    sphere_params = []
+    row_scale_params = []
+    adamw_no_decay_params = []
+    adamw_decay_params = []
 
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue
-        # Эмбеддинги всегда в AdamW
-        if "embeddings" in name:
-            adamw_params.append(param)
-        elif "vae_" in name:
-            adamw_params.append(param)
-        elif "norm" in name or param.ndim < 2:
-            adamw_params.append(param)
-        elif param.ndim == 2:
-            # 2D веса слоев трансформера
-            muon_params.append(param)
+        if name.endswith(".q_weight"):
+            sphere_params.append(param)
+        elif name.endswith(".row_scale"):
+            row_scale_params.append(param)
+        elif "norm" in name or name.endswith(".bias") or param.ndim < 2:
+            adamw_no_decay_params.append(param)
         else:
-            adamw_params.append(param)
+            adamw_decay_params.append(param)
 
-    opt_muon = Muon(muon_params, lr=muon_lr, weight_decay=weight_decay) if muon_params else None
-    opt_adamw = torch.optim.AdamW(adamw_params, lr=adamw_lr, weight_decay=weight_decay)
+    opt_muon = (
+        OrthMuon(sphere_params, lr=muon_lr, weight_decay=0.0, sphere=True)
+        if sphere_params
+        else None
+    )
 
+    adamw_groups = []
+    if adamw_decay_params:
+        adamw_groups.append({
+            "params": adamw_decay_params,
+            "lr": adamw_lr,
+            "lr_mult": 1.0,
+            "weight_decay": weight_decay,
+        })
+    if adamw_no_decay_params:
+        adamw_groups.append({
+            "params": adamw_no_decay_params,
+            "lr": adamw_lr,
+            "lr_mult": 1.0,
+            "weight_decay": 0.0,
+        })
+    if row_scale_params:
+        adamw_groups.append({
+            "params": row_scale_params,
+            "lr": adamw_lr * row_scale_lr_mult,
+            "lr_mult": row_scale_lr_mult,
+            "weight_decay": 0.0,
+        })
+
+    opt_adamw = torch.optim.AdamW(adamw_groups, lr=adamw_lr)
     return opt_muon, opt_adamw
 
 
@@ -1266,9 +1358,14 @@ class EMAModel:
                 s.lerp_(param.detach().float(), one_minus_decay)
 
                 # 2. PACE Pullback: притяжение живого веса к теневой копии
-                alpha = pullback_muon if (param.ndim == 2 and "embeddings" not in name and "vae_" not in name) else pullback_adamw
+                is_sphere = name.endswith(".q_weight")
+                alpha = pullback_muon if is_sphere else pullback_adamw
                 if alpha > 0.0:
                     param.data.lerp_(s.to(device=param.device, dtype=param.dtype), alpha)
+                    if is_sphere:
+                        # После хордового lerp_ возвращаем направления строк строго на единичную сферу
+                        q_normed = F.normalize(param.data.float(), p=2, dim=-1, eps=1e-8)
+                        param.data.copy_(q_normed.to(param.dtype))
 
     def apply_shadow(self, model: nn.Module):
         """Подменяет веса модели на теневые EMA перед валидацией или сохранением."""
@@ -1731,10 +1828,47 @@ def save_checkpoint(
                 print(f"[Storage Warning] Не удалось удалить локальный файл {path}: {e}", flush=True)
 
 
+def adapt_state_dict_to_sphere(
+    ckpt_sd: Dict[str, torch.Tensor],
+    model: nn.Module,
+) -> Tuple[Dict[str, torch.Tensor], bool]:
+    """
+    Адаптирует state_dict старых плотных чекпоинтов (nn.Linear без QK-norm) под
+    сферическую архитектуру (SphereLinear: q_weight + row_scale, и QK-norm = ones).
+    Возвращает (адаптированный_sd, флаг_конвертации).
+    """
+    raw_model = getattr(model, "module", model)
+    adapted = {k.replace("module.", ""): v for k, v in ckpt_sd.items()}
+    converted = False
+
+    # 1. Конвертация плотных матриц W -> (row_scale, q_weight) для всех SphereLinear
+    for mod_name, mod in raw_model.named_modules():
+        if isinstance(mod, SphereLinear):
+            q_key = f"{mod_name}.q_weight"
+            s_key = f"{mod_name}.row_scale"
+            w_key = f"{mod_name}.weight"
+            if q_key not in adapted and w_key in adapted:
+                w = adapted.pop(w_key)
+                w_f32 = w.float()
+                norms = w_f32.norm(p=2, dim=-1).clamp(min=1e-7)
+                adapted[q_key] = (w_f32 / norms.unsqueeze(-1)).to(w.dtype)
+                adapted[s_key] = norms.to(w.dtype)
+                converted = True
+
+    # 2. Заполнение отсутствующих весов QK-norm единицами (для совместимости со старыми чекпоинтами)
+    model_sd = raw_model.state_dict()
+    for k, target_tensor in model_sd.items():
+        if k not in adapted and (k.endswith(".q_norm.weight") or k.endswith(".k_norm.weight")):
+            adapted[k] = torch.ones_like(target_tensor, device=next(iter(adapted.values())).device if adapted else target_tensor.device)
+            converted = True
+
+    return adapted, converted
+
+
 def load_checkpoint(
     path: str,
     model: nn.Module,
-    opt_muon: Optional[Muon],
+    opt_muon: Optional[OrthMuon],
     opt_adamw: torch.optim.AdamW,
     device: torch.device,
     ema: Optional[EMAModel] = None,
@@ -1747,8 +1881,12 @@ def load_checkpoint(
     checkpoint = torch.load(path, map_location=device)
 
     raw_model = getattr(model, "module", model)
+    # Адаптируем старые плотные чекпоинты (nn.Linear -> SphereLinear + QK-norm)
+    ckpt_sd, converted = adapt_state_dict_to_sphere(checkpoint["model_state_dict"], raw_model)
+    if converted:
+        print("[Resume] Чекпоинт автоматически конвертирован в сферический формат SphereLinear + QK-norm (ADR 131).", flush=True)
+
     # Проверка совпадения словаря эмбеддингов
-    ckpt_sd = checkpoint["model_state_dict"]
     ckpt_embed = ckpt_sd.get("embeddings.weight", None)
     if ckpt_embed is not None and ckpt_embed.shape != raw_model.embeddings.weight.shape:
         print(f"[Resume Warning] Несовпадение словаря эмбеддингов: чекпоинт {ckpt_embed.shape} != модель {raw_model.embeddings.weight.shape}. Пропускаем embeddings.", flush=True)
@@ -1757,28 +1895,35 @@ def load_checkpoint(
     else:
         raw_model.load_state_dict(ckpt_sd)
 
-    try:
-        opt_adamw.load_state_dict(checkpoint["opt_adamw_state_dict"])
-        for state in opt_adamw.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.to(device)
-    except Exception as e:
-        print(f"[Resume Warning] Не удалось восстановить состояние AdamW: {e}", flush=True)
-
-    if opt_muon is not None and "opt_muon_state_dict" in checkpoint:
+    if converted:
+        print("[Resume Info] Формат параметров изменился: состояния буферов оптимизаторов инициализируются заново.", flush=True)
+    else:
         try:
-            opt_muon.load_state_dict(checkpoint["opt_muon_state_dict"])
-            for state in opt_muon.state.values():
+            opt_adamw.load_state_dict(checkpoint["opt_adamw_state_dict"])
+            for state in opt_adamw.state.values():
                 for k, v in state.items():
                     if isinstance(v, torch.Tensor):
                         state[k] = v.to(device)
         except Exception as e:
-            print(f"[Resume Warning] Не удалось полностью восстановить состояние Muon: {e}", flush=True)
+            print(f"[Resume Warning] Не удалось восстановить состояние AdamW: {e}", flush=True)
+
+        if opt_muon is not None and "opt_muon_state_dict" in checkpoint:
+            try:
+                opt_muon.load_state_dict(checkpoint["opt_muon_state_dict"])
+                for state in opt_muon.state.values():
+                    for k, v in state.items():
+                        if isinstance(v, torch.Tensor):
+                            state[k] = v.to(device)
+            except Exception as e:
+                print(f"[Resume Warning] Не удалось полностью восстановить состояние OrthMuon: {e}", flush=True)
 
     if ema is not None and "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
         try:
-            ema.load_state_dict(checkpoint["ema_state_dict"])
+            ema_raw = checkpoint["ema_state_dict"]
+            if isinstance(ema_raw, dict) and "shadow" in ema_raw:
+                ema_raw = ema_raw["shadow"]
+            ema_sd, _ = adapt_state_dict_to_sphere(ema_raw, raw_model)
+            ema.load_state_dict(ema_sd)
             print("[Resume] Успешно восстановлены теневые веса EMA!", flush=True)
         except Exception as e:
             print(f"[Resume Warning] Не удалось восстановить EMA веса: {e}", flush=True)
@@ -1967,7 +2112,7 @@ def train(
         )
 
     print(f"=== Запуск обучения Phase 1 Plan C на устройстве: {env.device} (Dtype: {env.dtype}) ===", flush=True)
-    print(f"    - Muon параметров: {sum(p.numel() for g in opt_muon.param_groups for p in g['params']) if opt_muon else 0:,}", flush=True)
+    print(f"    - OrthMuon (d=1) параметров: {sum(p.numel() for g in opt_muon.param_groups for p in g['params']) if opt_muon else 0:,}", flush=True)
     print(f"    - AdamW параметров: {sum(p.numel() for g in opt_adamw.param_groups for p in g['params']):,}", flush=True)
     print(f"    - EMA: {'Включен (decay=' + str(ema.decay) + ')' if ema else 'Отключен'}", flush=True)
     print(f"    - Jitter: target={cell_jitter_std:.4f}, warmup=[{jitter_warmup_start_step} -> {jitter_warmup_start_step + jitter_warmup_steps}]", flush=True)
@@ -2039,14 +2184,14 @@ def train(
             opt_adamw.zero_grad()
             continue
 
-        # Динамический косинусный спад LR
+        # Динамический косинусный спад LR (с учетом множителя lr_mult для row_scale)
         curr_muon_lr = get_cosine_lr(muon_lr, muon_min_lr, step, max_steps)
         curr_adamw_lr = get_cosine_lr(adamw_lr, adamw_min_lr, step, max_steps)
         if opt_muon is not None:
             for g in opt_muon.param_groups:
                 g["lr"] = curr_muon_lr
         for g in opt_adamw.param_groups:
-            g["lr"] = curr_adamw_lr
+            g["lr"] = curr_adamw_lr * g.get("lr_mult", 1.0)
 
         if opt_muon is not None:
             opt_muon.step()
