@@ -988,11 +988,11 @@ def compute_prior_loss(V_cell: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor
     """
     Взвешенный Prior Loss (Изотропия 128 каналов):
     bar_rho_batch = (1 / (sum ||V||_F^2 + eps)) * sum V^T V in R^{128 x 128}.
-    Возвращает два раздельных слагаемых:
-    1. off_diag_loss: Штраф Huber на недиагональные элементы (ортогонализация осей):
-       L_off = (2 / 128) * sum_{i < j} Huber(bar_rho_batch_{ij}, delta=0.01).
+    Обе компоненты приводятся к единому масштабу O(1) через умножение на 128.0:
+    1. off_diag_loss: Штраф Huber на масштабированные недиагональные элементы (декорреляция каналов):
+       L_off = mean_{i < j} Huber(128 * bar_rho_batch_{ij}, delta=0.5).
     2. diag_loss: Дисперсия диагональных элементов (равномерное распределение энергии по 128 каналам к 1/128):
-       L_diag = mean_i Huber(128 * bar_rho_batch_{ii} - 1.0, delta=0.5).
+       L_diag = mean_i Huber(128 * bar_rho_batch_{ii} - 1.0, delta=1.0).
     """
     # V_cell: (B, N, 8, 128) -> объединяем строки осей: (B * N * 8, 128)
     axes = V_cell.view(-1, 128).float()
@@ -1000,15 +1000,14 @@ def compute_prior_loss(V_cell: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor
     # bar_rho: (128, 128)
     bar_rho = torch.matmul(axes.transpose(0, 1), axes) / frob_total
 
-    # 1. Недиагональные элементы (ортогонализация)
+    # 1. Недиагональные элементы (масштаб O(1) аналогично диагонали)
     triu_indices = torch.triu_indices(128, 128, offset=1, device=V_cell.device)
-    off_diag = bar_rho[triu_indices[0], triu_indices[1]]
-    off_diag_loss = F.huber_loss(off_diag, torch.zeros_like(off_diag), delta=0.01, reduction="sum")
-    off_diag_loss = (2.0 / 128.0) * off_diag_loss
+    off_diag_scaled = bar_rho[triu_indices[0], triu_indices[1]] * 128.0
+    off_diag_loss = F.huber_loss(off_diag_scaled, torch.zeros_like(off_diag_scaled), delta=0.5, reduction="mean")
 
     # 2. Диагональные элементы (дисперсия диагонали к равномерному уровню 1/128, масштаб O(1))
     diag_scaled = torch.diagonal(bar_rho, 0) * 128.0
-    diag_loss = F.huber_loss(diag_scaled, torch.ones_like(diag_scaled), delta=0.5, reduction="mean")
+    diag_loss = F.huber_loss(diag_scaled, torch.ones_like(diag_scaled), delta=1.0, reduction="mean")
 
     return off_diag_loss, diag_loss
 
@@ -1057,8 +1056,8 @@ def compute_phase1_loss(
     rank_loss: torch.Tensor,
     beta: float = 0.015,
     gamma: float = 0.05,
-    delta: float = 0.05,
-    delta_diag: float = 0.05,
+    delta: float = 0.5,
+    delta_diag: float = 0.25,
     eta: float = 0.01,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
@@ -2484,7 +2483,7 @@ TRAINING_CONFIG = {
     "eval_batches": 20,        # Количество батчей для валидации (20 батчей * batch_size)
     "batch_size": 16,          # Общий размер батча (по 8 на каждый из 2 GPU при DataParallel)
     "seq_len": 256,            # Длина последовательности (256 токенов = 64 клетки по 4)
-    "max_steps": 50000,         # Общее число шагов обучения
+    "max_steps": 500000,         # Общее число шагов обучения
     "muon_lr": 0.02,           # Стартовый Learning Rate для Muon (2D веса Attention и MLP)
     "adamw_lr": 3e-4,          # Стартовый Learning Rate для AdamW (эмбеддинги, RMSNorm, VAE Head)
     "muon_min_lr": 0.008,      # Минимальный LR для Muon при мягком косинусном спаде (0.02 -> 0.008)
