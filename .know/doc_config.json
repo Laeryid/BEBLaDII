@@ -1329,6 +1329,14 @@
         "KI_knowledge_infrastructure.md"
       ],
       "summary": "ADR 131: Переход на сферическую оптимизацию весов OrthMuon (d=1) и QK-norm в трансформере (по статье Hu et al., 2026)"
+    },
+    "decisions/132_orthmuon_dense_projectors_and_ema_shadow_norm.md": {
+      "description": "ADR 132: Уточнение ADR 131: возврат скрытых 2D-проекторов в плотный OrthMuon (sphere=False) и ренормализация q_weight в EMAModel.apply_shadow (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 132: Уточнение ADR 131: возврат скрытых 2D-проекторов в плотный OrthMuon (sphere=False) и ренормализация q_weight в EMAModel.apply_shadow"
     }
   },
   "knowledge_system": {

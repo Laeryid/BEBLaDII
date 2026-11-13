@@ -1,27 +1,27 @@
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 # KI: Hugging Face Ecosystem
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
 ## Что это
 Описание работы со скриптами в папке `hugging face/`, правила загрузки весов проекта в Hub и маппинг названий файлов.

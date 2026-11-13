@@ -1,27 +1,27 @@
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 # KI: Knowledge Management (Методология)
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
 ## Overview
 Философия и стандарты ведения базы знаний проекта. Система базируется на принципе "Документация как код" (Docs as Code) и обеспечивает полную прозрачность архитектурных решений.

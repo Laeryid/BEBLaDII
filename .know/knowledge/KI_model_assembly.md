@@ -1,28 +1,28 @@
 # KI: Сборка модели для инференса (Model Assembly Guide)
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
 Этот документ описывает точную архитектуру, источники весов и критические нюансы реализации для корректной сборки полного пайплайна модели BEBLaDII (от токенов до диффузии и обратно в текст). 
 

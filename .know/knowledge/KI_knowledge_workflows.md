@@ -1,27 +1,27 @@
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 # KI: Knowledge Workflows
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
-<!-- last_verified: 2026-11-12 -->
+<!-- last_verified: 2026-11-13 -->
 
 ## Overview
 Исполняемые инструкции (Workflows) для ИИ-агентов, определяющие стандартные процедуры обслуживания базы знаний и управления изменениями.

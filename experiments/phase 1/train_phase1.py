@@ -1251,12 +1251,14 @@ def create_hybrid_optimizers(
 ) -> Tuple[Optional[OrthMuon], torch.optim.AdamW]:
     """
     Разделение параметров по ADR 131 (Hu et al., 2026):
-    - q_weight (SphereLinear Attention/MLP) -> OrthMuon d=1 (weight_decay=0.0)
+    - q_weight (SphereLinear Attention/MLP) -> OrthMuon d=1 (sphere=True, weight_decay=0.0)
+    - syntax_proj.weight, out_proj.weight -> OrthMuon (sphere=False, weight_decay=weight_decay)
     - row_scale (SphereLinear) -> AdamW (weight_decay=0.0, lr_mult=4.0)
     - RMSNorm (вкл. q_norm, k_norm), bias, 1D-параметры -> AdamW (weight_decay=0.0)
-    - Эмбеддинги, mu-VAE Head, прочие 2D-проекторы -> AdamW (weight_decay=weight_decay)
+    - Эмбеддинги, mu-VAE Head, малые проекторы с bias (gram_mlp) -> AdamW (weight_decay=weight_decay)
     """
     sphere_params = []
+    muon_dense_params = []
     row_scale_params = []
     adamw_no_decay_params = []
     adamw_decay_params = []
@@ -1266,6 +1268,8 @@ def create_hybrid_optimizers(
             continue
         if name.endswith(".q_weight"):
             sphere_params.append(param)
+        elif name.endswith("syntax_proj.weight") or name.endswith("out_proj.weight"):
+            muon_dense_params.append(param)
         elif name.endswith(".row_scale"):
             row_scale_params.append(param)
         elif "norm" in name or name.endswith(".bias") or param.ndim < 2:
@@ -1273,11 +1277,23 @@ def create_hybrid_optimizers(
         else:
             adamw_decay_params.append(param)
 
-    opt_muon = (
-        OrthMuon(sphere_params, lr=muon_lr, weight_decay=0.0, sphere=True)
-        if sphere_params
-        else None
-    )
+    muon_groups = []
+    if sphere_params:
+        muon_groups.append({
+            "params": sphere_params,
+            "lr": muon_lr,
+            "weight_decay": 0.0,
+            "sphere": True,
+        })
+    if muon_dense_params:
+        muon_groups.append({
+            "params": muon_dense_params,
+            "lr": muon_lr,
+            "weight_decay": weight_decay,
+            "sphere": False,
+        })
+
+    opt_muon = OrthMuon(muon_groups, lr=muon_lr) if muon_groups else None
 
     adamw_groups = []
     if adamw_decay_params:
@@ -1359,7 +1375,8 @@ class EMAModel:
 
                 # 2. PACE Pullback: притяжение живого веса к теневой копии
                 is_sphere = name.endswith(".q_weight")
-                alpha = pullback_muon if is_sphere else pullback_adamw
+                is_muon_weight = is_sphere or name.endswith("syntax_proj.weight") or name.endswith("out_proj.weight")
+                alpha = pullback_muon if is_muon_weight else pullback_adamw
                 if alpha > 0.0:
                     param.data.lerp_(s.to(device=param.device, dtype=param.dtype), alpha)
                     if is_sphere:
@@ -1374,7 +1391,11 @@ class EMAModel:
         for name, param in raw_model.named_parameters():
             if param.requires_grad and name in self.shadow:
                 self.backup[name] = param.detach().clone()
-                param.data.copy_(self.shadow[name].to(device=param.device, dtype=param.dtype))
+                shadow_val = self.shadow[name]
+                if name.endswith(".q_weight"):
+                    # Линейное усреднение в shadow сдвигает строки внутрь сферы; проецируем при применении
+                    shadow_val = F.normalize(shadow_val.float(), p=2, dim=-1, eps=1e-8)
+                param.data.copy_(shadow_val.to(device=param.device, dtype=param.dtype))
 
     def restore(self, model: nn.Module):
         """Восстанавливает горячие обучаемые веса модели."""
