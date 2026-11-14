@@ -1091,7 +1091,7 @@ def compute_phase1_loss(
     gamma: float = 0.05,
     delta: float = 0.5,
     delta_diag: float = 0.25,
-    eta: float = 0.01,
+    eta: float = 0.04,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     L_Phase1 = L_recon + beta * L_var_kl + gamma * L_rank_floor + delta * L_prior_off + delta_diag * L_prior_diag + eta * L_uniformity
@@ -1179,7 +1179,7 @@ class OrthMuon(torch.optim.Optimizer):
     def __init__(
         self,
         params,
-        lr: float = 0.02,
+        lr: float = 0.002,
         momentum: float = 0.95,
         nesterov: bool = True,
         ns_steps: int = 5,
@@ -1224,7 +1224,7 @@ class OrthMuon(torch.optim.Optimizer):
                 update = g.add(buf, alpha=momentum) if nesterov else buf
                 update_ortho = zeropower_via_newtonschulz5(update, steps=ns_steps)
 
-                scale = max(1.0, p.size(0) / p.size(1)) ** 0.5
+                scale = 0.2 * math.sqrt(max(p.size(0), p.size(1)))
                 if sphere:
                     # Касательный шаг по строкам и прямая сферическая ретракция в float32 (ADR 131)
                     q_f32 = p.data.float()
@@ -1244,7 +1244,7 @@ Muon = OrthMuon
 
 def create_hybrid_optimizers(
     model: GrassmannianPhase1Model,
-    muon_lr: float = 0.02,
+    muon_lr: float = 0.002,
     adamw_lr: float = 3e-4,
     weight_decay: float = 0.01,
     row_scale_lr_mult: float = 4.0,
@@ -1961,6 +1961,7 @@ def evaluate(
     env: EnvironmentConfig,
     eval_batches: int = 20,
     ema: Optional[EMAModel] = None,
+    uniformity_weight: float = 0.04,
 ) -> Dict[str, float]:
     """
     Прогон валидации на отложенном датасете (val.parquet) в режиме eval() и no_grad().
@@ -2002,6 +2003,7 @@ def evaluate(
                     V_cell=V_cell,
                     kl_loss=kl_loss,
                     rank_loss=rank_loss,
+                    eta=uniformity_weight,
                 )
 
             if not torch.isfinite(loss):
@@ -2055,11 +2057,23 @@ def evaluate(
     }
 
 
-def get_cosine_lr(initial_lr: float, min_lr: float, step: int, max_steps: int) -> float:
-    """Мягкий косинусный спад LR от initial_lr до min_lr."""
+def get_cosine_lr(
+    initial_lr: float,
+    min_lr: float,
+    step: int,
+    max_steps: int,
+    warmup_steps: int = 0,
+    warmup_start_factor: float = 0.05,
+) -> float:
+    """Линейный LR warmup до initial_lr и мягкий косинусный спад до min_lr."""
     if step >= max_steps:
         return min_lr
-    progress = step / max(1, max_steps)
+    if warmup_steps > 0 and step < warmup_steps:
+        start_lr = initial_lr * warmup_start_factor
+        progress = step / float(warmup_steps)
+        return start_lr + (initial_lr - start_lr) * progress
+    decay_steps = max(1, max_steps - max(0, warmup_steps))
+    progress = min(1.0, max(0, step - max(0, warmup_steps)) / float(decay_steps))
     return min_lr + 0.5 * (initial_lr - min_lr) * (1.0 + math.cos(math.pi * progress))
 
 
@@ -2088,11 +2102,13 @@ def train(
     opt_adamw: Optional[torch.optim.AdamW] = None,
     start_step: int = 0,
     metrics_history: Optional[List[Dict[str, Any]]] = None,
-    max_steps: int = 5000,
-    muon_lr: float = 0.02,
+    max_steps: int = 100000,
+    muon_lr: float = 0.002,
     adamw_lr: float = 3e-4,
-    muon_min_lr: float = 0.008,
-    adamw_min_lr: float = 1e-4,
+    muon_min_lr: float = 1e-4,
+    adamw_min_lr: float = 3e-5,
+    lr_warmup_steps: int = 1000,
+    uniformity_weight: float = 0.04,
     pullback_muon: float = 0.005,
     pullback_adamw: float = 0.002,
     cell_jitter_std: float = 0.035,
@@ -2136,6 +2152,8 @@ def train(
     print(f"    - OrthMuon (d=1) параметров: {sum(p.numel() for g in opt_muon.param_groups for p in g['params']) if opt_muon else 0:,}", flush=True)
     print(f"    - AdamW параметров: {sum(p.numel() for g in opt_adamw.param_groups for p in g['params']):,}", flush=True)
     print(f"    - EMA: {'Включен (decay=' + str(ema.decay) + ')' if ema else 'Отключен'}", flush=True)
+    print(f"    - LR Schedule: warmup={lr_warmup_steps} шагов | Muon={muon_lr}->{muon_min_lr} | AdamW={adamw_lr}->{adamw_min_lr}", flush=True)
+    print(f"    - Uniformity weight (eta): {uniformity_weight}", flush=True)
     print(f"    - Jitter: target={cell_jitter_std:.4f}, warmup=[{jitter_warmup_start_step} -> {jitter_warmup_start_step + jitter_warmup_steps}]", flush=True)
     print(f"    - Валидация: {'Каждые ' + str(eval_every) + ' шагов (' + str(eval_batches) + ' батчей)' if val_dataloader else 'Отключена'}", flush=True)
     print(f"    - Начальный шаг: {start_step} | Целевой шаг: {max_steps}", flush=True)
@@ -2179,6 +2197,7 @@ def train(
                 V_cell=V_cell,
                 kl_loss=kl_loss,
                 rank_loss=rank_loss,
+                eta=uniformity_weight,
             )
 
         if not torch.isfinite(total_loss):
@@ -2205,9 +2224,13 @@ def train(
             opt_adamw.zero_grad()
             continue
 
-        # Динамический косинусный спад LR (с учетом множителя lr_mult для row_scale)
-        curr_muon_lr = get_cosine_lr(muon_lr, muon_min_lr, step, max_steps)
-        curr_adamw_lr = get_cosine_lr(adamw_lr, adamw_min_lr, step, max_steps)
+        # Динамический косинусный спад LR с линейным warmup (с учетом множителя lr_mult для row_scale)
+        curr_muon_lr = get_cosine_lr(
+            muon_lr, muon_min_lr, step, max_steps, warmup_steps=lr_warmup_steps
+        )
+        curr_adamw_lr = get_cosine_lr(
+            adamw_lr, adamw_min_lr, step, max_steps, warmup_steps=lr_warmup_steps
+        )
         if opt_muon is not None:
             for g in opt_muon.param_groups:
                 g["lr"] = curr_muon_lr
@@ -2289,6 +2312,7 @@ def train(
                 env=env,
                 eval_batches=eval_batches,
                 ema=ema,
+                uniformity_weight=uniformity_weight,
             )
             v_loss = val_metrics["val/loss"]
             v_recon = val_metrics["val/recon"]
@@ -2373,11 +2397,13 @@ def parse_args():
     parser.add_argument("--no_dataparallel", action="store_true", help="Отключить DataParallel")
     parser.add_argument("--batch_size", type=int, default=4, help="Размер батча")
     parser.add_argument("--seq_len", type=int, default=256, help="Длина последовательности (кратно 4)")
-    parser.add_argument("--max_steps", type=int, default=5000, help="Количество шагов обучения")
-    parser.add_argument("--muon_lr", type=float, default=0.02, help="Learning rate для Muon")
+    parser.add_argument("--max_steps", type=int, default=100000, help="Количество шагов обучения")
+    parser.add_argument("--muon_lr", type=float, default=0.002, help="Learning rate для OrthMuon")
     parser.add_argument("--adamw_lr", type=float, default=3e-4, help="Learning rate для AdamW")
-    parser.add_argument("--muon_min_lr", type=float, default=0.008, help="Минимальный LR для Muon при косинусном спаде")
-    parser.add_argument("--adamw_min_lr", type=float, default=1e-4, help="Минимальный LR для AdamW при косинусном спаде")
+    parser.add_argument("--muon_min_lr", type=float, default=1e-4, help="Минимальный LR для OrthMuon при косинусном спаде")
+    parser.add_argument("--adamw_min_lr", type=float, default=3e-5, help="Минимальный LR для AdamW при косинусном спаде")
+    parser.add_argument("--lr_warmup_steps", type=int, default=1000, help="Число шагов линейного разогрева LR")
+    parser.add_argument("--uniformity_weight", type=float, default=0.04, help="Вес uniformity_loss (eta)")
     parser.add_argument("--pullback_muon", type=float, default=0.005, help="Коэффициент PACE pullback для весов Muon")
     parser.add_argument("--pullback_adamw", type=float, default=0.002, help="Коэффициент PACE pullback для весов AdamW")
     parser.add_argument("--cell_jitter_std", type=float, default=0.035, help="Целевая амплитуда шума декодера V_cell")
@@ -2423,6 +2449,7 @@ def main(args=None):
         args.save_every = 3
         args.eval_every = 2
         args.eval_batches = 2
+        args.lr_warmup_steps = 1
         args.jitter_warmup_start_step = 0
         args.jitter_warmup_steps = 2
         args.wandb = "disabled"
@@ -2596,6 +2623,8 @@ def main(args=None):
             adamw_lr=args.adamw_lr,
             muon_min_lr=args.muon_min_lr,
             adamw_min_lr=args.adamw_min_lr,
+            lr_warmup_steps=args.lr_warmup_steps,
+            uniformity_weight=args.uniformity_weight,
             pullback_muon=args.pullback_muon,
             pullback_adamw=args.pullback_adamw,
             cell_jitter_std=args.cell_jitter_std,
@@ -2649,11 +2678,13 @@ TRAINING_CONFIG = {
     "eval_batches": 20,        # Количество батчей для валидации (20 батчей * batch_size)
     "batch_size": 16,          # Общий размер батча (по 8 на каждый из 2 GPU при DataParallel)
     "seq_len": 256,            # Длина последовательности (256 токенов = 64 клетки по 4)
-    "max_steps": 500000,         # Общее число шагов обучения
-    "muon_lr": 0.02,           # Стартовый Learning Rate для Muon (2D веса Attention и MLP)
+    "max_steps": 100000,       # Общее число шагов обучения (с запасом под косинусный спад)
+    "muon_lr": 0.002,          # Стартовый LR для OrthMuon (scale=0.2*sqrt(max(m,n)) по Hu et al., 2026)
     "adamw_lr": 3e-4,          # Стартовый Learning Rate для AdamW (эмбеддинги, RMSNorm, VAE Head)
-    "muon_min_lr": 0.008,      # Минимальный LR для Muon при мягком косинусном спаде (0.02 -> 0.008)
-    "adamw_min_lr": 1e-4,      # Минимальный LR для AdamW при мягком косинусном спаде (3e-4 -> 1e-4)
+    "muon_min_lr": 1e-4,       # Минимальный LR для OrthMuon при косинусном спаде (0.002 -> 1e-4)
+    "adamw_min_lr": 3e-5,      # Минимальный LR для AdamW при косинусном спаде (3e-4 -> 3e-5)
+    "lr_warmup_steps": 1000,   # Число шагов линейного разогрева LR от 5% до пика
+    "uniformity_weight": 0.04, # Вес uniformity_loss (eta) для удержания ||V_cell||_F^4
     "pullback_muon": 0.005,    # Коэффициент PACE pullback для весов Muon (ADR 077, ADR 081)
     "pullback_adamw": 0.002,   # Коэффициент PACE pullback для весов AdamW
     "cell_jitter_std": 0.035,  # Целевая амплитуда Denoising Jittering декодера
