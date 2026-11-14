@@ -1,27 +1,27 @@
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 # KI: Knowledge Infrastructure (Техническая реализация)
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
 ## Overview
 Техническое ядро системы управления знаниями: сбор метрик, отслеживание хешей и предоставление MCP-интерфейса.
@@ -51,6 +51,7 @@
 
 ## Common Pitfalls
 - **Mtime Desync**: Некоторые редакторы не обновляют время модификации файла при сохранении идентичного контента, что может обмануть оптимизацию движка. Используйте `save_state` принудительно.
+
 
 
 

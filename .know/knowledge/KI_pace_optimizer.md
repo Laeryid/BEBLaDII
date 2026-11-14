@@ -1,28 +1,28 @@
 # PACE: The Iterate-Averaged Optimizer (Pullback Averaging Control for Efficient Optimization)
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
 ## Общая информация
 *   **Статья:** "PACE: A Pullback Averaging Control for Efficient Optimization"

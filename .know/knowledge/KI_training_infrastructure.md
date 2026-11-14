@@ -1,27 +1,27 @@
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 # KI: Training Infrastructure
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
-<!-- last_verified: 2026-11-13 -->
+<!-- last_verified: 2026-11-14 -->
 
 ## Overview
 Инфраструктура для обучения моделей в распределенной среде. Основной упор сделан на работу с TPU v6e через PyTorch XLA, использование SPMD и FSDP для эффективного шардирования весов.

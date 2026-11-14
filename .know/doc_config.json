@@ -1337,6 +1337,14 @@
       ],
       "depends_on": [],
       "summary": "ADR 132: Уточнение ADR 131: возврат скрытых 2D-проекторов в плотный OrthMuon (sphere=False) и ренормализация q_weight в EMAModel.apply_shadow"
+    },
+    "decisions/133_phase1_step0_orthmuon_warmup_calibration.md": {
+      "description": "ADR 133: Калибровка OrthMuon, LR warmup и усиление Uniformity Loss для чистого перезапуска Phase 1 Plan C с шага 0 (Accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 133: Калибровка OrthMuon, LR warmup и усиление Uniformity Loss для чистого перезапуска Phase 1 Plan C с шага 0"
     }
   },
   "knowledge_system": {
