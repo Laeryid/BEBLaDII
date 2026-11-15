@@ -1,6 +1,6 @@
 # План эксперимента: Фаза 1 Plan C (Спектральное латентное пространство Грассманиана Burer–Monteiro и иерархическая декомпрессия)
 
-**Статус:** Согласован к реализации  
+**Статус:** Завершён (`step_19500` EMA, компоненты экспортированы в `storage/components/`)  
 **Дата:** Ноябрь 2026  
 **Директория:** `experiments/phase 1/`  
 **Связанные документы:**  
@@ -264,7 +264,7 @@ $$\mathcal{L}_{\text{Phase1}} = \mathcal{L}_{\text{recon}} + \beta \mathcal{L}_{
 
 В локальном терминале можно проверить любой произвольный текст:
 
-  .venv\Scripts\python.exe "experiments/phase 1/inspect_phase1_latent.py" --ckpt "experiments\phase 1\checkpoints\planC_Phase 1_checkpoints_phase1_step_5000.pt" --custom-text "Любая фраза для проверки автоэнкодера"
+  .venv\Scripts\python.exe "experiments/phase 1/inspect_phase1_latent.py" --ckpt "experiments\phase 1\checkpoints\phase1_step_19500_ema.pt" --custom-text "Любая фраза для проверки автоэнкодера"
 
 
-.venv\Scripts\python.exe "experiments/phase 1/inspect_manifold_and_logic.py" --ckpt  "experiments\phase 1\checkpoints\planC_Phase 1_checkpoints_phase1_step_5000.pt"
+.venv\Scripts\python.exe "experiments/phase 1/inspect_manifold_and_logic.py" --ckpt "experiments\phase 1\checkpoints\phase1_step_19500_ema.pt"

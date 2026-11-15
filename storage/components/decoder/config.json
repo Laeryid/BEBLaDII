@@ -1,0 +1,18 @@
+{
+  "architecture": "GrassmannianDecoder",
+  "plan": "Plan C",
+  "phase": "Phase 1",
+  "source_checkpoint": "phase1_step_19500_ema.pt",
+  "step": 19500,
+  "vocab_size": 131072,
+  "hidden_size": 1024,
+  "intermediate_size": 2048,
+  "num_axes": 8,
+  "axis_dim": 128,
+  "chunk_size": 4,
+  "max_seq_len": 4096,
+  "cell_jitter_std": 0.0,
+  "tied_lm_head": true,
+  "weights_file": "weights.pt",
+  "ema_normalized_sphere": true
+}

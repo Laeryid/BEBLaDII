@@ -1,5 +1,6 @@
 <!-- created: 2026-10-28 -->
-<!-- status: Superseded by ADR 116 -->
+<!-- status: superseded -->
+<!-- superseded_by: 116 -->
 # ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling)
 
 > [!WARNING]

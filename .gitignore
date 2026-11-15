@@ -32,8 +32,10 @@ data/**
 !.know/decisions/
 !.know/doc_config.json
 *.pt
-!storage/components/sep_token.pt
-!storage/components/void_token.pt
+!storage/components/plan B/sep_token.pt
+!storage/components/plan B/void_token.pt
+!storage/components/sep_concept.pt
+!storage/components/void_concept.pt
 
 # Keys
 .keys/*

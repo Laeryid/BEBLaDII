@@ -1,27 +1,9 @@
-<!-- last_verified: 2026-11-14 -->
-# KI: Knowledge Infrastructure (Техническая реализация)
+<!-- last_verified: 2026-11-15 -->
+<!-- status: archived -->
+# KI: Knowledge Infrastructure (Техническая реализация, архив)
 
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
+> [!NOTE]
+> Устарело: локальные скрипты `.know/scripts/` удалены, логика перенесена во внешний MCP-сервер `ki-manager`.
 
 ## Overview
 Техническое ядро системы управления знаниями: сбор метрик, отслеживание хешей и предоставление MCP-интерфейса.

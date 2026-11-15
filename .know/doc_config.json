@@ -98,8 +98,9 @@
         "ideas/Architecture.md",
         "ideas/Training phases.md",
         "ideas/BEBLaDII idea.md",
-        "experiments/train_phase1_kaggle.py"
-      ]
+        "experiments/Plan A/phase 1/train_phase1_kaggle.py"
+      ],
+      "summary": "Central description of architecture (System 1/2) and training phases."
     },
     "KI_rag_engine.md": {
       "description": "RAG system, indexing, and knowledge search.",
@@ -145,25 +146,22 @@
         "Experiments"
       ],
       "depends_on": [
-        "experiments/train_phase1_kaggle.py",
-        "experiments/train_phase1_kaggle.ipynb"
-      ]
+        "experiments/Plan A/phase 1/train_phase1_kaggle.py",
+        "experiments/Plan A/phase 1/train_phase1_kaggle.ipynb"
+      ],
+      "summary": "Experiments with DUS Mapping, hyperparameters, and language data."
     },
     "KI_knowledge_infrastructure.md": {
-      "description": "Technical implementation: SHA-256 hashing, state tracking, and MCP tools logic.",
+      "description": "[Archived] Historical implementation notes of legacy .know/scripts/ before migration to external ki-manager MCP server.",
       "covers": [
         "Knowledge Infrastructure"
       ],
       "depends_on": [
-        ".know/scripts/knowledge_mcp.py",
-        ".know/scripts/knowledge_engine.py",
-        ".know/scripts/audit_coverage.py",
-        ".know/scripts/ki_dependency_analyzer.py",
-        ".know/scripts/ki_utils.py",
-        ".know/scripts/generate_dir_index.py",
-        ".know/scripts/sync_agents_md.py",
+        ".know/ki_config.json",
         ".know/doc_config.json"
-      ]
+      ],
+      "summary": "[Archived] Historical implementation notes of legacy .know/scripts/ before migration to external ki-manager MCP server.",
+      "status": "archived"
     },
     "KI_knowledge_management.md": {
       "description": "Knowledge management methodology: standards, metrics, and quality control.",
@@ -212,33 +210,22 @@
       ]
     },
     "KI_knowledge_testing.md": {
-      "description": "Integration and security tests for the knowledge infrastructure.",
+      "description": "[Archived] Historical test notes for legacy .know/tests/ before migration to external ki-manager MCP server.",
       "covers": [
         "Knowledge Infrastructure"
       ],
-      "depends_on": [
-        ".know/tests/conftest.py",
-        ".know/tests/test_audit_coverage.py",
-        ".know/tests/test_generate_dir_index.py",
-        ".know/tests/test_init_ki_system.py",
-        ".know/tests/test_ki_utils.py",
-        ".know/tests/test_knowledge_engine.py",
-        ".know/tests/test_knowledge_engine_extra.py",
-        ".know/tests/test_mcp_security.py",
-        ".know/tests/test_sync_and_add_ki.py"
-      ]
+      "depends_on": [],
+      "summary": "[Archived] Historical test notes for legacy .know/tests/ before migration to external ki-manager MCP server.",
+      "status": "archived"
     },
     "KI_knowledge_workflows.md": {
-      "description": "Executable instructions (Workflows) for agents and maintenance procedures.",
+      "description": "[Archived] Historical workflow notes for legacy .know/workflows/ before migration to external ki-manager MCP server.",
       "covers": [
         "Knowledge Infrastructure"
       ],
-      "depends_on": [
-        ".know/workflows/create-adr.md",
-        ".know/workflows/expand-knowledge.md",
-        ".know/workflows/sync-knowledge.md",
-        ".know/workflows/update-knowledge.md"
-      ]
+      "depends_on": [],
+      "summary": "[Archived] Historical workflow notes for legacy .know/workflows/ before migration to external ki-manager MCP server.",
+      "status": "archived"
     },
     "KI_datasets.md": {
       "description": "Описание источников данных, используемых для обучения и инференса в проекте BEBLaDII.",
@@ -317,9 +304,9 @@
       "depends_on": [
         "scripts/smoke_test_forward.py",
         "scripts/verify_new_tpu.py",
-        "scripts/inspect_system.py",
-        "evaluate_lengths.py"
-      ]
+        "scripts/inspect_system.py"
+      ],
+      "summary": "General operations: smoke tests, system diagnostics, and length evaluation."
     },
     "decisions/001_kaggle_phase1_retrospective.md": {
       "description": "ADR: Kaggle Phase 1 deployment retrospective (reasons for choosing FP32, Mirror-Load, Arrow_Schema).",
@@ -428,9 +415,10 @@
         "Data & Ops Scripts"
       ],
       "depends_on": [
-        "experiments/train_phase1_TPU_fsdp.py",
+        "experiments/Plan A/phase 2/train_phase1_TPU_fsdp.py",
         "src/beb_la_dii/utils/experiment_manager.py"
-      ]
+      ],
+      "summary": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler."
     },
     "KI_phase4_training.md": {
       "description": "Alignment & Confidence training, Phase 4.1/4.2 separation, and Orchestrator logic.",
@@ -868,7 +856,7 @@
       ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py",
-        "experiments/train_phase1_TPU_fsdp.py",
+        "experiments/Plan A/phase 2/train_phase1_TPU_fsdp.py",
         ".know/decisions/014_metrics_fix_and_delta_recovery.md",
         ".know/decisions/015_centered_cosine_similarity.md",
         ".know/decisions/017_new_loss_terms_and_metrics.md",
@@ -877,7 +865,8 @@
         ".know/decisions/025_centered_rkd.md",
         ".know/decisions/026_gradient_stabilization_rkd_cosine.md",
         ".know/decisions/027_huber_loss_variance_covariance.md"
-      ]
+      ],
+      "summary": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица."
     },
     "decisions/073_data_preparation_bug_stringified_tokens.md": {
       "description": "ADR: Переход к сырым текстам после обнаружения бага токенизации словарей (bulletproof fallback).",
@@ -1345,6 +1334,46 @@
       ],
       "depends_on": [],
       "summary": "ADR 133: Калибровка OrthMuon, LR warmup и усиление Uniformity Loss для чистого перезапуска Phase 1 Plan C с шага 0"
+    },
+    "_OVERVIEW.ki.md": {
+      "description": "Project overview: BEBLaDII architecture evolution (Plan A/B/C), repository layout, and navigation entrypoint.",
+      "covers": [
+        "Architecture & Training Phases",
+        "Model Core",
+        "Core Package"
+      ],
+      "depends_on": [
+        "experiments/plan C.md"
+      ],
+      "summary": "Обзор проекта BEBLaDII (эволюция Plan A -> B -> C), структура репозитория и навигация.",
+      "status": "active"
+    },
+    "KI_model_assembly.md": {
+      "description": "Exact architecture, weight sources, and assembly guide for the BEBLaDII Plan B Phase 6 inference pipeline.",
+      "covers": [
+        "Model Core",
+        "Experiments"
+      ],
+      "depends_on": [
+        "experiments/Plan B/phase 6/evaluate_phase6_metrics.py",
+        "src/beb_la_dii/model/vae.py",
+        "src/beb_la_dii/model/dus.py",
+        "src/beb_la_dii/model/modern_decoder.py"
+      ],
+      "summary": "Сборка полного пайплайна инференса BEBLaDII (Plan B Phase 6): источники весов и код сборки.",
+      "status": "active"
+    },
+    "decisions/134_phase1_planc_finalization_and_components_export.md": {
+      "description": "ADR 134: Финализация Фазы 1 Plan C (step_19500 EMA), модульная сборка System 1 и архивация Plan B (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "KI_knowledge_infrastructure.md",
+        "decisions/058_phase4_canvas_format_and_sep_token.md"
+      ],
+      "summary": "ADR 134: Финализация Фазы 1 Plan C (step_19500 EMA), модульная сборка System 1 и архивация Plan B",
+      "status": "accepted"
     }
   },
   "knowledge_system": {

@@ -4,8 +4,8 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~1068 (excluding excluded directories)
-**Updated:** 2026-11-14
+**Total files in project:** ~1076 (excluding excluded directories)
+**Updated:** 2026-11-15
 
 ```
 BEBLaDII/
@@ -13,12 +13,12 @@ BEBLaDII/
 |-- checkpoints/  *(empty)*
 |   `-- phase6_v2/  *(empty)*
 |-- data/  *(empty)*
-|-- experiments/  *573 files*
+|-- experiments/  *574 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
 |   |   `-- phase 3/  *7 files*
-|   |-- Plan B/  *535 files*
+|   |-- Plan B/  *536 files*
 |   |   |-- phase 1/  *31 files*
 |   |   |-- phase 2/  *35 files*
 |   |   |-- phase 3/  *187 files*
@@ -37,7 +37,8 @@ BEBLaDII/
 |-- kaggle_upload_1_2/  *1 files*
 |-- posts/  *30 files*
 |-- reports/  *11 files*
-|   `-- plan_A/  *6 files*
+|   |-- plan_A/  *6 files*
+|   `-- plan_B/  *5 files*
 |-- scratch/  *65 files*
 |-- scripts/  *33 files*
 |-- src/  *28 files*
@@ -48,10 +49,11 @@ BEBLaDII/
 |   |   |-- rag/  *1 files*
 |   |   `-- utils/  *7 files*
 |   `-- beb_la_dii.egg-info/  *5 files*
-|-- storage/  *28 files*
-|   |-- components/  *11 files*
-|   |   |-- model/  *1 files*
-|   |   |-- projector/  *4 files*
+|-- storage/  *35 files*
+|   |-- components/  *18 files*
+|   |   |-- decoder/  *3 files*
+|   |   |-- encoder/  *3 files*
+|   |   |-- plan B/  *5 files*
 |   |   `-- tokenizer/  *6 files*
 |   |-- dictionaries/  *1 files*
 |   |-- experiments/  *15 files*

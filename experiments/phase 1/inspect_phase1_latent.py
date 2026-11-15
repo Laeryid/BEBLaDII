@@ -56,11 +56,13 @@ def load_model_and_tokenizer(
     )
 
     # Приоритет отдаем теневым весам EMA
+    used_ema = False
     if "ema_state_dict" in checkpoint and checkpoint["ema_state_dict"] is not None:
         print("      -> Применяем сглаженные EMA shadow веса.", flush=True)
         raw_sd = checkpoint["ema_state_dict"]
         if isinstance(raw_sd, dict) and "shadow" in raw_sd:
             raw_sd = raw_sd["shadow"]
+        used_ema = True
     else:
         print("      -> Применяем стандартные веса модели.", flush=True)
         raw_sd = checkpoint.get("model_state_dict", checkpoint)
@@ -68,6 +70,17 @@ def load_model_and_tokenizer(
     cleaned_sd, converted = adapt_state_dict_to_sphere(raw_sd, model)
     if converted:
         print("      -> Старый плотный чекпоинт адаптирован к SphereLinear + QK-norm.", flush=True)
+    if used_ema:
+        # Построчная проекция q_weight на единичную сферу, как в EMAModel.apply_shadow() (ADR 132)
+        max_sphere_dev = 0.0
+        for k, v in list(cleaned_sd.items()):
+            if k.endswith(".q_weight") and isinstance(v, torch.Tensor):
+                v_f32 = v.float()
+                dev_err = (v_f32.norm(p=2, dim=-1) - 1.0).abs().max().item()
+                if dev_err > max_sphere_dev:
+                    max_sphere_dev = dev_err
+                cleaned_sd[k] = F.normalize(v_f32, p=2, dim=-1, eps=1e-8).to(v.dtype)
+        print(f"      -> Ренормализованы EMA *.q_weight на сферу (max |1 - ||q||| до проекции: {max_sphere_dev:.6f}).", flush=True)
     model.load_state_dict(cleaned_sd, strict=True)
     model.to(device)
     model.eval()

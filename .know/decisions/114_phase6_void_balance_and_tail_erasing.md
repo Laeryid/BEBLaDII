@@ -1,5 +1,6 @@
 <!-- created: 2026-10-28 -->
-<!-- status: Superseded by ADR 116 -->
+<!-- status: superseded -->
+<!-- superseded_by: 116 -->
 # ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000
 
 > [!WARNING]

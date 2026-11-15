@@ -1,27 +1,9 @@
-<!-- last_verified: 2026-11-14 -->
-# KI: Knowledge Infrastructure Testing
+<!-- last_verified: 2026-11-15 -->
+<!-- status: archived -->
+# KI: Knowledge Infrastructure Testing (архив)
 
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
+> [!NOTE]
+> Устарело: локальные тесты `.know/tests/` перенесены во внешний пакет `ki-manager`.
 
 ## Overview
 Система автоматизированного тестирования инфраструктуры знаний. Проверяет корректность расчета покрытия, безопасность MCP-сервера и стабильность генерации индексов.

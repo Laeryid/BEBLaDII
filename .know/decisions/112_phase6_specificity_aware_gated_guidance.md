@@ -1,5 +1,6 @@
 <!-- created: 2026-10-27 -->
-<!-- status: Superseded by ADR 113 -->
+<!-- status: superseded -->
+<!-- superseded_by: 113 -->
 # ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395)
 
 > [!WARNING]

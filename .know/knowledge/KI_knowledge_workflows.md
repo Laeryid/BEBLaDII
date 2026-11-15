@@ -1,27 +1,9 @@
-<!-- last_verified: 2026-11-14 -->
-# KI: Knowledge Workflows
+<!-- last_verified: 2026-11-15 -->
+<!-- status: archived -->
+# KI: Knowledge Workflows (архив)
 
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
+> [!NOTE]
+> Устарело: файлы `.know/workflows/` заменены встроенными инструкциями `ki_instructions(document=...)` внешнего MCP `ki-manager`.
 
 ## Overview
 Исполняемые инструкции (Workflows) для ИИ-агентов, определяющие стандартные процедуры обслуживания базы знаний и управления изменениями.

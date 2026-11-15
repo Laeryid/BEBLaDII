@@ -1,5 +1,6 @@
 <!-- created: 2026-11-11 -->
-<!-- status: Superseded by ADR 122 -->
+<!-- status: superseded -->
+<!-- superseded_by: 122 -->
 # ADR 121: Устранение несходимости cuSOLVER (error 18) через Тихоновскую регуляризацию и двухуровневый fallback в Grassmannian Spectral Pooling (Phase 1 Plan C)
 
 > [!WARNING]
