@@ -1374,6 +1374,15 @@
       ],
       "summary": "ADR 134: Финализация Фазы 1 Plan C (step_19500 EMA), модульная сборка System 1 и архивация Plan B",
       "status": "accepted"
+    },
+    "decisions/135_phase2_planc_softgate_adaln_shared_kv_and_loss_calibration.md": {
+      "description": "ADR 135: Спецификация Фазы 2 Plan C: Soft-Gate AdaLN, Shared KV, Unit-RMS Residual Stream и калибровка лосса (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 135: Спецификация Фазы 2 Plan C: Soft-Gate AdaLN, Shared KV, Unit-RMS Residual Stream и калибровка лосса",
+      "status": "accepted"
     }
   },
   "knowledge_system": {

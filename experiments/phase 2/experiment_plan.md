@@ -1,6 +1,6 @@
 # План реализации: Фаза 2 Plan C (Условное ядро латентной диффузии на холсте Грассманиана с `CA_Prompt`)
 
-**Статус:** Обновлён по результатам математического аудита и эмпирических замеров Q1–Q7 (готов к утверждению)  
+**Статус:** Реализован, проверен архитектурными тестами и `--smoke-test`  
 **Дата:** Ноябрь 2026  
 **Директория:** `experiments/phase 2/`  
 **Целевая платформа:** Kaggle 2×T4 (`sm_75`, 2×16 ГБ VRAM, `DDP` / `DataParallel` с внешним расчётом лосса, `FP16` + `GradScaler` + `FP32` инварианты; TPU v6e — опциональный резерв)  
@@ -23,7 +23,7 @@
   - [.know/knowledge/KI_clm_geometric_pooling.md](file:///C:/Experiments/BEBLaDII/.know/knowledge/KI_clm_geometric_pooling.md)
   - Контекст Системы 1 (`experiments_phase_1_system_1_autoencoder.ki.md`) и актуальные ADR:
     - **Plan C**: ADR `123` (FP16 переполнение матрицы Грама), `125`–`127` (численная устойчивость), `128` (спектральный пулинг со взвешиванием стоп-слов), `131` (`OrthMuon d=1` + `QK-norm`), `132` (невырожденный 8-осевой `VOID`), `134` (экспорт Системы 1).
-    - **Plan B (механика `CA_Prompt` и `AdaLN`)**: ADR `062` (Pre-LN + AdaLN порядок), `064` и `074` (ранний Micro-Noise Init `std=1e-3` + Diversity Loss и его последующий откат к Zero Init), `065` (Identity Gate), `108` (`RoPE` в Cross-Attention и анти-барицентрический лосс), `109` (`Prompt Dropout 15%` для CFG), `118` (`Token-Centered Contrast`, `Zero-Vector Attention Sink k_sink`, `Cross-Gated GeGLU`), `119` (переход к Plan C). Спецификация `Soft-Gate AdaLN` (`std=1e-4`, `gate_bias=0.02`) и пола $\sigma_{\text{adaln}}$ в Фазе 2 является новым решением Plan C (оформляется отдельным ADR при старте реализации; ADR `105` относится к другой задаче Phase 6).
+    - **Plan B (механика `CA_Prompt` и `AdaLN`)**: ADR `062` (Pre-LN + AdaLN порядок), `064` и `074` (ранний Micro-Noise Init `std=1e-3` + Diversity Loss и его последующий откат к Zero Init), `065` (Identity Gate), `108` (`RoPE` в Cross-Attention и анти-барицентрический лосс), `109` (`Prompt Dropout 15%` для CFG), `118` (`Token-Centered Contrast`, `Zero-Vector Attention Sink k_sink`, `Cross-Gated GeGLU`), `119` (переход к Plan C). Спецификация `Soft-Gate AdaLN` (`std=1e-4`, `gate_bias=0.02`) и пола $\sigma_{\text{adaln}}$ в Фазе 2 зафиксирована в [ADR 135](file:///C:/Experiments/BEBLaDII/.know/decisions/135_phase2_planc_softgate_adaln_shared_kv_and_loss_calibration.md) (ADR `105` относится к другой задаче Phase 6).
 - **KIs Constraints**:
   1. **[MUST]** Замороженные веса `GrassmannianEncoder` и `GrassmannianDecoder` переводятся в `.eval()` с `requires_grad_(False)` и не изменяются в Фазе 2.
   2. **[MUST]** На GPU NVIDIA T4 (`sm_75`) отсутствует аппаратный `bfloat16`; используется `torch.float16` autocast + `GradScaler`, поэтому все расчёты матриц Грама $G = V V^T$, норм Фробениуса, спектрального ранга $\operatorname{rk}_{\text{eff}}$, `RMSNorm`, `SwiGLU` (с клампом `[-65000.0, 65000.0]` как на `gate * up`, так и на выходе `down_proj`) и `AdaLN`-модуляций обязаны выполняться с защитой от переполнения FP16 (`> 65504`).
@@ -307,9 +307,10 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{basis}} + 0.02\,\mathcal{L}_{\
 
 ### 7.2. Файлы подсистемы `experiments/phase 2/`
 - [test_phase2_open_questions.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/test_phase2_open_questions.py) — **реализован и проверен**: воспроизводимый предполётный тест геометрии, граничных ячеек, квантилей $\operatorname{Sim}_{\text{Gr}}$, баланса лоссов и инициализации `AdaLN` (Q1–Q7).
-1. `experiments/phase 2/train_phase2.py` *(после одобрения плана)* — полный скрипт обучения для Kaggle 2×T4 (`DDP` / `DataParallel`, `GradScaler`, FP16-защищённые Грассмановы операции, `warmup_linalg_backends`, on-the-fly кодирование, `OrthMuon` + `AdamW`, сэмплер Эйлера–Хьюна с CFG, быстрый режим `--smoke-test`).
-2. `experiments/phase 2/export_to_notebook.py` *(после одобрения плана)* — экспортер скрипта в Kaggle-ноутбук `.ipynb`.
-3. `experiments/phase 2/inspect_phase2_generation.py` *(после одобрения плана)* — скрипт глубокого аудита обученного чекпоинта.
+1. [train_phase2.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/train_phase2.py) — **реализован и проверен `--smoke-test`**: полный скрипт обучения для Kaggle 2×T4 (`DDP` / `DataParallel`, `GradScaler`, FP16-защищённые Грассмановы операции, `warmup_linalg_backends`, on-the-fly кодирование, `OrthMuon` + `AdamW`, сэмплер Эйлера–Хьюна с CFG, быстрый режим `--smoke-test`).
+2. [export_to_notebook.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/export_to_notebook.py) — **реализован и проверен**: экспортер скрипта в Kaggle-ноутбук [train_phase2_notebook.ipynb](file:///C:/Experiments/BEBLaDII/experiments/phase%202/Kaggle/train_phase2_notebook.ipynb).
+3. [inspect_phase2_generation.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/inspect_phase2_generation.py) — **реализован и проверен**: скрипт глубокого аудита обученного чекпоинта.
+4. [test_phase2_architecture.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/test_phase2_architecture.py) — **реализован и пройден**: юнит-тесты архитектуры (`Soft-Gate AdaLN`, отсутствие утечки в cross-gate, сферичность `q_weight`, `OrthMuon`, EMA, Грассмановы лоссы).
 
 
 ---
