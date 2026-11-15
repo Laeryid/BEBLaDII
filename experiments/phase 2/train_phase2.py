@@ -156,26 +156,38 @@ class EnvironmentConfig:
             data_dir = "/kaggle/input"
             output_dir = "/kaggle/working/output"
             checkpoint_dir = "/kaggle/working/checkpoints/phase2"
-            search_roots = ["/kaggle/input", project_root]
+            search_roots = [
+                "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data",
+                "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data",
+                "/kaggle/input",
+                project_root,
+            ]
             train_data_path = resolve_file_path(
-                "train_phase6.parquet",
+                "train_phase2.parquet",
                 [
-                    "/kaggle/input/bebladii-planb-phase6-data/phase 6/data/train_phase6.parquet",
-                    os.path.join(project_root, "BEBLaDII-planB-Phase6-Data", "phase 6", "data", "train_phase6.parquet"),
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/data/train_phase2.parquet",
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/train_phase2.parquet",
+                    "/kaggle/input/bebladii-planc-phase2-data/data/train_phase2.parquet",
+                    "/kaggle/input/bebladii-planc-phase2-data/train_phase2.parquet",
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase2-Data", "data", "train_phase2.parquet"),
                 ],
                 search_roots,
             )
             val_data_path = resolve_file_path(
-                "val_phase6.parquet",
+                "val_phase2.parquet",
                 [
-                    "/kaggle/input/bebladii-planb-phase6-data/phase 6/data/val_phase6.parquet",
-                    os.path.join(project_root, "BEBLaDII-planB-Phase6-Data", "phase 6", "data", "val_phase6.parquet"),
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/data/val_phase2.parquet",
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/val_phase2.parquet",
+                    "/kaggle/input/bebladii-planc-phase2-data/data/val_phase2.parquet",
+                    "/kaggle/input/bebladii-planc-phase2-data/val_phase2.parquet",
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase2-Data", "data", "val_phase2.parquet"),
                 ],
                 search_roots,
             )
             stopwords_path = resolve_file_path(
                 "tekken_stopwords_mask.pt",
                 [
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/data/tekken_stopwords_mask.pt",
                     "/kaggle/input/bebladii-planc-phase1-data/data/tekken_stopwords_mask.pt",
                     os.path.join(project_root, "data", "plan C", "tekken_stopwords_mask.pt"),
                 ],
@@ -185,9 +197,10 @@ class EnvironmentConfig:
                 "encoder/weights.pt",
                 [
                     os.path.join(project_root, "storage", "components", "encoder", "weights.pt"),
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/encoder/weights.pt",
                     "/kaggle/input/bebladii-planc-phase1-data/encoder/weights.pt",
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/storage/components/encoder/weights.pt",
                     "/kaggle/input/bebladii-planc-phase1-data/storage/components/encoder/weights.pt",
-                    "/kaggle/input/bebladii-planc-phase1-data/components/encoder/weights.pt",
                 ],
                 search_roots,
             )
@@ -195,9 +208,10 @@ class EnvironmentConfig:
                 "decoder/weights.pt",
                 [
                     os.path.join(project_root, "storage", "components", "decoder", "weights.pt"),
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/decoder/weights.pt",
                     "/kaggle/input/bebladii-planc-phase1-data/decoder/weights.pt",
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/storage/components/decoder/weights.pt",
                     "/kaggle/input/bebladii-planc-phase1-data/storage/components/decoder/weights.pt",
-                    "/kaggle/input/bebladii-planc-phase1-data/components/decoder/weights.pt",
                 ],
                 search_roots,
             )
@@ -207,13 +221,13 @@ class EnvironmentConfig:
             output_dir = os.path.join(project_root, "experiments", "phase 2", "output")
             checkpoint_dir = os.path.join(project_root, "experiments", "phase 2", "checkpoints")
             train_data_path = resolve_file_path(
-                "train_phase6.parquet",
-                [os.path.join(project_root, "BEBLaDII-planB-Phase6-Data", "phase 6", "data", "train_phase6.parquet")],
+                "train_phase2.parquet",
+                [os.path.join(project_root, "BEBLaDII-plan\u0421-Phase2-Data", "data", "train_phase2.parquet")],
                 [project_root],
             )
             val_data_path = resolve_file_path(
-                "val_phase6.parquet",
-                [os.path.join(project_root, "BEBLaDII-planB-Phase6-Data", "phase 6", "data", "val_phase6.parquet")],
+                "val_phase2.parquet",
+                [os.path.join(project_root, "BEBLaDII-plan\u0421-Phase2-Data", "data", "val_phase2.parquet")],
                 [project_root],
             )
             stopwords_path = resolve_file_path(
@@ -1014,7 +1028,7 @@ def make_pooling_weights(input_ids: torch.Tensor, stopword_mask: torch.Tensor) -
 
 class PromptAnswerDataset(Dataset):
     """
-    Датасет пар (Q, A) из train_phase6.parquet / val_phase6.parquet:
+    Датасет пар (Q, A) из train_phase2.parquet / val_phase2.parquet:
     - Промпт Q: выравнивается по левому краю, дополняется справа PAD=10 до 256 токенов (64 клетки).
     - Ответ A: усекается до 508 токенов (по возможности по последней точке/переносу строки),
       дополняется справа PAD=10 до 508 токенов (127 клеток ответа + SEP на pos 0 = 128).

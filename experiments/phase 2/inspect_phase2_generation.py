@@ -211,7 +211,7 @@ def main() -> None:
     parser.add_argument("--steps", type=int, default=20, help="Число шагов Эйлера-Хьюна")
     parser.add_argument("--cfg-scale", type=float, default=3.0, help="Масштаб Classifier-Free Guidance")
     parser.add_argument("--eval-batches", type=int, default=20, help="Число батчей валидации")
-    parser.add_argument("--skip-val", action="store_true", help="Пропустить прогон по val_phase6.parquet")
+    parser.add_argument("--skip-val", action="store_true", help="Пропустить прогон по val_phase2.parquet")
     parser.add_argument("--save-json", type=str, default=None, help="Сохранить отчёт в JSON")
     args = parser.parse_args()
 

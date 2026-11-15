@@ -305,12 +305,32 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{basis}} + 0.02\,\mathcal{L}_{\
 3. **Точность детекции границы `VOID`**: exact-match индекса $i_{\text{void\_start}}$ и точность в пределах $\pm 1$ ячейки (оба $> 0.95$ для $\pm 1$), а также побочечный бинарный $F_1 > 0.95$ (`VOID` / не-`VOID`). Если ответ занимает все 127 ячеек, $i_{\text{void\_start}}$ не существует — такие примеры считаются отдельно (корректно, если предсказанных `VOID`-ячеек нет).
 4. **Отсутствие коллапсов (после warm-up 500 шагов)**: доля внимания в `k_sink` $10\% \dots 45\%$ для контента и $> 70\%$ для `VOID`-ячеек, $\sigma_{\text{adaln}}^{(l)} \ge 10^{-2}$ (на шаге 0 до обучения $\sigma_{\text{adaln}}^{(l)} \approx 8.15 \cdot 10^{-5}$), средний эффективный ранг смысловых ячеек $\operatorname{rk}_{\text{eff}}(\hat{V}_0) \ge 1.5$.
 
+#### Сводная таблица целевых метрик в WandB (Train + Evaluation Gate)
+Малые абсолютные значения `loss/basis` и `loss/total` обусловлены масштабом самого латентного пространства ($\sigma_{\text{data}} = 0.05$) и по-элементным усреднением `SmoothL1` ($\beta = 0.02$) по $8 \times 128 = 1024$ координатам:
+
+| Метрика в WandB | Тип | Старт (шаг `0–120`) | Целевое значение / порог | Пояснение |
+| :--- | :---: | :---: | :---: | :--- |
+| `loss/basis` | Train | `~0.022 → 0.013` | **`≤ 0.001 – 0.003`** | `SmoothL1(beta=0.02)` по $1024$ элементам (при ошибке $\sim 0.005\dots0.010$ падает в `0.0006–0.0025`). |
+| `loss/gr` | Train | `~0.90 → 0.57` | **`≤ 0.10 – 0.25`** | Сырой $\|\hat{\rho} - \rho_0\|_F^2$ по матрице $128 \times 128$ (в `loss/total` входит с весом `0.02`). |
+| `loss/total` | Train | `~0.040 → 0.025` | **`≤ 0.004 – 0.008`** | Итоговый взвешенный лосс. |
+| `loss/adj` | Train | `0.0` | **`≈ 0.0` (`< 1e-3`)** | Анти-повтор смежных ячеек ($\operatorname{Sim}_{\text{Gr}} > 0.85$); `0` означает отсутствие повторений. |
+| `loss/bary` | Train | `~0 .. 1.8e-6` | **`≈ 0.0` (`< 1e-3`)** | Анти-коллапс к среднему по батчу ($\operatorname{Sim}_{\text{Gr}} > 0.50$); около `0` — норма. |
+| `adaln/sigma_min`, `val/sigma_adaln_min` | Train / Eval | `~8.15e-5` | **`≥ 1e-2` (`0.01`)** | Разнообразие модуляций `Soft-Gate AdaLN` (warm-up веса `0 → 0.05` до шага `500`). |
+| `val/sim_gr_denoising` | Eval Gate | `~0.70` | **`> 0.82`** *(лучше `≥ 0.90`)* | Среднее нормированное $\operatorname{Sim}_{\text{Gr}}(\hat{V}_0, V_0)$ по смысловым ячейкам при $t \in [0.1, 0.5]$. |
+| `val/cfg_contrast` | Eval Gate | `~0.003` | **`> 0.25`** | Контраст с промптом $\left\|\hat{V}_0(V_t, \text{prompt}) - \hat{V}_0(V_t, \varnothing)\right\|_F$. |
+| `val/void_f1` | Eval Gate | `0.0` | **`> 0.95`** | Побочечный $F_1$ детекции `VOID` vs контент в латенте. |
+| `val/void_start_pm1` | Eval Gate | `0.0` | **`> 0.95`** | Точность начала `VOID`-хвоста ($\pm 1$ ячейка = $\pm 4$ токена). |
+| `val/sink_attn_content` | Eval Gate | `~0.05` | **`0.10 – 0.45`** | Доля внимания контентных ячеек в `k_sink`. |
+| `val/sink_attn_void` | Eval Gate | `~0.05` | **`> 0.70`** | Доля внимания `VOID`-ячеек в `k_sink`. |
+| `val/rk_eff_content` | Eval Gate | `~6.1` | **`≥ 1.5`** *(текст `~4.0–4.8`)* | Эффективный ранг смысловых ячеек (защита от вырождения осей). |
+
 ### 7.2. Файлы подсистемы `experiments/phase 2/`
 - [test_phase2_open_questions.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/test_phase2_open_questions.py) — **реализован и проверен**: воспроизводимый предполётный тест геометрии, граничных ячеек, квантилей $\operatorname{Sim}_{\text{Gr}}$, баланса лоссов и инициализации `AdaLN` (Q1–Q7).
 1. [train_phase2.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/train_phase2.py) — **реализован и проверен `--smoke-test`**: полный скрипт обучения для Kaggle 2×T4 (`DDP` / `DataParallel`, `GradScaler`, FP16-защищённые Грассмановы операции, `warmup_linalg_backends`, on-the-fly кодирование, `OrthMuon` + `AdamW`, сэмплер Эйлера–Хьюна с CFG, быстрый режим `--smoke-test`).
-2. [export_to_notebook.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/export_to_notebook.py) — **реализован и проверен**: экспортер скрипта в Kaggle-ноутбук [train_phase2_notebook.ipynb](file:///C:/Experiments/BEBLaDII/experiments/phase%202/Kaggle/train_phase2_notebook.ipynb).
-3. [inspect_phase2_generation.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/inspect_phase2_generation.py) — **реализован и проверен**: скрипт глубокого аудита обученного чекпоинта.
-4. [test_phase2_architecture.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/test_phase2_architecture.py) — **реализован и пройден**: юнит-тесты архитектуры (`Soft-Gate AdaLN`, отсутствие утечки в cross-gate, сферичность `q_weight`, `OrthMuon`, EMA, Грассмановы лоссы).
+2. [prepare_phase2_data.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/prepare_phase2_data.py) — **реализован и выполнен**: генератор Plan C `data_identity.parquet` и очищенных `train_phase2.parquet` / `val_phase2.parquet` в `BEBLaDII-planС-Phase2-Data/data/`.
+3. [export_to_notebook.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/export_to_notebook.py) — **реализован и проверен**: экспортер скрипта в Kaggle-ноутбук [train_phase2_notebook.ipynb](file:///C:/Experiments/BEBLaDII/experiments/phase%202/Kaggle/train_phase2_notebook.ipynb).
+4. [inspect_phase2_generation.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/inspect_phase2_generation.py) — **реализован и проверен**: скрипт глубокого аудита обученного чекпоинта.
+5. [test_phase2_architecture.py](file:///C:/Experiments/BEBLaDII/experiments/phase%202/test_phase2_architecture.py) — **реализован и пройден**: юнит-тесты архитектуры (`Soft-Gate AdaLN`, отсутствие утечки в cross-gate, сферичность `q_weight`, `OrthMuon`, EMA, Грассмановы лоссы).
 
 
 ---

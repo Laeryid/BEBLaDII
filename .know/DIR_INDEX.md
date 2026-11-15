@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~1078 (excluding excluded directories)
+**Total files in project:** ~1079 (excluding excluded directories)
 **Updated:** 2026-11-15
 
 ```
 BEBLaDII/
 |-- .know/  *(empty)*
 |-- data/  *(empty)*
-|-- experiments/  *576 files*
+|-- experiments/  *577 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -27,7 +27,7 @@ BEBLaDII/
 |   |   |-- Kaggle/  *1 files*
 |   |   |-- checkpoints/  *(empty)*
 |   |   `-- output/  *1 files*
-|   `-- phase 2/  *10 files*
+|   `-- phase 2/  *11 files*
 |       |-- Kaggle/  *2 files*
 |       |-- checkpoints/  *1 files*
 |       `-- output/  *1 files*
