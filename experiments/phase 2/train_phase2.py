@@ -1162,19 +1162,26 @@ def sample_mixed_noise_schedule(
 ) -> torch.Tensor:
     """
     Mixed Noise Curriculum (§5.2) для ячеек 0..127 (t_0 == 0.0 всегда):
-    - 50% Flat Diffusion: t ~ Sigmoid(N(0.2, 1.1))
+    - 40% Flat Diffusion: t ~ Sigmoid(N(0.3, 1.1))
+    - 15% High-Noise / Pure-Start: 1/3 ровно t=1.0, 2/3 U(0.80, 1.0)
     - 25% Per-Cell Inpainting & Clean Anchors: 20-50% ячеек t=0, остальные U(0.25, 1.0)
-    - 25% Heterogeneous Kalman / Span Schedule: градиент к хвосту или 1-2 шумных спана 4-12 ячеек.
+    - 20% Heterogeneous Kalman / Span Schedule: градиент к хвосту или 1-2 шумных спана 4-12 ячеек.
     """
     t_mat = torch.zeros(batch_size, N_CANVAS, device=device, dtype=torch.float32)
     regimes = torch.rand(batch_size, device=device)
 
     for b in range(batch_size):
         r = float(regimes[b].item())
-        if r < 0.50:
-            t_flat = torch.sigmoid(torch.randn(1, device=device) * 1.1 + 0.2).clamp(0.005, 1.0)
+        if r < 0.40:
+            t_flat = torch.sigmoid(torch.randn(1, device=device) * 1.1 + 0.3).clamp(0.005, 1.0)
             t_mat[b, 1:] = t_flat
-        elif r < 0.75:
+        elif r < 0.55:
+            if float(torch.rand(1, device=device).item()) < 0.333:
+                t_mat[b, 1:] = 1.0
+            else:
+                t_hi = torch.empty(1, device=device).uniform_(0.80, 1.0)
+                t_mat[b, 1:] = t_hi
+        elif r < 0.80:
             p_clean = 0.20 + 0.30 * float(torch.rand(1, device=device).item())
             vals = torch.empty(N_ANS, device=device).uniform_(0.25, 1.0)
             clean_mask = torch.rand(N_ANS, device=device) < p_clean
@@ -1282,7 +1289,8 @@ def compute_phase2_loss(
 
         B, N, _, _ = Vh.shape
         m_active = tf > 1e-3
-        w_snr = torch.clamp(1.0 / torch.clamp(tf, min=0.1), max=5.0)
+        # Смягченный SNR-вес [1.0..2.0], чтобы не подавлять обучение на высоком шуме t in [0.7, 1.0]
+        w_snr = torch.clamp(1.0 / torch.clamp(tf, min=0.25), max=2.0)
         w_tilde = m_active.float() * wc * w_snr
         w_denom = w_tilde.sum() + 1e-6
 
@@ -1758,6 +1766,75 @@ def decode_latent_answers(
 
 
 @torch.no_grad()
+def _eval_denoising_window(
+    raw_model: GrassmannianDiffusionCore,
+    V_0: torch.Tensor,
+    V_prompt: torch.Tensor,
+    p_valid: torch.Tensor,
+    t_range: Tuple[float, float],
+    noise: torch.Tensor,
+    use_amp: bool,
+    amp_dtype: torch.dtype,
+) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
+    """Выполняет условный и безусловный проходы денойзинга в заданном диапазоне шума t."""
+    B = V_0.shape[0]
+    device = V_0.device
+    t_val = torch.linspace(t_range[0], t_range[1], N_ANS, device=device).view(1, N_ANS).expand(B, N_ANS)
+    t_mat = torch.cat([torch.zeros(B, 1, device=device), t_val], dim=1)
+    t_exp = t_mat.unsqueeze(-1).unsqueeze(-1)
+    V_t = (1.0 - t_exp) * V_0 + t_exp * SIGMA_DATA * noise
+    V_t[:, 0] = V_0[:, 0]
+
+    m_cond = torch.ones(B, device=device)
+    m_uncond = torch.zeros(B, device=device)
+    v_in = V_t.to(amp_dtype if use_amp else torch.float32)
+    vp_in = V_prompt.to(amp_dtype if use_amp else torch.float32)
+
+    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+        V_0_hat, stats, sink_w = raw_model(
+            V_t=v_in,
+            t_mat=t_mat,
+            V_prompt=vp_in,
+            prompt_valid_mask=p_valid,
+            prompt_attn_mask=p_valid,
+            m_prompt=m_cond,
+            return_sink_weights=True,
+        )
+        V_0_uncond, _, _ = raw_model(
+            V_t=v_in,
+            t_mat=t_mat,
+            V_prompt=vp_in,
+            prompt_valid_mask=p_valid,
+            prompt_attn_mask=torch.zeros_like(p_valid),
+            m_prompt=m_uncond,
+            return_sink_weights=False,
+        )
+    return V_0_hat.float(), V_0_uncond.float(), stats, (sink_w.float() if sink_w is not None else None)
+
+
+def _record_window_metrics(
+    V_hat_ans: torch.Tensor,
+    V_uncond_ans: torch.Tensor,
+    V_gt_ans: torch.Tensor,
+    sink_w: Optional[torch.Tensor],
+    is_content: torch.Tensor,
+    is_true_void: torch.Tensor,
+    bucket: Dict[str, List[float]],
+) -> None:
+    """Накапливает Sim_Gr, CFG contrast и sink-доли для одного окна шума."""
+    if is_content.any():
+        bucket["sim"].append(float(sim_gr(V_hat_ans, V_gt_ans)[is_content].mean().item()))
+        diff_frob = torch.sqrt(((V_hat_ans - V_uncond_ans) ** 2).sum(dim=(-2, -1)) + 1e-12)
+        bucket["cfg"].append(float(diff_frob[is_content].mean().item()))
+    if sink_w is not None:
+        sw_ans = sink_w[:, 1:]
+        if is_content.any():
+            bucket["sink_c"].append(float(sw_ans[is_content].mean().item()))
+        if is_true_void.any():
+            bucket["sink_v"].append(float(sw_ans[is_true_void].mean().item()))
+
+
+@torch.no_grad()
 def evaluate_phase2(
     model: GrassmannianDiffusionCore,
     encoder: nn.Module,
@@ -1774,16 +1851,17 @@ def evaluate_phase2(
     run_generation_check: bool = True,
     gen_steps: int = 20,
 ) -> Dict[str, Any]:
-    """Полный расчет метрик Evaluation Gate (§7.1) на валидационном датасете."""
+    """Полный расчет метрик Evaluation Gate (§7.1) на низком [0.1, 0.5] и высоком [0.75, 0.95] шуме."""
     raw_model = getattr(model, "module", model)
     was_training = raw_model.training
     raw_model.eval()
 
-    sim_vals, cfg_vals, rk_vals = [], [], []
+    low_b: Dict[str, List[float]] = {"sim": [], "cfg": [], "sink_c": [], "sink_v": []}
+    hi_b: Dict[str, List[float]] = {"sim": [], "cfg": [], "sink_c": [], "sink_v": []}
+    rk_vals: List[float] = []
     tp, fp, fn = 0, 0, 0
     void_start_exact, void_start_pm1, void_start_tot = 0, 0, 0
     full_canvas_ok, full_canvas_tot = 0, 0
-    sink_content_vals, sink_void_vals = [], []
     sum_m_acc, sum_m2_acc, cnt_acc = None, None, None
     gen_samples: List[Dict[str, str]] = []
 
@@ -1808,38 +1886,15 @@ def evaluate_phase2(
 
         sep_exp = sep_cpu.to(device).view(1, 1, 8, 128).expand(B, 1, 8, 128)
         V_0 = torch.cat([sep_exp, V_ans], dim=1)
-
-        # Фиксированное окно шума t in [0.1, 0.5] для стабильной валидации денойзинга (§7.1 п.1)
-        t_val = torch.linspace(0.1, 0.5, N_ANS, device=device).view(1, N_ANS).expand(B, N_ANS)
-        t_mat = torch.cat([torch.zeros(B, 1, device=device), t_val], dim=1)
-        V_t = (1.0 - t_mat.unsqueeze(-1).unsqueeze(-1)) * V_0 + t_mat.unsqueeze(-1).unsqueeze(-1) * SIGMA_DATA * torch.randn_like(V_0)
-
         p_valid = n_real_prompt > 0
-        m_cond = torch.ones(B, device=device)
-        m_uncond = torch.zeros(B, device=device)
+        noise = torch.randn_like(V_0)
 
-        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            V_0_hat, stats, sink_w = raw_model(
-                V_t=V_t.to(amp_dtype if use_amp else torch.float32),
-                t_mat=t_mat,
-                V_prompt=V_prompt.to(amp_dtype if use_amp else torch.float32),
-                prompt_valid_mask=p_valid,
-                prompt_attn_mask=p_valid,
-                m_prompt=m_cond,
-                return_sink_weights=True,
-            )
-            V_0_uncond, _, _ = raw_model(
-                V_t=V_t.to(amp_dtype if use_amp else torch.float32),
-                t_mat=t_mat,
-                V_prompt=V_prompt.to(amp_dtype if use_amp else torch.float32),
-                prompt_valid_mask=p_valid,
-                prompt_attn_mask=torch.zeros_like(p_valid),
-                m_prompt=m_uncond,
-                return_sink_weights=False,
-            )
-
-        V_0_hat = V_0_hat.float()
-        V_0_uncond = V_0_uncond.float()
+        V_0_hat, V_0_uncond, stats, sink_w = _eval_denoising_window(
+            raw_model, V_0, V_prompt, p_valid, (0.1, 0.5), noise, use_amp, amp_dtype
+        )
+        V_0_hat_hi, V_0_uncond_hi, _, sink_w_hi = _eval_denoising_window(
+            raw_model, V_0, V_prompt, p_valid, (0.75, 0.95), noise, use_amp, amp_dtype
+        )
 
         # Накопление AdaLN статистик по всему валидационному прогону
         sm, sm2, cnt = stats
@@ -1858,18 +1913,10 @@ def evaluate_phase2(
         is_content = n_real_ans > 0
         is_true_void = ~is_content
 
+        _record_window_metrics(V_hat_ans, V_0_uncond[:, 1:], V_gt_ans, sink_w, is_content, is_true_void, low_b)
+        _record_window_metrics(V_0_hat_hi[:, 1:], V_0_uncond_hi[:, 1:], V_gt_ans, sink_w_hi, is_content, is_true_void, hi_b)
         if is_content.any():
-            sim_vals.append(float(sim_gr(V_hat_ans, V_gt_ans)[is_content].mean().item()))
-            diff_frob = torch.sqrt(((V_hat_ans - V_0_uncond[:, 1:]) ** 2).sum(dim=(-2, -1)) + 1e-12)
-            cfg_vals.append(float(diff_frob[is_content].mean().item()))
             rk_vals.append(float(compute_rk_eff(V_hat_ans)[is_content].mean().item()))
-
-        if sink_w is not None:
-            sw_ans = sink_w[:, 1:].float()
-            if is_content.any():
-                sink_content_vals.append(float(sw_ans[is_content].mean().item()))
-            if is_true_void.any():
-                sink_void_vals.append(float(sw_ans[is_true_void].mean().item()))
 
         pred_void = detect_void_mask(V_hat_ans, void_cpu)
         tp += int((pred_void & is_true_void).sum().item())
@@ -1935,15 +1982,19 @@ def evaluate_phase2(
         raw_model.train()
 
     return {
-        "val/sim_gr_denoising": float(np.mean(sim_vals)) if sim_vals else 0.0,
-        "val/cfg_contrast": float(np.mean(cfg_vals)) if cfg_vals else 0.0,
+        "val/sim_gr_denoising": float(np.mean(low_b["sim"])) if low_b["sim"] else 0.0,
+        "val/cfg_contrast": float(np.mean(low_b["cfg"])) if low_b["cfg"] else 0.0,
+        "val/sim_gr_hi": float(np.mean(hi_b["sim"])) if hi_b["sim"] else 0.0,
+        "val/cfg_contrast_hi": float(np.mean(hi_b["cfg"])) if hi_b["cfg"] else 0.0,
         "val/rk_eff_content": float(np.mean(rk_vals)) if rk_vals else 0.0,
         "val/void_f1": float(void_f1),
         "val/void_start_exact": float(void_start_exact / max(1, void_start_tot)),
         "val/void_start_pm1": float(void_start_pm1 / max(1, void_start_tot)),
         "val/full_canvas_no_void_acc": float(full_canvas_ok / max(1, full_canvas_tot)),
-        "val/sink_attn_content": float(np.mean(sink_content_vals)) if sink_content_vals else 0.0,
-        "val/sink_attn_void": float(np.mean(sink_void_vals)) if sink_void_vals else 0.0,
+        "val/sink_attn_content": float(np.mean(low_b["sink_c"])) if low_b["sink_c"] else 0.0,
+        "val/sink_attn_void": float(np.mean(low_b["sink_v"])) if low_b["sink_v"] else 0.0,
+        "val/sink_attn_content_hi": float(np.mean(hi_b["sink_c"])) if hi_b["sink_c"] else 0.0,
+        "val/sink_attn_void_hi": float(np.mean(hi_b["sink_v"])) if hi_b["sink_v"] else 0.0,
         "val/sigma_adaln_mean": sigma_mean,
         "val/sigma_adaln_min": sigma_min,
         "gen_samples": gen_samples,
@@ -2255,10 +2306,10 @@ def run_training_loop(
 
             gen_samples = val_res.pop("gen_samples", [])
             print(
-                f"  [Eval @ {step}] Sim_Gr={val_res['val/sim_gr_denoising']:.4f} | "
-                f"CFG={val_res['val/cfg_contrast']:.4f} | "
+                f"  [Eval @ {step}] Sim_Gr={val_res['val/sim_gr_denoising']:.4f} (hi={val_res['val/sim_gr_hi']:.4f}) | "
+                f"CFG={val_res['val/cfg_contrast']:.4f} (hi={val_res['val/cfg_contrast_hi']:.4f}) | "
                 f"VOID_F1={val_res['val/void_f1']:.4f} (pm1={val_res['val/void_start_pm1']:.3f}) | "
-                f"sink_c={val_res['val/sink_attn_content']:.3f} | "
+                f"sink_c={val_res['val/sink_attn_content']:.3f} (hi={val_res['val/sink_attn_content_hi']:.3f}) | "
                 f"sink_v={val_res['val/sink_attn_void']:.3f} | "
                 f"rk={val_res['val/rk_eff_content']:.2f} | "
                 f"adaln_min={val_res['val/sigma_adaln_min']:.2e}",

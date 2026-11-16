@@ -190,13 +190,15 @@ def trace_pair_generation(
 
 
 def evaluate_gate_status(val_metrics: Dict[str, Any]) -> Dict[str, bool]:
-    """Проверяет пороги Evaluation Gate из §7.1 плана Фазы 2."""
+    """Проверяет пороги Evaluation Gate из §7.1 плана Фазы 2 (CFG и sink_content берутся по окну высокого шума)."""
+    cfg_hi = val_metrics.get("val/cfg_contrast_hi", val_metrics["val/cfg_contrast"])
+    sink_c_hi = val_metrics.get("val/sink_attn_content_hi", val_metrics["val/sink_attn_content"])
     return {
         "1_sim_gr_gt_0.82": val_metrics["val/sim_gr_denoising"] > 0.82,
-        "2_cfg_contrast_gt_0.25": val_metrics["val/cfg_contrast"] > 0.25,
+        "2_cfg_contrast_hi_gt_0.25": cfg_hi > 0.25,
         "3_void_f1_gt_0.95": val_metrics["val/void_f1"] > 0.95,
         "3_void_start_pm1_gt_0.95": val_metrics["val/void_start_pm1"] > 0.95,
-        "4_sink_content_in_0.10_0.45": 0.10 <= val_metrics["val/sink_attn_content"] <= 0.45,
+        "4_sink_content_hi_in_0.10_0.45": 0.10 <= sink_c_hi <= 0.45,
         "4_sink_void_gt_0.70": val_metrics["val/sink_attn_void"] > 0.70,
         "4_sigma_adaln_ge_1e-2": val_metrics["val/sigma_adaln_min"] >= 1e-2,
         "4_rk_eff_ge_1.5": val_metrics["val/rk_eff_content"] >= 1.5,

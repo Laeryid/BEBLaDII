@@ -5,7 +5,7 @@
 > Automatically updated when running `/sync-knowledge`.
 
 **Total files in project:** ~1079 (excluding excluded directories)
-**Updated:** 2026-11-15
+**Updated:** 2026-11-16
 
 ```
 BEBLaDII/

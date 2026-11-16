@@ -232,15 +232,16 @@ flowchart TD
 
 ### 5.2. Смешанное расписание шума (Mixed Noise Curriculum)
 Для ячеек $i \in \{1, \dots, 127\}$ (при $t_0 \equiv 0.0$):
-1. **50% — Flat Diffusion**: единое время $t_i = t \sim \operatorname{Sigmoid}(\mathcal{N}(0.2, 1.1))$ для всех $i \ge 1$.
-2. **25% — Per-Cell Inpainting & Clean Anchors**: случайные 20–50% ячеек ответа фиксируются чистыми ($t_i = 0.0 \implies w_i = 0.0$ в лоссе), остальные получают $t_i \sim \mathcal{U}(0.25, 1.0)$.
-3. **25% — Heterogeneous Kalman / Span Schedule**: индивидуальные $t_i \in [0.05, 1.0]$ (плавный градиент шума к хвосту либо 1–2 локальных спана длиной 4–12 ячеек с $t_i \in [0.7, 1.0]$ на фоне $t_j \in [0.05, 0.35]$).
+1. **40% — Flat Diffusion**: единое время $t_i = t \sim \operatorname{Sigmoid}(\mathcal{N}(0.3, 1.1))$ для всех $i \ge 1$.
+2. **15% — High-Noise / Pure-Start**: единое высокое время $t_i = t$ ($1/3$ случаев ровно $t = 1.0$, $2/3$ — $\mathcal{U}(0.80, 1.0)$) для усиленной прокачки `CAPromptBlock` на старте генерации.
+3. **25% — Per-Cell Inpainting & Clean Anchors**: случайные 20–50% ячеек ответа фиксируются чистыми ($t_i = 0.0 \implies w_i = 0.0$ в лоссе), остальные получают $t_i \sim \mathcal{U}(0.25, 1.0)$.
+4. **20% — Heterogeneous Kalman / Span Schedule**: индивидуальные $t_i \in [0.05, 1.0]$ (плавный градиент шума к хвосту либо 1–2 локальных спана длиной 4–12 ячеек с $t_i \in [0.7, 1.0]$ на фоне $t_j \in [0.05, 0.35]$).
 
 ### 5.3. Гибридная функция потерь (в `torch.float32`, после сборки полного батча)
 Дублирующий ориентационный лосс $\mathcal{L}_{\text{spec}}$ исключён; оставлены взаимно дополняющие компоненты:
 $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{basis}} + 0.02\,\mathcal{L}_{\text{Gr}} + 0.1\,\mathcal{L}_{\text{adj}} + 0.1\,\mathcal{L}_{\text{bary}} + w_{\text{adaln}}(s)\,\mathcal{L}_{\text{adaln}}$$
 *(Вес $\mathcal{L}_{\text{Gr}}$ откалиброван с `0.5` до **`0.02`** по итогам замеров §8 Q4 для паритета градиентов с $\mathcal{L}_{\text{basis}}$; вес $w_{\text{adaln}}(s) = 0.05 \cdot \min(1, s / 500)$ вводится с линейным warm-up за 500 шагов по итогам §8 Q6.)*
-Пусть $m_{\text{active}, i} = \mathbb{I}[t_i > 10^{-3}]$ — маска реально зашумлённых ячеек, $\tilde{w}_i = m_{\text{active}, i} \cdot w_i \cdot w_{\text{snr}}(t_i)$, где $w_{\text{snr}}(t_i) = \min(\max(t_i, 0.1)^{-1},\; 5.0)$.
+Пусть $m_{\text{active}, i} = \mathbb{I}[t_i > 10^{-3}]$ — маска реально зашумлённых ячеек, $\tilde{w}_i = m_{\text{active}, i} \cdot w_i \cdot w_{\text{snr}}(t_i)$, где $w_{\text{snr}}(t_i) = \min(\max(t_i, 0.25)^{-1},\; 2.0)$ (ограничение `2.0` устраняет 5-кратный перекос градиента в пользу малых $t$).
 1. **Канонический лосс базиса ($\mathcal{L}_{\text{basis}}$)**:
    $$\mathcal{L}_{\text{basis}} = \frac{\sum_{b, i} \tilde{w}_{b,i} \, \operatorname{SmoothL1}(\hat{V}_{0,b,i}, V_{0,b,i}; \beta = 0.02)}{\sum_{b, i} \tilde{w}_{b,i} + 10^{-6}}$$
    Фиксирует порядок и знак 8 осей для совместимости с замороженным декодером.
@@ -301,9 +302,9 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{basis}} + 0.02\,\mathcal{L}_{\
 1. **Качество денойзинга подпространств**: среднее $\operatorname{Sim}_{\text{Gr}}(\hat{V}_0, V_0) > \mathbf{0.82}$ на валидации по зашумлённым смысловым ячейкам при $t \in [0.1, 0.5]$.
 2. **Чувствительность к промпту (CFG Contrast, ADR 109 / 117)**:
    $$\Delta_{\text{CFG}} = \left\|\hat{V}_0(V_t, \text{prompt}) - \hat{V}_0(V_t, \varnothing)\right\|_F > \mathbf{0.25}$$
-   плюс проверка, что ответы, сгенерированные с нуля ($20$ шагов Эйлера–Хьюна с $t = 1 \to 0$, ячейка `0` закреплена `SEP`) на два разных вопроса, семантически и лексически различаются.
+   в зоне высокого шума $t \in [0.75, 0.95]$ (`val/cfg_contrast_hi`), плюс проверка, что ответы, сгенерированные с нуля ($20$ шагов Эйлера–Хьюна с $t = 1 \to 0$, ячейка `0` закреплена `SEP`) на два разных вопроса, семантически и лексически различаются.
 3. **Точность детекции границы `VOID`**: exact-match индекса $i_{\text{void\_start}}$ и точность в пределах $\pm 1$ ячейки (оба $> 0.95$ для $\pm 1$), а также побочечный бинарный $F_1 > 0.95$ (`VOID` / не-`VOID`). Если ответ занимает все 127 ячеек, $i_{\text{void\_start}}$ не существует — такие примеры считаются отдельно (корректно, если предсказанных `VOID`-ячеек нет).
-4. **Отсутствие коллапсов (после warm-up 500 шагов)**: доля внимания в `k_sink` $10\% \dots 45\%$ для контента и $> 70\%$ для `VOID`-ячеек, $\sigma_{\text{adaln}}^{(l)} \ge 10^{-2}$ (на шаге 0 до обучения $\sigma_{\text{adaln}}^{(l)} \approx 8.15 \cdot 10^{-5}$), средний эффективный ранг смысловых ячеек $\operatorname{rk}_{\text{eff}}(\hat{V}_0) \ge 1.5$.
+4. **Отсутствие коллапсов (после warm-up 500 шагов)**: доля внимания в `k_sink` при высоком шуме $t \in [0.75, 0.95]$ (`val/sink_attn_content_hi`) $10\% \dots 45\%$ для контента и $> 70\%$ для `VOID`-ячеек, $\sigma_{\text{adaln}}^{(l)} \ge 10^{-2}$ (на шаге 0 до обучения $\sigma_{\text{adaln}}^{(l)} \approx 8.15 \cdot 10^{-5}$), средний эффективный ранг смысловых ячеек $\operatorname{rk}_{\text{eff}}(\hat{V}_0) \ge 1.5$.
 
 #### Сводная таблица целевых метрик в WandB (Train + Evaluation Gate)
 Малые абсолютные значения `loss/basis` и `loss/total` обусловлены масштабом самого латентного пространства ($\sigma_{\text{data}} = 0.05$) и по-элементным усреднением `SmoothL1` ($\beta = 0.02$) по $8 \times 128 = 1024$ координатам:
@@ -317,11 +318,12 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{basis}} + 0.02\,\mathcal{L}_{\
 | `loss/bary` | Train | `~0 .. 1.8e-6` | **`≈ 0.0` (`< 1e-3`)** | Анти-коллапс к среднему по батчу ($\operatorname{Sim}_{\text{Gr}} > 0.50$); около `0` — норма. |
 | `adaln/sigma_min`, `val/sigma_adaln_min` | Train / Eval | `~8.15e-5` | **`≥ 1e-2` (`0.01`)** | Разнообразие модуляций `Soft-Gate AdaLN` (warm-up веса `0 → 0.05` до шага `500`). |
 | `val/sim_gr_denoising` | Eval Gate | `~0.70` | **`> 0.82`** *(лучше `≥ 0.90`)* | Среднее нормированное $\operatorname{Sim}_{\text{Gr}}(\hat{V}_0, V_0)$ по смысловым ячейкам при $t \in [0.1, 0.5]$. |
-| `val/cfg_contrast` | Eval Gate | `~0.003` | **`> 0.25`** | Контраст с промптом $\left\|\hat{V}_0(V_t, \text{prompt}) - \hat{V}_0(V_t, \varnothing)\right\|_F$. |
+| `val/sim_gr_hi` | Eval | `~0.15` | **`> 0.65`** | Среднее $\operatorname{Sim}_{\text{Gr}}(\hat{V}_0, V_0)$ на высоком шуме $t \in [0.75, 0.95]$. |
+| `val/cfg_contrast` / `val/cfg_contrast_hi` | Eval Gate | `~0.003` | **`> 0.25`** *(по `_hi`)* | Контраст с промптом $\left\|\hat{V}_0(V_t, \text{prompt}) - \hat{V}_0(V_t, \varnothing)\right\|_F$ (на низком $t \in [0.1, 0.5]$ стремится к `0`). |
 | `val/void_f1` | Eval Gate | `0.0` | **`> 0.95`** | Побочечный $F_1$ детекции `VOID` vs контент в латенте. |
 | `val/void_start_pm1` | Eval Gate | `0.0` | **`> 0.95`** | Точность начала `VOID`-хвоста ($\pm 1$ ячейка = $\pm 4$ токена). |
-| `val/sink_attn_content` | Eval Gate | `~0.05` | **`0.10 – 0.45`** | Доля внимания контентных ячеек в `k_sink`. |
-| `val/sink_attn_void` | Eval Gate | `~0.05` | **`> 0.70`** | Доля внимания `VOID`-ячеек в `k_sink`. |
+| `val/sink_attn_content` / `val/sink_attn_content_hi` | Eval Gate | `~0.05` | **`0.10 – 0.45`** *(по `_hi`)* | Доля внимания контентных ячеек в `k_sink` при $t \in [0.75, 0.95]$ (на низком $t$ выше). |
+| `val/sink_attn_void` / `val/sink_attn_void_hi` | Eval Gate | `~0.05` | **`> 0.70`** | Доля внимания `VOID`-ячеек в `k_sink`. |
 | `val/rk_eff_content` | Eval Gate | `~6.1` | **`≥ 1.5`** *(текст `~4.0–4.8`)* | Эффективный ранг смысловых ячеек (защита от вырождения осей). |
 
 ### 7.2. Файлы подсистемы `experiments/phase 2/`
