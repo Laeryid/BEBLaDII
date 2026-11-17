@@ -66,7 +66,7 @@ class SetCrossAttentionUnpacker(nn.Module):
 
         # Строгий float32 с отключенным autocast для матрицы Грама и gram_mlp (ADR 126)
         device_type = V_cell.device.type
-        target_dtype = V_cell.dtype
+        cat_dtype = h_attn.dtype
         with torch.autocast(device_type=device_type, enabled=False):
             V_f32 = V_cell.float()
             G_flat_f32 = torch.matmul(V_f32, V_f32.transpose(-2, -1)).view(B, N, 64)
@@ -80,7 +80,7 @@ class SetCrossAttentionUnpacker(nn.Module):
             norm_w = self.gram_mlp[3].weight.float()
             variance = h2.pow(2).mean(-1, keepdim=True)
             h_normed = h2 * torch.rsqrt(variance + 1e-6) * norm_w
-            h_gram = h_normed.to(target_dtype).unsqueeze(2).expand(B, N, self.num_slots, 128)
+            h_gram = h_normed.to(cat_dtype).unsqueeze(2).expand(B, N, self.num_slots, 128)
 
         h_comb = torch.cat([h_attn, h_gram], dim=-1)
         h_out = self.out_norm(self.out_proj(h_comb))

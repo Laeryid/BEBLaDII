@@ -448,10 +448,15 @@ def rotate_half(x: torch.Tensor) -> torch.Tensor:
 def apply_rotary_pos_emb(
     q: torch.Tensor, k: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    cos = cos.unsqueeze(0).unsqueeze(0)
-    sin = sin.unsqueeze(0).unsqueeze(0)
-    q_embed = (q * cos) + (rotate_half(q) * sin)
-    k_embed = (k * cos) + (rotate_half(k) * sin)
+    cos_q = cos.to(dtype=q.dtype).unsqueeze(0).unsqueeze(0)
+    sin_q = sin.to(dtype=q.dtype).unsqueeze(0).unsqueeze(0)
+    q_embed = (q * cos_q) + (rotate_half(q) * sin_q)
+    if k.dtype == q.dtype:
+        cos_k, sin_k = cos_q, sin_q
+    else:
+        cos_k = cos.to(dtype=k.dtype).unsqueeze(0).unsqueeze(0)
+        sin_k = sin.to(dtype=k.dtype).unsqueeze(0).unsqueeze(0)
+    k_embed = (k * cos_k) + (rotate_half(k) * sin_k)
     return q_embed, k_embed
 
 
@@ -491,6 +496,12 @@ class ModernBERTLayer(nn.Module):
         v = self.v_proj(normed_x).view(B, T, self.num_heads, self.head_dim).transpose(1, 2)
 
         q, k = apply_rotary_pos_emb(q, k, cos, sin)
+        if q.dtype != v.dtype:
+            q = q.to(v.dtype)
+        if k.dtype != v.dtype:
+            k = k.to(v.dtype)
+        if attention_mask is not None and attention_mask.is_floating_point() and attention_mask.dtype != v.dtype:
+            attention_mask = attention_mask.to(v.dtype)
         attn_out = F.scaled_dot_product_attention(
             q, k, v, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )

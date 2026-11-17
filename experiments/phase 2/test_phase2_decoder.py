@@ -260,10 +260,44 @@ def test_chunked_loss_and_vectorized_corruption() -> None:
     print(f"[PASS] Chunked loss parity + vectorized corruption + is_safe guard OK (loss={float(loss_chunked):.4f})")
 
 
+def test_autocast_bfloat16_sdpa_dtype_consistency() -> None:
+    """Проверяет согласованность dtype (q, k, v) в ModernBERTLayer SDPA под autocast bfloat16."""
+    import torch.nn.functional as F
+
+    vocab_sz = 128
+    dec = GrassmannianDecoder(
+        vocab_size=vocab_sz,
+        num_smooth_layers=3,
+        canonicalize_basis=True,
+        enable_noise_radar=True,
+    )
+    dec.tie_embeddings(torch.randn(vocab_sz, 1024, dtype=torch.bfloat16))
+    V_in = torch.randn(2, 8, 8, 128, dtype=torch.float32) * 0.1
+
+    seen_dtypes = []
+    orig_sdpa = F.scaled_dot_product_attention
+
+    def checked_sdpa(q, k, v, *args, **kwargs):
+        seen_dtypes.append((q.dtype, k.dtype, v.dtype))
+        assert q.dtype == k.dtype == v.dtype, f"SDPA dtype mismatch: q={q.dtype}, k={k.dtype}, v={v.dtype}"
+        return orig_sdpa(q, k, v, *args, **kwargs)
+
+    F.scaled_dot_product_attention = checked_sdpa
+    try:
+        with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+            hidden, radar = dec.decode_hidden(V_in, return_radar=True)
+        assert hidden.shape == (2, 32, 1024)
+        assert len(seen_dtypes) == 4, f"Expected 4 SDPA calls (1 context + 3 smooth), got {len(seen_dtypes)}"
+    finally:
+        F.scaled_dot_product_attention = orig_sdpa
+    print(f"[PASS] Autocast bfloat16 SDPA dtype consistency OK (calls={len(seen_dtypes)}, dtypes={seen_dtypes[0]})")
+
+
 if __name__ == "__main__":
     test_o8_canonicalization_invariance()
     test_word_aware_elastic_chunker()
     test_decoder_radar_loss_and_grad_flow()
     test_phase2_dataset_source_and_sentence_truncation()
     test_chunked_loss_and_vectorized_corruption()
+    test_autocast_bfloat16_sdpa_dtype_consistency()
     print("=== ALL PHASE 2 DECODER TESTS PASSED ===")
