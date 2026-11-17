@@ -16,6 +16,7 @@ try:
         RotaryEmbedding128,
         SphereLinear,
         apply_rope_16d,
+        canonicalize_cell_basis,
         clamp_to_unit_ball,
         safe_lorentzian_eigh,
     )
@@ -26,6 +27,7 @@ except ImportError:
         RotaryEmbedding128,
         SphereLinear,
         apply_rope_16d,
+        canonicalize_cell_basis,
         clamp_to_unit_ball,
         safe_lorentzian_eigh,
     )
@@ -229,7 +231,7 @@ class GrassmannianEncoder(nn.Module):
         self.pooler = GrassmannianSpectralPooler(chunk_size=chunk_size, num_axes_per_tok=num_axes, out_axes=num_axes, axis_dim=axis_dim)
 
     def encode_and_pool(
-        self, input_ids: torch.Tensor, weights: Optional[torch.Tensor] = None
+        self, input_ids: torch.Tensor, weights: Optional[torch.Tensor] = None, canonicalize: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Кодирует последовательность (B, 4N) в V_cell (B, N, 8, 128) с возвратом kl_loss, rank_loss и rk_eff."""
         B, seq_len = input_ids.shape
@@ -266,10 +268,14 @@ class GrassmannianEncoder(nn.Module):
         V_tok_windows = V_tok.view(B, num_cells, self.chunk_size, self.num_axes, self.axis_dim)
         weights_windows = weights.view(B, num_cells, self.chunk_size) if weights is not None else None
         V_cell, _ = self.pooler(V_tok_windows, weights_windows)
+        if canonicalize:
+            V_cell, _ = canonicalize_cell_basis(V_cell)
         return V_cell, kl_loss, rank_loss, rk_eff
 
-    def forward(self, input_ids: torch.Tensor, weights: Optional[torch.Tensor] = None) -> torch.Tensor:
-        V_cell, _, _, _ = self.encode_and_pool(input_ids, weights)
+    def forward(
+        self, input_ids: torch.Tensor, weights: Optional[torch.Tensor] = None, canonicalize: bool = False
+    ) -> torch.Tensor:
+        V_cell, _, _, _ = self.encode_and_pool(input_ids, weights, canonicalize=canonicalize)
         return V_cell
 
 

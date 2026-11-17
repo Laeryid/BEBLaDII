@@ -1392,6 +1392,15 @@
       "depends_on": [],
       "summary": "ADR 136: Фаза 2 Plan C: 10-слойное ядро с 3x CA_Prompt, штраф L_sink, декомпозиция Грассманова лосса и полу-AR curriculum",
       "status": "accepted"
+    },
+    "decisions/137_phase2_generator_decoder_radar_and_word_chunking.md": {
+      "description": "ADR 137: Выделение Фазы 2 Plan C (Генеративный Декодер и Радар Шума), перенос диффузии в Фазу 3, детерминированная O(8)-канонизация и словный чанкинг 1..4 токена (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 137: Выделение Фазы 2 Plan C (Генеративный Декодер и Радар Шума), перенос диффузии в Фазу 3, детерминированная O(8)-канонизация и словный чанкинг 1..4 токена",
+      "status": "accepted"
     }
   },
   "knowledge_system": {
