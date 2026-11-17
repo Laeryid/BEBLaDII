@@ -1131,6 +1131,7 @@ def create_decoder_optimizers(
 # %% [markdown]
 # ## 6. Валидация по корзинам шума и сохранение/экспорт чекпоинтов
 
+# %%
 def get_amp_params(env: EnvironmentConfig) -> Tuple[str, torch.dtype, bool]:
     """Возвращает (device_type, autocast_dtype, enabled) для CUDA, TPU (XLA) и CPU."""
     if env.is_tpu:
