@@ -1383,6 +1383,15 @@
       "depends_on": [],
       "summary": "ADR 135: Спецификация Фазы 2 Plan C: Soft-Gate AdaLN, Shared KV, Unit-RMS Residual Stream и калибровка лосса",
       "status": "accepted"
+    },
+    "decisions/136_phase2_planc_3x_ca_sink_loss_and_curriculum.md": {
+      "description": "ADR 136: Фаза 2 Plan C: 10-слойное ядро с 3x CA_Prompt, штраф L_sink, декомпозиция Грассманова лосса и полу-AR curriculum (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 136: Фаза 2 Plan C: 10-слойное ядро с 3x CA_Prompt, штраф L_sink, декомпозиция Грассманова лосса и полу-AR curriculum",
+      "status": "accepted"
     }
   },
   "knowledge_system": {

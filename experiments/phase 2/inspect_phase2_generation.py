@@ -153,10 +153,11 @@ def trace_pair_generation(
     )
 
     items = []
+    sink_mean = last_sink_w.mean(dim=1) if (last_sink_w is not None and last_sink_w.ndim == 3) else last_sink_w
     for b in range(B):
         content_mask = ~is_void[b]
         void_mask_b = is_void[b]
-        sink_ans = last_sink_w[b, 1:] if last_sink_w is not None else None
+        sink_ans = sink_mean[b, 1:] if sink_mean is not None else None
         items.append(
             {
                 "prompt": prompts[b],

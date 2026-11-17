@@ -99,7 +99,7 @@ $$\operatorname{Sim}_{\text{Gr}}(A, B) \triangleq \frac{\langle \rho_A, \rho_B \
 
 ---
 
-## 3. Архитектура 9-слойного ядра диффузии (`GrassmannianDiffusionCore`)
+## 3. Архитектура 10-слойного ядра диффузии (`GrassmannianDiffusionCore`)
 
 ```mermaid
 flowchart TD
@@ -116,39 +116,40 @@ flowchart TD
     Cat -->|"V_0 (B, 128, 8, 128), V_0[:,0]=SEP"| Noise["Mixed Noise Curriculum: V_t = (1-t)*V_0 + t*0.05*xi (t_0 = 0)"]
 
     Noise -->|"V_t (B, 128, 8, 128)"| Cond["ConditionEmbedder: t_token + t_global + 8 Spectral Sensors"]
-    Cond -->|"c (B, 128, 256)"| AdaLN["Soft-Gate AdaLN (std=1e-4, gate_bias=0.02) во все 9 слоев ядра"]
+    Cond -->|"c (B, 128, 256)"| AdaLN["Soft-Gate AdaLN (std=1e-4, gate_bias=0.02) во все 10 слоев ядра"]
 
-    Noise -->|"X_t = V_t / 0.05"| L0["Layer 0: Full SA + SwiGLU (RoPE, Shared KV, AdaLN)"]
-    L0 --> L1["Layer 1: Local SA (r=8, W=17 + Global Pos 0, RoPE, Shared KV, AdaLN)"]
-    L1 --> L2["Layer 2: Local SA (r=8, W=17 + Global Pos 0, RoPE, Shared KV, AdaLN)"]
-    L2 --> L3["Layer 3: Full SA + SwiGLU (RoPE, Shared KV, AdaLN)"]
+    Noise -->|"X_t = V_t / 0.05"| L0["Layer 0: Full SA + SwiGLU"]
+    L0 --> L1["Layer 1: Local SA (r=8, W=17 + Global Pos 0)"]
+    PA -->|"X_prompt (B, 64, 1024)"| L2
+    PA -->|"X_prompt"| L4
+    PA -->|"X_prompt"| L6
+    L1 --> L2["Layer 2: CAPromptBlock (Shared KV, RoPE Offset=64, Contrast, k_sink, Cross-Gated SwiGLU)"]
+    L2 --> L3["Layer 3: Full SA + SwiGLU"]
+    L3 --> L4["Layer 4: CAPromptBlock"]
+    L4 --> L5["Layer 5: Full SA + SwiGLU"]
+    L5 --> L6["Layer 6: CAPromptBlock"]
+    L6 --> L7["Layer 7: Full SA + SwiGLU"]
+    L7 --> L8["Layer 8: Local SA (r=8, W=17 + Global Pos 0)"]
+    L8 --> L9["Layer 9: Full SA + SwiGLU"]
 
-    PA -->|"X_prompt (B, 64, 1024)"| L4
-    L3 -->|"X_ans (B, 128, 1024)"| L4["Layer 4: CAPromptBlock (Shared KV, RoPE Offset=64, Contrast, k_sink, Cross-Gated SwiGLU, AdaLN)"]
-
-    L4 --> L5["Layer 5: Full SA + SwiGLU (RoPE, Shared KV, AdaLN)"]
-    L5 --> L6["Layer 6: Local SA (r=8, W=17 + Global Pos 0, RoPE, Shared KV, AdaLN)"]
-    L6 --> L7["Layer 7: Local SA (r=8, W=17 + Global Pos 0, RoPE, Shared KV, AdaLN)"]
-    L7 --> L8["Layer 8: Full SA + SwiGLU (RoPE, Shared KV, AdaLN)"]
-
-    L8 --> OutHead["GrassmannianOutputHead: V_t + 0.05 * g(t) * Delta_X -> Row-wise Unit Ball Clamp"]
-    OutHead -->|"V_0_hat (B, 128, 8, 128)"| Loss["Гибридный Грассманов Лосс (fp32, вне DataParallel)"]
+    L9 --> OutHead["GrassmannianOutputHead: V_t + 0.05 * g(t) * Delta_X -> Row-wise Unit Ball Clamp"]
+    OutHead -->|"V_0_hat (B, 128, 8, 128)"| Loss["Гибридный Грассманов Лосс + L_sink (fp32, вне DataParallel)"]
     OutHead -.->|"Drop Pos 0 (SEP) + VOID Filter"| D
 ```
 
 ### 3.1. Послойная конфигурация ядра, локальное окно $r = 8$ ($W = 17$) и якорь `SEP` на позиции `0`
 - **Базовые гиперпараметры**: `hidden_size = 1024`, `num_heads = 8` (**1 голова внимания = 1 ось Грассманиана размерности `head_dim = 128`**), `intermediate_size = 2816` (`SwiGLU`), `Pre-LN RMSNorm` (`fp32`).
-- **Порядок слоёв ядра (9 блоков)**:
-  - `0: Full SA` $\to$ `1: Local SA` $\to$ `2: Local SA` $\to$ `3: Full SA` $\to$ `4: CA (CAPromptBlock)` $\to$ `5: Full SA` $\to$ `6: Local SA` $\to$ `7: Local SA` $\to$ `8: Full SA`.
-- **Единое определение локального окна (`Layers 1, 2, 6, 7`)**:
+- **Порядок слоёв ядра (10 блоков)**:
+  - `0: Full SA` $\to$ `1: Local SA` $\to$ `2: CA` $\to$ `3: Full SA` $\to$ `4: CA` $\to$ `5: Full SA` $\to$ `6: CA` $\to$ `7: Full SA` $\to$ `8: Local SA` $\to$ `9: Full SA`.
+- **Единое определение локального окна (`Layers 1, 8`)**:
   - Используется двустороннее скользящее окно **радиуса $r = 8$ ячеек** вокруг текущей позиции $i$ ($|i - j| \le 8$, что даёт **полную ширину окна $W = 2r + 1 = 17$ ячеек** = 68 токенов), плюс **глобальный аттрактор на позиции `0`** (каждая ячейка $i$ всегда видит ячейку `0`, а ячейка `0` видит все 128 ячеек холста).
 - **Детерминированный якорь `SEP` на позиции `0` (в 100% примеров при обучении и инференсе)**:
-  - Чтобы слои локального внимания `1, 2, 6, 7` всегда опирались на предсказуемый глобальный хаб на позиции `0`, ячейка `idx = 0` холста ответа **всегда (в 100% примеров на обучении и в 100% запусков при инференсе)** заполняется эталонным концептом `sep_concept.pt` с нулевым уровнем шума $t_0 \equiv 0.0$.
+  - Чтобы слои локального внимания `1, 8` всегда опирались на предсказуемый глобальный хаб на позиции `0`, ячейка `idx = 0` холста ответа **всегда (в 100% примеров на обучении и в 100% запусков при инференсе)** заполняется эталонным концептом `sep_concept.pt` с нулевым уровнем шума $t_0 \equiv 0.0$.
   - **Порядок формирования холста:** в `GrassmannianEncoder` подаются **только 508 токенов ответа** (right-padded `PAD`) → $V_{\text{ans}} \in \mathbb{R}^{B \times 127 \times 8 \times 128}$. `sep_concept.pt` **подставляется после энкодера, перед началом диффузии**: $V_0 = [V_{\text{sep}};\, V_{\text{ans}}] \in \mathbb{R}^{B \times 128 \times 8 \times 128}$. Токены `SEP` в энкодер не подаются.
   - Содержательный текст ответа располагается в ячейках `1..127` ($127$ концепт-ячеек = $508$ токенов Tekken). При декодировании в текст ячейка `0` всегда отбрасывается (`V_ans[:, 1:]`, ровно 127 ячеек, что соответствует входу энкодера; формат $N=127$ см. вопрос Q1 в §8).
 
-### 3.2. Единая матрица $K$ и $V$ (`Shared KV Projection` + `Split K/V Channel Gating`) во всех 11 слоях
-Во всех **11 блоках внимания** (`2` слоя `PromptAdapter` + `8` слоёв `SA` ядра + `1` слой `CAPromptBlock`) вместо трёх матриц $(W_Q, W_K, W_V)$ используются две полноранговые сферические матрицы:
+### 3.2. Единая матрица $K$ и $V$ (`Shared KV Projection` + `Split K/V Channel Gating`) во всех 12 слоях
+Во всех **12 блоках внимания** (`2` слоя `PromptAdapter` + `7` слоёв `SA` ядра + `3` слоя `CAPromptBlock`) вместо трёх матриц $(W_Q, W_K, W_V)$ используются две полноранговые сферические матрицы:
 - `q_proj: SphereLinear(1024, 1024, bias=False)`
 - `kv_proj: SphereLinear(1024, 1024, bias=False)`
 
@@ -232,15 +233,15 @@ flowchart TD
 
 ### 5.2. Смешанное расписание шума (Mixed Noise Curriculum)
 Для ячеек $i \in \{1, \dots, 127\}$ (при $t_0 \equiv 0.0$):
-1. **40% — Flat Diffusion**: единое время $t_i = t \sim \operatorname{Sigmoid}(\mathcal{N}(0.3, 1.1))$ для всех $i \ge 1$.
-2. **15% — High-Noise / Pure-Start**: единое высокое время $t_i = t$ ($1/3$ случаев ровно $t = 1.0$, $2/3$ — $\mathcal{U}(0.80, 1.0)$) для усиленной прокачки `CAPromptBlock` на старте генерации.
-3. **25% — Per-Cell Inpainting & Clean Anchors**: случайные 20–50% ячеек ответа фиксируются чистыми ($t_i = 0.0 \implies w_i = 0.0$ в лоссе), остальные получают $t_i \sim \mathcal{U}(0.25, 1.0)$.
-4. **20% — Heterogeneous Kalman / Span Schedule**: индивидуальные $t_i \in [0.05, 1.0]$ (плавный градиент шума к хвосту либо 1–2 локальных спана длиной 4–12 ячеек с $t_i \in [0.7, 1.0]$ на фоне $t_j \in [0.05, 0.35]$).
+1. **30% — High-Noise / Pure-Start**: единое высокое время $t_i = t$ ($1/3$ случаев ровно $t = 1.0$, $2/3$ — $\mathcal{U}(0.80, 1.0)$).
+2. **35% — Shifted Flat Diffusion**: единое время $t_i = t \sim \operatorname{Sigmoid}(\mathcal{N}(0.75, 1.0))$ (медиана $\approx 0.68$, без перекоса в лёгкий шум).
+3. **20% — Causal Prefix / Block-AR**: чистый префикс $1 \dots k$ ($t_i = 0.0$, срез $k \in [0, i_{\text{last}}-1]$), весь хвост $k+1 \dots 127$ при высоком шуме ($50\%$ — блок $[k+1 \dots k+16]$ в $\mathcal{U}(0.30, 1.0)$ и дальний хвост $t=1.0$; $50\%$ — весь хвост $\mathcal{U}(0.55, 1.0)$).
+4. **15% — Rolling Wave Gradient**: монотонный лево-правый фронт шума $[0.0, 0.25] \to [0.75, 1.0]$.
 
 ### 5.3. Гибридная функция потерь (в `torch.float32`, после сборки полного батча)
 Дублирующий ориентационный лосс $\mathcal{L}_{\text{spec}}$ исключён; оставлены взаимно дополняющие компоненты:
-$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{basis}} + 0.02\,\mathcal{L}_{\text{Gr}} + 0.1\,\mathcal{L}_{\text{adj}} + 0.1\,\mathcal{L}_{\text{bary}} + w_{\text{adaln}}(s)\,\mathcal{L}_{\text{adaln}}$$
-*(Вес $\mathcal{L}_{\text{Gr}}$ откалиброван с `0.5` до **`0.02`** по итогам замеров §8 Q4 для паритета градиентов с $\mathcal{L}_{\text{basis}}$; вес $w_{\text{adaln}}(s) = 0.05 \cdot \min(1, s / 500)$ вводится с линейным warm-up за 500 шагов по итогам §8 Q6.)*
+$$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{basis}} + 0.08\,\mathcal{L}_{\text{Gr,dir}} + 0.05\,\mathcal{L}_{\text{energy}} + 0.1\,\mathcal{L}_{\text{adj}} + 0.1\,\mathcal{L}_{\text{bary}} + 0.1\,\mathcal{L}_{\text{sink}} + w_{\text{adaln}}(s)\,\mathcal{L}_{\text{adaln}}$$
+*(Грассманов лосс разделён на масштабно-инвариантный угловой лосс $1 - \operatorname{Sim}_{\text{Gr}}$ с весом `0.08` и явный лосс сохранения энергии/спектра $\mathcal{L}_{\text{energy}}$ с весом `0.05`, чтобы исключить сжатие нормы $\|\hat{V}_0\|_F^2$ при неопределённости на высоком шуме $t \to 1$; вес $w_{\text{adaln}}(s) = 0.05 \cdot \min(1, s / 500)$ вводится с линейным warm-up за 500 шагов.)*
 Пусть $m_{\text{active}, i} = \mathbb{I}[t_i > 10^{-3}]$ — маска реально зашумлённых ячеек, $\tilde{w}_i = m_{\text{active}, i} \cdot w_i \cdot w_{\text{snr}}(t_i)$, где $w_{\text{snr}}(t_i) = \min(\max(t_i, 0.25)^{-1},\; 2.0)$ (ограничение `2.0` устраняет 5-кратный перекос градиента в пользу малых $t$).
 1. **Канонический лосс базиса ($\mathcal{L}_{\text{basis}}$)**:
    $$\mathcal{L}_{\text{basis}} = \frac{\sum_{b, i} \tilde{w}_{b,i} \, \operatorname{SmoothL1}(\hat{V}_{0,b,i}, V_{0,b,i}; \beta = 0.02)}{\sum_{b, i} \tilde{w}_{b,i} + 10^{-6}}$$
@@ -263,14 +264,14 @@ $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{basis}} + 0.02\,\mathcal{L}_{\
 
 ## 6. Инженерная спецификация для Kaggle 2×T4 (`sm_75`) и Оптимизатор
 
-### 6.1. Точный баланс параметров (~148.5M) и Бюджет памяти (2 × 16 ГБ VRAM)
+### 6.1. Точный баланс параметров (~167.89M) и Бюджет памяти (2 × 16 ГБ VRAM)
 | Подсистема | Состав матриц (`d=1024`, `d_ffn=2816`, `c=256`) | Параметров на блок | Всего параметров |
 | :--- | :--- | :---: | :---: |
-| **8 слоёв `SA` ядра** (`0..3, 5..8`) | `q_proj, kv_proj, o_proj` ($3.15\text{M}$) + `SwiGLU` ($8.65\text{M}$) + `AdaLN` ($1.57\text{M}$) | $13.37\text{M}$ | **$106.96\text{M}$** |
-| **Слой 4 `CAPromptBlock`** | `q_proj, kv_proj, o_proj` ($3.15\text{M}$) + `Cross-Gated SwiGLU` 4 матрицы ($11.53\text{M}$) + `AdaLN` ($1.57\text{M}$) | $16.25\text{M}$ | **$16.25\text{M}$** |
+| **7 слоёв `SA` ядра** (`0, 1, 3, 5, 7, 8, 9`) | `q_proj, kv_proj, o_proj` ($3.15\text{M}$) + `SwiGLU` ($8.65\text{M}$) + `AdaLN` ($1.57\text{M}$) | $13.37\text{M}$ | **$93.60\text{M}$** |
+| **3 слоя `CAPromptBlock`** (`2, 4, 6`) | `q_proj, kv_proj, o_proj` ($3.15\text{M}$) + `Cross-Gated SwiGLU` 4 матрицы ($11.53\text{M}$) + `AdaLN` ($1.57\text{M}$) | $16.25\text{M}$ | **$48.75\text{M}$** |
 | **`PromptAdapter` (2 слоя)** | `Full SA` ($3.15\text{M}$) + `SwiGLU FFN` ($8.65\text{M}$), без `AdaLN` | $11.80\text{M}$ | **$23.60\text{M}$** |
 | **`ConditionEmbedder` + `OutputHead`** | MLP условий ($0.12\text{M}$) + `AdaLN_out` ($0.52\text{M}$) + `out_proj` ($1.05\text{M}$) | $1.69\text{M}$ | **$1.69\text{M}$** |
-| **ИТОГО обучаемое ядро** | *(Экономия от `Shared KV` в 11 слоях: $-11.53\text{M}$ параметров)* | — | **$148.50\text{M}$** |
+| **ИТОГО обучаемое ядро** | *(Экономия от `Shared KV` в 12 слоях: $-12.58\text{M}$ параметров)* | — | **$167.89\text{M}$** |
 
 - **Исключение декодера из шага обучения**: замороженный `GrassmannianDecoder` не вызывается во время `train_step` (экономит ~6 ГБ VRAM), а используется только на шагах валидации под `torch.no_grad()`.
 - **План батчинга**: `batch_size_per_gpu = 8` (`micro_batch = 16` на 2×T4), `grad_accum_steps = 4` $\implies$ **эффективный батч = 64 пары**. Пиковое потребление VRAM: **~8.8–10.2 ГБ на каждую T4**.

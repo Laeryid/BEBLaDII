@@ -3,8 +3,8 @@
 # Архитектура:
 # - Замороженная Система 1 (`GrassmannianEncoder` + `GrassmannianDecoder` step_19500 из `storage/components/`).
 # - Unit-RMS остаточный поток (`sigma_data = 0.05`) + `PromptAdapter` (`2 x Full SA`).
-# - 9-слойное ядро `GrassmannianDiffusionCore`: `Full, Local(r=8), Local(r=8), Full, CA_Prompt, Full, Local(r=8), Local(r=8), Full`.
-# - `Shared KV Projection` + `Split K/V Channel Gating` во всех 11 слоях внимания.
+# - 10-слойное ядро `GrassmannianDiffusionCore`: `Full, Local(r=8), CA_Prompt, Full, CA_Prompt, Full, CA_Prompt, Full, Local(r=8), Full`.
+# - `Shared KV Projection` + `Split K/V Channel Gating` во всех 12 слоях внимания.
 # - `ConditionEmbedder` (локальное/глобальное время + 8 спектральных датчиков) + `Soft-Gate AdaLN` (`std=1e-4`, `gate_bias=0.02`).
 # - Детерминированный якорь `SEP` на позиции `0` ($t_0 = 0$) и формат ответа $N_{\text{ans}} = 127$ (508 токенов).
 # - Целевая платформа: Kaggle 2xT4 (`sm_75`, FP16 + GradScaler, `DDP` или `DataParallel` с внешним расчетом лосса).
@@ -442,12 +442,21 @@ class ConditionEmbedder(nn.Module):
             s3 = sim_gr(Vf, void_exp)
             s4 = (tf < 1e-3).float()
             s5 = mp.view(B, 1).expand(B, N)
+            if N > 1:
+                tf_ans = tf[:, 1:]
+                active_ans = (tf_ans > 1e-3).float()
+                active_cnt = active_ans.sum(dim=-1, keepdim=True).clamp(min=1.0)
+                # Глобальный средний шум по активным зашумленным ячейкам (без искажения от чистого префикса t=0)
+                t_bar = ((tf_ans * active_ans).sum(dim=-1, keepdim=True) / active_cnt).expand(B, N)
+                # Доля уже кристаллизованного префикса ответа (t_i <= 1e-3)
+                s6 = (1.0 - active_ans).mean(dim=-1, keepdim=True).expand(B, N)
+            else:
+                t_bar = tf
+                s6 = (tf <= 1e-3).float()
             zeros = torch.zeros_like(s0)
-            sensors = torch.stack([s0, s1, s2, s3, s4, s5, zeros, zeros], dim=-1)
+            sensors = torch.stack([s0, s1, s2, s3, s4, s5, s6, zeros], dim=-1)
 
             e_loc = self.t_local_emb(tf)
-            # Глобальный средний шум по ячейкам ответа (без SEP на позиции 0)
-            t_bar = tf[:, 1:].mean(dim=-1, keepdim=True).expand(B, N) if N > 1 else tf
             e_glob = self.t_global_emb(t_bar)
             feat = torch.cat([e_loc, e_glob, sensors], dim=-1)
             c_f32 = self.mlp(feat)
@@ -697,7 +706,7 @@ class DiffusionSABlock(nn.Module):
 
 class CAPromptBlock(nn.Module):
     """
-    Слой 4: Cross-Attention на промпт с:
+    Слои 2, 4, 6: Cross-Attention на промпт с:
     - Shared KV + Split K/V Channel Gating;
     - Token-Centered Contrast только на ветке ключей K_p (ADR 118);
     - Фиксированным RoPE offset=64 для запросов холста (ADR 108);
@@ -783,31 +792,24 @@ class CAPromptBlock(nn.Module):
         q, _ = apply_rotary_pos_emb(q, q, cos_a, sin_a)
         _, k_p = apply_rotary_pos_emb(k_p, k_p, cos_p, sin_p)
 
-        # Добавляем k_sink (без RoPE) и v_sink = 0
+        # Добавляем k_sink (без RoPE); v_sink тождественно равен 0 (Zero-Vector Sink)
         k_sink_exp = self.k_norm(self.k_sink.to(k_p.dtype)).expand(B, -1, -1, -1)
-        v_sink_exp = torch.zeros(B, self.num_heads, 1, self.head_dim, device=v_p.device, dtype=v_p.dtype)
-
         k_full = torch.cat([k_p, k_sink_exp], dim=2)  # (B, H, N_p + 1, D)
-        v_full = torch.cat([v_p, v_sink_exp], dim=2)
 
         # Маска: открыты только активные не-VOID клетки промпта и всегда открыт k_sink (последний столбец)
-        attn_mask = torch.zeros(B, 1, 1, N_p + 1, device=x_ans.device, dtype=q.dtype)
+        attn_mask = torch.zeros(B, 1, 1, N_p + 1, device=x_ans.device, dtype=torch.float32)
         attn_mask[:, :, :, :N_p] = attn_mask[:, :, :, :N_p].masked_fill(
             ~prompt_attn_mask[:, None, None, :], -10000.0
         )
 
-        sink_weights = None
-        if return_sink_weights:
-            with torch.no_grad():
-                scores = torch.matmul(q.float(), k_full.float().transpose(-2, -1)) / math.sqrt(self.head_dim)
-                scores = scores + attn_mask.float()
-                probs = F.softmax(scores, dim=-1)
-                # Средняя доля внимания в k_sink по головам: (B, N_a)
-                sink_weights = probs[:, :, :, -1].mean(dim=1)
+        # Однократный расчёт внимания в float32 (исключает повторный проход SDPA и защищает от FP16 underflow)
+        scores = torch.matmul(q.float(), k_full.float().transpose(-2, -1)) / math.sqrt(self.head_dim)
+        scores = scores + attn_mask
+        probs = F.softmax(scores, dim=-1)
+        sink_weights = probs[:, :, :, -1].mean(dim=1) if return_sink_weights else None
 
-        attn_out = F.scaled_dot_product_attention(
-            q, k_full, v_full, attn_mask=attn_mask, dropout_p=0.0, is_causal=False
-        )
+        # Так как v_sink == 0, вклад в контекст дают только первые N_p ключей промпта
+        attn_out = torch.matmul(probs[:, :, :, :N_p].to(v_p.dtype), v_p)
         attn_out = attn_out.transpose(1, 2).reshape(B, N_a, C)
         h_ca = self.o_proj(attn_out)
         x_ans = x_ans + gate_ca * h_ca
@@ -858,8 +860,8 @@ class GrassmannianOutputHead(nn.Module):
 
 class GrassmannianDiffusionCore(nn.Module):
     """
-    Полное условное ядро диффузии Фазы 2 Plan C (~148.50M обучаемых параметров).
-    Включает PromptAdapter (2 слоя), ConditionEmbedder, 9 слоев ядра (включая CAPromptBlock на слое 4)
+    Полное условное ядро диффузии Фазы 2 Plan C (~167.64M обучаемых параметров).
+    Включает PromptAdapter (2 слоя), ConditionEmbedder, 10 слоев ядра (CAPromptBlock на слоях 2, 4, 6)
     и GrassmannianOutputHead.
     """
 
@@ -887,18 +889,19 @@ class GrassmannianDiffusionCore(nn.Module):
             init_layer_scale=0.02,
         )
 
-        # Порядок слоев: 0:Full, 1:Local, 2:Local, 3:Full, 4:CA, 5:Full, 6:Local, 7:Local, 8:Full
+        # Порядок слоев: 0:Full, 1:Local, 2:CA, 3:Full, 4:CA, 5:Full, 6:CA, 7:Full, 8:Local, 9:Full
         self.layers = nn.ModuleList(
             [
                 DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=None),          # 0: Full
                 DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=local_radius),  # 1: Local
-                DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=local_radius),  # 2: Local
+                CAPromptBlock(hidden_size, intermediate_size, num_heads, rope_offset=N_PROMPT),          # 2: CA_Prompt
                 DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=None),          # 3: Full
                 CAPromptBlock(hidden_size, intermediate_size, num_heads, rope_offset=N_PROMPT),          # 4: CA_Prompt
                 DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=None),          # 5: Full
-                DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=local_radius),  # 6: Local
-                DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=local_radius),  # 7: Local
-                DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=None),          # 8: Full
+                CAPromptBlock(hidden_size, intermediate_size, num_heads, rope_offset=N_PROMPT),          # 6: CA_Prompt
+                DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=None),          # 7: Full
+                DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=local_radius),  # 8: Local
+                DiffusionSABlock(hidden_size, intermediate_size, num_heads, local_radius=None),          # 9: Full
             ]
         )
         self.output_head = GrassmannianOutputHead(hidden_size=hidden_size, cond_dim=cond_dim)
@@ -922,7 +925,7 @@ class GrassmannianDiffusionCore(nn.Module):
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
         """
         Прямой проход ядра с уже вычисленным x_prompt.
-        Возвращает (V_0_hat, (sum_M_stack, sum_M2_stack, count_vec), sink_weights).
+        Возвращает (V_0_hat, (sum_M_stack, sum_M2_stack, count_vec), sink_weights (B, N_ca, N_a)).
         """
         B, N_a, _, _ = V_t.shape
         m_active = t_mat > 1e-3
@@ -932,11 +935,11 @@ class GrassmannianDiffusionCore(nn.Module):
         cos_a, sin_a = self.rope(x_ans, N_a)
 
         sum_m_list, sum_m2_list, count_list = [], [], []
-        sink_weights = None
+        sink_list = []
 
-        for idx, layer in enumerate(self.layers):
-            if idx == 4:
-                x_ans, stats, sink_weights = layer(
+        for layer in self.layers:
+            if isinstance(layer, CAPromptBlock):
+                x_ans, stats, sw = layer(
                     x_ans,
                     x_prompt,
                     c,
@@ -945,6 +948,8 @@ class GrassmannianDiffusionCore(nn.Module):
                     m_active=m_active,
                     return_sink_weights=return_sink_weights,
                 )
+                if sw is not None:
+                    sink_list.append(sw)
             else:
                 x_ans, stats = layer(x_ans, c, cos_a, sin_a, m_active=m_active)
             sum_m_list.append(stats[0])
@@ -952,11 +957,13 @@ class GrassmannianDiffusionCore(nn.Module):
             count_list.append(stats[2])
 
         V_0_hat = self.output_head(x_ans, V_t, t_mat, c)
+        sink_weights = torch.stack(sink_list, dim=1) if sink_list else None  # (B, N_ca, N_a)
 
-        # Собираем в единые тензоры: (num_gpus, 9, 4096) после DataParallel gather
-        sum_m_pack = torch.stack(sum_m_list, dim=1)    # (1, 9, 4096)
-        sum_m2_pack = torch.stack(sum_m2_list, dim=1)  # (1, 9, 4096)
-        count_pack = torch.stack(count_list, dim=0).view(1, 9)  # (1, 9)
+        # Собираем в единые тензоры: (num_gpus, num_layers, 4096) после DataParallel gather
+        num_layers = len(self.layers)
+        sum_m_pack = torch.stack(sum_m_list, dim=1)    # (1, num_layers, 4096)
+        sum_m2_pack = torch.stack(sum_m2_list, dim=1)  # (1, num_layers, 4096)
+        count_pack = torch.stack(count_list, dim=0).view(1, num_layers)  # (1, num_layers)
         return V_0_hat, (sum_m_pack, sum_m2_pack, count_pack), sink_weights
 
     def forward(
@@ -1159,51 +1166,62 @@ class PromptAnswerDataset(Dataset):
 def sample_mixed_noise_schedule(
     batch_size: int,
     device: torch.device,
+    i_last: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
-    Mixed Noise Curriculum (§5.2) для ячеек 0..127 (t_0 == 0.0 всегда):
-    - 40% Flat Diffusion: t ~ Sigmoid(N(0.3, 1.1))
-    - 15% High-Noise / Pure-Start: 1/3 ровно t=1.0, 2/3 U(0.80, 1.0)
-    - 25% Per-Cell Inpainting & Clean Anchors: 20-50% ячеек t=0, остальные U(0.25, 1.0)
-    - 20% Heterogeneous Kalman / Span Schedule: градиент к хвосту или 1-2 шумных спана 4-12 ячеек.
+    Перебалансированный Mixed Noise Curriculum без доминирования лёгкого шума (для ячеек 0..127, t_0 == 0.0):
+    - 30% High-Noise / Pure-Start: 1/3 ровно t=1.0, 2/3 U(0.80, 1.0)
+    - 35% Shifted Flat Diffusion: t ~ Sigmoid(N(0.75, 1.0)) (медиана ~0.68)
+    - 20% Causal Prefix / Block-AR: чистый префикс 1..k (t=0), весь хвост k+1..127 в высоком шуме
+          (50% — блок [k+1..k+16] в U(0.30, 1.0) + дальний хвост t=1.0; 50% — весь хвост U(0.55, 1.0))
+    - 15% Rolling Wave Gradient: монотонный фронт шума слева направо [0.0..0.25] -> [0.75..1.0].
     """
     t_mat = torch.zeros(batch_size, N_CANVAS, device=device, dtype=torch.float32)
     regimes = torch.rand(batch_size, device=device)
 
     for b in range(batch_size):
         r = float(regimes[b].item())
-        if r < 0.40:
-            t_flat = torch.sigmoid(torch.randn(1, device=device) * 1.1 + 0.3).clamp(0.005, 1.0)
-            t_mat[b, 1:] = t_flat
-        elif r < 0.55:
+        if r < 0.30:
             if float(torch.rand(1, device=device).item()) < 0.333:
                 t_mat[b, 1:] = 1.0
             else:
                 t_hi = torch.empty(1, device=device).uniform_(0.80, 1.0)
                 t_mat[b, 1:] = t_hi
-        elif r < 0.80:
-            p_clean = 0.20 + 0.30 * float(torch.rand(1, device=device).item())
-            vals = torch.empty(N_ANS, device=device).uniform_(0.25, 1.0)
-            clean_mask = torch.rand(N_ANS, device=device) < p_clean
-            if clean_mask.all():
-                clean_mask[int(torch.randint(0, N_ANS, (1,)).item())] = False
-            vals[clean_mask] = 0.0
-            t_mat[b, 1:] = vals
-        else:
-            if float(torch.rand(1, device=device).item()) < 0.5:
-                t_start = 0.05 + 0.20 * float(torch.rand(1, device=device).item())
-                t_end = 0.65 + 0.35 * float(torch.rand(1, device=device).item())
-                grad_t = torch.linspace(t_start, t_end, N_ANS, device=device)
-                jitter = torch.empty(N_ANS, device=device).uniform_(-0.04, 0.04)
-                t_mat[b, 1:] = (grad_t + jitter).clamp(0.05, 1.0)
+        elif r < 0.65:
+            t_flat = torch.sigmoid(torch.randn(1, device=device) * 1.0 + 0.75).clamp(0.01, 1.0)
+            t_mat[b, 1:] = t_flat
+        elif r < 0.85:
+            max_cut = int(i_last[b].item()) - 1 if i_last is not None else N_ANS - 1
+            max_cut = max(0, min(max_cut, N_ANS - 1))
+            if max_cut > 0:
+                if float(torch.rand(1, device=device).item()) < 0.5 and max_cut >= 8:
+                    # Выравниваем срез под кратность блокам 8/16 для Block-AR
+                    step_blk = 16 if (max_cut >= 16 and float(torch.rand(1, device=device).item()) < 0.5) else 8
+                    choices = list(range(0, max_cut + 1, step_blk))
+                    cut = choices[int(torch.randint(0, len(choices), (1,)).item())]
+                else:
+                    cut = int(torch.randint(0, max_cut + 1, (1,)).item())
             else:
-                vals = torch.empty(N_ANS, device=device).uniform_(0.05, 0.35)
-                num_spans = int(torch.randint(1, 3, (1,)).item())
-                for _ in range(num_spans):
-                    span_len = int(torch.randint(4, 13, (1,)).item())
-                    start = int(torch.randint(0, N_ANS - span_len + 1, (1,)).item())
-                    vals[start : start + span_len] = torch.empty(span_len, device=device).uniform_(0.70, 1.0)
-                t_mat[b, 1:] = vals
+                cut = 0
+
+            # Префикс 1..cut чистый (t=0.0), хвост cut+1..127 (индексы 0..N_ANS-1 в t_ans) в высоком шуме
+            t_ans = torch.ones(N_ANS, device=device, dtype=torch.float32)
+            if float(torch.rand(1, device=device).item()) < 0.5:
+                blk_len = int(torch.randint(8, 25, (1,)).item())
+                blk_end = min(N_ANS, cut + blk_len)
+                if blk_end > cut:
+                    t_ans[cut:blk_end] = torch.empty(blk_end - cut, device=device).uniform_(0.30, 1.0)
+            else:
+                t_ans[cut:] = torch.empty(1, device=device).uniform_(0.55, 1.0)
+            if cut > 0:
+                t_ans[:cut] = 0.0
+            t_mat[b, 1:] = t_ans
+        else:
+            t_start = 0.25 * float(torch.rand(1, device=device).item())
+            t_end = 0.75 + 0.25 * float(torch.rand(1, device=device).item())
+            grad_t = torch.linspace(t_start, t_end, N_ANS, device=device)
+            jitter = torch.empty(N_ANS, device=device).uniform_(-0.03, 0.03)
+            t_mat[b, 1:] = (grad_t + jitter).clamp(0.01, 1.0)
     return t_mat
 
 
@@ -1269,16 +1287,22 @@ def compute_phase2_loss(
     i_last: torch.Tensor,
     adaln_stats: Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
     step: int,
-    gr_weight: float = 0.02,
+    m_prompt: Optional[torch.Tensor] = None,
+    sink_weights: Optional[torch.Tensor] = None,
+    gr_weight: float = 0.08,
+    energy_weight: float = 0.05,
     adj_weight: float = 0.10,
     bary_weight: float = 0.10,
+    sink_weight: float = 0.10,
+    sink_content_max: float = 0.35,
+    sink_content_min: float = 0.08,
     adaln_max_weight: float = 0.05,
     adaln_warmup_steps: int = 500,
     world_size: int = 1,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
     Гибридная функция потерь Фазы 2 (§5.3) строго в torch.float32 после gather на полном микро-батче:
-    L_total = L_basis + 0.02 * L_Gr + 0.1 * L_adj + 0.1 * L_bary + w_adaln(s) * L_adaln.
+    L_total = L_basis + 0.08*L_Gr_dir + 0.05*L_energy + 0.1*L_adj + 0.1*L_bary + 0.1*L_sink + w_adaln(s)*L_adaln.
     """
     device_type = V_0_hat.device.type
     with torch.autocast(device_type=device_type, enabled=False):
@@ -1298,12 +1322,25 @@ def compute_phase2_loss(
         elem_basis = F.smooth_l1_loss(Vh, V0, beta=0.02, reduction="none").mean(dim=(-2, -1))
         l_basis = (w_tilde * elem_basis).sum() / w_denom
 
-        # 2. O(8)-инвариантный Грассманов лосс операторов плотности
+        # 2. Декомпозированный Грассманов лосс:
+        #    (a) Масштабно-инвариантный угловой лосс (1 - Sim_Gr), не занижающий энергию на высоком шуме;
+        #    (b) Явный лосс сохранения энергии Tr(G) = ||V||_F^2 и спектральной нормы ||G||_F.
         Gh = torch.matmul(Vh, Vh.transpose(-2, -1))
         G0 = torch.matmul(V0, V0.transpose(-2, -1))
         cross = torch.matmul(Vh, V0.transpose(-2, -1))
-        elem_gr = (Gh ** 2).sum(dim=(-2, -1)) + (G0 ** 2).sum(dim=(-2, -1)) - 2.0 * (cross ** 2).sum(dim=(-2, -1))
-        l_gr = (w_tilde * elem_gr).sum() / w_denom
+        norm_gh = torch.sqrt((Gh ** 2).sum(dim=(-2, -1)) + 1e-12)
+        norm_g0 = torch.sqrt((G0 ** 2).sum(dim=(-2, -1)) + 1e-12)
+        sim_cell = (cross ** 2).sum(dim=(-2, -1)) / (norm_gh * norm_g0 + 1e-8)
+        elem_gr_dir = torch.clamp(1.0 - sim_cell, min=0.0)
+        l_gr = (w_tilde * elem_gr_dir).sum() / w_denom
+
+        energy_h = torch.diagonal(Gh, dim1=-2, dim2=-1).sum(dim=-1)
+        energy_0 = torch.diagonal(G0, dim1=-2, dim2=-1).sum(dim=-1)
+        elem_energy = (
+            F.smooth_l1_loss(energy_h, energy_0, beta=0.05, reduction="none")
+            + 0.5 * F.smooth_l1_loss(norm_gh, norm_g0, beta=0.05, reduction="none")
+        )
+        l_energy = (w_tilde * elem_energy).sum() / w_denom
 
         # 3. Анти-коллапс смежных смысловых ячеек (1 <= i < i_last)
         pos_idx = torch.arange(N - 1, device=Vh.device).unsqueeze(0).expand(B, N - 1)
@@ -1341,16 +1378,16 @@ def compute_phase2_loss(
 
         # 5. Пол разнообразия AdaLN (суммирование по репликам DP/DDP и линейный warm-up 500 шагов)
         sum_m_pack, sum_m2_pack, count_pack = adaln_stats
-        sum_m_tot = _ddp_sum(sum_m_pack.float().sum(dim=0))      # (9, 4096)
-        sum_m2_tot = _ddp_sum(sum_m2_pack.float().sum(dim=0))    # (9, 4096)
-        count_tot = _ddp_sum(count_pack.float().sum(dim=0))      # (9,)
+        sum_m_tot = _ddp_sum(sum_m_pack.float().sum(dim=0))      # (num_layers, 4096)
+        sum_m2_tot = _ddp_sum(sum_m2_pack.float().sum(dim=0))    # (num_layers, 4096)
+        count_tot = _ddp_sum(count_pack.float().sum(dim=0))      # (num_layers,)
 
         valid_layers = count_tot > 0
         if valid_layers.any():
             cnt = count_tot.clamp(min=1.0).unsqueeze(-1)
             mean_m = sum_m_tot / cnt
             var_m = torch.clamp(sum_m2_tot / cnt - mean_m ** 2, min=1e-12)
-            sigma_layers = torch.sqrt(var_m).mean(dim=-1)  # (9,)
+            sigma_layers = torch.sqrt(var_m).mean(dim=-1)  # (num_layers,)
             l_adaln = F.relu(1e-2 - sigma_layers).mean()
             sigma_mean_val = float(sigma_layers.mean().item())
             sigma_min_val = float(sigma_layers.min().item())
@@ -1359,6 +1396,25 @@ def compute_phase2_loss(
             sigma_mean_val = 0.0
             sigma_min_val = 0.0
 
+        # 6. Явный штраф на слив контентных ячеек в k_sink при m_prompt == 1 (VOID и uncond не штрафуются)
+        if sink_weights is not None and m_prompt is not None:
+            sw = sink_weights.float()
+            if sw.ndim == 2:
+                sw = sw.unsqueeze(1)  # (B, 1, N)
+            cond_active = (m_prompt.float() > 0.5).view(B, 1)
+            sink_mask = content_active & cond_active  # (B, N)
+            if sink_mask.any():
+                sink_mask_3d = sink_mask.unsqueeze(1).expand_as(sw)
+                sw_vals = sw[sink_mask_3d]
+                l_sink = (
+                    F.relu(sw_vals - sink_content_max) ** 2
+                    + 0.25 * (F.relu(sink_content_min - sw_vals) ** 2)
+                ).mean()
+            else:
+                l_sink = sw.sum() * 0.0
+        else:
+            l_sink = Vh.sum() * 0.0
+
         # В DDP каждый ранг усредняет градиенты по world_size; масштабируем вклад DDP для L_adaln корректно
         w_adaln = adaln_max_weight * min(1.0, float(step) / float(max(1, adaln_warmup_steps)))
         adaln_term = (w_adaln * float(world_size)) * l_adaln if world_size > 1 else w_adaln * l_adaln
@@ -1366,8 +1422,10 @@ def compute_phase2_loss(
         total_loss = (
             l_basis
             + gr_weight * l_gr
+            + energy_weight * l_energy
             + adj_weight * l_adj
             + bary_weight * l_bary
+            + sink_weight * l_sink
             + adaln_term
         )
 
@@ -1375,8 +1433,10 @@ def compute_phase2_loss(
             "loss/total": float(total_loss.item()),
             "loss/basis": float(l_basis.item()),
             "loss/gr": float(l_gr.item()),
+            "loss/energy": float(l_energy.item()),
             "loss/adj": float(l_adj.item()),
             "loss/bary": float(l_bary.item()),
+            "loss/sink": float(l_sink.item()),
             "loss/adaln_raw": float(l_adaln.item()),
             "loss/w_adaln": float(w_adaln),
             "adaln/sigma_mean": sigma_mean_val,
@@ -1626,6 +1686,27 @@ class EMAModel:
 # ## 7. Сэмплер Эйлера–Хьюна с CFG и Evaluation Gate
 
 # %%
+def _apply_cfg_and_clamp(
+    v0_cond: torch.Tensor,
+    v0_uncond: torch.Tensor,
+    cfg_scale: float,
+    cfg_rescale: float = 0.7,
+) -> torch.Tensor:
+    """
+    Classifier-Free Guidance с по-ячеечной стабилизацией Фробениусовой нормы (CFG Rescale)
+    и проекцией строк в единичный шар B^128. Защищает энергию контента и VOID от искажения при большом cfg_scale.
+    """
+    vc = v0_cond.float()
+    vu = v0_uncond.float()
+    v_cfg = vu + cfg_scale * (vc - vu)
+    if cfg_rescale > 0.0:
+        norm_c = torch.sqrt((vc ** 2).sum(dim=(-2, -1), keepdim=True) + 1e-12)
+        norm_cfg = torch.sqrt((v_cfg ** 2).sum(dim=(-2, -1), keepdim=True) + 1e-12)
+        v_rescaled = v_cfg * (norm_c / norm_cfg)
+        v_cfg = cfg_rescale * v_rescaled + (1.0 - cfg_rescale) * v_cfg
+    return clamp_to_unit_ball(v_cfg)
+
+
 @torch.no_grad()
 def euler_heun_sample(
     core: GrassmannianDiffusionCore,
@@ -1634,6 +1715,7 @@ def euler_heun_sample(
     sep_concept: torch.Tensor,
     num_steps: int = 20,
     cfg_scale: float = 3.0,
+    cfg_rescale: float = 0.7,
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.float16,
     seed: Optional[int] = None,
@@ -1641,7 +1723,7 @@ def euler_heun_sample(
     """
     Генерация с нуля (t = 1 -> 0) методом Эйлера–Хьюна 2-го порядка с CFG.
     Ячейка 0 всегда закреплена sep_concept.pt (t_0 = 0.0).
-    Возвращает (V_final (B, 128, 8, 128), sink_weights_last_step (B, 128)).
+    Возвращает (V_final (B, 128, 8, 128), sink_weights_last_step (B, 3, 128)).
     """
     raw_core = getattr(core, "module", core)
     was_training = raw_core.training
@@ -1689,8 +1771,7 @@ def euler_heun_sample(
                     m_prompt=m_uncond,
                     return_sink_weights=False,
                 )
-                v0 = v0_uncond.float() + cfg_scale * (v0_cond.float() - v0_uncond.float())
-                v0 = clamp_to_unit_ball(v0)
+                v0 = _apply_cfg_and_clamp(v0_cond, v0_uncond, cfg_scale=cfg_scale, cfg_rescale=cfg_rescale)
             else:
                 v0 = v0_cond.float()
         v0[:, 0] = sep_exp[:, 0]
@@ -1721,6 +1802,206 @@ def euler_heun_sample(
     if was_training:
         raw_core.train()
     return V_t, last_sink_weights
+
+
+@torch.no_grad()
+def rolling_wave_sample(
+    core: GrassmannianDiffusionCore,
+    V_prompt: torch.Tensor,
+    prompt_valid_mask: torch.Tensor,
+    sep_concept: torch.Tensor,
+    void_ref: Optional[torch.Tensor] = None,
+    num_steps: int = 40,
+    window: float = 56.0,
+    cfg_scale: float = 3.0,
+    cfg_rescale: float = 0.7,
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+    seed: Optional[int] = None,
+) -> torch.Tensor:
+    """
+    Полу-AR волновая генерация (Rolling Diffusion): фронт шума t_i движется слева направо,
+    обеспечивая ~12 шагов денойзинга на каждую ячейку (при window=56, num_steps=40)
+    и early-stop при кристаллизации устойчивого VOID-хвоста (>= 8 подряд).
+    """
+    raw_core = getattr(core, "module", core)
+    was_training = raw_core.training
+    raw_core.eval()
+
+    B = V_prompt.shape[0]
+    device = V_prompt.device
+    gen = torch.Generator(device=device) if seed is not None else None
+    if gen is not None:
+        gen.manual_seed(seed)
+
+    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+        x_prompt = raw_core.encode_prompt(V_prompt, prompt_valid_mask=prompt_valid_mask)
+
+    sep_exp = sep_concept.to(device=device, dtype=torch.float32).view(1, 1, 8, 128).expand(B, 1, 8, 128)
+    void_exp = void_ref.to(device=device, dtype=torch.float32).view(1, 1, 8, 128) if void_ref is not None else None
+    noise = torch.randn((B, N_ANS, 8, 128), generator=gen, device=device, dtype=torch.float32) * SIGMA_DATA
+    V_t = torch.cat([sep_exp, noise], dim=1)
+
+    cell_pos = torch.arange(N_ANS, device=device, dtype=torch.float32)
+    u_grid = torch.linspace(0.0, 1.0, steps=num_steps + 1, device=device, dtype=torch.float32)
+    m_cond = torch.ones(B, device=device, dtype=torch.float32)
+    m_uncond = torch.zeros(B, device=device, dtype=torch.float32)
+    uncond_mask = torch.zeros_like(prompt_valid_mask)
+    active_rows = torch.ones(B, dtype=torch.bool, device=device)
+
+    def get_t_ans(u: float) -> torch.Tensor:
+        front = -window + u * (float(N_ANS) + window)
+        return torch.clamp((cell_pos - front) / window, 0.0, 1.0)
+
+    for k in range(num_steps):
+        if not active_rows.any():
+            break
+        t_cur_ans = get_t_ans(float(u_grid[k].item()))
+        t_next_ans = get_t_ans(float(u_grid[k + 1].item()))
+        dt_ans = (t_cur_ans - t_next_ans).view(1, N_ANS, 1, 1)
+        t_mat = torch.cat([torch.zeros(B, 1, device=device), t_cur_ans.unsqueeze(0).expand(B, -1)], dim=1)
+
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            v0_cond, _, _ = raw_core.forward_with_cached_prompt(
+                V_t=V_t.to(amp_dtype if use_amp else torch.float32),
+                t_mat=t_mat,
+                x_prompt=x_prompt,
+                prompt_attn_mask=prompt_valid_mask,
+                m_prompt=m_cond,
+                return_sink_weights=False,
+            )
+            if abs(cfg_scale - 1.0) > 1e-4:
+                v0_uncond, _, _ = raw_core.forward_with_cached_prompt(
+                    V_t=V_t.to(amp_dtype if use_amp else torch.float32),
+                    t_mat=t_mat,
+                    x_prompt=x_prompt,
+                    prompt_attn_mask=uncond_mask,
+                    m_prompt=m_uncond,
+                    return_sink_weights=False,
+                )
+                v0 = _apply_cfg_and_clamp(v0_cond, v0_uncond, cfg_scale=cfg_scale, cfg_rescale=cfg_rescale)
+            else:
+                v0 = v0_cond.float()
+
+        active_cell = ((t_cur_ans > 1e-4) & (dt_ans.view(-1) > 1e-6)).view(1, N_ANS, 1, 1)
+        t_safe = torch.clamp(t_cur_ans, min=1e-4).view(1, N_ANS, 1, 1)
+        d1 = (V_t[:, 1:] - v0[:, 1:]) / t_safe
+        V_next_ans = V_t[:, 1:] - dt_ans * d1
+        snap = (t_next_ans <= 1e-5).view(1, N_ANS, 1, 1)
+        updated_ans = torch.where(snap, v0[:, 1:], torch.where(active_cell, V_next_ans, V_t[:, 1:]))
+        V_t[active_rows, 1:] = updated_ans[active_rows]
+
+        # Early-stop для примеров, где в уже кристаллизованном префиксе сформировался блок из >= 8 VOID подряд
+        if void_exp is not None:
+            n_cryst = int((t_next_ans <= 1e-5).sum().item())
+            if n_cryst >= 8:
+                cryst_void = detect_void_mask(V_t[:, 1 : 1 + n_cryst], void_exp)
+                tail_8_void = cryst_void[:, -8:].all(dim=-1)
+                newly_done = active_rows & tail_8_void
+                if newly_done.any():
+                    V_t[newly_done, 1 + n_cryst :] = void_exp
+                    active_rows = active_rows & (~newly_done)
+
+    if was_training:
+        raw_core.train()
+    return V_t
+
+
+@torch.no_grad()
+def block_ar_sample(
+    core: GrassmannianDiffusionCore,
+    V_prompt: torch.Tensor,
+    prompt_valid_mask: torch.Tensor,
+    sep_concept: torch.Tensor,
+    void_ref: torch.Tensor,
+    block_size: int = 16,
+    steps_per_block: int = 8,
+    cfg_scale: float = 3.0,
+    cfg_rescale: float = 0.7,
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+    seed: Optional[int] = None,
+) -> torch.Tensor:
+    """Блочная полу-AR диффузия (Эйлер–Хьюн 2-го порядка внутри блока) с early-stop по VOID."""
+    raw_core = getattr(core, "module", core)
+    was_training = raw_core.training
+    raw_core.eval()
+
+    B = V_prompt.shape[0]
+    device = V_prompt.device
+    gen = torch.Generator(device=device) if seed is not None else None
+    if gen is not None:
+        gen.manual_seed(seed)
+
+    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+        x_prompt = raw_core.encode_prompt(V_prompt, prompt_valid_mask=prompt_valid_mask)
+
+    sep_exp = sep_concept.to(device=device, dtype=torch.float32).view(1, 1, 8, 128).expand(B, 1, 8, 128)
+    noise = torch.randn((B, N_ANS, 8, 128), generator=gen, device=device, dtype=torch.float32) * SIGMA_DATA
+    V_t = torch.cat([sep_exp, noise], dim=1)
+
+    t_grid = torch.linspace(1.0, 0.0, steps=steps_per_block + 1, device=device, dtype=torch.float32)
+    m_cond = torch.ones(B, device=device, dtype=torch.float32)
+    m_uncond = torch.zeros(B, device=device, dtype=torch.float32)
+    uncond_mask = torch.zeros_like(prompt_valid_mask)
+    void_exp = void_ref.to(device=device, dtype=torch.float32).view(1, 1, 8, 128)
+    active_rows = torch.ones(B, dtype=torch.bool, device=device)
+
+    def predict_block_v0(V_in: torch.Tensor, s_idx: int, e_idx: int, t_val: float) -> torch.Tensor:
+        t_mat = torch.ones(B, N_CANVAS, device=device, dtype=torch.float32)
+        t_mat[:, :s_idx] = 0.0
+        t_mat[:, s_idx:e_idx] = t_val
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            v0_cond, _, _ = raw_core.forward_with_cached_prompt(
+                V_t=V_in.to(amp_dtype if use_amp else torch.float32),
+                t_mat=t_mat,
+                x_prompt=x_prompt,
+                prompt_attn_mask=prompt_valid_mask,
+                m_prompt=m_cond,
+                return_sink_weights=False,
+            )
+            if abs(cfg_scale - 1.0) > 1e-4:
+                v0_uncond, _, _ = raw_core.forward_with_cached_prompt(
+                    V_t=V_in.to(amp_dtype if use_amp else torch.float32),
+                    t_mat=t_mat,
+                    x_prompt=x_prompt,
+                    prompt_attn_mask=uncond_mask,
+                    m_prompt=m_uncond,
+                    return_sink_weights=False,
+                )
+                return _apply_cfg_and_clamp(v0_cond, v0_uncond, cfg_scale=cfg_scale, cfg_rescale=cfg_rescale)
+            return v0_cond.float()
+
+    for s in range(1, N_CANVAS, block_size):
+        if not active_rows.any():
+            V_t[:, s:] = void_exp
+            break
+        e = min(N_CANVAS, s + block_size)
+        for k in range(steps_per_block):
+            tc = float(t_grid[k].item())
+            tn = float(t_grid[k + 1].item())
+            dt = tc - tn
+
+            v0_1 = predict_block_v0(V_t, s, e, tc)
+            if tn <= 1e-6:
+                V_t[active_rows, s:e] = v0_1[active_rows, s:e]
+                break
+
+            d1 = (V_t[:, s:e] - v0_1[:, s:e]) / max(tc, 1e-4)
+            V_pred = V_t.clone()
+            V_pred[active_rows, s:e] = V_t[active_rows, s:e] - dt * d1[active_rows]
+
+            v0_2 = predict_block_v0(V_pred, s, e, tn)
+            d2 = (V_pred[:, s:e] - v0_2[:, s:e]) / max(tn, 1e-4)
+            V_t[active_rows, s:e] = V_t[active_rows, s:e] - 0.5 * dt * (d1[active_rows] + d2[active_rows])
+
+        blk_void = detect_void_mask(V_t[:, s:e], void_exp)
+        finished = blk_void.all(dim=-1)
+        active_rows = active_rows & (~finished)
+
+    if was_training:
+        raw_core.train()
+    return V_t
 
 
 @torch.no_grad()
@@ -1827,7 +2108,8 @@ def _record_window_metrics(
         diff_frob = torch.sqrt(((V_hat_ans - V_uncond_ans) ** 2).sum(dim=(-2, -1)) + 1e-12)
         bucket["cfg"].append(float(diff_frob[is_content].mean().item()))
     if sink_w is not None:
-        sw_ans = sink_w[:, 1:]
+        sw_mean = sink_w.mean(dim=1) if sink_w.ndim == 3 else sink_w
+        sw_ans = sw_mean[:, 1:]
         if is_content.any():
             bucket["sink_c"].append(float(sw_ans[is_content].mean().item()))
         if is_true_void.any():
@@ -1953,7 +2235,21 @@ def evaluate_phase2(
                 amp_dtype=amp_dtype,
                 seed=1234,
             )
+            V_gen_roll = rolling_wave_sample(
+                raw_model,
+                V_prompt[:n_gen],
+                p_valid[:n_gen],
+                sep_cpu,
+                void_ref=void_cpu,
+                num_steps=gen_steps * 2 if gen_steps > 2 else gen_steps,
+                window=56.0,
+                cfg_scale=3.0,
+                use_amp=use_amp,
+                amp_dtype=amp_dtype,
+                seed=1234,
+            )
             gen_texts, gen_vstarts = decode_latent_answers(V_gen, decoder, tokenizer, void_cpu)
+            roll_texts, roll_vstarts = decode_latent_answers(V_gen_roll, decoder, tokenizer, void_cpu)
             for g_i in range(n_gen):
                 q_toks = [t for t in prompt_ids[g_i].tolist() if t != PAD_TOKEN_ID]
                 q_str = tokenizer.decode(q_toks, skip_special_tokens=True) if tokenizer is not None else str(q_toks[:16])
@@ -1962,6 +2258,8 @@ def evaluate_phase2(
                         "prompt": q_str[:160],
                         "generated": gen_texts[g_i][:300],
                         "void_start": str(gen_vstarts[g_i]),
+                        "generated_rolling": roll_texts[g_i][:300],
+                        "void_start_rolling": str(roll_vstarts[g_i]),
                     }
                 )
 
@@ -2197,7 +2495,7 @@ def run_training_loop(
                 sep_exp = sep_cpu.to(device=env.device, dtype=V_ans.dtype).view(1, 1, 8, 128).expand(B, 1, 8, 128)
                 V_0 = torch.cat([sep_exp, V_ans], dim=1)
 
-                t_mat = sample_mixed_noise_schedule(B, env.device)
+                t_mat = sample_mixed_noise_schedule(B, env.device, i_last=i_last)
                 noise = torch.randn_like(V_0, dtype=torch.float32) * SIGMA_DATA
                 V_t = (1.0 - t_mat.unsqueeze(-1).unsqueeze(-1)) * V_0.float() + t_mat.unsqueeze(-1).unsqueeze(-1) * noise
                 V_t[:, 0] = sep_exp[:, 0].float()
@@ -2205,7 +2503,7 @@ def run_training_loop(
                 p_valid = n_real_prompt > 0
                 p_attn_mask, m_prompt = apply_prompt_dropout(p_valid)
 
-            # 2. Прямой проход модели (DataParallel возвращает (V_0_hat, adaln_stats) без расчёта лосса внутри)
+            # 2. Прямой проход модели (DataParallel возвращает (V_0_hat, adaln_stats, sink_weights) без расчёта лосса внутри)
             ddp_sync = (micro_idx == args.grad_accum_steps - 1)
             no_sync_ctx = model.no_sync() if (isinstance(model, DDP) and not ddp_sync) else None
             if no_sync_ctx is not None:
@@ -2213,13 +2511,14 @@ def run_training_loop(
 
             try:
                 with torch.autocast(device_type=env.device.type, dtype=env.amp_dtype, enabled=env.use_amp):
-                    V_0_hat, adaln_stats, _ = model(
+                    V_0_hat, adaln_stats, sink_weights = model(
                         V_t=V_t.to(env.amp_dtype if env.use_amp else torch.float32),
                         t_mat=t_mat,
                         V_prompt=V_prompt.to(env.amp_dtype if env.use_amp else torch.float32),
                         prompt_valid_mask=p_valid,
                         prompt_attn_mask=p_attn_mask,
                         m_prompt=m_prompt,
+                        return_sink_weights=True,
                     )
 
                 # 3. Гибридный лосс строго в fp32 и снаружи DataParallel на полном микро-батче
@@ -2231,6 +2530,8 @@ def run_training_loop(
                     i_last=i_last,
                     adaln_stats=adaln_stats,
                     step=step,
+                    m_prompt=m_prompt,
+                    sink_weights=sink_weights,
                     world_size=world_size,
                 )
                 scaled_loss = loss / float(args.grad_accum_steps)
@@ -2271,8 +2572,10 @@ def run_training_loop(
                 f"tot={accum_metrics['loss/total']:.4f} | "
                 f"basis={accum_metrics['loss/basis']:.4f} | "
                 f"gr={accum_metrics['loss/gr']:.4f} | "
+                f"en={accum_metrics['loss/energy']:.4f} | "
                 f"adj={accum_metrics['loss/adj']:.4f} | "
                 f"bary={accum_metrics['loss/bary']:.4f} | "
+                f"sink={accum_metrics['loss/sink']:.4f} | "
                 f"adaln_sig={accum_metrics['adaln/sigma_mean']:.2e} | "
                 f"lr_m={lr_mult:.3f} | {dt:.2f}s",
                 flush=True,
@@ -2317,9 +2620,14 @@ def run_training_loop(
             )
             for idx_g, gs in enumerate(gen_samples):
                 print(
-                    f"    [Sample {idx_g}] Q: {gs['prompt']!r} -> void_start={gs['void_start']} | A: {gs['generated']!r}",
+                    f"    [Sample {idx_g} Full] Q: {gs['prompt']!r} -> void_start={gs['void_start']} | A: {gs['generated']!r}",
                     flush=True,
                 )
+                if "generated_rolling" in gs:
+                    print(
+                        f"    [Sample {idx_g} Roll] void_start={gs['void_start_rolling']} | A: {gs['generated_rolling']!r}",
+                        flush=True,
+                    )
             if use_wandb:
                 import wandb
                 wandb.log(val_res, step=step)

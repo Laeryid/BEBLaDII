@@ -23,9 +23,11 @@ from train_phase2 import (
     N_CANVAS,
     N_PROMPT,
     SIGMA_DATA,
+    block_ar_sample,
     compute_phase2_loss,
     create_phase2_optimizers,
     euler_heun_sample,
+    rolling_wave_sample,
     sample_mixed_noise_schedule,
 )
 
@@ -35,11 +37,11 @@ def main() -> None:
     void_ref = torch.load(REPO_ROOT / "storage/components/void_concept.pt", map_location="cpu", weights_only=False)
     sep_ref = torch.load(REPO_ROOT / "storage/components/sep_concept.pt", map_location="cpu", weights_only=False)
 
-    print("[1/6] Initializing GrassmannianDiffusionCore (148.5M)...", flush=True)
+    print("[1/6] Initializing GrassmannianDiffusionCore (~167.6M)...", flush=True)
     core = GrassmannianDiffusionCore(void_ref=void_ref)
 
     total_params = sum(p.numel() for p in core.parameters() if p.requires_grad)
-    assert 147_000_000 <= total_params <= 150_500_000, f"Неожиданное число параметров: {total_params}"
+    assert 166_000_000 <= total_params <= 170_000_000, f"Неожиданное число параметров: {total_params}"
     opt_muon, opt_adamw = create_phase2_optimizers(core)
     assert opt_muon is not None
     muon_cnt = sum(p.numel() for g in opt_muon.param_groups for p in g["params"])
@@ -88,14 +90,23 @@ def main() -> None:
         vh_full, stats_full, sw = core(
             V_t, t_mat, V_prompt_a, p_valid, p_cond_mask, m_one, return_sink_weights=True
         )
-        assert sw is not None and sw.shape == (B, N_CANVAS)
-        _, met_full = compute_phase2_loss(vh_full, V_0, t_mat, w_cell, i_last, stats_full, step=250)
+        assert sw is not None and sw.shape == (B, 3, N_CANVAS)
+        _, met_full = compute_phase2_loss(
+            vh_full, V_0, t_mat, w_cell, i_last, stats_full, step=250, m_prompt=m_one, sink_weights=sw
+        )
 
-        vh_1, stats_1, _ = core(V_t[:1], t_mat[:1], V_prompt_a[:1], p_valid[:1], p_cond_mask[:1], m_one[:1])
-        vh_2, stats_2, _ = core(V_t[1:], t_mat[1:], V_prompt_a[1:], p_valid[1:], p_cond_mask[1:], m_one[1:])
+        vh_1, stats_1, sw_1 = core(
+            V_t[:1], t_mat[:1], V_prompt_a[:1], p_valid[:1], p_cond_mask[:1], m_one[:1], return_sink_weights=True
+        )
+        vh_2, stats_2, sw_2 = core(
+            V_t[1:], t_mat[1:], V_prompt_a[1:], p_valid[1:], p_cond_mask[1:], m_one[1:], return_sink_weights=True
+        )
         stats_cat = tuple(torch.cat([a, b], dim=0) for a, b in zip(stats_1, stats_2))
         vh_cat = torch.cat([vh_1, vh_2], dim=0)
-        _, met_cat = compute_phase2_loss(vh_cat, V_0, t_mat, w_cell, i_last, stats_cat, step=250)
+        sw_cat = torch.cat([sw_1, sw_2], dim=0)
+        _, met_cat = compute_phase2_loss(
+            vh_cat, V_0, t_mat, w_cell, i_last, stats_cat, step=250, m_prompt=m_one, sink_weights=sw_cat
+        )
 
     assert abs(met_full["adaln/sigma_mean"] - met_cat["adaln/sigma_mean"]) < 1e-6, "Расхождение sigma_adaln после gather"
     assert abs(met_full["loss/adaln_raw"] - met_cat["loss/adaln_raw"]) < 1e-6, "Расхождение L_adaln после gather"
@@ -105,8 +116,11 @@ def main() -> None:
     print("[4/6] Checking backward gradients + OrthMuon/AdamW step + EMA sphere projection...", flush=True)
     core.train()
     ema = EMAModel(core, decay=0.99)
-    vh_tr, stats_tr, _ = core(V_t, t_mat, V_prompt_a, p_valid, p_cond_mask, m_one)
-    loss_tr, _ = compute_phase2_loss(vh_tr, V_0, t_mat, w_cell, i_last, stats_tr, step=1)
+    vh_tr, stats_tr, sw_tr = core(V_t, t_mat, V_prompt_a, p_valid, p_cond_mask, m_one, return_sink_weights=True)
+    loss_tr, met_tr = compute_phase2_loss(
+        vh_tr, V_0, t_mat, w_cell, i_last, stats_tr, step=1, m_prompt=m_one, sink_weights=sw_tr
+    )
+    assert "loss/sink" in met_tr and "loss/energy" in met_tr
     loss_tr.backward()
 
     zero_grad_layers = [
@@ -128,13 +142,25 @@ def main() -> None:
     ema.restore(core)
     print(f"    -> all grads nonzero, max_sph_err={max_sph_err:.2e}", flush=True)
 
-    # 6. Быстрый тест Эйлера-Хьюна (2 шага)
-    print("[5/6] Checking Euler-Heun CFG sampler (2 steps)...", flush=True)
+    # 6. Быстрый тест сэмплеров Эйлера-Хьюна, Rolling Wave и Block-AR
+    print("[5/6] Checking Euler-Heun, Rolling Wave, and Block-AR CFG samplers...", flush=True)
     V_gen, _ = euler_heun_sample(
         core, V_prompt_a[:1], p_valid[:1], sep_ref, num_steps=2, cfg_scale=2.0, seed=7
     )
     assert V_gen.shape == (1, N_CANVAS, 8, 128)
     assert (V_gen[:, 0] - sep_ref.unsqueeze(0)).abs().max().item() < 1e-6
+
+    V_roll = rolling_wave_sample(
+        core, V_prompt_a[:1], p_valid[:1], sep_ref, void_ref=void_ref, num_steps=3, window=56.0, cfg_scale=2.0, seed=7
+    )
+    assert V_roll.shape == (1, N_CANVAS, 8, 128)
+    assert (V_roll[:, 0] - sep_ref.unsqueeze(0)).abs().max().item() < 1e-6
+
+    V_blk = block_ar_sample(
+        core, V_prompt_a[:1], p_valid[:1], sep_ref, void_ref=void_ref, block_size=64, steps_per_block=2, cfg_scale=2.0, seed=7
+    )
+    assert V_blk.shape == (1, N_CANVAS, 8, 128)
+    assert (V_blk[:, 0] - sep_ref.unsqueeze(0)).abs().max().item() < 1e-6
     print("[6/6] Done.", flush=True)
 
     print(
