@@ -161,8 +161,109 @@ def test_decoder_radar_loss_and_grad_flow() -> None:
     print(f"[PASS] Phase 2 Decoder+Radar grad flow ({mode}): loss={metrics['loss/total']:.4f}")
 
 
+def test_phase2_dataset_source_and_sentence_truncation() -> None:
+    """Проверяет, что Phase 2 использует только датасет Фазы 1, num_cells=128 и обрезает текст до конца предложения."""
+    args = train_mod.parse_args()
+    assert args.num_cells == 128, f"Expected default num_cells=128, got {args.num_cells}"
+    assert args.batch_size == 16, f"Expected default batch_size=16, got {args.batch_size}"
+    assert train_mod.TRAINING_CONFIG["num_cells"] == 128
+
+    env = train_mod.EnvironmentConfig.detect(override_device="cpu")
+    for p in env.train_data_paths + env.val_data_paths:
+        assert "phase2" not in p.lower(), f"Phase 2 dataset must not include Q/A phase2 parquet: {p}"
+
+    tok = get_tokenizer()
+    chunker = WordAwareElasticChunker(tokenizer=tok, vocab_size=131072, chunk_size=4, pad_token_id=10)
+    ds = train_mod.Phase2DecoderDataset(
+        parquet_paths=[],
+        chunker=chunker,
+        tokenizer=tok,
+        num_cells=16,
+        regime_b_ratio=0.0,
+        elastic_drop_prob=0.5,
+        is_validation=True,
+    )
+    # Длинный текст из нескольких предложений, не умещающийся целиком в 16 клеток (64 слота)
+    long_text = (
+        "Первое короткое предложение заканчивается точкой. "
+        "Второе предложение тоже полностью закончено! "
+        "Третье длинное предложение специально содержит много разных слов про математику геометрию алгебру топологию диффузию латентное пространство и ортогональные матрицы чтобы точно выйти за предел шестидесяти четырех токенов без точки"
+    )
+    ds.texts = [long_text]
+    ds.has_real_data = True
+    sample = ds[0]
+
+    decoded = WordAwareElasticChunker.detokenize_non_pad(sample["input_ids"], tok, pad_token_id=10)
+    assert decoded.endswith((".", "!")), f"Expected sentence-end truncation, got: {decoded!r}"
+    assert "Третье предложение" not in decoded, f"Overflowed tail should have been trimmed: {decoded!r}"
+    w_mat = sample["weights"].view(16, 4)
+    assert torch.allclose(w_mat.sum(dim=-1), torch.ones(16), atol=1e-5)
+    print(f"[PASS] Phase2 dataset source & sentence truncation: {decoded!r}")
+
+
+def test_chunked_loss_and_vectorized_corruption() -> None:
+    """Проверяет эквивалентность чанкованного лосса, векторную аугментацию и in-graph защиту OrthMuon/EMA."""
+    torch.manual_seed(123)
+    vocab_sz = 512
+    B, N, cs = 4, 8, 4
+    L = N * cs
+    dec = train_mod.GrassmannianDecoder(
+        vocab_size=vocab_sz,
+        num_smooth_layers=3,
+        canonicalize_basis=True,
+        enable_noise_radar=True,
+    ).eval()
+    emb_w = torch.randn(vocab_sz, 1024)
+    dec.tie_embeddings(emb_w)
+
+    V_0 = torch.randn(B, N, 8, 128) * 0.1
+    content_mask = torch.ones(B, N, dtype=torch.bool)
+    V_tilde, true_sigma, mode = train_mod.corrupt_latent_cells(V_0, content_mask, mode_override=None)
+    assert mode == "mixed_batch", f"Expected vectorized mixed_batch, got {mode}"
+    assert V_tilde.shape == V_0.shape and torch.isfinite(V_tilde).all()
+
+    targets = torch.randint(11, vocab_sz, (B, L))
+    targets[:, -4:] = -100
+    targets[:, 3] = 10
+
+    with torch.no_grad():
+        hidden, radar = dec.decode_hidden(V_tilde, return_radar=True)
+        logits_full = dec.get_tied_head_logits(hidden)
+        loss_full, m_full = train_mod.compute_phase2_decoder_loss(
+            logits=logits_full, radar=radar, targets=targets, true_sigma_cell=true_sigma, pad_token_id=10
+        )
+        loss_chunked, m_chunked, pred_chunked = train_mod.compute_phase2_decoder_loss_from_hidden(
+            hidden_states=hidden,
+            decoder=dec,
+            radar=radar,
+            targets=targets,
+            true_sigma_cell=true_sigma,
+            pad_token_id=10,
+            seq_chunks=4,
+        )
+    assert torch.allclose(loss_full, loss_chunked, atol=1e-5), f"Loss mismatch: {loss_full} vs {loss_chunked}"
+    assert abs(m_full["acc/words"] - m_chunked["acc/words"]) < 1e-6
+    assert torch.equal(pred_chunked, torch.argmax(logits_full.float(), dim=-1))
+
+    # Проверка in-graph изоляции шага при is_safe=False
+    ema = train_mod.EMAModel(dec, decay=0.99)
+    opt_muon, _ = train_mod.create_decoder_optimizers(dec)
+    p_ref = next(iter(opt_muon.param_groups[0]["params"]))
+    p_before = p_ref.detach().clone()
+    s_before = ema.shadow[next(iter(ema.shadow))].detach().clone()
+    p_ref.grad = torch.ones_like(p_ref)
+    is_unsafe = torch.tensor(False)
+    opt_muon.step(is_safe=is_unsafe)
+    ema.update(dec, is_safe=is_unsafe)
+    assert torch.equal(p_ref.detach(), p_before), "OrthMuon modified weights when is_safe=False!"
+    assert torch.equal(ema.shadow[next(iter(ema.shadow))], s_before), "EMA modified shadow when is_safe=False!"
+    print(f"[PASS] Chunked loss parity + vectorized corruption + is_safe guard OK (loss={float(loss_chunked):.4f})")
+
+
 if __name__ == "__main__":
     test_o8_canonicalization_invariance()
     test_word_aware_elastic_chunker()
     test_decoder_radar_loss_and_grad_flow()
+    test_phase2_dataset_source_and_sentence_truncation()
+    test_chunked_loss_and_vectorized_corruption()
     print("=== ALL PHASE 2 DECODER TESTS PASSED ===")

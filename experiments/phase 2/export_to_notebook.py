@@ -99,7 +99,6 @@ def py_percent_to_notebook(py_path: str, ipynb_path: str) -> None:
         "metadata": {
             "language_info": {"name": "python", "version": "3.10"},
             "kernelspec": {"display_name": "Python 3", "language": "python", "name": "python3"},
-            "accelerator": "GPU",
         },
         "nbformat": 4,
         "nbformat_minor": 5,
