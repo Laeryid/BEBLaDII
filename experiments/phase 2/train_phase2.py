@@ -19,6 +19,7 @@ import math
 import os
 import random
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -130,17 +131,20 @@ def setup_kaggle_secrets(is_kaggle: bool) -> None:
                 key_path = "/tmp/gcp_sa_key.json"
                 with open(key_path, "w", encoding="utf-8") as f:
                     f.write(gcp_json.strip())
-                res = subprocess.run(
-                    ["gcloud", "auth", "activate-service-account", f"--key-file={key_path}"],
-                    capture_output=True,
-                    text=True,
-                )
-                if res.returncode == 0:
-                    print("[Kaggle Secrets] Авторизация GCP активирована.", flush=True)
-                else:
-                    print(f"[Kaggle Secrets Warning] Ошибка gcloud auth: {res.stderr.strip()}", flush=True)
-        except Exception:
-            pass
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+                print(f"[Kaggle Secrets] Ключ GCP_SA_JSON сохранен в {key_path} (GOOGLE_APPLICATION_CREDENTIALS установлен).", flush=True)
+                if shutil.which("gcloud"):
+                    res = subprocess.run(
+                        ["gcloud", "auth", "activate-service-account", f"--key-file={key_path}"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if res.returncode == 0:
+                        print("[Kaggle Secrets] Авторизация gcloud CLI активирована.", flush=True)
+                    else:
+                        print(f"[Kaggle Secrets Warning] Ошибка gcloud auth: {res.stderr.strip()}", flush=True)
+        except Exception as e:
+            print(f"[Kaggle Secrets Warning] Не удалось загрузить GCP_SA_JSON: {e}", flush=True)
     except ImportError:
         pass
     except Exception as e:
@@ -319,6 +323,9 @@ class EnvironmentConfig:
                 pin_memory = False
 
         if is_master:
+            if is_kaggle and os.path.exists(checkpoint_dir):
+                shutil.rmtree(checkpoint_dir, ignore_errors=True)
+                print(f"[Disk Cleanup] Очищена локальная папка чекпоинтов: {checkpoint_dir}", flush=True)
             os.makedirs(output_dir, exist_ok=True)
             os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -1263,20 +1270,82 @@ def evaluate_phase2_decoder(
     return out
 
 
+def get_gcs_client():
+    try:
+        from google.cloud import storage
+
+        return storage.Client()
+    except Exception:
+        return None
+
+
+def _parse_gcs_uri(gcs_uri: str) -> Tuple[str, str]:
+    clean = gcs_uri.strip()
+    if clean.startswith("gs://"):
+        clean = clean[5:]
+    parts = clean.split("/", 1)
+    bucket_name = parts[0]
+    blob_path = parts[1].strip("/") if len(parts) > 1 else ""
+    return bucket_name, blob_path
+
+
 def sync_to_gcs(local_path: str, gcs_dir: str) -> bool:
     if not os.path.exists(local_path) or not gcs_dir:
         return False
     target = gcs_dir.rstrip("/") + "/" + os.path.basename(local_path)
-    for cmd in (["gsutil", "cp", local_path, target], ["gcloud", "storage", "cp", local_path, target]):
+    errors: List[str] = []
+
+    # 1. Python SDK (google-cloud-storage) — основной способ для Kaggle TPU (не требует gcloud/gsutil CLI)
+    try:
+        client = get_gcs_client()
+        if client is not None:
+            bucket_name, blob_name = _parse_gcs_uri(target)
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(blob_name)
+            blob.upload_from_filename(local_path)
+            print(f"[GCS] Выгружено (SDK): {target}", flush=True)
+            return True
+        errors.append("google-cloud-storage client unavailable")
+    except Exception as e:
+        errors.append(f"SDK: {e}")
+
+    # 2. Fallback на CLI-утилиты (gsutil / gcloud storage)
+    cli_cmds = []
+    if shutil.which("gsutil"):
+        cli_cmds.append(["gsutil", "-q", "cp", local_path, target])
+    if shutil.which("gcloud"):
+        cli_cmds.append(["gcloud", "storage", "cp", local_path, target])
+
+    for cmd in cli_cmds:
         try:
             res = subprocess.run(cmd, capture_output=True, text=True)
             if res.returncode == 0:
-                print(f"[GCS] Выгружено: {target}", flush=True)
+                print(f"[GCS] Выгружено ({cmd[0]}): {target}", flush=True)
                 return True
+            err_msg = (res.stderr or res.stdout or f"exit={res.returncode}").strip()
+            errors.append(f"{cmd[0]}: {err_msg}")
+        except Exception as e:
+            errors.append(f"{cmd[0]}: {e}")
+
+    if not cli_cmds:
+        errors.append("gsutil/gcloud CLI not found in PATH")
+
+    print(f"[GCS Warning] Не удалось выгрузить {local_path} в {target} ({' | '.join(errors)})", flush=True)
+    return False
+
+
+def _cleanup_old_local_checkpoints(checkpoint_dir: str, keep_last: int = 2) -> None:
+    """Страховочная ротация локальных step-чекпоинтов при сбое GCS, чтобы не переполнить диск."""
+    local_files = glob.glob(os.path.join(checkpoint_dir, "phase2_decoder_step_*.pt"))
+    if len(local_files) <= keep_last:
+        return
+    local_files.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
+    for old_path in local_files[:-keep_last]:
+        try:
+            os.remove(old_path)
+            print(f"[Disk Guard] Удален старый локальный чекпоинт: {old_path}", flush=True)
         except Exception:
             pass
-    print(f"[GCS Warning] Не удалось выгрузить {local_path} в {target}", flush=True)
-    return False
 
 
 def save_checkpoint(
@@ -1331,6 +1400,8 @@ def save_checkpoint(
                     os.remove(path)
                 except Exception:
                     pass
+            elif not ok and not keep_local:
+                _cleanup_old_local_checkpoints(os.path.dirname(path), keep_last=2)
 
 
 def find_latest_checkpoint(checkpoint_dir: str, gcs_dir: Optional[str] = None) -> Optional[str]:
@@ -1339,22 +1410,51 @@ def find_latest_checkpoint(checkpoint_dir: str, gcs_dir: Optional[str] = None) -
         local_files.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
         return local_files[-1]
     if gcs_dir:
+        # 1. Python SDK (google-cloud-storage)
         try:
-            res = subprocess.run(
-                ["gsutil", "ls", gcs_dir.rstrip("/") + "/phase2_decoder_step_*.pt"],
-                capture_output=True,
-                text=True,
-            )
-            if res.returncode == 0 and res.stdout.strip():
-                lines = [x.strip() for x in res.stdout.strip().split("\n") if x.strip()]
-                lines.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
-                latest = lines[-1]
-                dest = os.path.join(checkpoint_dir, os.path.basename(latest))
-                dl = subprocess.run(["gsutil", "cp", latest, dest], capture_output=True, text=True)
-                if dl.returncode == 0 and os.path.exists(dest):
-                    return dest
-        except Exception:
-            pass
+            client = get_gcs_client()
+            if client is not None:
+                bucket_name, prefix = _parse_gcs_uri(gcs_dir)
+                prefix_with_slash = f"{prefix}/" if prefix else ""
+                bucket = client.bucket(bucket_name)
+                blobs = [
+                    b
+                    for b in bucket.list_blobs(prefix=prefix_with_slash)
+                    if re.fullmatch(r"phase2_decoder_step_\d+\.pt", os.path.basename(b.name))
+                ]
+                if blobs:
+                    blobs.sort(key=lambda b: int(re.findall(r"\d+", os.path.basename(b.name))[-1]))
+                    latest_blob = blobs[-1]
+                    dest = os.path.join(checkpoint_dir, os.path.basename(latest_blob.name))
+                    latest_blob.download_to_filename(dest)
+                    if os.path.exists(dest):
+                        print(f"[GCS] Загружен чекпоинт (SDK): gs://{bucket_name}/{latest_blob.name}", flush=True)
+                        return dest
+        except Exception as e:
+            print(f"[GCS Warning] Ошибка поиска чекпоинта через SDK: {e}", flush=True)
+
+        # 2. Fallback на CLI (gsutil / gcloud storage)
+        pattern_uri = gcs_dir.rstrip("/") + "/phase2_decoder_step_*.pt"
+        cli_pairs = []
+        if shutil.which("gsutil"):
+            cli_pairs.append((["gsutil", "ls", pattern_uri], ["gsutil", "-q", "cp"]))
+        if shutil.which("gcloud"):
+            cli_pairs.append((["gcloud", "storage", "ls", pattern_uri], ["gcloud", "storage", "cp"]))
+
+        for ls_cmd, cp_prefix in cli_pairs:
+            try:
+                res = subprocess.run(ls_cmd, capture_output=True, text=True)
+                if res.returncode == 0 and res.stdout.strip():
+                    lines = [x.strip() for x in res.stdout.strip().split("\n") if x.strip()]
+                    lines.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
+                    latest = lines[-1]
+                    dest = os.path.join(checkpoint_dir, os.path.basename(latest))
+                    dl = subprocess.run(cp_prefix + [latest, dest], capture_output=True, text=True)
+                    if dl.returncode == 0 and os.path.exists(dest):
+                        print(f"[GCS] Загружен чекпоинт ({ls_cmd[0]}): {latest}", flush=True)
+                        return dest
+            except Exception:
+                pass
     return None
 
 
@@ -1413,7 +1513,9 @@ def train(
         raw_dec.register_buffer("lm_head_weight", None, persistent=False)
     else:
         raw_dec.lm_head_weight = None
-    decoder.to(device=env.device, dtype=torch.float32)
+    first_param = next(raw_dec.parameters(), None)
+    if first_param is not None and (first_param.device != env.device or first_param.dtype != torch.float32):
+        decoder.to(device=env.device, dtype=torch.float32)
     raw_dec.tie_embeddings(encoder.embeddings.weight.detach())
 
     if ema is not None:
@@ -1430,6 +1532,15 @@ def train(
 
     raw_dec.train()
     trainable_params = [p for p in raw_dec.parameters() if p.requires_grad]
+    # Защита от рассинхрона ссылок nn.Parameter после .to(xla_device)
+    model_param_ids = {id(p) for p in trainable_params}
+    opt_param_ids = {id(p) for g in opt_adamw.param_groups for p in g["params"]}
+    if opt_muon is not None:
+        opt_param_ids.update(id(p) for g in opt_muon.param_groups for p in g["params"])
+    if model_param_ids != opt_param_ids:
+        raise RuntimeError(
+            "Рассинхрон параметров между decoder и оптимизаторами (оптимизаторы созданы до переноса модели на устройство)."
+        )
     is_dp = isinstance(decoder, nn.DataParallel)
 
     if metrics_history is None:
@@ -1809,11 +1920,9 @@ def main(args=None):
             num_smooth_layers=args.num_smooth_layers,
         )
 
-    ema = EMAModel(decoder, decay=args.ema_decay, device=torch.device("cpu")) if not args.no_ema else None
-    opt_muon, opt_adamw = create_decoder_optimizers(decoder, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr)
-
     start_step = 0
     metrics_history: List[Dict[str, Any]] = []
+    ckpt: Optional[Dict[str, Any]] = None
     if not args.smoke_test and args.resume_ckpt:
         resume_path = (
             find_latest_checkpoint(env.checkpoint_dir, env.gcs_checkpoints_dir if sync_gcs else None)
@@ -1824,14 +1933,29 @@ def main(args=None):
             print(f"[Resume] Восстановление из {resume_path}", flush=True)
             ckpt = torch.load(resume_path, map_location="cpu", weights_only=False)
             decoder.load_state_dict(ckpt["decoder_state_dict"], strict=False)
-            if ckpt.get("opt_adamw_state_dict"):
-                opt_adamw.load_state_dict(ckpt["opt_adamw_state_dict"])
-            if opt_muon is not None and ckpt.get("opt_muon_state_dict"):
-                opt_muon.load_state_dict(ckpt["opt_muon_state_dict"])
-            if ema is not None and ckpt.get("ema_state_dict"):
-                ema.load_state_dict(ckpt["ema_state_dict"], device=torch.device("cpu"))
             start_step = int(ckpt.get("step", 0))
             metrics_history = ckpt.get("metrics_history", [])
+
+    # Переносим декодер на целевое устройство ДО создания оптимизаторов и EMA:
+    # в PyTorch/XLA .to(xla_device) пересоздаёт объекты nn.Parameter, что иначе разрывает ссылки в opt.param_groups.
+    if "lm_head_weight" in decoder._parameters:
+        del decoder._parameters["lm_head_weight"]
+        decoder.register_buffer("lm_head_weight", None, persistent=False)
+    else:
+        decoder.lm_head_weight = None
+    decoder.to(device=env.device, dtype=torch.float32)
+
+    ema = EMAModel(decoder, decay=args.ema_decay, device=env.device) if not args.no_ema else None
+    opt_muon, opt_adamw = create_decoder_optimizers(decoder, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr)
+
+    if ckpt is not None:
+        if ckpt.get("opt_adamw_state_dict"):
+            opt_adamw.load_state_dict(ckpt["opt_adamw_state_dict"])
+        if opt_muon is not None and ckpt.get("opt_muon_state_dict"):
+            opt_muon.load_state_dict(ckpt["opt_muon_state_dict"])
+        if ema is not None and ckpt.get("ema_state_dict"):
+            ema.load_state_dict(ckpt["ema_state_dict"], device=env.device)
+        del ckpt
 
     stopword_mask = None
     if os.path.exists(env.stopwords_path):
