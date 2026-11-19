@@ -50,6 +50,11 @@
         "hugging face",
         "Hugging Face Ecosystem",
         4
+      ],
+      [
+        "storage/components",
+        "Plan C Components",
+        10
       ]
     ],
     "thresholds": {
@@ -86,7 +91,11 @@
         "src/beb_la_dii/model/distiller.py",
         "src/beb_la_dii/model/dus.py",
         "src/beb_la_dii/model/projectors.py",
-        "src/beb_la_dii/model/assembler.py"
+        "src/beb_la_dii/model/assembler.py",
+        "storage/components/",
+        "storage/components/plan_c_layers.py",
+        "storage/components/encoder/__init__.py",
+        "storage/components/decoder/__init__.py"
       ]
     },
     "KI_architecture.md": {
@@ -98,7 +107,8 @@
         "ideas/Architecture.md",
         "ideas/Training phases.md",
         "ideas/BEBLaDII idea.md",
-        "experiments/Plan A/phase 1/train_phase1_kaggle.py"
+        "experiments/Plan A/phase 1/train_phase1_kaggle.py",
+        "experiments/plan C.md"
       ],
       "summary": "Central description of architecture (System 1/2) and training phases."
     },
@@ -147,7 +157,10 @@
       ],
       "depends_on": [
         "experiments/Plan A/phase 1/train_phase1_kaggle.py",
-        "experiments/Plan A/phase 1/train_phase1_kaggle.ipynb"
+        "experiments/Plan A/phase 1/train_phase1_kaggle.ipynb",
+        "experiments/phase 1/",
+        "experiments/phase 2/",
+        "experiments/phase 3/"
       ],
       "summary": "Experiments with DUS Mapping, hyperparameters, and language data."
     },
@@ -313,21 +326,24 @@
       "covers": [
         "Knowledge Infrastructure"
       ],
-      "depends_on": []
+      "depends_on": [],
+      "status": "archived"
     },
     "decisions/059_phase3_residual_stream_norm_explosion.md": {
       "description": "ADR: Решение проблемы 'глухоты' DUS к c_embed из-за взрыва нормы (Phase 3) через Layer Hooks и unified loss в float32.",
       "covers": [
         "Architecture & Training Phases"
       ],
-      "depends_on": []
+      "depends_on": [],
+      "status": "archived"
     },
     "decisions/060_phase3_canonical_diffusion_redesign.md": {
       "description": "ADR: Переход к канонической диффузии на сфере (Phase 3): полный диапазон t, косинусное расписание κ(t), зашумление всех токенов, AdaLN вместо c_embed. Переопределение Phase 3/4 в плане обучения.",
       "covers": [
         "Architecture & Training Phases"
       ],
-      "depends_on": []
+      "depends_on": [],
+      "status": "archived"
     },
     "decisions/061_phase3_clean_text_diffusion_transition.md": {
       "description": "ADR: Переход на диффузию чистых текстов без ChatML-тегов (Phase 3), выбор чекпоинта step_9995 как фундамента и сопряжение с ModernLatentDecoder.",
@@ -337,7 +353,8 @@
       "depends_on": [
         ".know/decisions/060_phase3_canonical_diffusion_redesign.md",
         "experiments/phase3/train_phase3_notebook.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/062_phase3_adaln_residual_stream_bug.md": {
       "description": "ADR: Фиксация бага интеграции AdaLN (умножение residual stream) и конфликта с Pre-LN, приведших к деградации Phase 3. Внедрение паттерна DiT.",
@@ -347,7 +364,8 @@
       "depends_on": [
         ".know/decisions/060_phase3_canonical_diffusion_redesign.md",
         "experiments/phase3/train_phase3_notebook.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/063_phase3_advanced_diffusion_techniques.md": {
       "description": "ADR: Integration of advanced continuous diffusion techniques (Self-Conditioning preparation, Shifted Noise Schedule) to improve model stability and convergence speed.",
@@ -356,7 +374,8 @@
       ],
       "depends_on": [
         "experiments/phase3/kaggle/train_phase3_notebook.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/064_adaln_zero_init_symmetry_break_and_diversity_loss.md": {
       "description": "ADR: Нарушение нулевой симметрии AdaLN (Micro-Noise Init) и введение Diversity Loss для предотвращения Rank-1 коллапса в Phase 3.",
@@ -367,7 +386,8 @@
       "depends_on": [
         "experiments/phase3/kaggle/train_phase3_notebook.py",
         ".know/decisions/062_phase3_adaln_residual_stream_bug.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/065_unet_skip_connections_and_identity_gate.md": {
       "description": "ADR: UNet-style skip-connection (проброс x_t) и внешний gate(t) на выходе DUS для структурной гарантии тождественного преобразования при t=0 без модификации ModernBERT.",
@@ -380,7 +400,8 @@
         ".know/decisions/060_phase3_canonical_diffusion_redesign.md",
         ".know/decisions/062_phase3_adaln_residual_stream_bug.md",
         ".know/decisions/064_adaln_zero_init_symmetry_break_and_diversity_loss.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/066_variance_matching_loss_anti_collapse.md": {
       "description": "ADR: Variance Matching Loss (anti-collapse) - штраф за коллапс дисперсии h_39 относительно дисперсии целевых векторов z_clean по батчу.",
@@ -392,7 +413,8 @@
       "depends_on": [
         "experiments/phase3/kaggle/train_phase3_notebook.py",
         ".know/decisions/065_unet_skip_connections_and_identity_gate.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/067_adaln_l2_penalty_and_token_rkd.md": {
       "description": "ADR: AdaLN Output L2 Penalty & Token-to-Token RKD Loss against Gradient Collapse (Phase 3).",
@@ -406,7 +428,8 @@
         "experiments/phase3/Lightning/train_phase3_lightning.py",
         ".know/decisions/065_unet_skip_connections_and_identity_gate.md",
         ".know/decisions/066_variance_matching_loss_anti_collapse.md"
-      ]
+      ],
+      "status": "archived"
     },
     "KI_training_infrastructure.md": {
       "description": "TPU v6e, SPMD/FSDP training logic, GCS synchronization and Anti-Phase Beta scheduler.",
@@ -438,7 +461,8 @@
       "depends_on": [
         "experiments/train_phase1_TPU_fsdp.py",
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/015_centered_cosine_similarity.md": {
       "description": "ADR: Внедрение центрированного косинусного сходства (Pearson Correlation) для устранения Rank-1 коллапса в слое 40.",
@@ -448,7 +472,8 @@
       "depends_on": [
         "experiments/train_phase1_TPU_fsdp.py",
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/016_decoupling_absolute_space.md": {
       "description": "ADR: Полный отказ от MSE на промежуточных слоях в пользу Centered Cosine для всей цепочки latentBERT.",
@@ -457,7 +482,8 @@
       ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/017_new_loss_terms_and_metrics.md": {
       "description": "ADR: Внедрение новых слагаемых потерь (RKD и Norm Correlation) для топологического выравнивания латентных пространств.",
@@ -467,7 +493,8 @@
       "depends_on": [
         "src/beb_la_dii/utils/loss.py",
         "tests/test_loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/019_decoupling_intermediate_layers.md": {
       "description": "ADR: Полный отказ от привязки промежуточных слоев DUS (l20, l30) к учителю. Удаление feat_proj_20/30, саморегуляризация через cov_loss на сырых BERT-векторах.",
@@ -478,7 +505,8 @@
         "src/beb_la_dii/model/distiller.py",
         "src/beb_la_dii/model/assembler.py",
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/021_semantic_metrics_and_denoising_strategy.md": {
       "description": "ADR: Добавление метрик контроля (rank-1, mu/var drift) для свободных слоев и стратегия семантического зашумления с защитой от катастрофического забывания.",
@@ -488,7 +516,8 @@
       ],
       "depends_on": [
         "experiments/train_phase1_TPU_fsdp.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/022_intermediate_layers_hybrid_regularization.md": {
       "description": "ADR: Гибридная регуляризация (центрирование + усиленный cov_loss) для промежуточных слоев без ограничения дисперсии.",
@@ -497,7 +526,8 @@
       ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/023_layer40_raw_topology_and_variance.md": {
       "description": "ADR: Формирование топологии сырого 40-го слоя (RKD, Norm Correlation) и введение мягкого штрафа дисперсии для промежуточных слоев.",
@@ -506,7 +536,8 @@
       ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/024_spherical_manifold_distillation.md": {
       "description": "ADR: Формирование сферической топологии (Zen Solution) без Norm Correlation для стабильности перед диффузионной фазой.",
@@ -515,7 +546,8 @@
       ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/025_centered_rkd.md": {
       "description": "ADR: Центрирование векторов перед вычислением RKD для устранения конфликта с prior_loss и предотвращения Rank-1 коллапса.",
@@ -524,7 +556,8 @@
       ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/026_gradient_stabilization_rkd_cosine.md": {
       "description": "ADR: Стабилизация градиентов в RKD и косинусном сходстве через добавление эпсилона под квадратный корень для предотвращения коллапса латентного пространства Студента.",
@@ -533,7 +566,8 @@
       ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/027_huber_loss_variance_covariance.md": {
       "description": "ADR: Замена MSE на Huber Loss для регуляризации дисперсии и ковариации (устранение градиентного взрыва O(S^3)).",
@@ -542,7 +576,8 @@
       ],
       "depends_on": [
         "src/beb_la_dii/utils/loss.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/028_manual_huber_and_norm_cv_metric.md": {
       "description": "ADR: Ручная реализация Huber Loss через torch.where (устранение лишних аллокаций D×D, XLA-фьюзинг) и добавление метрики Norm CV для диагностики сферичности латентного пространства перед Phase 8.",
@@ -553,7 +588,8 @@
       "depends_on": [
         "src/beb_la_dii/utils/loss.py",
         ".know/decisions/027_huber_loss_variance_covariance.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/029_variance_floor_and_scale_invariant_covariance.md": {
       "description": "ADR: Добавление нижней границы дисперсии и масштабно-инвариантной ковариации для устранения Shortcut Learning на промежуточных слоях.",
@@ -565,7 +601,8 @@
         "src/beb_la_dii/utils/loss.py",
         ".know/decisions/022_intermediate_layers_hybrid_regularization.md",
         ".know/decisions/027_huber_loss_variance_covariance.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/030_cov_loss_weight_increase_and_gcs_migration.md": {
       "description": "ADR: Увеличение коэффициента cov_loss в prior_loss с 0.1 до 0.3 для ускорения снижения rank1_ratio. Миграция GCS bucket'ов в us-central2 для устранения межконтинентального трафика.",
@@ -578,7 +615,8 @@
         "src/beb_la_dii/utils/loss.py",
         "experiments/train_phase1_TPU_fsdp.py",
         ".know/decisions/029_variance_floor_and_scale_invariant_covariance.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/033_spherical_latent_space_and_slerp.md": {
       "description": "ADR: Переход на Spherical Latent Space, LayerNorm на выходе OP и Slerp для диффузии.",
@@ -589,7 +627,8 @@
       "depends_on": [
         "src/beb_la_dii/model/projectors.py",
         "experiments/train_phase3.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/034_angular_loss_for_output_projector.md": {
       "description": "ADR: Замена Huber-loss на угловую (cosine+norm) для обучения OP. Диагностика ложного плато cos≈0.81 при loss=0.009. Добавлен --loss-mode для аблации.",
@@ -600,7 +639,8 @@
       "depends_on": [
         "experiments/phase 3/train_phase3.py",
         "src/beb_la_dii/model/projectors.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/035_centered_cosine_and_contrastive_neighbor_loss.md": {
       "description": "ADR: Внедрение центрированного косинуса, динамических якорей и контрастивного лосса ближайших соседей (RKD/InfoNCE) для стабилизации рекурсии OutputProjector.",
@@ -611,7 +651,8 @@
       "depends_on": [
         "experiments/phase 3/train_phase3.py",
         "experiments/phase 3/test_phase3.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/036_replacing_infonce_with_rkd.md": {
       "description": "ADR: Отказ от InfoNCE в пользу Angle-wise RKD для решения Hubness Problem и устранения False Negative Repulsion.",
@@ -621,7 +662,8 @@
       ],
       "depends_on": [
         "experiments/phase 3/train_phase3.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/037_phase3_failure_and_plan_b_skip_connections.md": {
       "description": "ADR: Фиксация неудачи OutputProjector (Phase 3) из-за Garbage Collapse и переход к Plan B (Skip Connections).",
@@ -632,7 +674,8 @@
       "depends_on": [
         "experiments/phase 3/train_phase3.py",
         "experiments/phase 3/test_phase3.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/038_plan_b_phase1_vae_spmd_training.md": {
       "description": "ADR: Plan B Phase 1 VAE FSDP training optimization, SPMD sharding, and on-the-fly tokenization.",
@@ -642,7 +685,8 @@
       ],
       "depends_on": [
         "experiments/phase 1/train_phase1_vae_fsdp.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/039_phase1_vae_spherical_topology_fix.md": {
       "description": "ADR: Phase 1 VAE spherical topology fix (F.normalize), variance-only KL, and uniformity loss.",
@@ -653,7 +697,8 @@
       "depends_on": [
         "src/beb_la_dii/model/vae.py",
         "experiments/phase 1/train_phase1_vae_fsdp.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/040_phase3_pearson_rkd_whitening.md": {
       "description": "ADR: Отказ от Anchor Loss в пользу Pearson RKD на выбеленных матрицах и возврат var_loss/cov_loss для предотвращения коллапса.",
@@ -664,7 +709,8 @@
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py",
         "experiments/phase3/compute_whitening.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/041_phase3_angular_loss_and_spherical_dus.md": {
       "description": "ADR: Переход на Angular Loss, фикс bfloat16, F.normalize для DUS и variance floor для сферической топологии.",
@@ -674,7 +720,8 @@
       ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/042_phase3_decoupling_denoising_and_logic.md": {
       "description": "ADR: Разделение задач денойзинга и логической топологии по глубине, внедрение Macro-Residual для DUS Phase 3.",
@@ -685,7 +732,8 @@
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py",
         "experiments/phase3/compute_whitening.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/043_activation_l2_penalty_bfloat16.md": {
       "description": "ADR: Внедрение Activation L2 Penalty для предотвращения loss плато и потери точности bfloat16 из-за сферических функций потерь.",
@@ -695,7 +743,8 @@
       ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/044_confidence_embed_and_residual_fix.md": {
       "description": "ADR: Внедрение Confidence Embedding и устранение двойного Residual (превращение DUS в Conditional Diffusion).",
@@ -705,7 +754,8 @@
       ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/045_ema_for_diffusion_stability.md": {
       "description": "ADR: Внедрение EMA (Exponential Moving Average) для стабилизации диффузионного обучения и валидации.",
@@ -715,7 +765,8 @@
       ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/046_c_embed_targets_and_ema_fix.md": {
       "description": "ADR: Интеграция Confidence Embedding в Identity и Denoise Loss, исправление EMA.",
@@ -725,7 +776,8 @@
       ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/047_shortcut_collapse_and_pure_targets.md": {
       "description": "ADR: Опровержение ADR 046 и решение проблемы Shortcut Collapse (Bounded c_embed & Pure Targets).",
@@ -736,7 +788,8 @@
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py",
         "experiments/phase3/eval_phase3_logic_local.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/048_analytical_c_embed_subtraction.md": {
       "description": "ADR: Аналитическое вычитание c_embed из pre-norm (Negative Skip Connection).",
@@ -747,7 +800,8 @@
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py",
         "experiments/phase3/eval_phase3_logic_local.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/049_removing_teacher_and_logic_loss.md": {
       "description": "ADR: Удаление дистилляции учителя (logic_loss) из Phase 3 для разрешения конфликта градиентов и экономии ресурсов.",
@@ -757,7 +811,8 @@
       ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/050_gradient_analysis_sparsity_and_llrd.md": {
       "description": "ADR: Математика градиентов DUS: Мертвый Logic Loss, L1 Sparsity для c_embed и перевернутый LLRD.",
@@ -767,7 +822,8 @@
       ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/051_llrd_c_embed_catastrophe.md": {
       "description": "ADR: Отказ от LLRD, усиленного c_embed и sparsity_loss (Анализ катастрофы с переобучением верхних слоев).",
@@ -777,7 +833,8 @@
       ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/052_frozen_encoder_eval_mode.md": {
       "description": "ADR: Изоляция замороженных генераторов таргетов в режиме eval() для устранения сдвига валидации из-за Dropout.",
@@ -787,7 +844,8 @@
       ],
       "depends_on": [
         "experiments/phase3/train_phase3_logic.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/054_modernbert_dataparallel_rope_masking.md": {
       "description": "ADR: Совместимость ModernBERT с DataParallel и влияние RoPE на PAD-токены.",
@@ -799,7 +857,8 @@
       "depends_on": [
         "src/beb_la_dii/model/modern_decoder.py",
         "experiments/phase 2/train_phase2_decoder.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/055_pretrained_modernbert_large_decoder_transition.md": {
       "description": "ADR: Предобученные веса ModernBERT-large для декодера Фазы 2 с целью устранения плато сжатия.",
@@ -810,7 +869,8 @@
       "depends_on": [
         "src/beb_la_dii/model/modern_decoder.py",
         "experiments/phase 2/train_phase2_decoder.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/056_decoder_learning_rate_plateau.md": {
       "description": "ADR: Опровержение ADR 055 (отсутствие Encoder Bias) и обоснование необходимости высокого LR для случайно инициализированного слоя проекции декодера.",
@@ -823,7 +883,8 @@
         "src/beb_la_dii/model/modern_decoder.py",
         "experiments/phase 2/train_phase2_decoder.py",
         ".know/decisions/055_pretrained_modernbert_large_decoder_transition.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/057_phase3_bfloat16_gradient_collapse.md": {
       "description": "ADR: Описание коллапса градиентов bfloat16 в Phase 3 из-за множителя gamma=20 и округления.",
@@ -835,7 +896,8 @@
       "depends_on": [
         "experiments/phase3/train_phase3_notebook.py",
         "experiments/phase3/eval_phase3_logic_local.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/058_phase4_canvas_format_and_sep_token.md": {
       "description": "ADR: Формат холста Фазы 4, шумовой токен и детерминированная генерация якоря <|thoughts|> через LatentEncoder.",
@@ -846,7 +908,8 @@
       "depends_on": [
         "experiments/phase3/Lightning/test_thoughts.py",
         "storage/components/sep_token.pt"
-      ]
+      ],
+      "status": "archived"
     },
     "KI_metrics_reference.md": {
       "description": "Все метрики Phase 2: формулы, типы (LOSS vs METRIC), интерпретация, частые ошибки, диагностическая таблица.",
@@ -876,7 +939,8 @@
       ],
       "depends_on": [
         "src/beb_la_dii/utils/data.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/083_phase4_semantic_skepticism_scl_and_anchors.md": {
       "description": "ADR: Phase 4 семантический скептицизм, устранение Data Leak через Истинные Якоря и половинный Angular SCL.",
@@ -888,7 +952,8 @@
       "depends_on": [
         "experiments/phase 4/kaggle/train_phase4_notebook.py",
         "experiments/phase 4/ideas.md"
-      ]
+      ],
+      "status": "archived"
     },
     "KI_pace_optimizer.md": {
       "description": "PACE optimizer for iterate-averaged models: mechanism, benefits for diffusion, and usage.",
@@ -915,7 +980,8 @@
       "depends_on": [
         "experiments/phase 6/kaggle/train_phase6_notebook.py",
         ".know/decisions/065_unet_skip_connections_and_identity_gate.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/092_phase6_void_token_and_canvas_unmasking.md": {
       "description": "ADR 092: Phase 6 Void Token, Canvas Unmasking, and Elastic Mid-Sequence Injection.",
@@ -927,7 +993,8 @@
       "depends_on": [
         "experiments/phase 6/kaggle/train_phase6_tpu_notebook.py",
         "experiments/phase 6/plan.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/093_phase6_self_identity_dataset_and_alignment_anchor.md": {
       "description": "ADR 093: Phase 6 Architectural Self-Identity Dataset and Alignment Anchor.",
@@ -937,7 +1004,8 @@
       ],
       "depends_on": [
         "experiments/phase 6/plan.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/094_orchestrator_canvas_expansion_vs_expand_token.md": {
       "description": "ADR 094: Rejection of Explicit Expand Token in Favor of Sensor-Driven Orchestrator Expansion.",
@@ -948,14 +1016,16 @@
       "depends_on": [
         "experiments/phase 6/plan.md",
         ".know/decisions/092_phase6_void_token_and_canvas_unmasking.md"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/095_phase6_progressive_unfreezing_buffer_layers.md": {
       "description": "ADR 095: Phase 6 Progressive Unfreezing (Buffer Layers) and DUS Manifold Alignment.",
       "covers": [
         "Architecture & Training Phases"
       ],
-      "depends_on": []
+      "depends_on": [],
+      "status": "archived"
     },
     "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md": {
       "description": "ADR 096: Phase 6 Gradient Collapse Fix and Dynamic Void Penalty.",
@@ -966,7 +1036,8 @@
       ],
       "depends_on": [
         "experiments/phase 6/kaggle/train_phase6_notebook.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md": {
       "description": "ADR 097: Phase 6 Global Scheduled Identity Gate, Beta Noise Sampling, and TPU Adaptation.",
@@ -977,7 +1048,8 @@
       "depends_on": [
         "experiments/phase 6/kaggle/train_phase6_notebook.py",
         "experiments/phase 6/tpu kaggle/train_phase6_tpu_notebook.py"
-      ]
+      ],
+      "status": "archived"
     },
     "decisions/099_phase6_layer12_prompt_cache.md": {
       "description": "ADR 099: Phase 6 DUS Layer 12 as Universal Conditioning Prompt Cache (Accepted)",
@@ -985,7 +1057,8 @@
         "Architecture Decisions"
       ],
       "depends_on": [],
-      "summary": "ADR 099: Phase 6 DUS Layer 12 as Universal Conditioning Prompt Cache"
+      "summary": "ADR 099: Phase 6 DUS Layer 12 as Universal Conditioning Prompt Cache",
+      "status": "archived"
     },
     "decisions/100_phase6_nan_guard_ema_isolation_and_fsdp_checkpoint_fix.md": {
       "description": "ADR 100: Phase 6 In-Graph NaN Guard, EMA Anomaly Isolation, and FSDP Checkpoint Key Normalization (Accepted)",
@@ -995,7 +1068,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 100: Phase 6 In-Graph NaN Guard, EMA Anomaly Isolation, and FSDP Checkpoint Key Normalization"
+      "summary": "ADR 100: Phase 6 In-Graph NaN Guard, EMA Anomaly Isolation, and FSDP Checkpoint Key Normalization",
+      "status": "archived"
     },
     "decisions/101_phase6_ieee754_nan_guard_and_resume_fix.md": {
       "description": "ADR 101: Phase 6 IEEE 754 Safe NaN Guard, Checkpoint Finite Validation, and Optimizer Warmup (Accepted)",
@@ -1005,7 +1079,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 101: Phase 6 IEEE 754 Safe NaN Guard, Checkpoint Finite Validation, and Optimizer Warmup"
+      "summary": "ADR 101: Phase 6 IEEE 754 Safe NaN Guard, Checkpoint Finite Validation, and Optimizer Warmup",
+      "status": "archived"
     },
     "decisions/102_phase6_guard_decoupling_and_phase4_weights_fix.md": {
       "description": "ADR 102: Phase 6 In-Graph Guard Decoupling, Full Phase 4 Backbone & Diffusion Modules Loading, and GCS Resiliency (Accepted)",
@@ -1015,7 +1090,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 102: Phase 6 In-Graph Guard Decoupling, Full Phase 4 Backbone & Diffusion Modules Loading, and GCS Resiliency"
+      "summary": "ADR 102: Phase 6 In-Graph Guard Decoupling, Full Phase 4 Backbone & Diffusion Modules Loading, and GCS Resiliency",
+      "status": "archived"
     },
     "decisions/103_phase6_tpu_xla_mask_underflow_and_diagnosis_cleanup.md": {
       "description": "ADR 103: Phase 6 TPU XLA Attention Mask Stabilization (finfo.min Underflow Fix) and Multi-Stage Diagnosis Memory Cleanup (Accepted)",
@@ -1025,7 +1101,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 103: Phase 6 TPU XLA Attention Mask Stabilization (finfo.min Underflow Fix) and Multi-Stage Diagnosis Memory Cleanup"
+      "summary": "ADR 103: Phase 6 TPU XLA Attention Mask Stabilization (finfo.min Underflow Fix) and Multi-Stage Diagnosis Memory Cleanup",
+      "status": "archived"
     },
     "decisions/104_phase6_tpu_sdpa_bool_mask_spmd_sharding_fix.md": {
       "description": "ADR 104: Phase 6 TPU SDPA Bool Mask Fix, SPMD Batch Sharding and Memory Restoration (Accepted)",
@@ -1035,7 +1112,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 104: Phase 6 TPU SDPA Bool Mask Fix, SPMD Batch Sharding and Memory Restoration"
+      "summary": "ADR 104: Phase 6 TPU SDPA Bool Mask Fix, SPMD Batch Sharding and Memory Restoration",
+      "status": "archived"
     },
     "decisions/105_phase6_rope_geodesic_noise_and_prompt_truncation.md": {
       "description": "ADR 105: Phase 6 RoPE in Self-Attention, Geodesic Tangent-Space Noise, Prompt Pass Truncation, and Phase 4 Core Extraction (Accepted)",
@@ -1061,7 +1139,8 @@
         "decisions/030_cov_loss_weight_increase_and_gcs_migration.md",
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 105: Phase 6 RoPE in Self-Attention, Geodesic Tangent-Space Noise, Prompt Pass Truncation, and Phase 4 Core Extraction"
+      "summary": "ADR 105: Phase 6 RoPE in Self-Attention, Geodesic Tangent-Space Noise, Prompt Pass Truncation, and Phase 4 Core Extraction",
+      "status": "archived"
     },
     "decisions/106_phase6_checkpoint_abort_decoupling_and_beta_nan_guard.md": {
       "description": "ADR 106: Phase 6 Checkpoint Abort Decoupling, Beta Sampler NaN Sanitization, and Consecutive NaN Guard (Accepted)",
@@ -1071,7 +1150,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 106: Phase 6 Checkpoint Abort Decoupling, Beta Sampler NaN Sanitization, and Consecutive NaN Guard"
+      "summary": "ADR 106: Phase 6 Checkpoint Abort Decoupling, Beta Sampler NaN Sanitization, and Consecutive NaN Guard",
+      "status": "archived"
     },
     "decisions/107_phase6_tpu_hbm_program_reservation_and_skill_calibration.md": {
       "description": "ADR 107: Phase 6 TPU HBM Program Reservation Fix, In-Graph Loss Guard, CPU Resume before FSDP, and TPU Skill Validator Calibration (Accepted)",
@@ -1083,7 +1163,8 @@
         "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md",
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 107: Phase 6 TPU HBM Program Reservation Fix, In-Graph Loss Guard, CPU Resume before FSDP, and TPU Skill Validator Calibration"
+      "summary": "ADR 107: Phase 6 TPU HBM Program Reservation Fix, In-Graph Loss Guard, CPU Resume before FSDP, and TPU Skill Validator Calibration",
+      "status": "archived"
     },
     "decisions/108_phase6_cross_attention_rope_and_anti_barycenter.md": {
       "description": "ADR 108: Устранение позиционного коллапса в Phase 6: RoPE в Cross-Attention, отталкивающий анти-барицентровый лосс, обнуление weight decay и разделение live/EMA чекпоинтов (Accepted)",
@@ -1095,7 +1176,8 @@
         "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md",
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 108: Устранение позиционного коллапса в Phase 6: RoPE в Cross-Attention, отталкивающий анти-барицентровый лосс, обнуление weight decay и разделение live/EMA чекпоинтов"
+      "summary": "ADR 108: Устранение позиционного коллапса в Phase 6: RoPE в Cross-Attention, отталкивающий анти-барицентровый лосс, обнуление weight decay и разделение live/EMA чекпоинтов",
+      "status": "archived"
     },
     "decisions/109_phase6_high_noise_sampling_and_hybrid_inference.md": {
       "description": "ADR 109: Phase 6 High-Noise t_global Mixture, Canvas Self-Attention LR Isolation, Prompt Dropout, and Hybrid Scheduled Inference (Accepted)",
@@ -1105,7 +1187,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 109: Phase 6 High-Noise t_global Mixture, Canvas Self-Attention LR Isolation, Prompt Dropout, and Hybrid Scheduled Inference"
+      "summary": "ADR 109: Phase 6 High-Noise t_global Mixture, Canvas Self-Attention LR Isolation, Prompt Dropout, and Hybrid Scheduled Inference",
+      "status": "archived"
     },
     "KI_clm_geometric_pooling.md": {
       "description": "Geometric knowledge spaces, parameter-free symplectic bilinear pooling (s_b, c_b) for CLM chunk compression, symmetric query-chunk indexing, and Decoupled RoPE + micro-order Cross-Attention (CA_Memory).",
@@ -1129,7 +1212,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 110: Phase 6 True CA-Adapter: Value Payload Isolation, Unified Module Gating, and SA Parameter Reinitialization"
+      "summary": "ADR 110: Phase 6 True CA-Adapter: Value Payload Isolation, Unified Module Gating, and SA Parameter Reinitialization",
+      "status": "archived"
     },
     "decisions/111_phase6_coherence_and_span_noise.md": {
       "description": "ADR 111: Phase 6 Coherence Fix: Uniform/Span Noise, RoPE Coordinate Stabilization, Transition Bigram Loss, and 512 Canvas Synchronization (Accepted)",
@@ -1139,7 +1223,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 111: Phase 6 Coherence Fix: Uniform/Span Noise, RoPE Coordinate Stabilization, Transition Bigram Loss, and 512 Canvas Synchronization"
+      "summary": "ADR 111: Phase 6 Coherence Fix: Uniform/Span Noise, RoPE Coordinate Stabilization, Transition Bigram Loss, and 512 Canvas Synchronization",
+      "status": "archived"
     },
     "decisions/112_phase6_specificity_aware_gated_guidance.md": {
       "description": "ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395) (Superseded by ADR 113)",
@@ -1147,7 +1232,8 @@
         "Architecture Decisions"
       ],
       "depends_on": [],
-      "summary": "ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395)"
+      "summary": "ADR 112: Phase 6 Specificity-Aware Likelihood-Ratio Gated Guidance (arXiv:2610.00395)",
+      "status": "archived"
     },
     "decisions/113_phase6_step_normalized_specificity_and_impulse_cfg.md": {
       "description": "ADR 113: Phase 6 Step-Normalized Specificity Gating and Impulse CFG Schedule (Correction of ADR 112) (Accepted)",
@@ -1155,7 +1241,8 @@
         "Architecture Decisions"
       ],
       "depends_on": [],
-      "summary": "ADR 113: Phase 6 Step-Normalized Specificity Gating and Impulse CFG Schedule (Correction of ADR 112)"
+      "summary": "ADR 113: Phase 6 Step-Normalized Specificity Gating and Impulse CFG Schedule (Correction of ADR 112)",
+      "status": "archived"
     },
     "decisions/114_phase6_void_balance_and_tail_erasing.md": {
       "description": "ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000 (Superseded by ADR 116)",
@@ -1165,7 +1252,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000"
+      "summary": "ADR 114: Ребалансировка весов <|void|>, ликвидация Exposure Bias через Spurious-Tail Erasing и фиксация отката к step_107000",
+      "status": "archived"
     },
     "decisions/115_phase6_variable_length_and_exposure_bias_synthesis.md": {
       "description": "ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling) (Superseded by ADR 116)",
@@ -1175,7 +1263,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling)"
+      "summary": "ADR 115: Синтез современных методов переменной длины и теории Exposure Bias для усиления Phase 6 (SmartCrop, dLLM-Var, LR-DLLM, Epsilon Scaling)",
+      "status": "archived"
     },
     "decisions/116_phase6_coherence_boundary_adaptive_crop.md": {
       "description": "ADR 116: Phase 6 Coherence Restoration, Boundary Void Weighting, and Adaptive Inference Cropping (Accepted)",
@@ -1185,7 +1274,8 @@
       "depends_on": [
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 116: Phase 6 Coherence Restoration, Boundary Void Weighting, and Adaptive Inference Cropping"
+      "summary": "ADR 116: Phase 6 Coherence Restoration, Boundary Void Weighting, and Adaptive Inference Cropping",
+      "status": "archived"
     },
     "decisions/117_phase6_geglu_caprompt_and_anticopy_reversal.md": {
       "description": "ADR 117: Phase 6 Non-Linear CAPromptLayer (GeGLU + AdaLN), Prompt Copy Penalty Reversal, and GPU-TPU Synchronization (Accepted)",
@@ -1197,7 +1287,8 @@
         "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md",
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 117: Phase 6 Non-Linear CAPromptLayer (GeGLU + AdaLN), Prompt Copy Penalty Reversal, and GPU-TPU Synchronization"
+      "summary": "ADR 117: Phase 6 Non-Linear CAPromptLayer (GeGLU + AdaLN), Prompt Copy Penalty Reversal, and GPU-TPU Synchronization",
+      "status": "archived"
     },
     "decisions/118_phase6_caprompt_v4_contrast_sink_and_cross_gate.md": {
       "description": "ADR 118: Phase 6 CAPromptLayer v4: Token-Centered Contrast, Cross-Gated GeGLU, and Zero-Vector Attention Sink (Accepted)",
@@ -1209,7 +1300,8 @@
         "decisions/096_phase6_gradient_collapse_and_dynamic_void_penalty.md",
         "decisions/097_phase6_t_global_orchestrator_and_per_sample_beta_noise.md"
       ],
-      "summary": "ADR 118: Phase 6 CAPromptLayer v4: Token-Centered Contrast, Cross-Gated GeGLU, and Zero-Vector Attention Sink"
+      "summary": "ADR 118: Phase 6 CAPromptLayer v4: Token-Centered Contrast, Cross-Gated GeGLU, and Zero-Vector Attention Sink",
+      "status": "archived"
     },
     "decisions/119_plan_b_retrospective_and_transition_to_plan_c.md": {
       "description": "ADR 119: Ретроспектива и завершение Плана Б: Пределы поточечной BPE-диффузии на холсте (Demos 107k–134k) и переход к Плану С (Accepted)",
@@ -1217,7 +1309,8 @@
         "Architecture Decisions"
       ],
       "depends_on": [],
-      "summary": "ADR 119: Ретроспектива и завершение Плана Б: Пределы поточечной BPE-диффузии на холсте (Demos 107k–134k) и переход к Плану С"
+      "summary": "ADR 119: Ретроспектива и завершение Плана Б: Пределы поточечной BPE-диффузии на холсте (Demos 107k–134k) и переход к Плану С",
+      "status": "archived"
     },
     "decisions/120_plan_c_tekken_tokenizer_for_cyrillic.md": {
       "description": "ADR 120: Выбор токенизатора Tekken (Mistral AI) для кириллицы и Plan C (Accepted)",

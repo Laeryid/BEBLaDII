@@ -1,27 +1,5 @@
-<!-- last_verified: 2026-11-14 -->
+<!-- last_verified: 2026-11-19 -->
 # KI: Architecture (System 1 / 2)
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
-
-<!-- last_verified: 2026-11-14 -->
 
 ## Основная концепция
 BEBLaDII — это архитектура, разделяющая инференс на две системы:
