@@ -40,6 +40,7 @@ description: >-
 - [ ] **Мастер-веса в Float32**: Обучаемые параметры модели, модули AdaLN, проекторы и буферы оптимизатора AdamW хранятся строго в `torch.float32`.
 - [ ] **Замороженные модули в BF16**: Замороженные энкодеры/декодеры (Qwen, VAE) явно приведены к `bfloat16` (`.to(torch.bfloat16)`) для экономии памяти HBM.
 - [ ] **Отключение Dynamo**: `torch._dynamo.disable()` вызван в самом начале, чтобы избежать конфликта TorchDynamo с компилятором XLA.
+- [ ] **Установка и проверка зависимостей Kaggle/TPU**: В установочной ячейке блокнота (или в начале скрипта) явно устанавливаются все требуемые пакеты (`!pip install -q --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage` — в зависимости от используемых модулей, обязательно `google-cloud-storage` при выгрузке в GCS). **Важно**: при условной установке через `try/except ImportError` нужно проверять импорт **каждого** пакета (включая `from google.cloud import storage`), иначе при предустановленных `wandb`/`einops` пакет `google-cloud-storage` останется неустановленным и выгрузка чекпоинтов в GCS тихо отвалится.
 
 ### Блок B: Граф XLA и Компиляция (Zero-Recompilation Rule)
 - [ ] **НЕТ `.item()` внутри шага обучения**: Никаких вызовов `loss.item()`, `grad_norm.item()` или `metric.item()` на каждом шаге! Синхронизация CPU-TPU (`aten::_local_scalar_dense`) замораживает конвейер (ADR 079).

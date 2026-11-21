@@ -18,7 +18,7 @@ def py_percent_to_notebook(py_path: str, ipynb_path: str) -> None:
 
     setup_code = [
         "# 1. Установка необходимых пакетов на Kaggle\n",
-        "!pip install -q einops wandb\n",
+        "!pip install -q --no-cache-dir einops wandb indexed_parquet_dataset google-cloud-storage\n",
         "\n",
         "# 2. Синхронизация репозитория BEBLaDII (git clone / git pull)\n",
         "import os, sys, subprocess\n",
