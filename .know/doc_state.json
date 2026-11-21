@@ -172,8 +172,8 @@
         "mtime": 1794671092.7107418
     },
     ".know\\knowledge\\KI_experiments.md": {
-        "hash": "278f0aea8a6bc192e826178aaed73a852c72a80e63dc496054fc009be608aa4e",
-        "mtime": 1795046364.032401
+        "hash": "05f65bd0dc6eaeefbff5a661d788ee880236966c0eb6c224fb517cba46ba5926",
+        "mtime": 1795251752.6084661
     },
     ".know\\knowledge\\KI_huggingface_ecosystem.md": {
         "hash": "0b1d9e94c278343338ac77e1cededa6f2a7e20a5b48af860c4152df9266d34ca",
@@ -208,12 +208,12 @@
         "mtime": 1794671092.7494698
     },
     ".know\\knowledge\\KI_model_assembly.md": {
-        "hash": "3781fb678bd9329428d6458cffeab158de88c3a48d81b76bd52c2998293e5764",
-        "mtime": 1794734628.1957593
+        "hash": "b298120208b05f9e4b7cfd5d4cf6797ac7d9f06c0c231b4dd83b623af415c049",
+        "mtime": 1795251736.6399875
     },
     ".know\\knowledge\\KI_model_core.md": {
-        "hash": "d201cfa7d473d6e878c46071156afba84ae41cd9861bc481e1d9ebd0a391f063",
-        "mtime": 1795046364.0390759
+        "hash": "31e4fd39a74f8e3416dafb78feb90040312be993cb999b464e5c3522b163687f",
+        "mtime": 1795251752.6104693
     },
     ".know\\knowledge\\KI_model_inspection.md": {
         "hash": "84dc2a567fd47aa77e8b2f19965e3e59ac36abd8dbd00819a8106299dcbe7158",
@@ -280,20 +280,20 @@
         "mtime": 1794734821.8813877
     },
     "storage\\components\\decoder\\config.json": {
-        "hash": "1649a5d4a1430335176fc6762db0962b23a9a582ee84ce11465310271759269d",
-        "mtime": 1794734572.8298535
+        "hash": "76fc39a1ebd94b7d03b36323c4e96e3ffbb14c93e00acb0f35d291457eecefcf",
+        "mtime": 1795251478.4683833
     },
     "storage\\components\\decoder\\README.md": {
-        "hash": "6d950aeb3ca411607ae416ab49bb1db55a3dc24ac76f50b2070d201b63eca2fc",
-        "mtime": 1794734574.595951
+        "hash": "8330a140fc77a6983f4d01cf639182dc5ea7d31ca5ace6e8c2c3e342df17596e",
+        "mtime": 1795251483.097935
     },
     "storage\\components\\decoder\\weights.pt": {
-        "hash": "d5eb6820a473eb3164f7addf97cad64c31acdea9279e4524b4f76fb81c95f908",
-        "mtime": 1794734765.2890623
+        "hash": "7c82dd5942cb7a866f928169bcb07d1590d71536bec8fd5c10eb14a452ee3715",
+        "mtime": 1795251644.0510607
     },
     "storage\\components\\decoder\\__init__.py": {
-        "hash": "b9eabf47b42f69a9c7950d90c0effd47037389c1ccf513dd2362c4df43b546ee",
-        "mtime": 1794950878.551998
+        "hash": "7bbd5af5f8e10f00baf10f12a2fcfeaa36fa6575407143678c48809099feeef6",
+        "mtime": 1795251481.5899181
     },
     "storage\\components\\encoder\\config.json": {
         "hash": "6a127de289f6f8eeb1632ebbf1794fe4b6fd61f49a51a00fefc437b370d90c92",
@@ -436,24 +436,36 @@
         "mtime": 1794944514.9224682
     },
     "experiments\\phase 2\\export_to_notebook.py": {
-        "hash": "68e1dd392b64736b072f55e9418c745fdb99031ad1a62ef02fe10b2ba3ed0204",
-        "mtime": 1794948516.8612134
+        "hash": "799f65bb6bc9936f17728f46e9cf485c1a8099411194fa4962c1990a62664c3c",
+        "mtime": 1795218181.3019454
+    },
+    "experiments\\phase 2\\inspect_phase2_decoder.py": {
+        "hash": "158797c2520244db0763dc9f9d8b54adac24caea44a4bcf1fa7a98e98bf1f7fd",
+        "mtime": 1795219921.8702934
+    },
+    "experiments\\phase 2\\inspect_phase2_generation.py": {
+        "hash": "be1c1eae25a2626c57473f73aecb4cce1c31ee74d72984bac193ab9cb7ba7148",
+        "mtime": 1794903623.0686033
     },
     "experiments\\phase 2\\test_phase2_decoder.py": {
         "hash": "f03fe4dfa8389725db2d798dbb5e068d25e965f6c7eb1a31894805bb4b83d0bb",
         "mtime": 1794950966.4902403
     },
     "experiments\\phase 2\\train_phase2.py": {
-        "hash": "756d853d17ca107996ef498dbbeddb6e811e04f91ea60c6b0f51f4f314df26f5",
-        "mtime": 1794949958.5765698
+        "hash": "b3e06f936a560a171098ab7d47946ea6e87e14ac66ad3484419452979d1a4217",
+        "mtime": 1795077208.9874215
     },
     "experiments\\phase 2\\checkpoints\\.gitkeep": {
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "mtime": 1794944647.2164059
     },
+    "experiments\\phase 2\\checkpoints\\phase2_decoder_step_25000.pt": {
+        "hash": "ba86b24fe08babe748837c1e9964f039d2bfe1c9ccb0b78377dd679e81278721",
+        "mtime": 1795190655.1879325
+    },
     "experiments\\phase 2\\Kaggle\\train_phase2_notebook.ipynb": {
-        "hash": "817815c77c57b8016c59752d599b1b6e8f0648f4ed52198e36d282b639316719",
-        "mtime": 1794950028.742234
+        "hash": "03605dd56b6822d39c9ec86934a4bdb1062097af589becaf07e8b8af78ed74fa",
+        "mtime": 1795218227.766853
     },
     "experiments\\phase 2\\output\\.gitkeep": {
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -467,25 +479,25 @@
         "hash": "a4983b0b148d7da6259e0afae2cc2e892c9b7440b643cee9f7499acde3331af3",
         "mtime": 1794744693.7823777
     },
-    "experiments\\phase 3\\inspect_phase2_generation.py": {
+    "experiments\\phase 3\\inspect_phase3_generation.py": {
         "hash": "be1c1eae25a2626c57473f73aecb4cce1c31ee74d72984bac193ab9cb7ba7148",
         "mtime": 1794903623.0686033
     },
-    "experiments\\phase 3\\prepare_phase2_data.py": {
+    "experiments\\phase 3\\prepare_phase3_data.py": {
         "hash": "2eec16667d3ec24f6ba1e47c85d1546c581b3ad048405eab4fe9b53e167cf280",
         "mtime": 1794748688.3700001
     },
-    "experiments\\phase 3\\test_phase2_architecture.py": {
+    "experiments\\phase 3\\test_phase3_architecture.py": {
         "hash": "bc4c64aa02dbedcfe14b7f77d75106bff2159bc130f84a0ae35d6c3b968be954",
         "mtime": 1794906275.187447
     },
-    "experiments\\phase 3\\test_phase2_open_questions.py": {
+    "experiments\\phase 3\\test_phase3_open_questions.py": {
         "hash": "2df80d398f7d53bc2ff3ca4d3cc5344ca2228fbffe9288476f8221e2d3de4b03",
         "mtime": 1794743131.402553
     },
-    "experiments\\phase 3\\train_phase2.py": {
+    "experiments\\phase 3\\train_phase3.py": {
         "hash": "36c8314a9a29cfb21ec88f01330c11e943c255e300f71f8c49af7e5bb8784e71",
-        "mtime": 1794906216.431318
+        "mtime": 1795251234.6402547
     },
     "experiments\\phase 3\\checkpoints\\.gitkeep": {
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

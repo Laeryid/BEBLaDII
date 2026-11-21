@@ -1,9 +1,9 @@
 {
   "architecture": "GrassmannianDecoder",
   "plan": "Plan C",
-  "phase": "Phase 1",
-  "source_checkpoint": "phase1_step_19500_ema.pt",
-  "step": 19500,
+  "phase": "Phase 2",
+  "source_checkpoint": "phase2_decoder_step_25000.pt",
+  "step": 25000,
   "vocab_size": 131072,
   "hidden_size": 1024,
   "intermediate_size": 2048,
@@ -12,6 +12,9 @@
   "chunk_size": 4,
   "max_seq_len": 4096,
   "cell_jitter_std": 0.0,
+  "num_smooth_layers": 4,
+  "canonicalize_basis": true,
+  "enable_noise_radar": true,
   "tied_lm_head": true,
   "weights_file": "weights.pt",
   "ema_normalized_sphere": true

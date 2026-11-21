@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~1087 (excluding excluded directories)
-**Updated:** 2026-11-18
+**Total files in project:** ~1092 (excluding excluded directories)
+**Updated:** 2026-11-21
 
 ```
 BEBLaDII/
 |-- .know/  *(empty)*
 |-- data/  *(empty)*
-|-- experiments/  *584 files*
+|-- experiments/  *586 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -27,7 +27,7 @@ BEBLaDII/
 |   |   |-- Kaggle/  *1 files*
 |   |   |-- checkpoints/  *(empty)*
 |   |   `-- output/  *1 files*
-|   |-- phase 2/  *7 files*
+|   |-- phase 2/  *9 files*
 |   |   |-- Kaggle/  *1 files*
 |   |   |-- checkpoints/  *1 files*
 |   |   `-- output/  *1 files*
@@ -36,7 +36,7 @@ BEBLaDII/
 |       |-- checkpoints/  *1 files*
 |       `-- output/  *1 files*
 |-- hugging face/  *2 files*
-|-- ideas/  *92 files*
+|-- ideas/  *95 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
 |-- kaggle_upload_1_2/  *1 files*
 |-- posts/  *30 files*

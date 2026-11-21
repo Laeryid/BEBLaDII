@@ -228,9 +228,9 @@ class GrassmannianDecoder(nn.Module):
         chunk_size: int = 4,
         max_seq_len: int = 4096,
         cell_jitter_std: float = 0.0,
-        num_smooth_layers: int = 2,
-        canonicalize_basis: bool = False,
-        enable_noise_radar: bool = False,
+        num_smooth_layers: int = 4,
+        canonicalize_basis: bool = True,
+        enable_noise_radar: bool = True,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -417,15 +417,16 @@ def get_decoder(
     canonicalize_basis: Optional[bool] = None,
     enable_noise_radar: Optional[bool] = None,
     num_smooth_layers: Optional[int] = None,
+    use_ema: bool = True,
 ) -> GrassmannianDecoder:
     """Загружает GrassmannianDecoder и привязывает матрицу эмбеддингов (от encoder или из ../encoder/weights.pt)."""
     cfg_file = Path(config_path) if config_path else DECODER_DIR / "config.json"
     with open(cfg_file, "r", encoding="utf-8") as f:
         cfg = json.load(f)
 
-    use_canon = cfg.get("canonicalize_basis", False) if canonicalize_basis is None else canonicalize_basis
-    use_radar = cfg.get("enable_noise_radar", False) if enable_noise_radar is None else enable_noise_radar
-    n_smooth = cfg.get("num_smooth_layers", 2) if num_smooth_layers is None else num_smooth_layers
+    use_canon = cfg.get("canonicalize_basis", True) if canonicalize_basis is None else canonicalize_basis
+    use_radar = cfg.get("enable_noise_radar", True) if enable_noise_radar is None else enable_noise_radar
+    n_smooth = cfg.get("num_smooth_layers", 4) if num_smooth_layers is None else num_smooth_layers
 
     model = GrassmannianDecoder(
         vocab_size=cfg.get("vocab_size", 131072),
@@ -442,9 +443,24 @@ def get_decoder(
     )
 
     w_file = Path(weights_path) if weights_path else DECODER_DIR / cfg.get("weights_file", "weights.pt")
-    sd = torch.load(w_file, map_location="cpu", weights_only=False)
-    if isinstance(sd, dict) and "model_state_dict" in sd:
-        sd = sd["model_state_dict"]
+    raw_ckpt = torch.load(w_file, map_location="cpu", weights_only=False)
+    if isinstance(raw_ckpt, dict) and ("decoder_state_dict" in raw_ckpt or "ema_state_dict" in raw_ckpt):
+        # Тренировочный чекпоинт Phase 2 (с EMA-тенями и/или сырыми весами)
+        ema_shadow = (raw_ckpt.get("ema_state_dict") or {}).get("shadow") if use_ema else None
+        if isinstance(ema_shadow, dict) and len(ema_shadow) > 0:
+            sd = {}
+            for k, v in ema_shadow.items():
+                clean_k = k.replace("module.", "")
+                if clean_k.endswith(".q_weight"):
+                    v = F.normalize(v.float(), p=2, dim=-1, eps=1e-8)
+                sd[clean_k] = v
+        else:
+            sd = {k.replace("module.", ""): v for k, v in raw_ckpt["decoder_state_dict"].items()}
+    elif isinstance(raw_ckpt, dict) and "model_state_dict" in raw_ckpt:
+        sd = {k.replace("module.", ""): v for k, v in raw_ckpt["model_state_dict"].items()}
+    else:
+        sd = {k.replace("module.", ""): v for k, v in raw_ckpt.items()}
+
     # Извлекаем веса декодера, если передан общий чекпоинт Phase 1
     if any(k.startswith("dec_") or k.startswith("unpacker.") or k == "cell_in_norm.weight" for k in sd):
         dec_prefixes = ("cell_in_norm.", "dec_context_layer.", "unpacker.", "dec_smooth_layers.", "dec_final_norm.", "noise_radar.", "noise_cond_proj.")

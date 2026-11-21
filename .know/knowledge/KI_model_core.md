@@ -1,27 +1,27 @@
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 # KI: Model Core
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
-<!-- last_verified: 2026-11-19 -->
+<!-- last_verified: 2026-11-21 -->
 
 ## Что это
 Ядро системы, отвечающее за архитектуру моделей и процесс дистилляции рассуждений (Reasoning) из крупного "учителя" в компактный latentBERT. Реализует Depth Up-Scaling (DUS) и проекцию латентных пространств.
