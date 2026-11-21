@@ -1494,6 +1494,21 @@
       "depends_on": [],
       "summary": "ADR 137: Выделение Фазы 2 Plan C (Генеративный Декодер и Радар Шума), перенос диффузии в Фазу 3, детерминированная O(8)-канонизация и словный чанкинг 1..4 токена",
       "status": "accepted"
+    },
+    "decisions/138_phase3_planc_word_chunking_canon_radar_s7_and_crystal_curriculum.md": {
+      "description": "ADR 138: Фаза 3 Plan C (старт с нуля): WordAwareElasticChunker, канонизация таргетов V_0, датчик s7 (NoiseRadarHead), Random Crystal Anchors и перебалансировка лосса (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "KI_experiments.md",
+        "decisions/034_angular_loss_for_output_projector.md",
+        "decisions/035_centered_cosine_and_contrastive_neighbor_loss.md",
+        "decisions/036_replacing_infonce_with_rkd.md",
+        "decisions/037_phase3_failure_and_plan_b_skip_connections.md"
+      ],
+      "summary": "ADR 138: Фаза 3 Plan C (старт с нуля): WordAwareElasticChunker, канонизация таргетов V_0, датчик s7 (NoiseRadarHead), Random Crystal Anchors и перебалансировка лосса",
+      "status": "accepted"
     }
   },
   "knowledge_system": {

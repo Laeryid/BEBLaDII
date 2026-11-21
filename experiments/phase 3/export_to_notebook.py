@@ -111,13 +111,13 @@ def py_percent_to_notebook(py_path: str, ipynb_path: str) -> None:
     with open(ipynb_path, "w", encoding="utf-8") as f:
         json.dump(notebook, f, indent=2, ensure_ascii=False)
 
-    print(f"[Export] Блокнот Phase 2 успешно экспортирован ({len(cells)} ячеек) в:\n{ipynb_path}")
+    print(f"[Export] Блокнот Phase 3 успешно экспортирован ({len(cells)} ячеек) в:\n{ipynb_path}")
 
 
 if __name__ == "__main__":
     base_dir = os.path.dirname(os.path.abspath(__file__))
-    parser = argparse.ArgumentParser(description="Export train_phase2.py to Kaggle notebook")
-    parser.add_argument("--src", type=str, default=os.path.join(base_dir, "train_phase2.py"))
-    parser.add_argument("--out", type=str, default=os.path.join(base_dir, "Kaggle", "train_phase2_notebook.ipynb"))
+    parser = argparse.ArgumentParser(description="Export train_phase3.py to Kaggle notebook")
+    parser.add_argument("--src", type=str, default=os.path.join(base_dir, "train_phase3.py"))
+    parser.add_argument("--out", type=str, default=os.path.join(base_dir, "Kaggle", "train_phase3_notebook.ipynb"))
     args = parser.parse_args()
     py_percent_to_notebook(args.src, args.out)

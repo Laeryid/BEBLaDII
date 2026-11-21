@@ -17,15 +17,16 @@ for p in (str(REPO_ROOT), str(PHASE2_DIR)):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from train_phase2 import (
+from train_phase3 import (
     EMAModel,
     GrassmannianDiffusionCore,
     N_CANVAS,
     N_PROMPT,
     SIGMA_DATA,
     block_ar_sample,
-    compute_phase2_loss,
+    compute_phase3_loss,
     create_phase2_optimizers,
+    crystal_radar_sample,
     euler_heun_sample,
     rolling_wave_sample,
     sample_mixed_noise_schedule,
@@ -66,11 +67,16 @@ def main() -> None:
     m_zero = torch.zeros(B, dtype=torch.float32)
 
     core.eval()
+    radar_sig = torch.rand(B, N_CANVAS) * 0.5
+    radar_sig[:, 0] = 0.0
     with torch.no_grad():
-        out_a, _, _ = core(V_t, t_mat, V_prompt_a, p_valid, p_uncond_mask, m_zero)
-        out_b, _, _ = core(V_t, t_mat, V_prompt_b, p_valid, p_uncond_mask, m_zero)
+        out_a, _, _ = core(V_t, t_mat, V_prompt_a, p_valid, p_uncond_mask, m_zero, radar_sigma=radar_sig)
+        out_b, _, _ = core(V_t, t_mat, V_prompt_b, p_valid, p_uncond_mask, m_zero, radar_sigma=radar_sig)
+        out_zero_rad, _, _ = core(V_t, t_mat, V_prompt_a, p_valid, p_uncond_mask, m_zero, radar_sigma=torch.zeros_like(radar_sig))
     leak_diff = (out_a - out_b).abs().max().item()
     assert leak_diff < 1e-6, f"Обнаружена утечка промпта при CFG dropout: max_diff={leak_diff}"
+    radar_effect = (out_a - out_zero_rad).abs().max().item()
+    assert radar_effect > 0.0, "Датчик s7 (radar_sigma) не влияет на выход ядра"
 
     # 3. Тождественность на чистых якорях (t_i == 0) и ограничение норм строк шаром B^128
     assert (out_a[:, 0] - sep_ref.unsqueeze(0)).abs().max().item() < 1e-6, "Искажение ячейки SEP при t_0=0"
@@ -91,7 +97,7 @@ def main() -> None:
             V_t, t_mat, V_prompt_a, p_valid, p_cond_mask, m_one, return_sink_weights=True
         )
         assert sw is not None and sw.shape == (B, 3, N_CANVAS)
-        _, met_full = compute_phase2_loss(
+        _, met_full = compute_phase3_loss(
             vh_full, V_0, t_mat, w_cell, i_last, stats_full, step=250, m_prompt=m_one, sink_weights=sw
         )
 
@@ -104,7 +110,7 @@ def main() -> None:
         stats_cat = tuple(torch.cat([a, b], dim=0) for a, b in zip(stats_1, stats_2))
         vh_cat = torch.cat([vh_1, vh_2], dim=0)
         sw_cat = torch.cat([sw_1, sw_2], dim=0)
-        _, met_cat = compute_phase2_loss(
+        _, met_cat = compute_phase3_loss(
             vh_cat, V_0, t_mat, w_cell, i_last, stats_cat, step=250, m_prompt=m_one, sink_weights=sw_cat
         )
 
@@ -116,8 +122,10 @@ def main() -> None:
     print("[4/6] Checking backward gradients + OrthMuon/AdamW step + EMA sphere projection...", flush=True)
     core.train()
     ema = EMAModel(core, decay=0.99)
-    vh_tr, stats_tr, sw_tr = core(V_t, t_mat, V_prompt_a, p_valid, p_cond_mask, m_one, return_sink_weights=True)
-    loss_tr, met_tr = compute_phase2_loss(
+    vh_tr, stats_tr, sw_tr = core(
+        V_t, t_mat, V_prompt_a, p_valid, p_cond_mask, m_one, radar_sigma=radar_sig, return_sink_weights=True
+    )
+    loss_tr, met_tr = compute_phase3_loss(
         vh_tr, V_0, t_mat, w_cell, i_last, stats_tr, step=1, m_prompt=m_one, sink_weights=sw_tr
     )
     assert "loss/sink" in met_tr and "loss/energy" in met_tr
@@ -161,11 +169,17 @@ def main() -> None:
     )
     assert V_blk.shape == (1, N_CANVAS, 8, 128)
     assert (V_blk[:, 0] - sep_ref.unsqueeze(0)).abs().max().item() < 1e-6
+
+    V_cryst, _ = crystal_radar_sample(
+        core, V_prompt_a[:1], p_valid[:1], sep_ref, decoder=None, num_steps=2, cfg_scale=2.0, seed=7
+    )
+    assert V_cryst.shape == (1, N_CANVAS, 8, 128)
+    assert (V_cryst[:, 0] - sep_ref.unsqueeze(0)).abs().max().item() < 1e-6
     print("[6/6] Done.", flush=True)
 
     print(
-        f"ALL PHASE 2 ARCHITECTURE CHECKS PASSED "
-        f"(params={total_params/1e6:.2f}M, leak_diff={leak_diff:.2e}, max_sph_err={max_sph_err:.2e})."
+        f"ALL PHASE 3 ARCHITECTURE CHECKS PASSED "
+        f"(params={total_params/1e6:.2f}M, leak_diff={leak_diff:.2e}, radar_eff={radar_effect:.2e}, max_sph_err={max_sph_err:.2e})."
     )
 
 

@@ -24,8 +24,9 @@ for p in (str(REPO_ROOT), str(PHASE2_DIR)):
 
 from storage.components.decoder import get_decoder
 from storage.components.encoder import get_encoder
+from storage.components.plan_c_layers import WordAwareElasticChunker, canonicalize_cell_basis
 from storage.components.tokenizer import get_tokenizer
-from train_phase2 import (
+from train_phase3 import (
     N_ANS,
     N_CANVAS,
     N_PROMPT,
@@ -36,11 +37,12 @@ from train_phase2 import (
     GrassmannianDiffusionCore,
     PromptAnswerDataset,
     compute_rk_eff,
+    crystal_radar_sample,
     decode_latent_answers,
     detect_void_mask,
     encode_token_ids,
     euler_heun_sample,
-    evaluate_phase2,
+    evaluate_phase3,
     find_latest_checkpoint,
     make_pooling_weights,
     sim_gr,
@@ -116,25 +118,32 @@ def trace_pair_generation(
     """Генерирует ответы на список промптов и оценивает их различимость и латентную геометрию."""
     B = len(prompts)
     sw_dev = stopword_mask.to(device)
+    chunker = WordAwareElasticChunker(
+        tokenizer=tokenizer, chunk_size=4, pad_token_id=PAD_TOKEN_ID, stopword_mask=stopword_mask.cpu()
+    )
 
     prompt_rows = []
+    weight_rows = []
     for txt in prompts:
         ids = encode_token_ids(tokenizer, txt)[:T_PROMPT]
         if not ids:
             ids = [1]
-        ids = ids + [PAD_TOKEN_ID] * (T_PROMPT - len(ids))
-        prompt_rows.append(ids)
+        pack = chunker.chunk_tokens(ids, max_cells=N_PROMPT, elastic_drop_prob=0.0)
+        prompt_rows.append(pack["input_ids"])
+        weight_rows.append(pack["weights"])
 
-    prompt_ids = torch.tensor(prompt_rows, dtype=torch.long, device=device)
+    prompt_ids = torch.stack(prompt_rows, dim=0).to(device)
+    w_p = torch.stack(weight_rows, dim=0).to(device)
     p_valid = (prompt_ids.view(B, N_PROMPT, 4) != PAD_TOKEN_ID).sum(dim=-1) > 0
-    w_p = make_pooling_weights(prompt_ids, sw_dev)
-    V_prompt = encoder(prompt_ids, w_p).float()
+    V_prompt, _ = canonicalize_cell_basis(encoder(prompt_ids, w_p).float())
+    sep_canon, _ = canonicalize_cell_basis(sep_concept.float())
 
-    V_gen, last_sink_w = euler_heun_sample(
+    V_gen, last_sink_w = crystal_radar_sample(
         core=core,
         V_prompt=V_prompt,
         prompt_valid_mask=p_valid,
-        sep_concept=sep_concept,
+        sep_concept=sep_canon,
+        decoder=decoder,
         num_steps=num_steps,
         cfg_scale=cfg_scale,
         use_amp=(device.type == "cuda"),
@@ -274,7 +283,7 @@ def main() -> None:
             is_validation=True,
         )
         val_loader = DataLoader(val_ds, batch_size=8, shuffle=False, num_workers=0)
-        val_metrics = evaluate_phase2(
+        val_metrics = evaluate_phase3(
             model=core,
             encoder=encoder,
             decoder=decoder,

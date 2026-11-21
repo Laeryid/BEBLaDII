@@ -188,8 +188,8 @@
         "mtime": 1794671092.7260642
     },
     ".know\\knowledge\\KI_knowledge_infrastructure.md": {
-        "hash": "793b3c8c8c8e4b9a417937c9036e630533006833b7a1ac1e7b6a96b1fc314a4b",
-        "mtime": 1795046364.0364008
+        "hash": "eb26a04db5187ac4f2be682910e7bd5387ac177f44b703cd29ff90bdd1977edb",
+        "mtime": 1795254377.7439992
     },
     ".know\\knowledge\\KI_knowledge_management.md": {
         "hash": "13fda0c55903bc5cba7f2f1ec67b4b1fef6e485b1e659a95e14046d7da71258a",
@@ -264,8 +264,8 @@
         "mtime": 1794734892.705766
     },
     ".know\\doc_config.json": {
-        "hash": "54d07421363bff8d941a3f98031ac06d5470e14ea169f85733bc74e015adddac",
-        "mtime": 1795046347.8201091
+        "hash": "dad6e3680002d2e4d34c2fdb112cf9c43a21e97eabfec41e651dac00fc6ece1e",
+        "mtime": 1795254370.2175815
     },
     "storage\\components\\plan_c_layers.py": {
         "hash": "f97ed18afe802347abb8433d801c572f21b16b47fb24aabf59584acd6d223fc3",
@@ -476,34 +476,34 @@
         "mtime": 1794906411.0398972
     },
     "experiments\\phase 3\\export_to_notebook.py": {
-        "hash": "a4983b0b148d7da6259e0afae2cc2e892c9b7440b643cee9f7499acde3331af3",
-        "mtime": 1794744693.7823777
+        "hash": "63a597e6dcd93587d08c402d753c22e99686fda76c807897bb7335731ab2552d",
+        "mtime": 1795253064.8500822
     },
     "experiments\\phase 3\\inspect_phase3_generation.py": {
-        "hash": "be1c1eae25a2626c57473f73aecb4cce1c31ee74d72984bac193ab9cb7ba7148",
-        "mtime": 1794903623.0686033
+        "hash": "5ecf78874044a14a99239a0b0ec48c68fde14a1241d8bcda958ed1ef9dce67eb",
+        "mtime": 1795253071.834668
     },
     "experiments\\phase 3\\prepare_phase3_data.py": {
         "hash": "2eec16667d3ec24f6ba1e47c85d1546c581b3ad048405eab4fe9b53e167cf280",
         "mtime": 1794748688.3700001
     },
     "experiments\\phase 3\\test_phase3_architecture.py": {
-        "hash": "bc4c64aa02dbedcfe14b7f77d75106bff2159bc130f84a0ae35d6c3b968be954",
-        "mtime": 1794906275.187447
+        "hash": "8ddb1ae18dc080eca814c1a018ff6b64226e0705b3caa0fabeff1be541fa0169",
+        "mtime": 1795253101.7122743
     },
     "experiments\\phase 3\\test_phase3_open_questions.py": {
         "hash": "2df80d398f7d53bc2ff3ca4d3cc5344ca2228fbffe9288476f8221e2d3de4b03",
         "mtime": 1794743131.402553
     },
     "experiments\\phase 3\\train_phase3.py": {
-        "hash": "36c8314a9a29cfb21ec88f01330c11e943c255e300f71f8c49af7e5bb8784e71",
-        "mtime": 1795251234.6402547
+        "hash": "f84273ece84c7e0620bd522ef669923636e325b793179cc02e6b65db12188b0c",
+        "mtime": 1795253045.7076275
     },
     "experiments\\phase 3\\checkpoints\\.gitkeep": {
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
         "mtime": 1794744643.2544372
     },
-    "experiments\\phase 3\\checkpoints\\planC_Phase 2_checkpoints_phase2_step_7500.pt": {
+    "experiments\\phase 3\\checkpoints\\planC_Phase 2_checkpoints_phase3_step_7500.pt": {
         "hash": "50fdbedfbd40059b96ab78c6ac4ff78378db250d9e2b90040bd3768e2db46a22",
         "mtime": 1794936164.092381
     },
@@ -514,6 +514,10 @@
     "experiments\\phase 3\\Kaggle\\train_phase2_notebook.ipynb": {
         "hash": "e38cc89300c88451e71c2812adf9293736cb5e21189992b455f1dc1a6ae12170",
         "mtime": 1794906768.6517498
+    },
+    "experiments\\phase 3\\Kaggle\\train_phase3_notebook.ipynb": {
+        "hash": "e83dbdbae492bb0a493218f2b498af8351a1273391131866647f513a661a4576",
+        "mtime": 1795253478.8479543
     },
     "experiments\\phase 3\\output\\.gitkeep": {
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

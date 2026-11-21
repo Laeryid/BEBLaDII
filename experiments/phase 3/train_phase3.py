@@ -1,12 +1,13 @@
 # %% [markdown]
-# # BEBLaDII Phase 2 Plan C — Условное ядро латентной диффузии на Грассманиане с `CA_Prompt`
+# # BEBLaDII Phase 3 Plan C — Условное ядро латентной диффузии на Грассманиане с `CA_Prompt` и `NoiseRadarHead`
 # Архитектура:
-# - Замороженная Система 1 (`GrassmannianEncoder` + `GrassmannianDecoder` step_19500 из `storage/components/`).
+# - Замороженный Энкодер Фазы 1 (`GrassmannianEncoder`) + обновлённый O(8)-инвариантный Декодер-Радар Фазы 2 (`GrassmannianDecoder` step_25000, ADR 137).
+# - Словно-ориентированный эластичный чанкер `WordAwareElasticChunker` + канонизация базиса `canonicalize_cell_basis(V)` для таргетов V_0 и V_prompt.
 # - Unit-RMS остаточный поток (`sigma_data = 0.05`) + `PromptAdapter` (`2 x Full SA`).
 # - 10-слойное ядро `GrassmannianDiffusionCore`: `Full, Local(r=8), CA_Prompt, Full, CA_Prompt, Full, CA_Prompt, Full, Local(r=8), Full`.
 # - `Shared KV Projection` + `Split K/V Channel Gating` во всех 12 слоях внимания.
-# - `ConditionEmbedder` (локальное/глобальное время + 8 спектральных датчиков) + `Soft-Gate AdaLN` (`std=1e-4`, `gate_bias=0.02`).
-# - Детерминированный якорь `SEP` на позиции `0` ($t_0 = 0$) и формат ответа $N_{\text{ans}} = 127$ (508 токенов).
+# - `ConditionEmbedder` (локальное/глобальное время + 8 спектральных датчиков, включая `s7 = NoiseRadarHead.sigma_cell_hat`) + `Soft-Gate AdaLN`.
+# - Детерминированный якорь `SEP` на позиции `0` ($t_0 = 0$) и формат ответа $N_{\text{ans}} = 127$ (до 508 токенов).
 # - Целевая платформа: Kaggle 2xT4 (`sm_75`, FP16 + GradScaler, `DDP` или `DataParallel` с внешним расчетом лосса).
 
 # %%
@@ -150,12 +151,12 @@ class EnvironmentConfig:
         if project_root not in sys.path:
             sys.path.insert(0, project_root)
 
-        gcs_checkpoints_dir = "gs://bebladii-weigths-us/planC/Phase 2/checkpoints/"
+        gcs_checkpoints_dir = "gs://bebladii-weigths-us/planC/Phase3_Diffusion/checkpoints/"
 
         if is_kaggle:
             data_dir = "/kaggle/input"
             output_dir = "/kaggle/working/output"
-            checkpoint_dir = "/kaggle/working/checkpoints/phase2"
+            checkpoint_dir = "/kaggle/working/checkpoints/phase3"
             search_roots = [
                 "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data",
                 "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data",
@@ -218,8 +219,8 @@ class EnvironmentConfig:
             wandb_mode = "online" if "WANDB_API_KEY" in os.environ else "disabled"
         else:
             data_dir = os.path.join(project_root, "data")
-            output_dir = os.path.join(project_root, "experiments", "phase 2", "output")
-            checkpoint_dir = os.path.join(project_root, "experiments", "phase 2", "checkpoints")
+            output_dir = os.path.join(project_root, "experiments", "phase 3", "output")
+            checkpoint_dir = os.path.join(project_root, "experiments", "phase 3", "checkpoints")
             train_data_path = resolve_file_path(
                 "train_phase2.parquet",
                 [os.path.join(project_root, "BEBLaDII-plan\u0421-Phase2-Data", "data", "train_phase2.parquet")],
@@ -302,7 +303,9 @@ from storage.components.plan_c_layers import (
     RMSNorm,
     RotaryEmbedding128,
     SphereLinear,
+    WordAwareElasticChunker,
     apply_rotary_pos_emb,
+    canonicalize_cell_basis,
     clamp_to_unit_ball,
 )
 from storage.components.tokenizer import get_tokenizer
@@ -359,6 +362,32 @@ def detect_void_mask(V_cells: torch.Tensor, void_ref: torch.Tensor) -> torch.Ten
     ref = ref.expand_as(V_f)
     s_void = sim_gr(V_f, ref)
     return (energy < VOID_ENERGY_THR) | (s_void > VOID_SIM_THR)
+
+
+@torch.no_grad()
+def compute_radar_sigma(
+    decoder: Optional[nn.Module],
+    V_t: torch.Tensor,
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+) -> torch.Tensor:
+    """
+    Быстрый расчёт поклеточного показания NoiseRadarHead (Выход А декодера Фазы 2) для датчика s7:
+    Возвращает radar_sigma (B, N_CANVAS) в float32 в [0, 1], причём для якоря SEP (pos 0) всегда 0.0.
+    """
+    B, N, _, _ = V_t.shape
+    radar_full = torch.zeros((B, N), device=V_t.device, dtype=torch.float32)
+    if decoder is None or N <= 1 or not hasattr(decoder, "estimate_noise"):
+        return radar_full
+    if getattr(decoder, "noise_radar", None) is None:
+        return radar_full
+
+    dec_dtype = next(decoder.parameters()).dtype
+    v_ans = V_t[:, 1:].to(dtype=amp_dtype if use_amp else dec_dtype)
+    with torch.autocast(device_type=V_t.device.type, dtype=amp_dtype, enabled=use_amp):
+        sigma_cell, _, _ = decoder.estimate_noise(v_ans)
+    radar_full[:, 1:] = sigma_cell.float().clamp(0.0, 1.0)
+    return radar_full
 
 
 class PerHeadRMSNorm(nn.Module):
@@ -425,6 +454,7 @@ class ConditionEmbedder(nn.Module):
         V_t: torch.Tensor,
         t_mat: torch.Tensor,
         m_prompt: torch.Tensor,
+        radar_sigma: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         B, N, _, _ = V_t.shape
         device_type = V_t.device.type
@@ -448,13 +478,19 @@ class ConditionEmbedder(nn.Module):
                 active_cnt = active_ans.sum(dim=-1, keepdim=True).clamp(min=1.0)
                 # Глобальный средний шум по активным зашумленным ячейкам (без искажения от чистого префикса t=0)
                 t_bar = ((tf_ans * active_ans).sum(dim=-1, keepdim=True) / active_cnt).expand(B, N)
-                # Доля уже кристаллизованного префикса ответа (t_i <= 1e-3)
+                # Доля уже кристаллизованных ячеек ответа (t_i <= 1e-3)
                 s6 = (1.0 - active_ans).mean(dim=-1, keepdim=True).expand(B, N)
             else:
                 t_bar = tf
                 s6 = (tf <= 1e-3).float()
-            zeros = torch.zeros_like(s0)
-            sensors = torch.stack([s0, s1, s2, s3, s4, s5, s6, zeros], dim=-1)
+            if radar_sigma is not None:
+                s7 = radar_sigma.float().clamp(0.0, 1.0)
+                if N > 0:
+                    s7 = s7.clone()
+                    s7[:, 0] = 0.0
+            else:
+                s7 = torch.zeros_like(s0)
+            sensors = torch.stack([s0, s1, s2, s3, s4, s5, s6, s7], dim=-1)
 
             e_loc = self.t_local_emb(tf)
             e_glob = self.t_global_emb(t_bar)
@@ -921,6 +957,7 @@ class GrassmannianDiffusionCore(nn.Module):
         x_prompt: torch.Tensor,
         prompt_attn_mask: torch.Tensor,
         m_prompt: torch.Tensor,
+        radar_sigma: Optional[torch.Tensor] = None,
         return_sink_weights: bool = False,
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
         """
@@ -930,7 +967,7 @@ class GrassmannianDiffusionCore(nn.Module):
         B, N_a, _, _ = V_t.shape
         m_active = t_mat > 1e-3
 
-        c = self.cond_embedder(V_t, t_mat, m_prompt)
+        c = self.cond_embedder(V_t, t_mat, m_prompt, radar_sigma=radar_sigma)
         x_ans = (V_t.float() / SIGMA_DATA).to(V_t.dtype).reshape(B, N_a, self.hidden_size)
         cos_a, sin_a = self.rope(x_ans, N_a)
 
@@ -974,6 +1011,7 @@ class GrassmannianDiffusionCore(nn.Module):
         prompt_valid_mask: torch.Tensor,
         prompt_attn_mask: torch.Tensor,
         m_prompt: torch.Tensor,
+        radar_sigma: Optional[torch.Tensor] = None,
         return_sink_weights: bool = False,
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
         x_prompt = self.encode_prompt(V_prompt, prompt_valid_mask=prompt_valid_mask)
@@ -983,6 +1021,7 @@ class GrassmannianDiffusionCore(nn.Module):
             x_prompt=x_prompt,
             prompt_attn_mask=prompt_attn_mask,
             m_prompt=m_prompt,
+            radar_sigma=radar_sigma,
             return_sink_weights=return_sink_weights,
         )
 
@@ -1035,10 +1074,10 @@ def make_pooling_weights(input_ids: torch.Tensor, stopword_mask: torch.Tensor) -
 
 class PromptAnswerDataset(Dataset):
     """
-    Датасет пар (Q, A) из train_phase2.parquet / val_phase2.parquet:
-    - Промпт Q: выравнивается по левому краю, дополняется справа PAD=10 до 256 токенов (64 клетки).
-    - Ответ A: усекается до 508 токенов (по возможности по последней точке/переносу строки),
-      дополняется справа PAD=10 до 508 токенов (127 клеток ответа + SEP на pos 0 = 128).
+    Датасет пар (Q, A) с WordAwareElasticChunker (ADR 137):
+    - Промпт Q: упаковывается по целым словам (1..4 токена) в N_PROMPT=64 клетки (256 слотов), elastic_drop_prob=0.0.
+    - Ответ A: упаковывается по целым словам в N_ANS=127 клеток (508 слотов) с опциональным мягким
+      elastic_drop_prob (по умолчанию 0.05 на train, 0.0 на val) и двухуровневыми весами пулера.
     """
 
     def __init__(
@@ -1051,13 +1090,21 @@ class PromptAnswerDataset(Dataset):
         max_rows: Optional[int] = None,
         is_validation: bool = False,
         synthetic_len: int = 200,
+        elastic_drop_prob: float = 0.05,
     ):
         self.tokenizer = tokenizer
         self.stopword_mask = stopword_mask.bool()
         self.max_prompt_tokens = max_prompt_tokens
         self.max_ans_tokens = max_ans_tokens
         self.is_validation = is_validation
+        self.elastic_drop_prob = 0.0 if is_validation else float(elastic_drop_prob)
         self.punct_ids = build_punctuation_id_set(tokenizer)
+        self.chunker = WordAwareElasticChunker(
+            tokenizer=tokenizer,
+            chunk_size=4,
+            pad_token_id=PAD_TOKEN_ID,
+            stopword_mask=self.stopword_mask,
+        )
 
         self.pairs: List[Tuple[str, str]] = []
         if parquet_path and os.path.exists(parquet_path):
@@ -1104,11 +1151,6 @@ class PromptAnswerDataset(Dataset):
     def __len__(self) -> int:
         return len(self.pairs)
 
-    def _pad_right(self, ids: List[int], target_len: int) -> List[int]:
-        if len(ids) >= target_len:
-            return ids[:target_len]
-        return ids + [PAD_TOKEN_ID] * (target_len - len(ids))
-
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         q_text, a_text = self.pairs[idx]
         q_ids = encode_token_ids(self.tokenizer, q_text)[: self.max_prompt_tokens]
@@ -1129,11 +1171,13 @@ class PromptAnswerDataset(Dataset):
         if not a_ids:
             a_ids = [1]
 
-        q_padded = self._pad_right(q_ids, self.max_prompt_tokens)
-        a_padded = self._pad_right(a_ids, self.max_ans_tokens)
+        p_pack = self.chunker.chunk_tokens(q_ids, max_cells=N_PROMPT, elastic_drop_prob=0.0)
+        a_pack = self.chunker.chunk_tokens(a_ids, max_cells=N_ANS, elastic_drop_prob=self.elastic_drop_prob)
 
-        prompt_ids = torch.tensor(q_padded, dtype=torch.long)
-        ans_ids = torch.tensor(a_padded, dtype=torch.long)
+        prompt_ids = p_pack["input_ids"]
+        ans_ids = a_pack["input_ids"]
+        prompt_weights = p_pack["weights"]
+        ans_weights = a_pack["weights"]
 
         # Разметка ячеек промпта (64) и ответа (127)
         n_real_prompt = (prompt_ids.view(N_PROMPT, 4) != PAD_TOKEN_ID).sum(dim=-1)
@@ -1141,8 +1185,8 @@ class PromptAnswerDataset(Dataset):
 
         # Базовые веса ячеек холста 0..127 (см. §5.1)
         w_cell = torch.zeros(N_CANVAS, dtype=torch.float32)
-        nz = torch.where(n_real_ans > 0)[0]
-        i_last = (int(nz[-1].item()) if len(nz) > 0 else 0) + 1  # в индексах холста 1..127
+        n_content_ans = int(a_pack["n_content_cells"].item())
+        i_last = max(1, min(N_ANS, n_content_ans))  # в индексах холста 1..127
         for i in range(1, N_CANVAS):
             if i < i_last:
                 w_cell[i] = 1.0
@@ -1156,6 +1200,8 @@ class PromptAnswerDataset(Dataset):
         return {
             "prompt_ids": prompt_ids,
             "ans_ids": ans_ids,
+            "prompt_weights": prompt_weights,
+            "ans_weights": ans_weights,
             "n_real_prompt": n_real_prompt,
             "n_real_ans": n_real_ans,
             "i_last": torch.tensor(i_last, dtype=torch.long),
@@ -1169,11 +1215,11 @@ def sample_mixed_noise_schedule(
     i_last: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
-    Перебалансированный Mixed Noise Curriculum без доминирования лёгкого шума (для ячеек 0..127, t_0 == 0.0):
-    - 30% High-Noise / Pure-Start: 1/3 ровно t=1.0, 2/3 U(0.80, 1.0)
-    - 35% Shifted Flat Diffusion: t ~ Sigmoid(N(0.75, 1.0)) (медиана ~0.68)
-    - 20% Causal Prefix / Block-AR: чистый префикс 1..k (t=0), весь хвост k+1..127 в высоком шуме
-          (50% — блок [k+1..k+16] в U(0.30, 1.0) + дальний хвост t=1.0; 50% — весь хвост U(0.55, 1.0))
+    Перебалансированный Mixed Noise Curriculum Фазы 3 с режимом кристаллизации (для ячеек 0..127, t_0 == 0.0):
+    - 25% High-Noise / Pure-Start: 1/3 ровно t=1.0, 2/3 U(0.80, 1.0)
+    - 30% Shifted Flat Diffusion: t ~ Sigmoid(N(0.75, 1.0)) (медиана ~0.68)
+    - 15% Causal Prefix / Block-AR: чистый префикс 1..k (t=0), хвост k+1..127 в высоком шуме
+    - 15% Random Crystal Anchors: 20-60% случайных ячеек контента кристаллизованы (t=0.0), остальные U(0.30, 1.0)
     - 15% Rolling Wave Gradient: монотонный фронт шума слева направо [0.0..0.25] -> [0.75..1.0].
     """
     t_mat = torch.zeros(batch_size, N_CANVAS, device=device, dtype=torch.float32)
@@ -1181,16 +1227,16 @@ def sample_mixed_noise_schedule(
 
     for b in range(batch_size):
         r = float(regimes[b].item())
-        if r < 0.30:
+        if r < 0.25:
             if float(torch.rand(1, device=device).item()) < 0.333:
                 t_mat[b, 1:] = 1.0
             else:
                 t_hi = torch.empty(1, device=device).uniform_(0.80, 1.0)
                 t_mat[b, 1:] = t_hi
-        elif r < 0.65:
+        elif r < 0.55:
             t_flat = torch.sigmoid(torch.randn(1, device=device) * 1.0 + 0.75).clamp(0.01, 1.0)
             t_mat[b, 1:] = t_flat
-        elif r < 0.85:
+        elif r < 0.70:
             max_cut = int(i_last[b].item()) - 1 if i_last is not None else N_ANS - 1
             max_cut = max(0, min(max_cut, N_ANS - 1))
             if max_cut > 0:
@@ -1215,6 +1261,16 @@ def sample_mixed_noise_schedule(
                 t_ans[cut:] = torch.empty(1, device=device).uniform_(0.55, 1.0)
             if cut > 0:
                 t_ans[:cut] = 0.0
+            t_mat[b, 1:] = t_ans
+        elif r < 0.85:
+            # Random Crystal Anchors: часть ячеек уже кристаллизована (t=0), остальные достраиваются
+            t_ans = torch.empty(N_ANS, device=device, dtype=torch.float32).uniform_(0.30, 1.0)
+            n_c = int(i_last[b].item()) if i_last is not None else N_ANS
+            n_c = max(2, min(n_c, N_ANS))
+            keep_frac = 0.20 + 0.40 * float(torch.rand(1, device=device).item())
+            n_anchors = max(1, min(n_c - 1, int(round(n_c * keep_frac))))
+            anchor_idx = torch.randperm(n_c, device=device)[:n_anchors]
+            t_ans[anchor_idx] = 0.0
             t_mat[b, 1:] = t_ans
         else:
             t_start = 0.25 * float(torch.rand(1, device=device).item())
@@ -1279,7 +1335,7 @@ def _ddp_sum(x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def compute_phase2_loss(
+def compute_phase3_loss(
     V_0_hat: torch.Tensor,
     V_0: torch.Tensor,
     t_mat: torch.Tensor,
@@ -1289,8 +1345,9 @@ def compute_phase2_loss(
     step: int,
     m_prompt: Optional[torch.Tensor] = None,
     sink_weights: Optional[torch.Tensor] = None,
-    gr_weight: float = 0.08,
-    energy_weight: float = 0.05,
+    basis_weight: float = 0.50,
+    gr_weight: float = 0.50,
+    energy_weight: float = 0.15,
     adj_weight: float = 0.10,
     bary_weight: float = 0.10,
     sink_weight: float = 0.10,
@@ -1301,8 +1358,8 @@ def compute_phase2_loss(
     world_size: int = 1,
 ) -> Tuple[torch.Tensor, Dict[str, float]]:
     """
-    Гибридная функция потерь Фазы 2 (§5.3) строго в torch.float32 после gather на полном микро-батче:
-    L_total = L_basis + 0.08*L_Gr_dir + 0.05*L_energy + 0.1*L_adj + 0.1*L_bary + 0.1*L_sink + w_adaln(s)*L_adaln.
+    Гибридная функция потерь Фазы 3 (канонический базис V_0 + O(8)-инвариантный декодер ADR 137):
+    L_total = 0.50*L_basis + 0.50*L_Gr_dir + 0.15*L_energy + 0.1*L_adj + 0.1*L_bary + 0.1*L_sink + w_adaln(s)*L_adaln.
     """
     device_type = V_0_hat.device.type
     with torch.autocast(device_type=device_type, enabled=False):
@@ -1420,7 +1477,7 @@ def compute_phase2_loss(
         adaln_term = (w_adaln * float(world_size)) * l_adaln if world_size > 1 else w_adaln * l_adaln
 
         total_loss = (
-            l_basis
+            basis_weight * l_basis
             + gr_weight * l_gr
             + energy_weight * l_energy
             + adj_weight * l_adj
@@ -1443,6 +1500,9 @@ def compute_phase2_loss(
             "adaln/sigma_min": sigma_min_val,
         }
         return total_loss, metrics
+
+
+compute_phase2_loss = compute_phase3_loss
 
 
 # %% [markdown]
@@ -1716,12 +1776,13 @@ def euler_heun_sample(
     num_steps: int = 20,
     cfg_scale: float = 3.0,
     cfg_rescale: float = 0.7,
+    decoder: Optional[nn.Module] = None,
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.float16,
     seed: Optional[int] = None,
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """
-    Генерация с нуля (t = 1 -> 0) методом Эйлера–Хьюна 2-го порядка с CFG.
+    Генерация с нуля (t = 1 -> 0) методом Эйлера–Хьюна 2-го порядка с CFG и датчиком s7 (NoiseRadarHead).
     Ячейка 0 всегда закреплена sep_concept.pt (t_0 = 0.0).
     Возвращает (V_final (B, 128, 8, 128), sink_weights_last_step (B, 3, 128)).
     """
@@ -1753,6 +1814,7 @@ def euler_heun_sample(
     def predict_v0(V_in: torch.Tensor, t_val: float, want_sink: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         t_mat = torch.full((B, N_CANVAS), t_val, device=device, dtype=torch.float32)
         t_mat[:, 0] = 0.0
+        radar_sig = compute_radar_sigma(decoder, V_in, use_amp=use_amp, amp_dtype=amp_dtype)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             v0_cond, _, sw = raw_core.forward_with_cached_prompt(
                 V_t=V_in.to(amp_dtype if use_amp else torch.float32),
@@ -1760,6 +1822,7 @@ def euler_heun_sample(
                 x_prompt=x_prompt,
                 prompt_attn_mask=prompt_valid_mask,
                 m_prompt=m_cond,
+                radar_sigma=radar_sig,
                 return_sink_weights=want_sink,
             )
             if abs(cfg_scale - 1.0) > 1e-4:
@@ -1769,6 +1832,7 @@ def euler_heun_sample(
                     x_prompt=x_prompt,
                     prompt_attn_mask=uncond_mask,
                     m_prompt=m_uncond,
+                    radar_sigma=radar_sig,
                     return_sink_weights=False,
                 )
                 v0 = _apply_cfg_and_clamp(v0_cond, v0_uncond, cfg_scale=cfg_scale, cfg_rescale=cfg_rescale)
@@ -1815,6 +1879,7 @@ def rolling_wave_sample(
     window: float = 56.0,
     cfg_scale: float = 3.0,
     cfg_rescale: float = 0.7,
+    decoder: Optional[nn.Module] = None,
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.float16,
     seed: Optional[int] = None,
@@ -1860,6 +1925,7 @@ def rolling_wave_sample(
         t_next_ans = get_t_ans(float(u_grid[k + 1].item()))
         dt_ans = (t_cur_ans - t_next_ans).view(1, N_ANS, 1, 1)
         t_mat = torch.cat([torch.zeros(B, 1, device=device), t_cur_ans.unsqueeze(0).expand(B, -1)], dim=1)
+        radar_sig = compute_radar_sigma(decoder, V_t, use_amp=use_amp, amp_dtype=amp_dtype)
 
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             v0_cond, _, _ = raw_core.forward_with_cached_prompt(
@@ -1868,6 +1934,7 @@ def rolling_wave_sample(
                 x_prompt=x_prompt,
                 prompt_attn_mask=prompt_valid_mask,
                 m_prompt=m_cond,
+                radar_sigma=radar_sig,
                 return_sink_weights=False,
             )
             if abs(cfg_scale - 1.0) > 1e-4:
@@ -1877,6 +1944,7 @@ def rolling_wave_sample(
                     x_prompt=x_prompt,
                     prompt_attn_mask=uncond_mask,
                     m_prompt=m_uncond,
+                    radar_sigma=radar_sig,
                     return_sink_weights=False,
                 )
                 v0 = _apply_cfg_and_clamp(v0_cond, v0_uncond, cfg_scale=cfg_scale, cfg_rescale=cfg_rescale)
@@ -1918,6 +1986,7 @@ def block_ar_sample(
     steps_per_block: int = 8,
     cfg_scale: float = 3.0,
     cfg_rescale: float = 0.7,
+    decoder: Optional[nn.Module] = None,
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.float16,
     seed: Optional[int] = None,
@@ -1951,6 +2020,7 @@ def block_ar_sample(
         t_mat = torch.ones(B, N_CANVAS, device=device, dtype=torch.float32)
         t_mat[:, :s_idx] = 0.0
         t_mat[:, s_idx:e_idx] = t_val
+        radar_sig = compute_radar_sigma(decoder, V_in, use_amp=use_amp, amp_dtype=amp_dtype)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             v0_cond, _, _ = raw_core.forward_with_cached_prompt(
                 V_t=V_in.to(amp_dtype if use_amp else torch.float32),
@@ -1958,6 +2028,7 @@ def block_ar_sample(
                 x_prompt=x_prompt,
                 prompt_attn_mask=prompt_valid_mask,
                 m_prompt=m_cond,
+                radar_sigma=radar_sig,
                 return_sink_weights=False,
             )
             if abs(cfg_scale - 1.0) > 1e-4:
@@ -1967,6 +2038,7 @@ def block_ar_sample(
                     x_prompt=x_prompt,
                     prompt_attn_mask=uncond_mask,
                     m_prompt=m_uncond,
+                    radar_sigma=radar_sig,
                     return_sink_weights=False,
                 )
                 return _apply_cfg_and_clamp(v0_cond, v0_uncond, cfg_scale=cfg_scale, cfg_rescale=cfg_rescale)
@@ -2005,6 +2077,111 @@ def block_ar_sample(
 
 
 @torch.no_grad()
+def crystal_radar_sample(
+    core: GrassmannianDiffusionCore,
+    V_prompt: torch.Tensor,
+    prompt_valid_mask: torch.Tensor,
+    sep_concept: torch.Tensor,
+    decoder: Optional[nn.Module] = None,
+    num_steps: int = 20,
+    cfg_scale: float = 3.0,
+    cfg_rescale: float = 0.7,
+    crystal_thr: float = 0.04,
+    crystal_start_t: float = 0.65,
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+    seed: Optional[int] = None,
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """
+    Адаптивная кристаллизация под управлением NoiseRadarHead (Выход А декодера Фазы 2):
+    На каждом шаге клетки с sigma_cell_hat < crystal_thr (при t <= crystal_start_t) фиксируются
+    в чистые опорные кристаллы (t_i = 0.0), помогая ядру достраивать оставшиеся неуверенные клетки.
+    """
+    raw_core = getattr(core, "module", core)
+    was_training = raw_core.training
+    raw_core.eval()
+
+    B = V_prompt.shape[0]
+    device = V_prompt.device
+    gen = torch.Generator(device=device) if seed is not None else None
+    if gen is not None:
+        gen.manual_seed(seed)
+
+    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+        x_prompt = raw_core.encode_prompt(V_prompt, prompt_valid_mask=prompt_valid_mask)
+
+    sep_exp = sep_concept.to(device=device, dtype=torch.float32).view(1, 1, 8, 128).expand(B, 1, 8, 128)
+    noise = torch.randn((B, N_ANS, 8, 128), generator=gen, device=device, dtype=torch.float32) * SIGMA_DATA
+    V_t = torch.cat([sep_exp, noise], dim=1)
+
+    t_grid = torch.linspace(1.0, 0.0, steps=num_steps + 1, device=device, dtype=torch.float32)
+    m_cond = torch.ones(B, device=device, dtype=torch.float32)
+    m_uncond = torch.zeros(B, device=device, dtype=torch.float32)
+    uncond_mask = torch.zeros_like(prompt_valid_mask)
+    locked = torch.zeros((B, N_CANVAS), dtype=torch.bool, device=device)
+    locked[:, 0] = True
+    last_sink_weights = None
+
+    for k in range(num_steps):
+        t_cur = float(t_grid[k].item())
+        t_next = float(t_grid[k + 1].item())
+        dt = t_cur - t_next
+
+        t_mat = torch.where(locked, torch.zeros((B, N_CANVAS), device=device), torch.full((B, N_CANVAS), t_cur, device=device))
+        radar_sig = compute_radar_sigma(decoder, V_t, use_amp=use_amp, amp_dtype=amp_dtype)
+        radar_sig = torch.where(locked, torch.zeros_like(radar_sig), radar_sig)
+
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            v0_cond, _, sw = raw_core.forward_with_cached_prompt(
+                V_t=V_t.to(amp_dtype if use_amp else torch.float32),
+                t_mat=t_mat,
+                x_prompt=x_prompt,
+                prompt_attn_mask=prompt_valid_mask,
+                m_prompt=m_cond,
+                radar_sigma=radar_sig,
+                return_sink_weights=(k == num_steps - 1),
+            )
+            if abs(cfg_scale - 1.0) > 1e-4:
+                v0_uncond, _, _ = raw_core.forward_with_cached_prompt(
+                    V_t=V_t.to(amp_dtype if use_amp else torch.float32),
+                    t_mat=t_mat,
+                    x_prompt=x_prompt,
+                    prompt_attn_mask=uncond_mask,
+                    m_prompt=m_uncond,
+                    radar_sigma=radar_sig,
+                    return_sink_weights=False,
+                )
+                v0 = _apply_cfg_and_clamp(v0_cond, v0_uncond, cfg_scale=cfg_scale, cfg_rescale=cfg_rescale)
+            else:
+                v0 = v0_cond.float()
+        if k == num_steps - 1:
+            last_sink_weights = sw
+        v0[:, 0] = sep_exp[:, 0]
+
+        if t_next <= 1e-6:
+            V_t = torch.where(locked.unsqueeze(-1).unsqueeze(-1), V_t, v0)
+            break
+
+        d1 = (V_t - v0) / max(t_cur, 1e-4)
+        V_next = V_t - dt * d1
+        V_t = torch.where(locked.unsqueeze(-1).unsqueeze(-1), V_t, V_next)
+        V_t[:, 0] = sep_exp[:, 0]
+
+        # Кристаллизуем клетки, в которых радар шума уверен (sigma_cell < crystal_thr)
+        if decoder is not None and t_next <= crystal_start_t:
+            sig_after = compute_radar_sigma(decoder, V_t, use_amp=use_amp, amp_dtype=amp_dtype)
+            newly_locked = (~locked) & (sig_after < crystal_thr)
+            newly_locked[:, 0] = False
+            if newly_locked.any():
+                V_t = torch.where(newly_locked.unsqueeze(-1).unsqueeze(-1), v0, V_t)
+                locked = locked | newly_locked
+
+    if was_training:
+        raw_core.train()
+    return V_t, last_sink_weights
+
+
+@torch.no_grad()
 def decode_latent_answers(
     V_canvas: torch.Tensor,
     decoder: nn.Module,
@@ -2015,7 +2192,7 @@ def decode_latent_answers(
     Декодирование ответа после генерации:
     1. Отбрасываем ячейку 0 (SEP) -> V_ans (B, 127, 8, 128).
     2. Латентный фильтр VOID до декодера (§1.3).
-    3. Вызов GrassmannianDecoder (eval) для смыслового префикса.
+    3. Вызов GrassmannianDecoder (eval) и сборка текста через WordAwareElasticChunker.detokenize_non_pad (ADR 137).
     """
     V_ans = V_canvas[:, 1:].float()
     is_void = detect_void_mask(V_ans, void_ref)
@@ -2037,11 +2214,15 @@ def decode_latent_answers(
             continue
 
         logits = decoder(V_ans[b : b + 1, :n_keep].to(next(decoder.parameters()).dtype))
-        tok_ids = logits.argmax(dim=-1)[0].tolist()
-        tok_ids = [tid for tid in tok_ids if tid != PAD_TOKEN_ID]
+        pred_ids = logits.argmax(dim=-1)[0]
         if tokenizer is not None:
-            texts.append(tokenizer.decode(tok_ids, skip_special_tokens=True))
+            texts.append(
+                WordAwareElasticChunker.detokenize_non_pad(
+                    pred_ids, tokenizer=tokenizer, pad_token_id=PAD_TOKEN_ID, skip_special_tokens=True
+                )
+            )
         else:
+            tok_ids = [tid for tid in pred_ids.tolist() if tid != PAD_TOKEN_ID]
             texts.append(" ".join(str(x) for x in tok_ids[:32]))
     return texts, void_starts
 
@@ -2056,8 +2237,9 @@ def _eval_denoising_window(
     noise: torch.Tensor,
     use_amp: bool,
     amp_dtype: torch.dtype,
+    decoder: Optional[nn.Module] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
-    """Выполняет условный и безусловный проходы денойзинга в заданном диапазоне шума t."""
+    """Выполняет условный и безусловный проходы денойзинга в заданном диапазоне шума t (с датчиком s7)."""
     B = V_0.shape[0]
     device = V_0.device
     t_val = torch.linspace(t_range[0], t_range[1], N_ANS, device=device).view(1, N_ANS).expand(B, N_ANS)
@@ -2066,6 +2248,7 @@ def _eval_denoising_window(
     V_t = (1.0 - t_exp) * V_0 + t_exp * SIGMA_DATA * noise
     V_t[:, 0] = V_0[:, 0]
 
+    radar_sig = compute_radar_sigma(decoder, V_t, use_amp=use_amp, amp_dtype=amp_dtype)
     m_cond = torch.ones(B, device=device)
     m_uncond = torch.zeros(B, device=device)
     v_in = V_t.to(amp_dtype if use_amp else torch.float32)
@@ -2079,6 +2262,7 @@ def _eval_denoising_window(
             prompt_valid_mask=p_valid,
             prompt_attn_mask=p_valid,
             m_prompt=m_cond,
+            radar_sigma=radar_sig,
             return_sink_weights=True,
         )
         V_0_uncond, _, _ = raw_model(
@@ -2088,6 +2272,7 @@ def _eval_denoising_window(
             prompt_valid_mask=p_valid,
             prompt_attn_mask=torch.zeros_like(p_valid),
             m_prompt=m_uncond,
+            radar_sigma=radar_sig,
             return_sink_weights=False,
         )
     return V_0_hat.float(), V_0_uncond.float(), stats, (sink_w.float() if sink_w is not None else None)
@@ -2117,7 +2302,7 @@ def _record_window_metrics(
 
 
 @torch.no_grad()
-def evaluate_phase2(
+def evaluate_phase3(
     model: GrassmannianDiffusionCore,
     encoder: nn.Module,
     decoder: nn.Module,
@@ -2133,7 +2318,7 @@ def evaluate_phase2(
     run_generation_check: bool = True,
     gen_steps: int = 20,
 ) -> Dict[str, Any]:
-    """Полный расчет метрик Evaluation Gate (§7.1) на низком [0.1, 0.5] и высоком [0.75, 0.95] шуме."""
+    """Полный расчет метрик Evaluation Gate Фазы 3 на низком [0.1, 0.5] и высоком [0.75, 0.95] шуме + NoiseRadarHead."""
     raw_model = getattr(model, "module", model)
     was_training = raw_model.training
     raw_model.eval()
@@ -2141,13 +2326,15 @@ def evaluate_phase2(
     low_b: Dict[str, List[float]] = {"sim": [], "cfg": [], "sink_c": [], "sink_v": []}
     hi_b: Dict[str, List[float]] = {"sim": [], "cfg": [], "sink_c": [], "sink_v": []}
     rk_vals: List[float] = []
+    radar_sig_vals: List[float] = []
+    dict_cos_vals: List[float] = []
     tp, fp, fn = 0, 0, 0
     void_start_exact, void_start_pm1, void_start_tot = 0, 0, 0
     full_canvas_ok, full_canvas_tot = 0, 0
     sum_m_acc, sum_m2_acc, cnt_acc = None, None, None
     gen_samples: List[Dict[str, str]] = []
 
-    sep_cpu = sep_concept.float()
+    sep_cpu, _ = canonicalize_cell_basis(sep_concept.float())
     void_cpu = void_concept.float()
     sw_dev = stopword_mask.to(device)
 
@@ -2160,11 +2347,13 @@ def evaluate_phase2(
         n_real_ans = batch["n_real_ans"].to(device)
         B = prompt_ids.shape[0]
 
-        w_p = make_pooling_weights(prompt_ids, sw_dev)
-        w_a = make_pooling_weights(ans_ids, sw_dev)
+        w_p = batch["prompt_weights"].to(device) if "prompt_weights" in batch else make_pooling_weights(prompt_ids, sw_dev)
+        w_a = batch["ans_weights"].to(device) if "ans_weights" in batch else make_pooling_weights(ans_ids, sw_dev)
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-            V_prompt = encoder(prompt_ids, w_p).float()
-            V_ans = encoder(ans_ids, w_a).float()
+            V_prompt_raw = encoder(prompt_ids, w_p).float()
+            V_ans_raw = encoder(ans_ids, w_a).float()
+        V_prompt, _ = canonicalize_cell_basis(V_prompt_raw)
+        V_ans, _ = canonicalize_cell_basis(V_ans_raw)
 
         sep_exp = sep_cpu.to(device).view(1, 1, 8, 128).expand(B, 1, 8, 128)
         V_0 = torch.cat([sep_exp, V_ans], dim=1)
@@ -2172,10 +2361,10 @@ def evaluate_phase2(
         noise = torch.randn_like(V_0)
 
         V_0_hat, V_0_uncond, stats, sink_w = _eval_denoising_window(
-            raw_model, V_0, V_prompt, p_valid, (0.1, 0.5), noise, use_amp, amp_dtype
+            raw_model, V_0, V_prompt, p_valid, (0.1, 0.5), noise, use_amp, amp_dtype, decoder=decoder
         )
         V_0_hat_hi, V_0_uncond_hi, _, sink_w_hi = _eval_denoising_window(
-            raw_model, V_0, V_prompt, p_valid, (0.75, 0.95), noise, use_amp, amp_dtype
+            raw_model, V_0, V_prompt, p_valid, (0.75, 0.95), noise, use_amp, amp_dtype, decoder=decoder
         )
 
         # Накопление AdaLN статистик по всему валидационному прогону
@@ -2199,6 +2388,13 @@ def evaluate_phase2(
         _record_window_metrics(V_0_hat_hi[:, 1:], V_0_uncond_hi[:, 1:], V_gt_ans, sink_w_hi, is_content, is_true_void, hi_b)
         if is_content.any():
             rk_vals.append(float(compute_rk_eff(V_hat_ans)[is_content].mean().item()))
+            if decoder is not None and hasattr(decoder, "estimate_noise") and getattr(decoder, "noise_radar", None) is not None:
+                dec_dtype = next(decoder.parameters()).dtype
+                sig_c, _, rad_dict = decoder.estimate_noise(V_hat_ans.to(dec_dtype))
+                radar_sig_vals.append(float(sig_c.float()[is_content].mean().item()))
+                if "dict_stats" in rad_dict:
+                    cos_c = rad_dict["dict_stats"].float().view(B, N_ANS, 4, 4)[..., 0].mean(dim=-1)
+                    dict_cos_vals.append(float(cos_c[is_content].mean().item()))
 
         pred_void = detect_void_mask(V_hat_ans, void_cpu)
         tp += int((pred_void & is_true_void).sum().item())
@@ -2231,35 +2427,36 @@ def evaluate_phase2(
                 sep_cpu,
                 num_steps=gen_steps,
                 cfg_scale=3.0,
+                decoder=decoder,
                 use_amp=use_amp,
                 amp_dtype=amp_dtype,
                 seed=1234,
             )
-            V_gen_roll = rolling_wave_sample(
+            V_gen_cryst, _ = crystal_radar_sample(
                 raw_model,
                 V_prompt[:n_gen],
                 p_valid[:n_gen],
                 sep_cpu,
-                void_ref=void_cpu,
-                num_steps=gen_steps * 2 if gen_steps > 2 else gen_steps,
-                window=56.0,
+                decoder=decoder,
+                num_steps=gen_steps,
                 cfg_scale=3.0,
                 use_amp=use_amp,
                 amp_dtype=amp_dtype,
                 seed=1234,
             )
             gen_texts, gen_vstarts = decode_latent_answers(V_gen, decoder, tokenizer, void_cpu)
-            roll_texts, roll_vstarts = decode_latent_answers(V_gen_roll, decoder, tokenizer, void_cpu)
+            cryst_texts, cryst_vstarts = decode_latent_answers(V_gen_cryst, decoder, tokenizer, void_cpu)
             for g_i in range(n_gen):
-                q_toks = [t for t in prompt_ids[g_i].tolist() if t != PAD_TOKEN_ID]
-                q_str = tokenizer.decode(q_toks, skip_special_tokens=True) if tokenizer is not None else str(q_toks[:16])
+                q_str = WordAwareElasticChunker.detokenize_non_pad(
+                    prompt_ids[g_i], tokenizer=tokenizer, pad_token_id=PAD_TOKEN_ID, skip_special_tokens=True
+                )
                 gen_samples.append(
                     {
                         "prompt": q_str[:160],
                         "generated": gen_texts[g_i][:300],
                         "void_start": str(gen_vstarts[g_i]),
-                        "generated_rolling": roll_texts[g_i][:300],
-                        "void_start_rolling": str(roll_vstarts[g_i]),
+                        "generated_crystal": cryst_texts[g_i][:300],
+                        "void_start_crystal": str(cryst_vstarts[g_i]),
                     }
                 )
 
@@ -2285,6 +2482,8 @@ def evaluate_phase2(
         "val/sim_gr_hi": float(np.mean(hi_b["sim"])) if hi_b["sim"] else 0.0,
         "val/cfg_contrast_hi": float(np.mean(hi_b["cfg"])) if hi_b["cfg"] else 0.0,
         "val/rk_eff_content": float(np.mean(rk_vals)) if rk_vals else 0.0,
+        "val/radar_sigma_cell": float(np.mean(radar_sig_vals)) if radar_sig_vals else 0.0,
+        "val/dict_cos_max": float(np.mean(dict_cos_vals)) if dict_cos_vals else 0.0,
         "val/void_f1": float(void_f1),
         "val/void_start_exact": float(void_start_exact / max(1, void_start_tot)),
         "val/void_start_pm1": float(void_start_pm1 / max(1, void_start_tot)),
@@ -2297,6 +2496,9 @@ def evaluate_phase2(
         "val/sigma_adaln_min": sigma_min,
         "gen_samples": gen_samples,
     }
+
+
+evaluate_phase2 = evaluate_phase3
 
 
 # %% [markdown]
@@ -2318,14 +2520,14 @@ def sync_to_gcs(local_path: str, gcs_dir: str) -> bool:
 
 
 def find_latest_checkpoint(checkpoint_dir: str, gcs_dir: Optional[str] = None) -> Optional[str]:
-    local_files = glob.glob(os.path.join(checkpoint_dir, "phase2_step_*.pt"))
+    local_files = glob.glob(os.path.join(checkpoint_dir, "phase3_step_*.pt"))
     if local_files:
         local_files.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
         return local_files[-1]
 
     if gcs_dir:
         try:
-            res = subprocess.run(["gsutil", "ls", gcs_dir.rstrip("/") + "/phase2_step_*.pt"], capture_output=True, text=True)
+            res = subprocess.run(["gsutil", "ls", gcs_dir.rstrip("/") + "/phase3_step_*.pt"], capture_output=True, text=True)
             if res.returncode == 0 and res.stdout.strip():
                 lines = [ln.strip() for ln in res.stdout.strip().split("\n") if ln.strip()]
                 lines.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
@@ -2438,7 +2640,7 @@ def run_training_loop(
     scaler = torch.amp.GradScaler("cuda", init_scale=16384.0, growth_interval=1000) if env.use_amp else None
 
     sw_dev = stopword_mask.to(env.device)
-    sep_cpu = sep_concept.float()
+    sep_cpu, _ = canonicalize_cell_basis(sep_concept.float())
     void_cpu = void_concept.float()
 
     model.train()
@@ -2450,7 +2652,7 @@ def run_training_loop(
     if is_main_process:
         n_params = sum(p.numel() for p in raw_model.parameters() if p.requires_grad)
         print(
-            f"=== Старт обучения Фазы 2 Plan C (params={n_params/1e6:.2f}M, "
+            f"=== Старт обучения Фазы 3 Plan C (params={n_params/1e6:.2f}M, "
             f"micro_batch={args.batch_size}, grad_accum={args.grad_accum_steps}, "
             f"world_size={world_size}, eff_batch={args.batch_size * args.grad_accum_steps * world_size}) ===",
             flush=True,
@@ -2484,21 +2686,26 @@ def run_training_loop(
             w_cell = batch["w_cell"].to(env.device, non_blocking=True)
             B = prompt_ids.shape[0]
 
-            # 1. On-the-fly кодирование замороженной Системой 1 (decoder не вызывается)
+            # 1. On-the-fly кодирование замороженным Энкодером + канонизация базиса + NoiseRadarHead (s7)
             with torch.no_grad():
-                w_p = make_pooling_weights(prompt_ids, sw_dev)
-                w_a = make_pooling_weights(ans_ids, sw_dev)
+                w_p = batch["prompt_weights"].to(env.device, non_blocking=True) if "prompt_weights" in batch else make_pooling_weights(prompt_ids, sw_dev)
+                w_a = batch["ans_weights"].to(env.device, non_blocking=True) if "ans_weights" in batch else make_pooling_weights(ans_ids, sw_dev)
                 with torch.autocast(device_type=env.device.type, dtype=env.amp_dtype, enabled=env.use_amp):
-                    V_prompt = encoder(prompt_ids, w_p)
-                    V_ans = encoder(ans_ids, w_a)
+                    V_prompt_raw = encoder(prompt_ids, w_p)
+                    V_ans_raw = encoder(ans_ids, w_a)
+                V_prompt, _ = canonicalize_cell_basis(V_prompt_raw.float())
+                V_ans, _ = canonicalize_cell_basis(V_ans_raw.float())
 
-                sep_exp = sep_cpu.to(device=env.device, dtype=V_ans.dtype).view(1, 1, 8, 128).expand(B, 1, 8, 128)
+                sep_exp = sep_cpu.to(device=env.device, dtype=torch.float32).view(1, 1, 8, 128).expand(B, 1, 8, 128)
                 V_0 = torch.cat([sep_exp, V_ans], dim=1)
 
                 t_mat = sample_mixed_noise_schedule(B, env.device, i_last=i_last)
                 noise = torch.randn_like(V_0, dtype=torch.float32) * SIGMA_DATA
                 V_t = (1.0 - t_mat.unsqueeze(-1).unsqueeze(-1)) * V_0.float() + t_mat.unsqueeze(-1).unsqueeze(-1) * noise
                 V_t[:, 0] = sep_exp[:, 0].float()
+
+                # Датчик s7: оценка поклеточного шума от NoiseRadarHead (Выход А декодера Фазы 2)
+                radar_sigma = compute_radar_sigma(decoder, V_t, use_amp=env.use_amp, amp_dtype=env.amp_dtype)
 
                 p_valid = n_real_prompt > 0
                 p_attn_mask, m_prompt = apply_prompt_dropout(p_valid)
@@ -2518,11 +2725,12 @@ def run_training_loop(
                         prompt_valid_mask=p_valid,
                         prompt_attn_mask=p_attn_mask,
                         m_prompt=m_prompt,
+                        radar_sigma=radar_sigma,
                         return_sink_weights=True,
                     )
 
                 # 3. Гибридный лосс строго в fp32 и снаружи DataParallel на полном микро-батче
-                loss, m_dict = compute_phase2_loss(
+                loss, m_dict = compute_phase3_loss(
                     V_0_hat=V_0_hat,
                     V_0=V_0,
                     t_mat=t_mat,
@@ -2588,7 +2796,7 @@ def run_training_loop(
         if is_main_process and val_dataloader is not None and (step % args.eval_every == 0):
             if ema is not None:
                 ema.apply_shadow(raw_model)
-            val_res = evaluate_phase2(
+            val_res = evaluate_phase3(
                 model=raw_model,
                 encoder=encoder,
                 decoder=decoder,
@@ -2612,8 +2820,8 @@ def run_training_loop(
                 f"  [Eval @ {step}] Sim_Gr={val_res['val/sim_gr_denoising']:.4f} (hi={val_res['val/sim_gr_hi']:.4f}) | "
                 f"CFG={val_res['val/cfg_contrast']:.4f} (hi={val_res['val/cfg_contrast_hi']:.4f}) | "
                 f"VOID_F1={val_res['val/void_f1']:.4f} (pm1={val_res['val/void_start_pm1']:.3f}) | "
+                f"radar={val_res['val/radar_sigma_cell']:.3f} (cos={val_res['val/dict_cos_max']:.3f}) | "
                 f"sink_c={val_res['val/sink_attn_content']:.3f} (hi={val_res['val/sink_attn_content_hi']:.3f}) | "
-                f"sink_v={val_res['val/sink_attn_void']:.3f} | "
                 f"rk={val_res['val/rk_eff_content']:.2f} | "
                 f"adaln_min={val_res['val/sigma_adaln_min']:.2e}",
                 flush=True,
@@ -2623,9 +2831,9 @@ def run_training_loop(
                     f"    [Sample {idx_g} Full] Q: {gs['prompt']!r} -> void_start={gs['void_start']} | A: {gs['generated']!r}",
                     flush=True,
                 )
-                if "generated_rolling" in gs:
+                if "generated_crystal" in gs:
                     print(
-                        f"    [Sample {idx_g} Roll] void_start={gs['void_start_rolling']} | A: {gs['generated_rolling']!r}",
+                        f"    [Sample {idx_g} Cryst] void_start={gs['void_start_crystal']} | A: {gs['generated_crystal']!r}",
                         flush=True,
                     )
             if use_wandb:
@@ -2634,7 +2842,7 @@ def run_training_loop(
 
             if val_res["val/sim_gr_denoising"] > best_sim_gr:
                 best_sim_gr = val_res["val/sim_gr_denoising"]
-                best_path = os.path.join(env.checkpoint_dir, "phase2_best_model.pt")
+                best_path = os.path.join(env.checkpoint_dir, "phase3_best_model.pt")
                 save_checkpoint(
                     model=raw_model,
                     opt_muon=opt_muon,
@@ -2651,7 +2859,7 @@ def run_training_loop(
 
         # 6. Регулярный чекпоинт (только rank 0)
         if is_main_process and (step % args.save_every == 0):
-            ckpt_path = os.path.join(env.checkpoint_dir, f"phase2_step_{step}.pt")
+            ckpt_path = os.path.join(env.checkpoint_dir, f"phase3_step_{step}.pt")
             save_checkpoint(
                 model=raw_model,
                 opt_muon=opt_muon,
@@ -2667,7 +2875,7 @@ def run_training_loop(
             )
 
     if is_main_process:
-        print("=== Обучение Фазы 2 Plan C завершено ===", flush=True)
+        print("=== Обучение Фазы 3 Plan C завершено ===", flush=True)
 
 
 # %% [markdown]
@@ -2731,7 +2939,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if args.smoke_test:
         if is_main_process:
-            print("=== РЕЖИМ SMOKE TEST (ФАЗА 2) АКТИВИРОВАН ===", flush=True)
+            print("=== РЕЖИМ SMOKE TEST (ФАЗА 3) АКТИВИРОВАН ===", flush=True)
         args.max_steps = 2
         args.batch_size = 2
         args.grad_accum_steps = 1
@@ -2754,8 +2962,8 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
                 import wandb
                 wandb.login(key=api_key)
                 wandb.init(
-                    project="BEBLaDII-Phase2-PlanC",
-                    name=f"phase2-{'kaggle' if env.is_kaggle else 'local'}-{int(time.time())}",
+                    project="BEBLaDII-Phase3-PlanC",
+                    name=f"phase3-{'kaggle' if env.is_kaggle else 'local'}-{int(time.time())}",
                     config=vars(args),
                 )
                 use_wandb = True
