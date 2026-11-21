@@ -2526,6 +2526,32 @@ def sync_to_gcs(local_path: str, gcs_dir: str) -> bool:
     return False
 
 
+def verify_gcs_write_access(gcs_dir: str) -> bool:
+    """Тестовое сохранение небольшого файла в GCS при старте для проверки прав и доступности бакета."""
+    if not gcs_dir:
+        return False
+    test_name = "_gcs_write_test.txt"
+    local_tmp = os.path.join("/tmp" if os.path.isdir("/tmp") else ".", test_name)
+    target = gcs_dir.rstrip("/") + "/" + test_name
+    try:
+        with open(local_tmp, "w", encoding="utf-8") as f:
+            f.write(f"BEBLaDII Phase 3 GCS write test at {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}\n")
+        res = subprocess.run(["gsutil", "-q", "cp", local_tmp, target], capture_output=True, text=True)
+        if res.returncode == 0:
+            print(f"[GCS Test] OK: тестовый файл успешно сохранён в {target}", flush=True)
+            return True
+        print(f"[GCS Test Warning] Ошибка записи в {target}: {res.stderr.strip()}", flush=True)
+    except Exception as e:
+        print(f"[GCS Test Warning] Исключение при тестовой записи в {target}: {e}", flush=True)
+    finally:
+        if os.path.exists(local_tmp):
+            try:
+                os.remove(local_tmp)
+            except OSError:
+                pass
+    return False
+
+
 def find_latest_checkpoint(checkpoint_dir: str, gcs_dir: Optional[str] = None) -> Optional[str]:
     local_files = glob.glob(os.path.join(checkpoint_dir, "phase3_step_*.pt"))
     if local_files:
@@ -2959,6 +2985,9 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         args.wandb = "disabled"
         args.resume_ckpt = ""
         sync_gcs_flag = False
+
+    if is_main_process and sync_gcs_flag:
+        verify_gcs_write_access(env.gcs_checkpoints_dir)
 
     use_wandb = False
     wandb_mode = args.wandb if args.wandb != "auto" else env.wandb_mode
