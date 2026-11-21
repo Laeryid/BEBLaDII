@@ -24,10 +24,12 @@ from train_phase3 import (
     N_PROMPT,
     SIGMA_DATA,
     block_ar_sample,
+    build_rollout_noisy_canvas,
     compute_phase3_loss,
     create_phase2_optimizers,
     crystal_radar_sample,
     euler_heun_sample,
+    migrate_cond_embedder_state_dict,
     rolling_wave_sample,
     sample_mixed_noise_schedule,
 )
@@ -78,11 +80,34 @@ def main() -> None:
     radar_effect = (out_a - out_zero_rad).abs().max().item()
     assert radar_effect > 0.0, "Датчик s7 (radar_sigma) не влияет на выход ядра"
 
-    # 3. Тождественность на чистых якорях (t_i == 0) и ограничение норм строк шаром B^128
+    # 3. Тождественность на чистых якорях (SEP t_0 == 0), отсутствие утечки t_local и ограничение норм шаром B^128
     assert (out_a[:, 0] - sep_ref.unsqueeze(0)).abs().max().item() < 1e-6, "Искажение ячейки SEP при t_0=0"
     row_norms = out_a.norm(p=2, dim=-1)
     assert row_norms.max().item() <= 1.0 + 1e-5, f"Выход за единичный шар: max_norm={row_norms.max().item()}"
-    print(f"    -> leak_diff={leak_diff:.2e}, max_row_norm={row_norms.max().item():.6f}", flush=True)
+    assert core.cond_embedder.mlp[0].weight.shape == (256, 72), "Ожидалась размерность ConditionEmbedder.mlp[0] (256, 72)"
+
+    # Проверка отсутствия утечки оракульного t_local: два разных t_mat с одинаковым глобальным t_bar обязаны дать идентичный выход
+    t_mat_flat = torch.full((B, N_CANVAS), 0.50, dtype=torch.float32)
+    t_mat_flat[:, 0] = 0.0
+    t_mat_het = torch.cat(
+        [
+            torch.zeros(B, 1, dtype=torch.float32),
+            torch.linspace(0.20, 0.80, N_CANVAS - 1, dtype=torch.float32).unsqueeze(0).expand(B, -1),
+        ],
+        dim=1,
+    )
+    with torch.no_grad():
+        out_flat, _, _ = core(V_t, t_mat_flat, V_prompt_a, p_valid, p_valid, torch.ones(B), radar_sigma=radar_sig)
+        out_het, _, _ = core(V_t, t_mat_het, V_prompt_a, p_valid, p_valid, torch.ones(B), radar_sigma=radar_sig)
+    t_local_leak = (out_flat - out_het).abs().max().item()
+    assert t_local_leak < 1e-6, f"Обнаружена утечка оракульного t_local: max_diff={t_local_leak}"
+
+    # Проверка бесшовной миграции старого чекпоинта (256, 200) -> (256, 72)
+    fake_old_sd = {"cond_embedder.mlp.0.weight": torch.randn(256, 200)}
+    migrated_sd = migrate_cond_embedder_state_dict(fake_old_sd, expected_in_dim=72, verbose=False)
+    assert migrated_sd["cond_embedder.mlp.0.weight"].shape == (256, 72)
+    assert torch.allclose(migrated_sd["cond_embedder.mlp.0.weight"], fake_old_sd["cond_embedder.mlp.0.weight"][:, 128:200])
+    print(f"    -> leak_diff={leak_diff:.2e}, t_local_leak={t_local_leak:.2e}, max_row_norm={row_norms.max().item():.6f}", flush=True)
 
     # 4. Эквивалентность распределенной статистики adaln_stats (полный батч vs DataParallel split)
     print("[3/6] Checking DataParallel gather equivalence for L_adaln...", flush=True)
@@ -175,6 +200,20 @@ def main() -> None:
     )
     assert V_cryst.shape == (1, N_CANVAS, 8, 128)
     assert (V_cryst[:, 0] - sep_ref.unsqueeze(0)).abs().max().item() < 1e-6
+
+    sep_exp = sep_ref.view(1, 1, 8, 128).expand(B, 1, 8, 128)
+    V_t_roll, t_roll, _ = build_rollout_noisy_canvas(
+        raw_model=core,
+        decoder=None,
+        V_0=V_0,
+        V_prompt=V_prompt_a,
+        p_valid=p_valid,
+        p_attn_mask=p_cond_mask,
+        m_prompt=m_one,
+        sep_exp=sep_exp,
+    )
+    assert V_t_roll.shape == V_0.shape and t_roll.shape == (B, N_CANVAS)
+    assert torch.all(t_roll[:, 0] == 0.0)
     print("[6/6] Done.", flush=True)
 
     print(

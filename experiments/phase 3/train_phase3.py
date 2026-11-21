@@ -441,20 +441,31 @@ class SinusoidalTimeEmbedding(nn.Module):
 class ConditionEmbedder(nn.Module):
     """
     Формирует вектор управления c_i in R^{B x N x 256}:
-    t_local (128) + t_global (64) + 8 аналитических спектральных датчиков в float32.
+    только управляющий глобальный шум t_global (64) + 8 чисто диагностических датчиков s0..s7 в float32.
+    Оракульный поячеечный t_local удален: модель обязана диагностировать чистоту каждой ячейки по V_t и s0..s7.
     """
 
     def __init__(self, void_ref: torch.Tensor, cond_dim: int = 256):
         super().__init__()
         self.register_buffer("void_ref", void_ref.float().clone())
-        self.t_local_emb = SinusoidalTimeEmbedding(128)
         self.t_global_emb = SinusoidalTimeEmbedding(64)
         self.mlp = nn.Sequential(
-            nn.Linear(200, cond_dim),
+            nn.Linear(72, cond_dim),
             nn.SiLU(),
             nn.Linear(cond_dim, cond_dim),
             nn.LayerNorm(cond_dim),
         )
+
+    @staticmethod
+    def extract_t_global(t_mat: torch.Tensor, batch_size: int, seq_len: int) -> torch.Tensor:
+        """Извлекает единый для всего полотна управляющий скаляр t_global in [0, 1] формы (B, N)."""
+        tf = t_mat.float()
+        if tf.ndim == 2 and tf.shape[1] > 1:
+            tf_ans = tf[:, 1:]
+            active_ans = (tf_ans > 1e-3).float()
+            active_cnt = active_ans.sum(dim=-1, keepdim=True).clamp(min=1.0)
+            return ((tf_ans * active_ans).sum(dim=-1, keepdim=True) / active_cnt).expand(batch_size, seq_len)
+        return tf.view(batch_size, 1).expand(batch_size, seq_len)
 
     def forward(
         self,
@@ -467,8 +478,8 @@ class ConditionEmbedder(nn.Module):
         device_type = V_t.device.type
         with torch.autocast(device_type=device_type, enabled=False):
             Vf = V_t.float()
-            tf = t_mat.float()
             mp = m_prompt.float()
+            t_bar = self.extract_t_global(t_mat, B, N)
 
             G = torch.matmul(Vf, Vf.transpose(-2, -1))  # (B, N, 8, 8)
             energy = torch.diagonal(G, dim1=-2, dim2=-1).sum(dim=-1)
@@ -477,31 +488,29 @@ class ConditionEmbedder(nn.Module):
             s2 = 1.0 / (8.0 * torch.clamp(s1, min=1e-4))
             void_exp = self.void_ref.view(1, 1, 8, 128).expand(B, N, 8, 128)
             s3 = sim_gr(Vf, void_exp)
-            s4 = (tf < 1e-3).float()
-            s5 = mp.view(B, 1).expand(B, N)
-            if N > 1:
-                tf_ans = tf[:, 1:]
-                active_ans = (tf_ans > 1e-3).float()
-                active_cnt = active_ans.sum(dim=-1, keepdim=True).clamp(min=1.0)
-                # Глобальный средний шум по активным зашумленным ячейкам (без искажения от чистого префикса t=0)
-                t_bar = ((tf_ans * active_ans).sum(dim=-1, keepdim=True) / active_cnt).expand(B, N)
-                # Доля уже кристаллизованных ячеек ответа (t_i <= 1e-3)
-                s6 = (1.0 - active_ans).mean(dim=-1, keepdim=True).expand(B, N)
-            else:
-                t_bar = tf
-                s6 = (tf <= 1e-3).float()
             if radar_sigma is not None:
                 s7 = radar_sigma.float().clamp(0.0, 1.0)
                 if N > 0:
                     s7 = s7.clone()
                     s7[:, 0] = 0.0
+                # Диагностический индикатор чистоты кристалла строго по радару s7 (без оракула t_local)
+                s4 = torch.clamp(1.0 - s7 / 0.05, min=0.0, max=1.0)
             else:
                 s7 = torch.zeros_like(s0)
+                s4 = torch.zeros_like(s0)
+            if N > 0:
+                s4 = s4.clone()
+                s4[:, 0] = 1.0
+            s5 = mp.view(B, 1).expand(B, N)
+            if N > 1:
+                # Средняя диагностическая доля кристаллизации полотна по датчику s4
+                s6 = s4[:, 1:].mean(dim=-1, keepdim=True).expand(B, N)
+            else:
+                s6 = s4
             sensors = torch.stack([s0, s1, s2, s3, s4, s5, s6, s7], dim=-1)
 
-            e_loc = self.t_local_emb(tf)
             e_glob = self.t_global_emb(t_bar)
-            feat = torch.cat([e_loc, e_glob, sensors], dim=-1)
+            feat = torch.cat([e_glob, sensors], dim=-1)
             c_f32 = self.mlp(feat)
         return c_f32.to(V_t.dtype)
 
@@ -896,7 +905,12 @@ class GrassmannianOutputHead(nn.Module):
         h = self.norm(x_ans) * (1.0 + scale_out) + shift_out
         delta_x = self.out_proj(h.to(self.out_proj.weight.dtype)).view(B, N, 8, 128)
 
-        g_t = torch.clamp(t_mat.float() / 0.02, min=0.0, max=1.0).unsqueeze(-1).unsqueeze(-1)
+        t_bar = ConditionEmbedder.extract_t_global(t_mat, B, N)
+        g_t = torch.clamp(t_bar / 0.02, min=0.0, max=1.0)
+        if N > 0:
+            g_t = g_t.clone()
+            g_t[:, 0] = 0.0  # Точное тождество на ячейке 0 (SEP) без подглядывания в поячеечный t_local
+        g_t = g_t.unsqueeze(-1).unsqueeze(-1)
         V_0_raw = V_t.float() + SIGMA_DATA * g_t * delta_x.float()
         return clamp_to_unit_ball(V_0_raw)
 
@@ -1097,7 +1111,7 @@ class PromptAnswerDataset(Dataset):
         max_rows: Optional[int] = None,
         is_validation: bool = False,
         synthetic_len: int = 200,
-        elastic_drop_prob: float = 0.05,
+        elastic_drop_prob: float = 0.0,
     ):
         self.tokenizer = tokenizer
         self.stopword_mask = stopword_mask.bool()
@@ -1270,14 +1284,18 @@ def sample_mixed_noise_schedule(
                 t_ans[:cut] = 0.0
             t_mat[b, 1:] = t_ans
         elif r < 0.85:
-            # Random Crystal Anchors: часть ячеек уже кристаллизована (t=0), остальные достраиваются
-            t_ans = torch.empty(N_ANS, device=device, dtype=torch.float32).uniform_(0.30, 1.0)
+            # Random Crystal & Soft Confidence Anchors: имитация разной чистоты ячеек полотна
+            # (половина с жесткими кристаллами t=0, половина с мягкими маяками t in [0.01, 0.22])
+            t_ans = torch.empty(N_ANS, device=device, dtype=torch.float32).uniform_(0.35, 0.95)
             n_c = int(i_last[b].item()) if i_last is not None else N_ANS
             n_c = max(2, min(n_c, N_ANS))
             keep_frac = 0.20 + 0.40 * float(torch.rand(1, device=device).item())
             n_anchors = max(1, min(n_c - 1, int(round(n_c * keep_frac))))
             anchor_idx = torch.randperm(n_c, device=device)[:n_anchors]
-            t_ans[anchor_idx] = 0.0
+            if float(torch.rand(1, device=device).item()) < 0.5:
+                t_ans[anchor_idx] = 0.0
+            else:
+                t_ans[anchor_idx] = torch.empty(n_anchors, device=device).uniform_(0.01, 0.22)
             t_mat[b, 1:] = t_ans
         else:
             t_start = 0.25 * float(torch.rand(1, device=device).item())
@@ -1286,6 +1304,85 @@ def sample_mixed_noise_schedule(
             jitter = torch.empty(N_ANS, device=device).uniform_(-0.03, 0.03)
             t_mat[b, 1:] = (grad_t + jitter).clamp(0.01, 1.0)
     return t_mat
+
+
+@torch.no_grad()
+def build_rollout_noisy_canvas(
+    raw_model: GrassmannianDiffusionCore,
+    decoder: Optional[nn.Module],
+    V_0: torch.Tensor,
+    V_prompt: torch.Tensor,
+    p_valid: torch.Tensor,
+    p_attn_mask: torch.Tensor,
+    m_prompt: torch.Tensor,
+    sep_exp: torch.Tensor,
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """
+    Two-Step Rollout для обучения непрерывной Coarse-to-Fine фокусировке:
+    1. Шаг 1 (высокий шум t_hi in [0.80, 1.0]): модель строит сглаженный черновик ответа V_0_draft.
+    2. NoiseRadarHead оценивает истинную неуверенность каждой ячейки черновика sigma_draft.
+    3. Шаг 2: переходим к среднему шуму t_base in [0.15, 0.70] с адаптивным профилем t_i ~ sigma_draft_i
+       (уверенные ячейки черновика зашумляются слабее, размытые — сильнее), формируя V_t для обучения.
+    Возвращает (V_t, t_mat, radar_sigma).
+    """
+    B, N, _, _ = V_0.shape
+    device = V_0.device
+    was_training = raw_model.training
+    raw_model.eval()
+
+    # Шаг 1: черновой прогноз на высоком глобальном шуме t_hi in [0.80, 1.0]
+    t_hi = torch.empty((B, 1), device=device, dtype=torch.float32).uniform_(0.80, 1.0)
+    t_hi_mat = torch.cat([torch.zeros((B, 1), device=device, dtype=torch.float32), t_hi.expand(B, N - 1)], dim=1)
+    noise_1 = torch.randn_like(V_0, dtype=torch.float32) * SIGMA_DATA
+    V_hi = (1.0 - t_hi_mat.unsqueeze(-1).unsqueeze(-1)) * V_0.float() + t_hi_mat.unsqueeze(-1).unsqueeze(-1) * noise_1
+    V_hi[:, 0] = sep_exp[:, 0].float()
+
+    radar_hi = compute_radar_sigma(decoder, V_hi, use_amp=use_amp, amp_dtype=amp_dtype)
+    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+        V_draft, _, _ = raw_model(
+            V_t=V_hi.to(amp_dtype if use_amp else torch.float32),
+            t_mat=t_hi_mat,
+            V_prompt=V_prompt.to(amp_dtype if use_amp else torch.float32),
+            prompt_valid_mask=p_valid,
+            prompt_attn_mask=p_attn_mask,
+            m_prompt=m_prompt,
+            radar_sigma=radar_hi,
+            return_sink_weights=False,
+        )
+    V_draft = V_draft.float()
+    V_draft[:, 0] = sep_exp[:, 0].float()
+
+    # Оценка чистоты ячеек черновика радаром (sigma_draft in [0, 1])
+    sig_draft = compute_radar_sigma(decoder, V_draft, use_amp=use_amp, amp_dtype=amp_dtype)
+    if sig_draft is not None:
+        sig_ans = sig_draft[:, 1:].float()
+        sig_mean = sig_ans.mean(dim=-1, keepdim=True).clamp(min=1e-4)
+        rel_uncert = torch.clamp(sig_ans / sig_mean, min=0.35, max=1.45)
+    else:
+        sig_ans = None
+        rel_uncert = torch.ones((B, N - 1), device=device, dtype=torch.float32)
+
+    # Шаг 2: адаптивное перезашумление черновика к среднему уровню t_base in [0.15, 0.70]
+    t_base = torch.empty((B, 1), device=device, dtype=torch.float32).uniform_(0.15, 0.70)
+    t_ans = torch.clamp(t_base * rel_uncert, min=0.02, max=0.90)
+    if sig_ans is not None:
+        # Самые уверенные клетки черновика при t_base < 0.45 могут полностью кристаллизоваться в t_i = 0
+        cryst_mask = (sig_ans < 0.035) & (t_base < 0.45)
+        t_ans = torch.where(cryst_mask, torch.zeros_like(t_ans), t_ans)
+    t_mat = torch.cat([torch.zeros((B, 1), device=device, dtype=torch.float32), t_ans], dim=1)
+
+    alpha = torch.empty((B, 1, 1, 1), device=device, dtype=torch.float32).uniform_(0.65, 1.0)
+    V_mix = alpha * V_draft + (1.0 - alpha) * V_0.float()
+    noise_2 = torch.randn_like(V_0, dtype=torch.float32) * SIGMA_DATA
+    V_t = (1.0 - t_mat.unsqueeze(-1).unsqueeze(-1)) * V_mix + t_mat.unsqueeze(-1).unsqueeze(-1) * noise_2
+    V_t[:, 0] = sep_exp[:, 0].float()
+
+    radar_sigma = compute_radar_sigma(decoder, V_t, use_amp=use_amp, amp_dtype=amp_dtype)
+    if was_training:
+        raw_model.train()
+    return V_t, t_mat, radar_sigma
 
 
 def apply_prompt_dropout(
@@ -2127,21 +2224,27 @@ def crystal_radar_sample(
     uncond_mask = torch.zeros_like(prompt_valid_mask)
     locked = torch.zeros((B, N_CANVAS), dtype=torch.bool, device=device)
     locked[:, 0] = True
+    # Локальная температура охлаждения t_cell используется только солвером для шага dt_i;
+    # в ConditionEmbedder передается только глобальный управляющий t_cur (s0..s7 считываются по V_t).
+    t_cell = torch.ones((B, N_CANVAS), device=device, dtype=torch.float32)
+    t_cell[:, 0] = 0.0
     last_sink_weights = None
 
     for k in range(num_steps):
         t_cur = float(t_grid[k].item())
         t_next = float(t_grid[k + 1].item())
-        dt = t_cur - t_next
+        dt_base = t_cur - t_next
 
-        t_mat = torch.where(locked, torch.zeros((B, N_CANVAS), device=device), torch.full((B, N_CANVAS), t_cur, device=device))
+        t_global_mat = torch.full((B, N_CANVAS), t_cur, device=device, dtype=torch.float32)
+        t_global_mat[:, 0] = 0.0
         radar_sig = compute_radar_sigma(decoder, V_t, use_amp=use_amp, amp_dtype=amp_dtype)
-        radar_sig = torch.where(locked, torch.zeros_like(radar_sig), radar_sig)
+        if radar_sig is not None:
+            radar_sig = torch.where(locked, torch.zeros_like(radar_sig), radar_sig)
 
         with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
             v0_cond, _, sw = raw_core.forward_with_cached_prompt(
                 V_t=V_t.to(amp_dtype if use_amp else torch.float32),
-                t_mat=t_mat,
+                t_mat=t_global_mat,
                 x_prompt=x_prompt,
                 prompt_attn_mask=prompt_valid_mask,
                 m_prompt=m_cond,
@@ -2151,7 +2254,7 @@ def crystal_radar_sample(
             if abs(cfg_scale - 1.0) > 1e-4:
                 v0_uncond, _, _ = raw_core.forward_with_cached_prompt(
                     V_t=V_t.to(amp_dtype if use_amp else torch.float32),
-                    t_mat=t_mat,
+                    t_mat=t_global_mat,
                     x_prompt=x_prompt,
                     prompt_attn_mask=uncond_mask,
                     m_prompt=m_uncond,
@@ -2169,19 +2272,37 @@ def crystal_radar_sample(
             V_t = torch.where(locked.unsqueeze(-1).unsqueeze(-1), V_t, v0)
             break
 
-        d1 = (V_t - v0) / max(t_cur, 1e-4)
-        V_next = V_t - dt * d1
-        V_t = torch.where(locked.unsqueeze(-1).unsqueeze(-1), V_t, V_next)
-        V_t[:, 0] = sep_exp[:, 0]
+        # Оцениваем чистоту предсказанного v0 (а не зашумленного V_t!) через NoiseRadarHead
+        sig_v0 = compute_radar_sigma(decoder, v0, use_amp=use_amp, amp_dtype=amp_dtype)
+        if sig_v0 is not None:
+            sig_ans = sig_v0[:, 1:].float()
+            sig_mean = sig_ans.mean(dim=-1, keepdim=True).clamp(min=1e-4)
+            # Более чистые клетки v0 охлаждаются быстрее (speed > 1), размытые — медленнее
+            cool_speed = torch.clamp(sig_mean / sig_ans.clamp(min=1e-4), min=0.70, max=1.50)
+            dt_mat = torch.cat([torch.zeros((B, 1), device=device), dt_base * cool_speed], dim=1)
+        else:
+            dt_mat = torch.full((B, N_CANVAS), dt_base, device=device, dtype=torch.float32)
+            dt_mat[:, 0] = 0.0
 
-        # Кристаллизуем клетки, в которых радар шума уверен (sigma_cell < crystal_thr)
-        if decoder is not None and t_next <= crystal_start_t:
-            sig_after = compute_radar_sigma(decoder, V_t, use_amp=use_amp, amp_dtype=amp_dtype)
-            newly_locked = (~locked) & (sig_after < crystal_thr)
-            newly_locked[:, 0] = False
-            if newly_locked.any():
-                V_t = torch.where(newly_locked.unsqueeze(-1).unsqueeze(-1), v0, V_t)
-                locked = locked | newly_locked
+        dt_eff = torch.minimum(dt_mat, t_cell)
+        t_safe = t_cell.clamp(min=1e-4).unsqueeze(-1).unsqueeze(-1)
+        d1 = (V_t - v0) / t_safe
+        V_next = V_t - dt_eff.unsqueeze(-1).unsqueeze(-1) * d1
+        t_cell_next = (t_cell - dt_eff).clamp(min=0.0)
+
+        # Кристаллизуем клетки, где предсказание v0 уже чистое (sig_v0 < crystal_thr) или t_cell дошел до 0
+        newly_locked = (~locked) & (t_cell_next <= 1e-5)
+        if sig_v0 is not None and t_next <= crystal_start_t:
+            newly_locked = newly_locked | ((~locked) & (sig_v0 < crystal_thr))
+        newly_locked[:, 0] = False
+
+        V_t = torch.where(locked.unsqueeze(-1).unsqueeze(-1), V_t, V_next)
+        if newly_locked.any():
+            V_t = torch.where(newly_locked.unsqueeze(-1).unsqueeze(-1), v0, V_t)
+            locked = locked | newly_locked
+            t_cell_next = torch.where(locked, torch.zeros_like(t_cell_next), t_cell_next)
+        t_cell = t_cell_next
+        V_t[:, 0] = sep_exp[:, 0]
 
     if was_training:
         raw_core.train()
@@ -2611,6 +2732,28 @@ def save_checkpoint(
                 pass
 
 
+def migrate_cond_embedder_state_dict(
+    sd: Dict[str, torch.Tensor],
+    expected_in_dim: int = 72,
+    verbose: bool = True,
+) -> Dict[str, torch.Tensor]:
+    """
+    Автоматическая миграция старых чекпоинтов (где ConditionEmbedder.mlp[0] имел вход 200 = 128 t_local + 64 t_global + 8 sensors)
+    в новый формат 72 = 64 t_global + 8 sensors через срез [:, 128:200].
+    """
+    key = "cond_embedder.mlp.0.weight"
+    if key in sd and sd[key].ndim == 2 and sd[key].shape[1] == 200 and expected_in_dim == 72:
+        sd = dict(sd)
+        sd[key] = sd[key][:, 128:200].clone()
+        if verbose:
+            print(
+                f"[Checkpoint Migration] {key}: (256, 200) -> (256, 72) "
+                f"(оракульный t_local отсечен, веса t_global и s0..s7 сохранены).",
+                flush=True,
+            )
+    return sd
+
+
 def load_checkpoint(
     path: str,
     model: nn.Module,
@@ -2622,11 +2765,27 @@ def load_checkpoint(
 ) -> int:
     ckpt = torch.load(path, map_location=device, weights_only=False)
     raw_model = getattr(model, "module", model)
+    expected_in_dim = int(raw_model.cond_embedder.mlp[0].weight.shape[1])
     sd = {k.replace("module.", ""): v for k, v in ckpt["model_state_dict"].items()}
+    migrated = (
+        "cond_embedder.mlp.0.weight" in sd
+        and sd["cond_embedder.mlp.0.weight"].ndim == 2
+        and sd["cond_embedder.mlp.0.weight"].shape[1] == 200
+        and expected_in_dim == 72
+    )
+    sd = migrate_cond_embedder_state_dict(sd, expected_in_dim=expected_in_dim, verbose=True)
     raw_model.load_state_dict(sd, strict=True)
 
     try:
-        opt_adamw.load_state_dict(ckpt["opt_adamw_state_dict"])
+        adamw_sd = ckpt["opt_adamw_state_dict"]
+        if migrated and isinstance(adamw_sd, dict) and "state" in adamw_sd:
+            for st in adamw_sd["state"].values():
+                if isinstance(st, dict):
+                    for buf_name in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+                        buf = st.get(buf_name)
+                        if isinstance(buf, torch.Tensor) and buf.ndim == 2 and buf.shape == (256, 200):
+                            st[buf_name] = buf[:, 128:200].clone()
+        opt_adamw.load_state_dict(adamw_sd)
     except Exception as e:
         print(f"[Resume Warning] AdamW state не загружен: {e}", flush=True)
     if opt_muon is not None and "opt_muon_state_dict" in ckpt:
@@ -2640,7 +2799,10 @@ def load_checkpoint(
         except Exception:
             pass
     if ema is not None and ckpt.get("ema_state_dict") is not None:
-        ema.load_state_dict(ckpt["ema_state_dict"])
+        ema_sd = migrate_cond_embedder_state_dict(
+            ckpt["ema_state_dict"], expected_in_dim=expected_in_dim, verbose=False
+        )
+        ema.load_state_dict(ema_sd)
 
     step = int(ckpt.get("step", 0))
     print(f"[Resume] Восстановлено состояние с шага {step} ({path}).", flush=True)
@@ -2732,16 +2894,35 @@ def run_training_loop(
                 sep_exp = sep_cpu.to(device=env.device, dtype=torch.float32).view(1, 1, 8, 128).expand(B, 1, 8, 128)
                 V_0 = torch.cat([sep_exp, V_ans], dim=1)
 
-                t_mat = sample_mixed_noise_schedule(B, env.device, i_last=i_last)
-                noise = torch.randn_like(V_0, dtype=torch.float32) * SIGMA_DATA
-                V_t = (1.0 - t_mat.unsqueeze(-1).unsqueeze(-1)) * V_0.float() + t_mat.unsqueeze(-1).unsqueeze(-1) * noise
-                V_t[:, 0] = sep_exp[:, 0].float()
-
-                # Датчик s7: оценка поклеточного шума от NoiseRadarHead (Выход А декодера Фазы 2)
-                radar_sigma = compute_radar_sigma(decoder, V_t, use_amp=env.use_amp, amp_dtype=env.amp_dtype)
-
                 p_valid = n_real_prompt > 0
                 p_attn_mask, m_prompt = apply_prompt_dropout(p_valid)
+
+                use_rollout = (
+                    step >= getattr(args, "rollout_start_step", 1000)
+                    and float(getattr(args, "rollout_prob", 0.35)) > 0.0
+                    and float(torch.rand(1, device=env.device).item()) < float(getattr(args, "rollout_prob", 0.35))
+                )
+                if use_rollout:
+                    V_t, t_mat, radar_sigma = build_rollout_noisy_canvas(
+                        raw_model=raw_model,
+                        decoder=decoder,
+                        V_0=V_0,
+                        V_prompt=V_prompt,
+                        p_valid=p_valid,
+                        p_attn_mask=p_attn_mask,
+                        m_prompt=m_prompt,
+                        sep_exp=sep_exp,
+                        use_amp=env.use_amp,
+                        amp_dtype=env.amp_dtype,
+                    )
+                else:
+                    t_mat = sample_mixed_noise_schedule(B, env.device, i_last=i_last)
+                    noise = torch.randn_like(V_0, dtype=torch.float32) * SIGMA_DATA
+                    V_t = (1.0 - t_mat.unsqueeze(-1).unsqueeze(-1)) * V_0.float() + t_mat.unsqueeze(-1).unsqueeze(-1) * noise
+                    V_t[:, 0] = sep_exp[:, 0].float()
+
+                    # Датчик s7: оценка поклеточного шума от NoiseRadarHead (Выход А декодера Фазы 2)
+                    radar_sigma = compute_radar_sigma(decoder, V_t, use_amp=env.use_amp, amp_dtype=env.amp_dtype)
 
             # 2. Прямой проход модели (DataParallel возвращает (V_0_hat, adaln_stats, sink_weights) без расчёта лосса внутри)
             ddp_sync = (micro_idx == args.grad_accum_steps - 1)
@@ -2942,6 +3123,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gcs-dir", "--gcs_dir", dest="gcs_dir", type=str, default="")
     parser.add_argument("--no-gcs", "--no_gcs", dest="no_gcs", action="store_true")
     parser.add_argument("--wandb", type=str, default="auto", choices=["auto", "online", "disabled"])
+    parser.add_argument("--elastic-drop-prob", "--elastic_drop_prob", dest="elastic_drop_prob", type=float, default=0.0)
+    parser.add_argument("--rollout-prob", "--rollout_prob", dest="rollout_prob", type=float, default=0.35)
+    parser.add_argument("--rollout-start-step", "--rollout_start_step", dest="rollout_start_step", type=int, default=1000)
     args, _ = parser.parse_known_args()
     return args
 
@@ -3049,6 +3233,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         stopword_mask=stopword_mask,
         max_rows=max_rows,
         is_validation=False,
+        elastic_drop_prob=args.elastic_drop_prob,
     )
     sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
     train_loader = DataLoader(
@@ -3144,6 +3329,9 @@ TRAINING_CONFIG = {
     "gcs_dir": "",
     "no_gcs": False,
     "wandb": "auto",
+    "elastic_drop_prob": 0.0,
+    "rollout_prob": 0.35,
+    "rollout_start_step": 1000,
 }
 
 if __name__ == "__main__":

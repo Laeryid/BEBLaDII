@@ -1509,6 +1509,21 @@
       ],
       "summary": "ADR 138: Фаза 3 Plan C (старт с нуля): WordAwareElasticChunker, канонизация таргетов V_0, датчик s7 (NoiseRadarHead), Random Crystal Anchors и перебалансировка лосса",
       "status": "accepted"
+    },
+    "decisions/139_phase3_remove_t_local_two_step_rollout_and_diagnostic_sensors.md": {
+      "description": "ADR 139: Фаза 3 Plan C: Удаление оракульного t_local, детерминированный чанкинг (elastic_drop_prob=0), Two-Step Rollout и диагностическое управление через s0..s7 (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "KI_experiments.md",
+        "decisions/034_angular_loss_for_output_projector.md",
+        "decisions/035_centered_cosine_and_contrastive_neighbor_loss.md",
+        "decisions/036_replacing_infonce_with_rkd.md",
+        "decisions/037_phase3_failure_and_plan_b_skip_connections.md"
+      ],
+      "summary": "ADR 139: Фаза 3 Plan C: Удаление оракульного t_local, детерминированный чанкинг (elastic_drop_prob=0), Two-Step Rollout и диагностическое управление через s0..s7",
+      "status": "accepted"
     }
   },
   "knowledge_system": {

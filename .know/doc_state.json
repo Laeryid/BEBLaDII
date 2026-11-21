@@ -264,8 +264,8 @@
         "mtime": 1794734892.705766
     },
     ".know\\doc_config.json": {
-        "hash": "dad6e3680002d2e4d34c2fdb112cf9c43a21e97eabfec41e651dac00fc6ece1e",
-        "mtime": 1795254370.2175815
+        "hash": "2331a2358d583b2e181ca05013b5f11c7d0ca939b6d908b78c318ae9cca90dd9",
+        "mtime": 1795296224.1268897
     },
     "storage\\components\\plan_c_layers.py": {
         "hash": "f97ed18afe802347abb8433d801c572f21b16b47fb24aabf59584acd6d223fc3",
@@ -480,24 +480,24 @@
         "mtime": 1795253064.8500822
     },
     "experiments\\phase 3\\inspect_phase3_generation.py": {
-        "hash": "5ecf78874044a14a99239a0b0ec48c68fde14a1241d8bcda958ed1ef9dce67eb",
-        "mtime": 1795253071.834668
+        "hash": "3719a086aa07a704676ba9a73199fd96c3ba4c70c2239f83a42af01296adff74",
+        "mtime": 1795295856.0021973
     },
     "experiments\\phase 3\\prepare_phase3_data.py": {
         "hash": "2eec16667d3ec24f6ba1e47c85d1546c581b3ad048405eab4fe9b53e167cf280",
         "mtime": 1794748688.3700001
     },
     "experiments\\phase 3\\test_phase3_architecture.py": {
-        "hash": "8ddb1ae18dc080eca814c1a018ff6b64226e0705b3caa0fabeff1be541fa0169",
-        "mtime": 1795253101.7122743
+        "hash": "b83ef2c23f5dc1b67c9b73b11c638f0d3ad3ad920ee217752ccc67edfaeac082",
+        "mtime": 1795295884.530007
     },
     "experiments\\phase 3\\test_phase3_open_questions.py": {
         "hash": "2df80d398f7d53bc2ff3ca4d3cc5344ca2228fbffe9288476f8221e2d3de4b03",
         "mtime": 1794743131.402553
     },
     "experiments\\phase 3\\train_phase3.py": {
-        "hash": "f84273ece84c7e0620bd522ef669923636e325b793179cc02e6b65db12188b0c",
-        "mtime": 1795253045.7076275
+        "hash": "bd0fe0e6d599b99777917449b238e2b91c49cc054082eac440dbc2aed7bc4f1d",
+        "mtime": 1795295883.1734276
     },
     "experiments\\phase 3\\checkpoints\\.gitkeep": {
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -506,6 +506,10 @@
     "experiments\\phase 3\\checkpoints\\planC_Phase 2_checkpoints_phase3_step_7500.pt": {
         "hash": "50fdbedfbd40059b96ab78c6ac4ff78378db250d9e2b90040bd3768e2db46a22",
         "mtime": 1794936164.092381
+    },
+    "experiments\\phase 3\\checkpoints\\planC_Phase3_Diffusion_checkpoints_phase3_step_4500.pt": {
+        "hash": "cf2bf305b5022afe931c0e1ccce35f2bc0dc02323161b79c59e6ed8d56aed23c",
+        "mtime": 1795289277.323062
     },
     "experiments\\phase 3\\Kaggle\\.gitkeep": {
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -516,8 +520,8 @@
         "mtime": 1794906768.6517498
     },
     "experiments\\phase 3\\Kaggle\\train_phase3_notebook.ipynb": {
-        "hash": "e83dbdbae492bb0a493218f2b498af8351a1273391131866647f513a661a4576",
-        "mtime": 1795253478.8479543
+        "hash": "dcb3ecc92618bf4053bf03466e1ceb39983df466e275443eb3abe403c9d42c2b",
+        "mtime": 1795255739.9350996
     },
     "experiments\\phase 3\\output\\.gitkeep": {
         "hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
