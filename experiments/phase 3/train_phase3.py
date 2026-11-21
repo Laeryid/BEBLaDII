@@ -205,16 +205,23 @@ class EnvironmentConfig:
                 ],
                 search_roots,
             )
+            decoder_search_roots = [
+                "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data",
+                "/kaggle/input/bebladii-planc-phase2-data",
+                "/kaggle/input",
+            ]
             decoder_weights_path = resolve_file_path(
-                "decoder/weights.pt",
+                "phase2_decoder_step_25000.pt",
                 [
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/decoder/phase2_decoder_step_25000.pt",
+                    "/kaggle/input/bebladii-planc-phase2-data/decoder/phase2_decoder_step_25000.pt",
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/phase2_decoder_step_25000.pt",
+                    "/kaggle/input/bebladii-planc-phase2-data/phase2_decoder_step_25000.pt",
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/decoder/weights.pt",
+                    "/kaggle/input/bebladii-planc-phase2-data/decoder/weights.pt",
                     os.path.join(project_root, "storage", "components", "decoder", "weights.pt"),
-                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/decoder/weights.pt",
-                    "/kaggle/input/bebladii-planc-phase1-data/decoder/weights.pt",
-                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/storage/components/decoder/weights.pt",
-                    "/kaggle/input/bebladii-planc-phase1-data/storage/components/decoder/weights.pt",
                 ],
-                search_roots,
+                decoder_search_roots,
             )
             wandb_mode = "online" if "WANDB_API_KEY" in os.environ else "disabled"
         else:
