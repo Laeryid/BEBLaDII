@@ -1221,6 +1221,7 @@ class PromptAnswerDataset(Dataset):
         return {
             "prompt_ids": prompt_ids,
             "ans_ids": ans_ids,
+            "ans_targets": a_pack["targets"],
             "prompt_weights": prompt_weights,
             "ans_weights": ans_weights,
             "n_real_prompt": n_real_prompt,
@@ -1236,12 +1237,12 @@ def sample_mixed_noise_schedule(
     i_last: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
     """
-    Перебалансированный Mixed Noise Curriculum Фазы 3 с режимом кристаллизации (для ячеек 0..127, t_0 == 0.0):
+    Языково-ориентированный Mixed Noise Curriculum Фазы 3 (для ячеек 0..127, t_0 == 0.0):
     - 25% High-Noise / Pure-Start: 1/3 ровно t=1.0, 2/3 U(0.80, 1.0)
-    - 30% Shifted Flat Diffusion: t ~ Sigmoid(N(0.75, 1.0)) (медиана ~0.68)
-    - 15% Causal Prefix / Block-AR: чистый префикс 1..k (t=0), хвост k+1..127 в высоком шуме
-    - 15% Random Crystal Anchors: 20-60% случайных ячеек контента кристаллизованы (t=0.0), остальные U(0.30, 1.0)
-    - 15% Rolling Wave Gradient: монотонный фронт шума слева направо [0.0..0.25] -> [0.75..1.0].
+    - 20% Shifted Flat Diffusion: t ~ Sigmoid(N(1.0, 1.0)) (медиана ~0.73)
+    - 20% Causal Prefix / Block-AR: чистый префикс 1..k (t=0), хвост/блок в t=1.0 (50%) или U(0.50, 1.0)
+    - 20% Cloze & Crystal Anchors: 20-70% чистых/мягких якорей, остальные в t=1.0 (50%, прямой Cloze) или U(0.50, 1.0)
+    - 15% Rolling Wave Gradient: монотонный фронт шума слева направо [0.0..0.20] -> [0.80..1.0].
     """
     t_mat = torch.zeros(batch_size, N_CANVAS, device=device, dtype=torch.float32)
     regimes = torch.rand(batch_size, device=device)
@@ -1254,10 +1255,10 @@ def sample_mixed_noise_schedule(
             else:
                 t_hi = torch.empty(1, device=device).uniform_(0.80, 1.0)
                 t_mat[b, 1:] = t_hi
-        elif r < 0.55:
-            t_flat = torch.sigmoid(torch.randn(1, device=device) * 1.0 + 0.75).clamp(0.01, 1.0)
+        elif r < 0.45:
+            t_flat = torch.sigmoid(torch.randn(1, device=device) * 1.0 + 1.0).clamp(0.01, 1.0)
             t_mat[b, 1:] = t_flat
-        elif r < 0.70:
+        elif r < 0.65:
             max_cut = int(i_last[b].item()) - 1 if i_last is not None else N_ANS - 1
             max_cut = max(0, min(max_cut, N_ANS - 1))
             if max_cut > 0:
@@ -1271,35 +1272,43 @@ def sample_mixed_noise_schedule(
             else:
                 cut = 0
 
-            # Префикс 1..cut чистый (t=0.0), хвост cut+1..127 (индексы 0..N_ANS-1 в t_ans) в высоком шуме
+            # Префикс 1..cut чистый (t=0.0), хвост/блок в чистом шуме t=1.0 (50%) или U(0.50, 1.0)
             t_ans = torch.ones(N_ANS, device=device, dtype=torch.float32)
             if float(torch.rand(1, device=device).item()) < 0.5:
                 blk_len = int(torch.randint(8, 25, (1,)).item())
                 blk_end = min(N_ANS, cut + blk_len)
                 if blk_end > cut:
-                    t_ans[cut:blk_end] = torch.empty(blk_end - cut, device=device).uniform_(0.30, 1.0)
+                    if float(torch.rand(1, device=device).item()) < 0.5:
+                        t_ans[cut:blk_end] = 1.0
+                    else:
+                        t_ans[cut:blk_end] = torch.empty(blk_end - cut, device=device).uniform_(0.50, 1.0)
             else:
-                t_ans[cut:] = torch.empty(1, device=device).uniform_(0.55, 1.0)
+                if float(torch.rand(1, device=device).item()) < 0.5:
+                    t_ans[cut:] = 1.0
+                else:
+                    t_ans[cut:] = torch.empty(1, device=device).uniform_(0.50, 1.0)
             if cut > 0:
                 t_ans[:cut] = 0.0
             t_mat[b, 1:] = t_ans
         elif r < 0.85:
-            # Random Crystal & Soft Confidence Anchors: имитация разной чистоты ячеек полотна
-            # (половина с жесткими кристаллами t=0, половина с мягкими маяками t in [0.01, 0.22])
-            t_ans = torch.empty(N_ANS, device=device, dtype=torch.float32).uniform_(0.35, 0.95)
+            # Cloze & Crystal Anchors: 20-70% чистых/мягких якорей, остальные в t=1.0 (50%, прямой Cloze) или U(0.50, 1.0)
+            if float(torch.rand(1, device=device).item()) < 0.5:
+                t_ans = torch.ones(N_ANS, device=device, dtype=torch.float32)
+            else:
+                t_ans = torch.empty(N_ANS, device=device, dtype=torch.float32).uniform_(0.50, 1.0)
             n_c = int(i_last[b].item()) if i_last is not None else N_ANS
             n_c = max(2, min(n_c, N_ANS))
-            keep_frac = 0.20 + 0.40 * float(torch.rand(1, device=device).item())
+            keep_frac = 0.20 + 0.50 * float(torch.rand(1, device=device).item())
             n_anchors = max(1, min(n_c - 1, int(round(n_c * keep_frac))))
             anchor_idx = torch.randperm(n_c, device=device)[:n_anchors]
-            if float(torch.rand(1, device=device).item()) < 0.5:
+            if float(torch.rand(1, device=device).item()) < 0.65:
                 t_ans[anchor_idx] = 0.0
             else:
-                t_ans[anchor_idx] = torch.empty(n_anchors, device=device).uniform_(0.01, 0.22)
+                t_ans[anchor_idx] = torch.empty(n_anchors, device=device).uniform_(0.01, 0.15)
             t_mat[b, 1:] = t_ans
         else:
-            t_start = 0.25 * float(torch.rand(1, device=device).item())
-            t_end = 0.75 + 0.25 * float(torch.rand(1, device=device).item())
+            t_start = 0.20 * float(torch.rand(1, device=device).item())
+            t_end = 0.80 + 0.20 * float(torch.rand(1, device=device).item())
             grad_t = torch.linspace(t_start, t_end, N_ANS, device=device)
             jitter = torch.empty(N_ANS, device=device).uniform_(-0.03, 0.03)
             t_mat[b, 1:] = (grad_t + jitter).clamp(0.01, 1.0)
@@ -1323,8 +1332,8 @@ def build_rollout_noisy_canvas(
     Two-Step Rollout для обучения непрерывной Coarse-to-Fine фокусировке:
     1. Шаг 1 (высокий шум t_hi in [0.80, 1.0]): модель строит сглаженный черновик ответа V_0_draft.
     2. NoiseRadarHead оценивает истинную неуверенность каждой ячейки черновика sigma_draft.
-    3. Шаг 2: переходим к среднему шуму t_base in [0.15, 0.70] с адаптивным профилем t_i ~ sigma_draft_i
-       (уверенные ячейки черновика зашумляются слабее, размытые — сильнее), формируя V_t для обучения.
+    3. Шаг 2: чистый самочерновик V_draft (alpha=1.0, без подмешивания GT V_0) перезашумляется
+       к среднему уровню t_base in [0.15, 0.70] с адаптивным профилем t_i ~ sigma_draft_i.
     Возвращает (V_t, t_mat, radar_sigma).
     """
     B, N, _, _ = V_0.shape
@@ -1364,19 +1373,16 @@ def build_rollout_noisy_canvas(
         sig_ans = None
         rel_uncert = torch.ones((B, N - 1), device=device, dtype=torch.float32)
 
-    # Шаг 2: адаптивное перезашумление черновика к среднему уровню t_base in [0.15, 0.70]
+    # Шаг 2: адаптивное перезашумление чистого самочерновика (alpha=1.0, без подсказки от GT V_0)
     t_base = torch.empty((B, 1), device=device, dtype=torch.float32).uniform_(0.15, 0.70)
     t_ans = torch.clamp(t_base * rel_uncert, min=0.02, max=0.90)
     if sig_ans is not None:
-        # Самые уверенные клетки черновика при t_base < 0.45 могут полностью кристаллизоваться в t_i = 0
         cryst_mask = (sig_ans < 0.035) & (t_base < 0.45)
         t_ans = torch.where(cryst_mask, torch.zeros_like(t_ans), t_ans)
     t_mat = torch.cat([torch.zeros((B, 1), device=device, dtype=torch.float32), t_ans], dim=1)
 
-    alpha = torch.empty((B, 1, 1, 1), device=device, dtype=torch.float32).uniform_(0.65, 1.0)
-    V_mix = alpha * V_draft + (1.0 - alpha) * V_0.float()
     noise_2 = torch.randn_like(V_0, dtype=torch.float32) * SIGMA_DATA
-    V_t = (1.0 - t_mat.unsqueeze(-1).unsqueeze(-1)) * V_mix + t_mat.unsqueeze(-1).unsqueeze(-1) * noise_2
+    V_t = (1.0 - t_mat.unsqueeze(-1).unsqueeze(-1)) * V_draft + t_mat.unsqueeze(-1).unsqueeze(-1) * noise_2
     V_t[:, 0] = sep_exp[:, 0].float()
 
     radar_sigma = compute_radar_sigma(decoder, V_t, use_amp=use_amp, amp_dtype=amp_dtype)
@@ -1607,6 +1613,54 @@ def compute_phase3_loss(
 
 
 compute_phase2_loss = compute_phase3_loss
+
+
+def compute_decoder_ce_loss(
+    decoder: nn.Module,
+    V_0_hat: torch.Tensor,
+    t_mat: torch.Tensor,
+    ans_targets: torch.Tensor,
+    ce_max_tokens: int = 512,
+    use_amp: bool = False,
+    amp_dtype: torch.dtype = torch.float16,
+) -> Tuple[torch.Tensor, float]:
+    """
+    Сквозной токенный Cross-Entropy лосс через замороженный GrassmannianDecoder (eval, requires_grad=False):
+    - Использует torch.utils.checkpoint.checkpoint(decoder.decode_hidden, ...) для минимизации VRAM на T4;
+    - Считает логиты только на случайной подвыборке до ce_max_tokens активных контентных токенов
+      (<= 512 x 131072 в FP32 = <= 268 MB VRAM), возвращая (l_ce, tok_acc).
+    """
+    B = V_0_hat.shape[0]
+    device = V_0_hat.device
+    V_ans_hat = V_0_hat[:, 1:]  # (B, 127, 8, 128) с градиентом
+
+    active_tok_mask = (t_mat[:, 1:] > 1e-3).unsqueeze(-1).expand(B, N_ANS, 4).reshape(B, -1)
+    valid_mask = active_tok_mask & (ans_targets != -100)
+    flat_valid = torch.where(valid_mask.reshape(-1))[0]
+    if flat_valid.numel() == 0:
+        return V_0_hat.sum() * 0.0, 0.0
+
+    if flat_valid.numel() > ce_max_tokens:
+        perm = torch.randperm(flat_valid.numel(), device=device)[:ce_max_tokens]
+        sel_idx = flat_valid[perm]
+    else:
+        sel_idx = flat_valid
+
+    dec_dtype = next(decoder.parameters()).dtype
+    V_in = V_ans_hat.to(amp_dtype if use_amp else dec_dtype)
+    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+        h_final = torch.utils.checkpoint.checkpoint(
+            decoder.decode_hidden, V_in, use_reentrant=False
+        )  # (B, 508, 1024)
+
+    h_sub = h_final.reshape(-1, h_final.shape[-1])[sel_idx]
+    tgt_sub = ans_targets.reshape(-1)[sel_idx].long()
+    logits_sub = decoder.get_tied_head_logits(h_sub)  # float32 (M, vocab_size)
+    with torch.autocast(device_type=device.type, enabled=False):
+        l_ce = F.cross_entropy(logits_sub.float(), tgt_sub, reduction="mean")
+        with torch.no_grad():
+            tok_acc = float((logits_sub.argmax(dim=-1) == tgt_sub).float().mean().item())
+    return l_ce, tok_acc
 
 
 # %% [markdown]
@@ -2456,6 +2510,9 @@ def evaluate_phase3(
     rk_vals: List[float] = []
     radar_sig_vals: List[float] = []
     dict_cos_vals: List[float] = []
+    tok_acc_low_vals: List[float] = []
+    tok_acc_hi_vals: List[float] = []
+    ce_loss_hi_vals: List[float] = []
     tp, fp, fn = 0, 0, 0
     void_start_exact, void_start_pm1, void_start_tot = 0, 0, 0
     full_canvas_ok, full_canvas_tot = 0, 0
@@ -2523,6 +2580,24 @@ def evaluate_phase3(
                 if "dict_stats" in rad_dict:
                     cos_c = rad_dict["dict_stats"].float().view(B, N_ANS, 4, 4)[..., 0].mean(dim=-1)
                     dict_cos_vals.append(float(cos_c[is_content].mean().item()))
+
+            if decoder is not None:
+                dec_dtype = next(decoder.parameters()).dtype
+                ans_tgts = batch["ans_targets"].to(device) if "ans_targets" in batch else ans_ids
+                real_tok_m = (ans_ids.view(B, N_ANS, 4) != PAD_TOKEN_ID) & is_content.unsqueeze(-1)
+                real_tok_flat = real_tok_m.reshape(-1)
+                if real_tok_flat.any():
+                    h_low = decoder.decode_hidden(V_hat_ans.to(dec_dtype))
+                    h_hi = decoder.decode_hidden(V_0_hat_hi[:, 1:].to(dec_dtype))
+                    idx_r = torch.where(real_tok_flat)[0]
+                    if idx_r.numel() > 512:
+                        idx_r = idx_r[:512]
+                    tgt_r = ans_ids.reshape(-1)[idx_r].long()
+                    logits_low = decoder.get_tied_head_logits(h_low.reshape(-1, h_low.shape[-1])[idx_r])
+                    logits_hi = decoder.get_tied_head_logits(h_hi.reshape(-1, h_hi.shape[-1])[idx_r])
+                    tok_acc_low_vals.append(float((logits_low.argmax(dim=-1) == tgt_r).float().mean().item()))
+                    tok_acc_hi_vals.append(float((logits_hi.argmax(dim=-1) == tgt_r).float().mean().item()))
+                    ce_loss_hi_vals.append(float(F.cross_entropy(logits_hi.float(), tgt_r).item()))
 
         pred_void = detect_void_mask(V_hat_ans, void_cpu)
         tp += int((pred_void & is_true_void).sum().item())
@@ -2612,6 +2687,9 @@ def evaluate_phase3(
         "val/rk_eff_content": float(np.mean(rk_vals)) if rk_vals else 0.0,
         "val/radar_sigma_cell": float(np.mean(radar_sig_vals)) if radar_sig_vals else 0.0,
         "val/dict_cos_max": float(np.mean(dict_cos_vals)) if dict_cos_vals else 0.0,
+        "val/tok_acc_low": float(np.mean(tok_acc_low_vals)) if tok_acc_low_vals else 0.0,
+        "val/tok_acc_hi": float(np.mean(tok_acc_hi_vals)) if tok_acc_hi_vals else 0.0,
+        "val/ce_loss_hi": float(np.mean(ce_loss_hi_vals)) if ce_loss_hi_vals else 0.0,
         "val/void_f1": float(void_f1),
         "val/void_start_exact": float(void_start_exact / max(1, void_start_tot)),
         "val/void_start_pm1": float(void_start_pm1 / max(1, void_start_tot)),
@@ -2876,6 +2954,11 @@ def run_training_loop(
 
             prompt_ids = batch["prompt_ids"].to(env.device, non_blocking=True)
             ans_ids = batch["ans_ids"].to(env.device, non_blocking=True)
+            ans_targets = (
+                batch["ans_targets"].to(env.device, non_blocking=True)
+                if "ans_targets" in batch
+                else ans_ids
+            )
             n_real_prompt = batch["n_real_prompt"].to(env.device, non_blocking=True)
             i_last = batch["i_last"].to(env.device, non_blocking=True)
             w_cell = batch["w_cell"].to(env.device, non_blocking=True)
@@ -2956,6 +3039,32 @@ def run_training_loop(
                     sink_weights=sink_weights,
                     world_size=world_size,
                 )
+
+                # 3б. Сквозной токенный Cross-Entropy через замороженный Декодер (с прогревом от start_step)
+                ce_max_w = float(getattr(args, "ce_weight", 0.15))
+                ce_warmup = max(1, int(getattr(args, "ce_warmup_steps", 300)))
+                ce_max_toks = int(getattr(args, "ce_max_tokens", 512))
+                w_ce = ce_max_w * min(1.0, float(max(1, step - start_step)) / float(ce_warmup))
+                if decoder is not None and ce_max_w > 0.0:
+                    l_ce, ce_tok_acc = compute_decoder_ce_loss(
+                        decoder=decoder,
+                        V_0_hat=V_0_hat,
+                        t_mat=t_mat,
+                        ans_targets=ans_targets,
+                        ce_max_tokens=ce_max_toks,
+                        use_amp=env.use_amp,
+                        amp_dtype=env.amp_dtype,
+                    )
+                    loss = loss + w_ce * l_ce
+                    m_dict["loss/ce"] = float(l_ce.item())
+                    m_dict["loss/w_ce"] = float(w_ce)
+                    m_dict["train/ce_tok_acc"] = float(ce_tok_acc)
+                    m_dict["loss/total"] = float(loss.item())
+                else:
+                    m_dict["loss/ce"] = 0.0
+                    m_dict["loss/w_ce"] = 0.0
+                    m_dict["train/ce_tok_acc"] = 0.0
+
                 scaled_loss = loss / float(args.grad_accum_steps)
                 if scaler is not None:
                     scaler.scale(scaled_loss).backward()
@@ -2992,11 +3101,11 @@ def run_training_loop(
             print(
                 f"[Step {step:6d}/{args.max_steps}] "
                 f"tot={accum_metrics['loss/total']:.4f} | "
+                f"ce={accum_metrics.get('loss/ce', 0.0):.3f} (acc={accum_metrics.get('train/ce_tok_acc', 0.0):.3f}) | "
                 f"basis={accum_metrics['loss/basis']:.4f} | "
                 f"gr={accum_metrics['loss/gr']:.4f} | "
                 f"en={accum_metrics['loss/energy']:.4f} | "
                 f"adj={accum_metrics['loss/adj']:.4f} | "
-                f"bary={accum_metrics['loss/bary']:.4f} | "
                 f"sink={accum_metrics['loss/sink']:.4f} | "
                 f"adaln_sig={accum_metrics['adaln/sigma_mean']:.2e} | "
                 f"lr_m={lr_mult:.3f} | {dt:.2f}s",
@@ -3032,9 +3141,10 @@ def run_training_loop(
             gen_samples = val_res.pop("gen_samples", [])
             print(
                 f"  [Eval @ {step}] Sim_Gr={val_res['val/sim_gr_denoising']:.4f} (hi={val_res['val/sim_gr_hi']:.4f}) | "
+                f"TokAcc={val_res.get('val/tok_acc_low', 0.0):.3f} (hi={val_res.get('val/tok_acc_hi', 0.0):.3f}, CE_hi={val_res.get('val/ce_loss_hi', 0.0):.2f}) | "
                 f"CFG={val_res['val/cfg_contrast']:.4f} (hi={val_res['val/cfg_contrast_hi']:.4f}) | "
                 f"VOID_F1={val_res['val/void_f1']:.4f} (pm1={val_res['val/void_start_pm1']:.3f}) | "
-                f"radar={val_res['val/radar_sigma_cell']:.3f} (cos={val_res['val/dict_cos_max']:.3f}) | "
+                f"radar={val_res['val/radar_sigma_cell']:.3f} | "
                 f"sink_c={val_res['val/sink_attn_content']:.3f} (hi={val_res['val/sink_attn_content_hi']:.3f}) | "
                 f"rk={val_res['val/rk_eff_content']:.2f} | "
                 f"adaln_min={val_res['val/sigma_adaln_min']:.2e}",
@@ -3126,6 +3236,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--elastic-drop-prob", "--elastic_drop_prob", dest="elastic_drop_prob", type=float, default=0.0)
     parser.add_argument("--rollout-prob", "--rollout_prob", dest="rollout_prob", type=float, default=0.35)
     parser.add_argument("--rollout-start-step", "--rollout_start_step", dest="rollout_start_step", type=int, default=1000)
+    parser.add_argument("--ce-weight", "--ce_weight", dest="ce_weight", type=float, default=0.15)
+    parser.add_argument("--ce-warmup-steps", "--ce_warmup_steps", dest="ce_warmup_steps", type=int, default=300)
+    parser.add_argument("--ce-max-tokens", "--ce_max_tokens", dest="ce_max_tokens", type=int, default=512)
     args, _ = parser.parse_known_args()
     return args
 
@@ -3332,6 +3445,9 @@ TRAINING_CONFIG = {
     "elastic_drop_prob": 0.0,
     "rollout_prob": 0.35,
     "rollout_start_step": 1000,
+    "ce_weight": 0.15,
+    "ce_warmup_steps": 300,
+    "ce_max_tokens": 512,
 }
 
 if __name__ == "__main__":
