@@ -1,27 +1,27 @@
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 # KI: Experiments
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
-<!-- last_verified: 2026-11-21 -->
+<!-- last_verified: 2026-11-22 -->
 
 ## Что это
 Песочница для отработки гипотез по дистилляции и основной хаб для запуска тренировочных скриптов проекта BEBLaDII. Основной фокус сейчас: Phase 1 (Awakening & Reasoning).
