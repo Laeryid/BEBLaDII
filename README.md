@@ -20,10 +20,10 @@
 BEBLaDII is an experimental research model designed to separate logical reasoning (System 2) from linguistic generation (System 1) and use **Complementary Latent Memory (CLM)** directly inside continuous latent space. Instead of autoregressively predicting one discrete token at a time, the current **Plan C** architecture encodes 4-token chunks into **Grassmannian Burer–Monteiro concept cells** $V \in \mathbb{R}^{8 \times 128}$ ($\rho = V^T V$, $d = 1024$), performs iterative diffusion reasoning over compressed concept canvases, and reconstructs fluent text via an $\mathcal{O}(8)$-invariant decompressor decoder.
 
 ## 💾 Model Weights
-Modular System 1 components for Plan C Phase 1 are stored in `storage/components/`:
+Modular System 1 components for Plan C (Phase 1 & Phase 2) are stored in `storage/components/`:
 - `storage/components/tokenizer` — Tekken (Mistral AI, `vocab_size = 131,072`)
-- `storage/components/encoder` — `GrassmannianEncoder` (`step_19500` EMA)
-- `storage/components/decoder` — `GrassmannianDecoder` (`step_19500` EMA, `SetCrossAttentionUnpacker` $1 \to 4$)
+- `storage/components/encoder` — `GrassmannianEncoder` (Phase 1 `step_19500` EMA)
+- `storage/components/decoder` — `GrassmannianDecoder` (Phase 2 `step_25000`, $\mathcal{O}(8)$-invariant `SetCrossAttentionUnpacker` $1 \to 4$ + `NoiseRadarHead`)
 - `storage/components/sep_concept.pt` & `storage/components/void_concept.pt` — deterministic anchor concepts
 
 Foundation weights for earlier Plan B experiments:
@@ -44,7 +44,7 @@ flowchart TD
     end
 
     subgraph S2 ["2. System 2 Diffusion Core (Concept Canvas)"]
-        E["7-Layer Diffusion Core (ModernBERT + SphereLinear)"]
+        E["10-Layer Diffusion Core (ModernBERT + SphereLinear)"]
         F["Geometric / Gram Sensors"]
         G{"Orchestrator"}
 
@@ -54,7 +54,7 @@ flowchart TD
     end
 
     subgraph S1_OUT ["3. System 1 Decompressor (1 -> 4)"]
-        P["SetCrossAttentionUnpacker + 2 Smooth Layers"] --> J["Tied LM Head (131k)"]
+        P["SetCrossAttentionUnpacker + NoiseRadarHead + 4 Smooth Layers"] --> J["Tied LM Head (131k)"]
         J --> M["Final Output Text"]
     end
 
@@ -79,21 +79,24 @@ flowchart TD
    - **Role:** Tekken BPE tokenizer ($V = 131\,072$) with high Cyrillic compression efficiency.
 2. **Grassmannian Encoder (`storage/components/encoder`)**
    - **Role:** Split-subspace encoder (`LexicalCoreMLP` + 2-layer `ContextSyntaxEncoder`) with block-diagonal $\mu$-VAE head, unit-ball normalizer ($\text{rk}_{\text{eff}} \ge 1.5$), and $4 \to 1$ Eckart–Young spectral pooler (Partial RoPE + Lorentzian Autograd SVD).
-3. **Diffusion Core (System 2, Phase 2 Plan C)**
-   - **Role:** Iterative Flow Matching / DDPM transformer over compressed concept canvases $V \in \mathbb{R}^{N \times 8 \times 128}$ trained with `OrthMuon (d=1)` and `SphereLinear`.
-4. **Grassmannian Decoder (`storage/components/decoder`)**
-   - **Role:** $\mathcal{O}(8)$-invariant hierarchical decompressor: 1 canvas context layer, `SetCrossAttentionUnpacker` ($1 \to 4$ with Gram matrix $G = V V^T$ injection in FP32), 2 smoothing layers, and tied LM head.
+3. **Diffusion Core (System 2, Phase 3 Plan C)**
+   - **Role:** Iterative Flow Matching / DDPM transformer (10-layer `GrassmannianDiffusionCore` + 2-layer `PromptAdapter`) over canonicalized concept canvases $V \in \mathbb{R}^{N \times 8 \times 128}$ trained with `OrthMuon (d=1)` and `SphereLinear`.
+4. **Grassmannian Decoder (`storage/components/decoder`, Phase 2 Plan C)**
+   - **Role:** Dual-output $\mathcal{O}(8)$-invariant hierarchical decompressor with deterministic basis canonicalization (`canonicalize_cell_basis`), `NoiseRadarHead` (cell/token noise estimation $\hat{\sigma}_{\text{cell}}, \hat{\sigma}_{\text{tok}}$), 1 canvas context layer, `SetCrossAttentionUnpacker` ($1 \to 4$ with Gram matrix $G = V V^T$ in FP32), 4 noise-conditioned smoothing layers, and tied LM head.
 5. **CLM & Orchestrator**
    - **Role:** External geometric memory and control loop operating on subspace projections and typed relation anchors.
 
 ## Training Pipeline (Plan C)
 
-- **Stage C.1 (Phase 1): Grassmannian Autoencoder & Decompressor** (✅ Completed at `step_19500`)
+- **Stage C.1 (Phase 1): Grassmannian Autoencoder & Base Decompressor** (✅ Completed at `step_19500`)
   - Dual-regime training (85% coherent text + 15% vocabulary spectrum `randperm(131k)`), `OrthMuon (d=1)` + `AdamW`, Denoising Jittering (`0.035`), diagonal/off-diagonal Gram prior regularization.
   - Achieved `val/recon = 0.0014`, `100%` Token Accuracy (`PPL = 1.00–1.02`), `val/effective_dim = 64.39 / 128` (`47.51 / 128` on text-only scan), zero collapsed tokens, and clean quantum-boolean subspace algebra.
-- **Stage C.2 (Phase 2): Concept-Canvas Diffusion Core** (Next)
-  - Train the 7-layer diffusion core over fixed compressed canvases ($N = 32\dots64$) with Frobenius density-matrix / subspace losses.
-- **Stage C.3–C.4: CLM Integration & End-to-End Inference**
+- **Stage C.2 (Phase 2): Generative $\mathcal{O}(8)$-Invariant Decoder & Noise Radar** (✅ Completed at `step_25000`)
+  - Trained on frozen Phase 1 `GrassmannianEncoder` and tied `embeddings.weight` with deterministic $\mathcal{O}(8)$ basis canonicalization (`canonicalize_cell_basis`) and word-aware elastic chunking (`WordAwareElasticChunker`, `1..4` BPE tokens without splitting words $\le 4$ tokens).
+  - Upgraded `GrassmannianDecoder` to a dual-output architecture: `NoiseRadarHead` (predicting per-cell/per-token noise $\hat{\sigma}_{\text{cell}}, \hat{\sigma}_{\text{tok}}$) and a 4-layer noise-conditioned generative smoothing contour trained under realistic latent corruptions (`clean_jitter`, strong Gaussian noise, barycentric `MixOther`, partial crystallization, and random $\mathcal{O}(8)$ rotations).
+- **Stage C.3 (Phase 3): Concept-Canvas Diffusion Core** (🚧 In Progress)
+  - Train the 10-layer `GrassmannianDiffusionCore` + 2-layer `PromptAdapter` (`CA_Prompt`, `Shared KV`, `Soft-Gate AdaLN`) over canonicalized concept canvases ($N = 128$ with `SEP` anchor at pos `0`), using `WordAwareElasticChunker`, diagnostic spectral + `NoiseRadarHead` sensors (`s0..s7`), `Two-Step Rollout`, hybrid Grassmannian losses, and end-to-end token Cross-Entropy (`L_CE`) through the frozen decoder.
+- **Stage C.4–C.5: CLM Integration & End-to-End Inference** (Planned)
   - Connect CLM rule/fact indexing via Gram invariants and run end-to-end prompt-conditioned latent reasoning.
 
 ## Results & Reports
@@ -103,6 +106,12 @@ flowchart TD
 * **Phase 1 (Completed — `step_19500` EMA):**
   * [Phase 1 Experiment Plan](<experiments/phase 1/experiment_plan.md>)
   * [Training Pipeline](<experiments/phase 1/train_phase1.py>)
+* **Phase 2 (Completed — `step_25000`):**
+  * [Phase 2 Experiment Plan (Generative Decoder & Noise Radar)](<experiments/phase 2/experiment_plan.md>)
+  * [Training Pipeline](<experiments/phase 2/train_phase2.py>)
+* **Phase 3 (In Progress):**
+  * [Phase 3 Experiment Plan (Diffusion Core)](<experiments/phase 3/experiment_plan.md>)
+  * [Training Pipeline](<experiments/phase 3/train_phase3.py>)
 
 ### Plan B (failed)
 Old README: [README Plan B](<experiments/Plan B/README.md>) | Experiment folder: [experiments/Plan B](<experiments/Plan B>)
