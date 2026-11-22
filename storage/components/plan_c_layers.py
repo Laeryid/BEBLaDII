@@ -20,24 +20,29 @@ class LorentzianEigh(torch.autograd.Function):
         diag_shift = torch.arange(1, K + 1, device=G_f32.device, dtype=torch.float32) * 1e-6
         G_reg = G_f32 + torch.diag(diag_shift)
 
-        L_reg: Optional[torch.Tensor] = None
-        V: Optional[torch.Tensor] = None
-        try:
+        if G_reg.device.type == "xla":
             L_reg, V = torch.linalg.eigh(G_reg)
-            is_valid = torch.isfinite(L_reg).all() and torch.isfinite(V).all()
-        except Exception:
-            is_valid = False
-
-        if not is_valid:
-            try:
-                L_64, V_64 = torch.linalg.eigh(G_reg.double())
-                L_reg = L_64.float()
-                V = V_64.float()
-            except Exception:
-                L_reg = torch.full(G_reg.shape[:-1], 1e-5, device=G_reg.device, dtype=torch.float32)
-                V = torch.eye(K, device=G_reg.device, dtype=torch.float32).expand_as(G_reg).clone()
             L_reg = torch.nan_to_num(L_reg, nan=1e-5, posinf=1.0, neginf=1e-5)
             V = torch.nan_to_num(V, nan=0.0, posinf=0.0, neginf=0.0)
+        else:
+            L_reg: Optional[torch.Tensor] = None
+            V: Optional[torch.Tensor] = None
+            try:
+                L_reg, V = torch.linalg.eigh(G_reg)
+                is_valid = torch.isfinite(L_reg).all() and torch.isfinite(V).all()
+            except Exception:
+                is_valid = False
+
+            if not is_valid:
+                try:
+                    L_64, V_64 = torch.linalg.eigh(G_reg.double())
+                    L_reg = L_64.float()
+                    V = V_64.float()
+                except Exception:
+                    L_reg = torch.full(G_reg.shape[:-1], 1e-5, device=G_reg.device, dtype=torch.float32)
+                    V = torch.eye(K, device=G_reg.device, dtype=torch.float32).expand_as(G_reg).clone()
+                L_reg = torch.nan_to_num(L_reg, nan=1e-5, posinf=1.0, neginf=1e-5)
+                V = torch.nan_to_num(V, nan=0.0, posinf=0.0, neginf=0.0)
 
         ctx.save_for_backward(L_reg, V)
         ctx.eps = eps
