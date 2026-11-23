@@ -1,4 +1,4 @@
-<!-- last_verified: 2026-11-22 -->
+<!-- last_verified: 2026-11-23 -->
 <!-- status: archived -->
 # KI: Knowledge Infrastructure (Техническая реализация, архив)
 

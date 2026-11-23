@@ -1539,6 +1539,21 @@
       ],
       "summary": "ADR 140: Фаза 3 Plan C: Сквозной токенный Cross-Entropy (L_CE) через замороженный Декодер, чистый Two-Step Rollout (alpha=1.0) и языковой Curriculum",
       "status": "accepted"
+    },
+    "decisions/141_phase3_low_noise_gated_ce_and_stopword_weighting.md": {
+      "description": "ADR 141: Фаза 3 Plan C: Ограничение L_CE по уровню шума (t < 0.50), ослабление стоп-слов и отключение CE на Rollout против Unigram Mode Collapse (уточнение ADR 140) (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "KI_experiments.md",
+        "decisions/034_angular_loss_for_output_projector.md",
+        "decisions/035_centered_cosine_and_contrastive_neighbor_loss.md",
+        "decisions/036_replacing_infonce_with_rkd.md",
+        "decisions/037_phase3_failure_and_plan_b_skip_connections.md"
+      ],
+      "summary": "ADR 141: Фаза 3 Plan C: Ограничение L_CE по уровню шума (t < 0.50), ослабление стоп-слов и отключение CE на Rollout против Unigram Mode Collapse (уточнение ADR 140)",
+      "status": "accepted"
     }
   },
   "knowledge_system": {

@@ -1484,25 +1484,37 @@ def compute_decoder_ce_loss_tpu(
     t_mat: torch.Tensor,
     ans_targets: torch.Tensor,
     ce_max_tokens: int = 256,
+    ce_t_max: float = 0.50,
+    stopword_mask: Optional[torch.Tensor] = None,
+    ce_stopword_weight: float = 0.25,
+    sample_mask: Optional[torch.Tensor] = None,
     use_bf16: bool = True,
     use_grad_ckpt: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     100% статичный сквозной Cross-Entropy через замороженный GrassmannianDecoder (ADR 140):
-    - Выбирает ровно M_sel = min(ce_max_tokens, B * 508) позиций через topk(rand + 2 * valid_mask).
+    - Активен только на низком/среднем шуме t_i in (0, ce_t_max) и вне rollout (sample_mask),
+      с гладким весом ((ce_t_max - t_i) / ce_t_max)^2 и понижением веса стоп-слов/пунктуации;
+    - Выбирает ровно M_sel = min(ce_max_tokens, B * 508) позиций через topk(rand + 2 * valid_mask);
     - Никаких torch.where(mask)[0] и .item() -> строго 1 граф XLA, логиты (256, 131072) = 134 MB FP32.
     """
     B = V_0_hat.shape[0]
     device = V_0_hat.device
     V_ans_hat = V_0_hat[:, 1:]  # (B, 127, 8, 128) с градиентом
 
-    active_tok_mask = (t_mat[:, 1:] > 1e-3).unsqueeze(-1).expand(B, N_ANS, 4).reshape(B, -1)
+    t_tok = t_mat[:, 1:].float().unsqueeze(-1).expand(B, N_ANS, 4).reshape(B, -1)
+    active_tok_mask = (t_tok > 1e-3) & (t_tok < ce_t_max)
+    if sample_mask is not None:
+        active_tok_mask = active_tok_mask & sample_mask.bool().view(B, 1)
     valid_flat = (active_tok_mask & (ans_targets != -100)).reshape(-1)
+    t_flat = t_tok.reshape(-1)
     M_sel = min(ce_max_tokens, valid_flat.numel())
 
     scores = torch.rand(valid_flat.numel(), device=device, dtype=torch.float32) + valid_flat.float() * 2.0
     _, sel_idx = torch.topk(scores, k=M_sel, sorted=False)
-    sel_valid = valid_flat[sel_idx].float()
+    sel_valid_bool = valid_flat[sel_idx]
+    sel_valid = sel_valid_bool.float()
+    w_t_sel = torch.clamp((ce_t_max - t_flat[sel_idx]) / max(ce_t_max, 1e-6), min=0.0, max=1.0) ** 2
 
     dec_dtype = next(decoder.parameters()).dtype
     V_in = V_ans_hat.to(dtype=dec_dtype)
@@ -1516,15 +1528,25 @@ def compute_decoder_ce_loss_tpu(
 
     h_sub = h_final.reshape(-1, h_final.shape[-1])[sel_idx]
     raw_tgts = ans_targets.reshape(-1)[sel_idx].long()
-    safe_tgts = torch.where(valid_flat[sel_idx], raw_tgts, torch.zeros_like(raw_tgts))
+    safe_tgts = torch.where(sel_valid_bool, raw_tgts, torch.zeros_like(raw_tgts))
 
     logits_sub = decoder.get_tied_head_logits(h_sub)  # float32 (M_sel, vocab_size)
     with torch.amp.autocast(device_type=device.type, enabled=False):
         per_tok_ce = F.cross_entropy(logits_sub.float(), safe_tgts, reduction="none")
-        denom = sel_valid.sum().clamp(min=1.0)
-        l_ce = (per_tok_ce * sel_valid).sum() / denom
+        if stopword_mask is not None:
+            sw_idx = safe_tgts.clamp(0, stopword_mask.numel() - 1)
+            w_sw = torch.where(
+                stopword_mask[sw_idx],
+                torch.full_like(w_t_sel, float(ce_stopword_weight)),
+                torch.ones_like(w_t_sel),
+            )
+            sel_weight = sel_valid * w_t_sel * w_sw
+        else:
+            sel_weight = sel_valid * w_t_sel
+        l_ce = (per_tok_ce * sel_weight).sum() / sel_weight.sum().clamp(min=1e-6)
         with torch.no_grad():
-            tok_acc = ((logits_sub.argmax(dim=-1) == safe_tgts).float() * sel_valid).sum() / denom
+            acc_denom = sel_valid.sum().clamp(min=1.0)
+            tok_acc = ((logits_sub.argmax(dim=-1) == safe_tgts).float() * sel_valid).sum() / acc_denom
     return l_ce, tok_acc.detach()
 
 
@@ -2286,6 +2308,7 @@ def _mp_train_worker(index: int, args: argparse.Namespace, env: EnvironmentConfi
 
     sep_cpu, _ = canonicalize_cell_basis(sep_concept.float())
     sep_dev = sep_cpu.to(device=device, dtype=torch.float32)
+    sw_dev = stopword_mask.to(device=device, dtype=torch.bool)
 
     # 2. Создание модели на CPU, загрузка чекпоинта ДО переноса на TPU (Блок E), затем .to(device) в FP32
     model = GrassmannianDiffusionCore(void_ref=void_concept)
@@ -2372,6 +2395,7 @@ def _mp_train_worker(index: int, args: argparse.Namespace, env: EnvironmentConfi
     # Фиксированное число rollout-примеров в батче (единый граф XLA, 0 перекомпиляций)
     b_roll = int(round(args.batch_size * args.rollout_prob)) if args.rollout_prob > 0.0 else 0
     b_roll = min(args.batch_size, max(0, b_roll))
+    ce_rollout_sample_mask = (torch.arange(args.batch_size, device=device) >= b_roll) if b_roll > 0 else None
 
     # Тензорные гиперпараметры на устройстве (обновляются без перекомпиляции)
     w_ce_t = torch.tensor(0.0, device=device, dtype=torch.float32)
@@ -2518,12 +2542,17 @@ def _mp_train_worker(index: int, args: argparse.Namespace, env: EnvironmentConfi
             )
 
             if args.ce_weight > 0.0:
+                ce_s_mask = ce_rollout_sample_mask if (b_roll > 0 and global_step >= args.rollout_start_step) else None
                 l_ce, ce_acc = compute_decoder_ce_loss_tpu(
                     decoder=decoder,
                     V_0_hat=V_0_hat,
                     t_mat=t_mat,
                     ans_targets=ans_targets,
                     ce_max_tokens=args.ce_max_tokens,
+                    ce_t_max=args.ce_t_max,
+                    stopword_mask=sw_dev,
+                    ce_stopword_weight=args.ce_stopword_weight,
+                    sample_mask=ce_s_mask,
                     use_bf16=use_bf16,
                     use_grad_ckpt=args.decoder_grad_ckpt,
                 )
@@ -2687,9 +2716,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--elastic-drop-prob", "--elastic_drop_prob", dest="elastic_drop_prob", type=float, default=0.0)
     parser.add_argument("--rollout-prob", "--rollout_prob", dest="rollout_prob", type=float, default=0.35)
     parser.add_argument("--rollout-start-step", "--rollout_start_step", dest="rollout_start_step", type=int, default=1000)
-    parser.add_argument("--ce-weight", "--ce_weight", dest="ce_weight", type=float, default=0.15)
+    parser.add_argument("--ce-weight", "--ce_weight", dest="ce_weight", type=float, default=0.05)
     parser.add_argument("--ce-warmup-steps", "--ce_warmup_steps", dest="ce_warmup_steps", type=int, default=300)
     parser.add_argument("--ce-max-tokens", "--ce_max_tokens", dest="ce_max_tokens", type=int, default=256)
+    parser.add_argument("--ce-t-max", "--ce_t_max", dest="ce_t_max", type=float, default=0.50)
+    parser.add_argument("--ce-stopword-weight", "--ce_stopword_weight", dest="ce_stopword_weight", type=float, default=0.25)
     parser.add_argument("--decoder-grad-ckpt", "--decoder_grad_ckpt", dest="decoder_grad_ckpt", action="store_true")
     parser.add_argument("--nprocs", type=int, default=0, help="Число процессов TPU (0 = авто)")
     args, _ = parser.parse_known_args()
@@ -2774,9 +2805,11 @@ TRAINING_CONFIG = {
     "elastic_drop_prob": 0.0,
     "rollout_prob": 0.35,
     "rollout_start_step": 1000,
-    "ce_weight": 0.15,
+    "ce_weight": 0.05,
     "ce_warmup_steps": 300,
     "ce_max_tokens": 256,     # 256 на чип x 8 чипов = 2048 токенов на шаг (как на 2xT4)
+    "ce_t_max": 0.50,
+    "ce_stopword_weight": 0.25,
     "decoder_grad_ckpt": False,
     "nprocs": 0,              # 0 = авто (все 8 чипов на Kaggle TPU)
 }

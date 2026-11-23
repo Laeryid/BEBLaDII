@@ -1621,11 +1621,17 @@ def compute_decoder_ce_loss(
     t_mat: torch.Tensor,
     ans_targets: torch.Tensor,
     ce_max_tokens: int = 512,
+    ce_t_max: float = 0.50,
+    stopword_mask: Optional[torch.Tensor] = None,
+    ce_stopword_weight: float = 0.25,
     use_amp: bool = False,
     amp_dtype: torch.dtype = torch.float16,
 ) -> Tuple[torch.Tensor, float]:
     """
     Сквозной токенный Cross-Entropy лосс через замороженный GrassmannianDecoder (eval, requires_grad=False):
+    - Применяется только на низком/среднем шуме t_i in (0, ce_t_max) с гладким весом ((ce_t_max - t_i) / ce_t_max)^2,
+      чтобы не вызывать unigram mode collapse (запятые/пробелы/\\n\\n) на высоком шуме;
+    - Понижает вес стоп-слов/пунктуации до ce_stopword_weight;
     - Использует torch.utils.checkpoint.checkpoint(decoder.decode_hidden, ...) для минимизации VRAM на T4;
     - Считает логиты только на случайной подвыборке до ce_max_tokens активных контентных токенов
       (<= 512 x 131072 в FP32 = <= 268 MB VRAM), возвращая (l_ce, tok_acc).
@@ -1634,7 +1640,8 @@ def compute_decoder_ce_loss(
     device = V_0_hat.device
     V_ans_hat = V_0_hat[:, 1:]  # (B, 127, 8, 128) с градиентом
 
-    active_tok_mask = (t_mat[:, 1:] > 1e-3).unsqueeze(-1).expand(B, N_ANS, 4).reshape(B, -1)
+    t_tok = t_mat[:, 1:].float().unsqueeze(-1).expand(B, N_ANS, 4).reshape(B, -1)
+    active_tok_mask = (t_tok > 1e-3) & (t_tok < ce_t_max)
     valid_mask = active_tok_mask & (ans_targets != -100)
     flat_valid = torch.where(valid_mask.reshape(-1))[0]
     if flat_valid.numel() == 0:
@@ -1655,9 +1662,22 @@ def compute_decoder_ce_loss(
 
     h_sub = h_final.reshape(-1, h_final.shape[-1])[sel_idx]
     tgt_sub = ans_targets.reshape(-1)[sel_idx].long()
+    t_sub = t_tok.reshape(-1)[sel_idx]
     logits_sub = decoder.get_tied_head_logits(h_sub)  # float32 (M, vocab_size)
     with torch.autocast(device_type=device.type, enabled=False):
-        l_ce = F.cross_entropy(logits_sub.float(), tgt_sub, reduction="mean")
+        per_tok_ce = F.cross_entropy(logits_sub.float(), tgt_sub, reduction="none")
+        w_t = torch.clamp((ce_t_max - t_sub) / max(ce_t_max, 1e-6), min=0.0, max=1.0) ** 2
+        if stopword_mask is not None:
+            sw_idx = tgt_sub.clamp(0, stopword_mask.numel() - 1)
+            w_sw = torch.where(
+                stopword_mask[sw_idx],
+                torch.full_like(w_t, float(ce_stopword_weight)),
+                torch.ones_like(w_t),
+            )
+            w_tok = w_t * w_sw
+        else:
+            w_tok = w_t
+        l_ce = (per_tok_ce * w_tok).sum() / w_tok.sum().clamp(min=1e-6)
         with torch.no_grad():
             tok_acc = float((logits_sub.argmax(dim=-1) == tgt_sub).float().mean().item())
     return l_ce, tok_acc
@@ -3040,18 +3060,23 @@ def run_training_loop(
                     world_size=world_size,
                 )
 
-                # 3б. Сквозной токенный Cross-Entropy через замороженный Декодер (с прогревом от start_step)
-                ce_max_w = float(getattr(args, "ce_weight", 0.15))
+                # 3б. Сквозной токенный Cross-Entropy через замороженный Декодер (только на t < ce_t_max и вне rollout)
+                ce_max_w = float(getattr(args, "ce_weight", 0.05))
                 ce_warmup = max(1, int(getattr(args, "ce_warmup_steps", 300)))
                 ce_max_toks = int(getattr(args, "ce_max_tokens", 512))
+                ce_t_max = float(getattr(args, "ce_t_max", 0.50))
+                ce_sw_w = float(getattr(args, "ce_stopword_weight", 0.25))
                 w_ce = ce_max_w * min(1.0, float(max(1, step - start_step)) / float(ce_warmup))
-                if decoder is not None and ce_max_w > 0.0:
+                if decoder is not None and ce_max_w > 0.0 and (not use_rollout):
                     l_ce, ce_tok_acc = compute_decoder_ce_loss(
                         decoder=decoder,
                         V_0_hat=V_0_hat,
                         t_mat=t_mat,
                         ans_targets=ans_targets,
                         ce_max_tokens=ce_max_toks,
+                        ce_t_max=ce_t_max,
+                        stopword_mask=sw_dev,
+                        ce_stopword_weight=ce_sw_w,
                         use_amp=env.use_amp,
                         amp_dtype=env.amp_dtype,
                     )
@@ -3236,9 +3261,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--elastic-drop-prob", "--elastic_drop_prob", dest="elastic_drop_prob", type=float, default=0.0)
     parser.add_argument("--rollout-prob", "--rollout_prob", dest="rollout_prob", type=float, default=0.35)
     parser.add_argument("--rollout-start-step", "--rollout_start_step", dest="rollout_start_step", type=int, default=1000)
-    parser.add_argument("--ce-weight", "--ce_weight", dest="ce_weight", type=float, default=0.15)
+    parser.add_argument("--ce-weight", "--ce_weight", dest="ce_weight", type=float, default=0.05)
     parser.add_argument("--ce-warmup-steps", "--ce_warmup_steps", dest="ce_warmup_steps", type=int, default=300)
     parser.add_argument("--ce-max-tokens", "--ce_max_tokens", dest="ce_max_tokens", type=int, default=512)
+    parser.add_argument("--ce-t-max", "--ce_t_max", dest="ce_t_max", type=float, default=0.50)
+    parser.add_argument("--ce-stopword-weight", "--ce_stopword_weight", dest="ce_stopword_weight", type=float, default=0.25)
     args, _ = parser.parse_known_args()
     return args
 
@@ -3445,9 +3472,11 @@ TRAINING_CONFIG = {
     "elastic_drop_prob": 0.0,
     "rollout_prob": 0.35,
     "rollout_start_step": 1000,
-    "ce_weight": 0.15,
+    "ce_weight": 0.05,
     "ce_warmup_steps": 300,
     "ce_max_tokens": 512,
+    "ce_t_max": 0.50,
+    "ce_stopword_weight": 0.25,
 }
 
 if __name__ == "__main__":
