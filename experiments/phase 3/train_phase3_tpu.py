@@ -99,17 +99,25 @@ def setup_kaggle_secrets(is_kaggle: bool) -> None:
                 with open(sa_path, "w", encoding="utf-8") as f:
                     f.write(gcp_json.strip())
                 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = sa_path
-                res = subprocess.run(
-                    ["gcloud", "auth", "activate-service-account", f"--key-file={sa_path}"],
-                    capture_output=True,
-                    text=True,
-                )
-                if res.returncode == 0:
-                    print("[Kaggle Secrets] GCP Service Account успешно авторизован.", flush=True)
-                else:
-                    print(f"[Kaggle Secrets Warning] Ошибка gcloud auth: {res.stderr.strip()}", flush=True)
-        except Exception:
-            pass
+                print(f"[Kaggle Secrets] GCP_SA_JSON сохранен в {sa_path}.", flush=True)
+                if shutil.which("gcloud"):
+                    res = subprocess.run(
+                        ["gcloud", "auth", "activate-service-account", f"--key-file={sa_path}"],
+                        capture_output=True,
+                        text=True,
+                    )
+                    if res.returncode == 0:
+                        print("[Kaggle Secrets] gcloud CLI авторизован.", flush=True)
+                    else:
+                        print(f"[Kaggle Secrets Warning] Ошибка gcloud auth: {res.stderr.strip()}", flush=True)
+                try:
+                    from google.cloud import storage
+                    _ = storage.Client()
+                    print("[Kaggle Secrets] GCS Python SDK (google-cloud-storage) авторизован и готов.", flush=True)
+                except Exception as e_sdk:
+                    print(f"[Kaggle Secrets Warning] Ошибка инициализации google-cloud-storage: {e_sdk}", flush=True)
+        except Exception as e_gcp:
+            print(f"[Kaggle Secrets Warning] GCP_SA_JSON не загружен: {e_gcp}", flush=True)
     except ImportError:
         pass
     except Exception as e:
@@ -2091,17 +2099,45 @@ def evaluate_phase3_tpu(
 # ## 8. Чекпоинты (совместимые с GPU/GCS) и цикл обучения на TPU
 
 # %%
+def _parse_gcs_uri(gcs_uri: str) -> Tuple[str, str]:
+    """Разбирает gs://bucket/prefix -> (bucket_name, prefix_without_leading_slash)."""
+    clean = gcs_uri.replace("gs://", "", 1)
+    parts = clean.split("/", 1)
+    bucket_name = parts[0]
+    prefix = parts[1] if len(parts) > 1 else ""
+    return bucket_name, prefix
+
+
+def get_gcs_client():
+    """Возвращает google.cloud.storage.Client() (основной способ работы с GCS на Kaggle TPU)."""
+    try:
+        from google.cloud import storage
+        return storage.Client()
+    except Exception:
+        return None
+
+
 def sync_to_gcs(local_path: str, gcs_dir: str) -> bool:
     if not gcs_dir:
         return False
     target = gcs_dir.rstrip("/") + "/" + os.path.basename(local_path)
-    try:
-        res = subprocess.run(["gsutil", "-q", "cp", local_path, target], capture_output=True, text=True)
-        if res.returncode == 0:
-            print(f"[GCS] Выгружено: {target}", flush=True)
+    client = get_gcs_client()
+    if client is not None:
+        try:
+            bucket_name, blob_name = _parse_gcs_uri(target)
+            client.bucket(bucket_name).blob(blob_name).upload_from_filename(local_path)
+            print(f"[GCS] Выгружено (SDK): {target}", flush=True)
             return True
-    except Exception:
-        pass
+        except Exception as e:
+            print(f"[GCS Warning] Ошибка SDK при выгрузке {target}: {e}", flush=True)
+    if shutil.which("gsutil"):
+        try:
+            res = subprocess.run(["gsutil", "-q", "cp", local_path, target], capture_output=True, text=True)
+            if res.returncode == 0:
+                print(f"[GCS] Выгружено (gsutil): {target}", flush=True)
+                return True
+        except Exception as e:
+            print(f"[GCS Warning] Ошибка gsutil при выгрузке {target}: {e}", flush=True)
     return False
 
 
@@ -2112,18 +2148,39 @@ def find_latest_checkpoint(checkpoint_dir: str, gcs_dir: Optional[str] = None) -
         return local_files[-1]
 
     if gcs_dir:
-        try:
-            res = subprocess.run(["gsutil", "ls", gcs_dir.rstrip("/") + "/phase3_step_*.pt"], capture_output=True, text=True)
-            if res.returncode == 0 and res.stdout.strip():
-                lines = [ln.strip() for ln in res.stdout.strip().split("\n") if ln.strip()]
-                lines.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
-                latest = lines[-1]
-                dest = os.path.join(checkpoint_dir, os.path.basename(latest))
-                dl = subprocess.run(["gsutil", "cp", latest, dest], capture_output=True, text=True)
-                if dl.returncode == 0 and os.path.exists(dest):
-                    return dest
-        except Exception:
-            pass
+        client = get_gcs_client()
+        if client is not None:
+            try:
+                bucket_name, prefix = _parse_gcs_uri(gcs_dir.rstrip("/") + "/")
+                blobs = [
+                    b for b in client.list_blobs(bucket_name, prefix=prefix)
+                    if re.search(r"phase3_step_(\d+)\.pt$", os.path.basename(b.name))
+                ]
+                if blobs:
+                    blobs.sort(key=lambda b: int(re.findall(r"\d+", os.path.basename(b.name))[-1]))
+                    latest_blob = blobs[-1]
+                    dest = os.path.join(checkpoint_dir, os.path.basename(latest_blob.name))
+                    print(f"[GCS] Скачивание последнего чекпоинта: gs://{bucket_name}/{latest_blob.name} ...", flush=True)
+                    latest_blob.download_to_filename(dest)
+                    if os.path.exists(dest):
+                        print(f"[GCS] Чекпоинт загружен: {dest}", flush=True)
+                        return dest
+            except Exception as e:
+                print(f"[GCS Warning] Ошибка SDK при поиске чекпоинта в {gcs_dir}: {e}", flush=True)
+
+        if shutil.which("gsutil"):
+            try:
+                res = subprocess.run(["gsutil", "ls", gcs_dir.rstrip("/") + "/phase3_step_*.pt"], capture_output=True, text=True)
+                if res.returncode == 0 and res.stdout.strip():
+                    lines = [ln.strip() for ln in res.stdout.strip().split("\n") if ln.strip()]
+                    lines.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
+                    latest = lines[-1]
+                    dest = os.path.join(checkpoint_dir, os.path.basename(latest))
+                    dl = subprocess.run(["gsutil", "cp", latest, dest], capture_output=True, text=True)
+                    if dl.returncode == 0 and os.path.exists(dest):
+                        return dest
+            except Exception as e:
+                print(f"[GCS Warning] Ошибка gsutil при поиске чекпоинта: {e}", flush=True)
     return None
 
 
@@ -2686,7 +2743,8 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             resume_path = args.resume_ckpt
 
     nprocs = args.nprocs if args.nprocs > 0 else None
-    xmp.spawn(_mp_train_worker, args=(args, env, resume_path), nprocs=nprocs)
+    start_method = "fork" if sys.platform != "win32" else "spawn"
+    xmp.spawn(_mp_train_worker, args=(args, env, resume_path), nprocs=nprocs, start_method=start_method)
 
 
 # %% [markdown]
