@@ -45,6 +45,12 @@ if sys.platform == "win32":
     except Exception:
         pass
 
+# Kaggle TPU v5e-8/v3-8 по умолчанию задаёт TPU_PROCESS_ADDRESSES="local" (однопроцессный режим),
+# что конфликтует с многопроцессным xmp.spawn ("Expected 8 worker addresses, got 1").
+if os.environ.get("TPU_PROCESS_ADDRESSES") == "local":
+    os.environ.pop("TPU_PROCESS_ADDRESSES", None)
+    os.environ.pop("CLOUD_TPU_TASK_ID", None)
+
 import torch_xla
 import torch_xla.core.xla_model as xm
 import torch_xla.distributed.parallel_loader as pl
@@ -2772,6 +2778,10 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             resume_path = find_latest_checkpoint(env.checkpoint_dir, env.gcs_checkpoints_dir if sync_gcs_flag else None)
         else:
             resume_path = args.resume_ckpt
+
+    if os.environ.get("TPU_PROCESS_ADDRESSES") == "local":
+        os.environ.pop("TPU_PROCESS_ADDRESSES", None)
+        os.environ.pop("CLOUD_TPU_TASK_ID", None)
 
     nprocs = args.nprocs if args.nprocs > 0 else None
     start_method = "fork" if sys.platform != "win32" else "spawn"

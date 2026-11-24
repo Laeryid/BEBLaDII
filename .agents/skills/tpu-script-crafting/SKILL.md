@@ -72,6 +72,14 @@ description: >-
 - [ ] **НЕТ `lerp_` со скаляром**: Не использовать `tensor.lerp_(..., weight=scalar)` из-за бага PyTorch/XLA, аллоцирующего CPU-тензор. Заменять на `tensor.sub_(diff * alpha_tensor)`.
 
 ### Блок E: FSDP, SPMD и Multi-Processing
+- [ ] **Очистка `TPU_PROCESS_ADDRESSES="local"` перед `xmp.spawn`**: Контейнеры Kaggle TPU v5e-8/v3-8 по умолчанию задают `TPU_PROCESS_ADDRESSES="local"` (однопроцессный режим), что ломает `xmp.spawn` ошибкой `Invalid --2a886c8_slice_builder_worker_addresses specified. Expected 8 worker addresses, got 1`. Обязательно сбрасывать до `import torch_xla` и перед `xmp.spawn`:
+  ```python
+  if os.environ.get("TPU_PROCESS_ADDRESSES") == "local":
+      os.environ.pop("TPU_PROCESS_ADDRESSES", None)
+      os.environ.pop("CLOUD_TPU_TASK_ID", None)
+  ```
+- [ ] **`start_method="fork"` для `xmp.spawn` в ноутбуках Kaggle/Jupyter**: По умолчанию `xmp.spawn` использует `start_method="spawn"`, который не может сериализовать (pickle) воркер-функцию из `__main__` в интерактивных/Papermill-ноутбуках. Использовать `start_method = "fork" if sys.platform != "win32" else "spawn"`.
+- [ ] **GCS через Python SDK (`google-cloud-storage`), а не только `gsutil`/`gcloud` CLI**: На образах Kaggle TPU утилиты `gcloud`/`gsutil` часто отсутствуют. Основной путь скачивания и выгрузки чекпоинтов — `google.cloud.storage.Client()` (авторизуется через `GOOGLE_APPLICATION_CREDENTIALS`), а `gsutil`/`gcloud` допускается только как fallback под проверкой `shutil.which(...)`.
 - [ ] **Послойная обертка модулей**: Не оборачивать динамические контейнеры (словари `model.ca_layers`) целиком. Оборачивать каждый слой отдельно:
   ```python
   for key in model.ca_layers.keys():

@@ -38,6 +38,32 @@ class TPUASTVisitor(ast.NodeVisitor):
         self.saw_backward_in_loop: bool = False
         self.saw_mark_step_in_loop: bool = False
         self.saw_fsdp_in_main: bool = False
+        self.xmp_spawn_lines: List[int] = []
+        self.clears_tpu_process_addresses: bool = False
+        self.has_gcs_sdk: bool = False
+        self.gcs_cli_lines: List[Tuple[int, str]] = []
+
+    def visit_Import(self, node: ast.Import):
+        for alias in node.names:
+            if alias.name == "google.cloud.storage" or alias.name.startswith("google.cloud.storage."):
+                self.has_gcs_sdk = True
+        self.generic_visit(node)
+
+    def visit_ImportFrom(self, node: ast.ImportFrom):
+        mod = node.module or ""
+        if mod == "google.cloud" and any(a.name == "storage" for a in node.names):
+            self.has_gcs_sdk = True
+        elif mod.startswith("google.cloud.storage"):
+            self.has_gcs_sdk = True
+        self.generic_visit(node)
+
+    def visit_Delete(self, node: ast.Delete):
+        for target in node.targets:
+            if isinstance(target, ast.Subscript):
+                if isinstance(target.value, ast.Attribute) and target.value.attr == "environ":
+                    if isinstance(target.slice, ast.Constant) and target.slice.value == "TPU_PROCESS_ADDRESSES":
+                        self.clears_tpu_process_addresses = True
+        self.generic_visit(node)
 
     def visit_Assign(self, node: ast.Assign):
         # Check: os.environ["XLA_USE_BF16"] = "1"
@@ -361,6 +387,51 @@ class TPUASTVisitor(ast.NodeVisitor):
                 "Use in-place .copy_(): ema.shadow[k].copy_(v.to(device=ema.shadow[k].device, dtype=torch.float32))."
             ))
 
+        # 7. Check: os.environ.pop("TPU_PROCESS_ADDRESSES", ...)
+        if attr_name == "pop" and "environ" in full_call_str:
+            if node.args and isinstance(node.args[0], ast.Constant) and node.args[0].value == "TPU_PROCESS_ADDRESSES":
+                self.clears_tpu_process_addresses = True
+
+        # 8. Check: xmp.spawn start_method & Kaggle TPU_PROCESS_ADDRESSES="local" conflict
+        if func_name in ("xmp.spawn", "pjrt.spawn"):
+            self.xmp_spawn_lines.append(node.lineno)
+            start_method_kw = None
+            for kw in node.keywords:
+                if kw.arg == "start_method":
+                    start_method_kw = kw.value
+                    break
+            if start_method_kw is None:
+                self.findings.append(Finding(
+                    "XMP_SPAWN_START_METHOD",
+                    "WARNING",
+                    f"{func_name}() called without explicit start_method. Default 'spawn' fails to pickle __main__ functions in Kaggle/Jupyter notebooks.",
+                    node.lineno,
+                    "Pass start_method='fork' on Linux/Kaggle (e.g. start_method = 'fork' if sys.platform != 'win32' else 'spawn')."
+                ))
+            elif isinstance(start_method_kw, ast.Constant) and start_method_kw.value == "spawn":
+                self.findings.append(Finding(
+                    "XMP_SPAWN_START_METHOD",
+                    "WARNING",
+                    f"{func_name}() hardcodes start_method='spawn', which fails to pickle __main__ worker functions in Kaggle/Jupyter notebooks.",
+                    node.lineno,
+                    "Use start_method = 'fork' if sys.platform != 'win32' else 'spawn'."
+                ))
+
+        # 9. Check: gsutil / gcloud CLI calls without google-cloud-storage Python SDK
+        if func_name in ("subprocess.run", "subprocess.check_call", "subprocess.check_output", "subprocess.Popen"):
+            if node.args:
+                cmd_arg = node.args[0]
+                first_cmd = None
+                if isinstance(cmd_arg, (ast.List, ast.Tuple)) and cmd_arg.elts:
+                    if isinstance(cmd_arg.elts[0], ast.Constant) and isinstance(cmd_arg.elts[0].value, str):
+                        first_cmd = cmd_arg.elts[0].value
+                elif isinstance(cmd_arg, ast.Constant) and isinstance(cmd_arg.value, str):
+                    parts = cmd_arg.value.strip().split()
+                    if parts:
+                        first_cmd = parts[0]
+                if first_cmd in ("gsutil", "gcloud"):
+                    self.gcs_cli_lines.append((node.lineno, first_cmd))
+
         self.generic_visit(node)
 
 
@@ -375,6 +446,26 @@ def audit_file_ast(file_path: Path) -> List[Finding]:
 
     visitor = TPUASTVisitor(source_lines)
     visitor.visit(tree)
+
+    if visitor.xmp_spawn_lines and not visitor.clears_tpu_process_addresses:
+        visitor.findings.append(Finding(
+            "XMP_SPAWN_LOCAL_TPU_ENV",
+            "CRITICAL",
+            "Script uses xmp.spawn() without clearing TPU_PROCESS_ADDRESSES='local'. Kaggle TPU v5e-8/v3-8 fails with 'Expected 8 worker addresses, got 1'.",
+            visitor.xmp_spawn_lines[0],
+            "Before 'import torch_xla' and before xmp.spawn(), clear local TPU env: if os.environ.get('TPU_PROCESS_ADDRESSES') == 'local': os.environ.pop('TPU_PROCESS_ADDRESSES', None); os.environ.pop('CLOUD_TPU_TASK_ID', None)"
+        ))
+
+    if visitor.gcs_cli_lines and not visitor.has_gcs_sdk:
+        first_line, cli_tool = visitor.gcs_cli_lines[0]
+        visitor.findings.append(Finding(
+            "GCS_CLI_WITHOUT_SDK",
+            "WARNING",
+            f"Script invokes '{cli_tool}' via subprocess without using google.cloud.storage SDK. Kaggle TPU images often lack gsutil/gcloud CLI.",
+            first_line,
+            "Use google.cloud.storage.Client() as the primary GCS backend and guard gsutil/gcloud CLI fallback with shutil.which()."
+        ))
+
     return visitor.findings
 
 

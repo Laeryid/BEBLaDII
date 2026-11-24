@@ -98,3 +98,20 @@ $$\frac{\Delta \theta}{\theta} \approx 10^{-5}$$
 ### Ошибки FSDP при загрузке весов (ADR 006, коммит `1634e88`)
 - Попытка загрузить веса в модель ПОСЛЕ её обертки в `SpmdFullyShardedDataParallel` разрушает внутренние дескрипторы шардирования (`xs.mark_sharding`) и вызывает мгновенный OOM.
 - **Решение:** Веса модели загружаются строго ДО обертки FSDP! Оптимизатор и планировщик загружаются ПОСЛЕ FSDP.
+
+---
+
+## 6. Ошибки запуска `xmp.spawn` и GCS на Kaggle TPU v5e-8/v3-8 (Phase 3 Plan C)
+
+### Конфликт `TPU_PROCESS_ADDRESSES="local"` с `xmp.spawn`
+- **Симптом:** 8 воркеров `xmp.spawn` падают на инициализации с `Could not find SliceBuilder port 8476..8483 in any of the 0 ports provided in tpu_process_addresses="local"` и `RuntimeError: TPU initialization failed: Invalid --2a886c8_slice_builder_worker_addresses specified. Expected 8 worker addresses, got 1`.
+- **Причина:** Образ Kaggle TPU выставляет `TPU_PROCESS_ADDRESSES="local"` (для однопроцессного режима), что конфликтует с многопроцессным `xmp.spawn`, которому нужны 8 локальных портов SliceBuilder.
+- **Решение:** Сбрасывать `TPU_PROCESS_ADDRESSES` и `CLOUD_TPU_TASK_ID` при значении `"local"` до `import torch_xla` и перед `xmp.spawn`.
+
+### Падение `xmp.spawn` с дефолтным `start_method="spawn"` в ноутбуках (коммит `ea5a61e`)
+- **Симптом:** В Jupyter/Kaggle (Papermill) воркеры падают при сериализации функции `_mp_train_worker` из `__main__`.
+- **Решение:** Явно передавать `start_method = "fork" if sys.platform != "win32" else "spawn"` в `xmp.spawn(...)`.
+
+### Отсутствие `gsutil`/`gcloud` CLI на Kaggle TPU (коммит `ea5a61e`)
+- **Симптом:** Выгрузка и авто-резюм чекпоинтов из GCS тихо не работают, так как в контейнере Kaggle TPU отсутствуют бинарники `gcloud`/`gsutil`.
+- **Решение:** Использовать `google-cloud-storage` Python SDK (`google.cloud.storage.Client()`) как основной транспорт GCS, а вызовы `gsutil`/`gcloud` оставлять только как fallback под `shutil.which(...)`.
