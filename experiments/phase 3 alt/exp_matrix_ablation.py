@@ -417,8 +417,8 @@ def render_matrix_report(
         "",
         f"## 1. Скорость, параметры и качество после {args.steps} шагов",
         "",
-        "| Вариант | Params | Мед. шаг (Speedup) | Val Loss (t=0.5) | Train AUC | SimGr low/mid/hi | CFG mid/hi | VOID F1 | TokAcc low/hi | CE low |",
-        "|---|---:|---|---:|---:|---|---|---:|---|---:|",
+        "| Вариант | Params | Мед. шаг (Speedup) | Val Loss (t=0.5) | Train AUC | SimGr low/mid/hi | CFG mid/hi | CFG-ΔSim mid/hi | VOID F1 | TokAcc low/hi | CE low |",
+        "|---|---:|---|---:|---:|---|---|---|---:|---|---:|",
     ]
     for r in ordered:
         sf = r["val_final"]
@@ -433,12 +433,15 @@ def render_matrix_report(
             else "n/a"
         )
         ce_s = f"{sf['val/ce_low']:.2f}" if "val/ce_low" in sf else "n/a"
+        dsim_s = (
+            f"{sf['val/cfg_dsim_mid']:+.4f} / {sf.get('val/cfg_dsim_hi', 0.0):+.4f}" if "val/cfg_dsim_mid" in sf else "n/a"
+        )
         lines.append(
             f"| `{r['variant']}` | {p_m:.2f}M{p_ratio} | {r['med_step_sec']:.2f}s{sp_str} | "
             f"{sf['val/loss_total']:.4f}{_delta(sf['val/loss_total'], b_loss, True)} | "
             f"{r['train_loss_auc']:.4f}{_delta(r['train_loss_auc'], b_auc, True)} | "
             f"{sf['val/sim_gr_low']:.3f} / {sf['val/sim_gr_mid']:.3f} / {sf['val/sim_gr_hi']:.3f} | "
-            f"{sf['val/cfg_mid']:.4f} / {sf['val/cfg_hi']:.4f} | "
+            f"{sf['val/cfg_mid']:.4f} / {sf['val/cfg_hi']:.4f} | {dsim_s} | "
             f"{sf['val/void_f1']:.3f} | {tok_s} | {ce_s} |"
         )
 

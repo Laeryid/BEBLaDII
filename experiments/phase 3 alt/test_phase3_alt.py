@@ -265,24 +265,59 @@ def main() -> None:
     assert (restored_stats - ref_stats).abs().max().item() < 1e-6, "detach_from_decoder не восстановил оригинал"
     print(f"    -> max_radar_err={max_radar_err:.2e}, attach/detach OK", flush=True)
 
-    print("[9/9] Checking Batch-Shared Stratified Sampled Softmax gradient & static batch filtering...", flush=True)
-    # Строим реалистичный низкоранговый+шумовой словарь для проверки SVD hard-negatives
+    print("[9/10] Checking Online Chunked Exact CE (full-rank sharp) + Sampled CE + static batch filtering...", flush=True)
+    # 9a. Проверка дефолтного exact_chunked CE на ПОЛНОРАНГОВОЙ матрице в остром режиме
     torch.manual_seed(77)
+    W_full = torch.randn(V_test, D_test) * 0.25
+    fv_exact = FastVocabOptimizer(
+        lm_head_weight=W_full,
+        gemm_dtype=torch.bfloat16,
+        ce_mode="exact_chunked",
+        ce_vocab_chunk_size=4096,
+        ce_batch_fraction=0.5,
+    )
+    assert fv_exact.w_svd_vocab is None, "В exact_chunked SVD-эскиз не должен строиться при старте"
+    M_test = 48
+    tgt_ids = torch.randint(0, V_test, (M_test,))
+    tgt_ids[0] = tgt_ids[1] = tgt_ids[2] = 42  # явные дубликаты целевых токенов
+    # Делаем острое распределение (p_tgt близко к 1), где sampled rank=64 проваливался
+    h_sharp = W_full[tgt_ids] * 1.4 + torch.randn(M_test, D_test) * 0.20
+    valid_m = torch.ones(M_test, dtype=torch.bool)
+    valid_m[-4:] = False
+
+    h_ref = h_sharp.clone().detach().requires_grad_(True)
+    logits_ref = F.linear(h_ref, W_full)
+    ce_ref_vec = F.cross_entropy(logits_ref, tgt_ids, reduction="none")
+    corr_ref = logits_ref.detach().argmax(dim=-1) == tgt_ids
+    loss_ref = ce_ref_vec[valid_m].mean()
+    loss_ref.backward()
+
+    h_chk = h_sharp.clone().detach().requires_grad_(True)
+    ce_chk_vec, corr_chk = fv_exact.compute_exact_chunked_ce_from_hidden(h_chk, tgt_ids, valid_m, W_full)
+    loss_chk = ce_chk_vec[valid_m].mean()
+    loss_chk.backward()
+
+    exact_ce_err = (ce_chk_vec[valid_m] - ce_ref_vec[valid_m]).abs().max().item()
+    exact_gcos = F.cosine_similarity(
+        h_ref.grad[valid_m].reshape(-1), h_chk.grad[valid_m].reshape(-1), dim=0
+    ).item()
+    exact_gerr = (h_chk.grad[valid_m] - h_ref.grad[valid_m]).abs().max().item()
+    assert exact_ce_err < 1e-5, f"Ошибка exact_chunked CE: {exact_ce_err}"
+    assert exact_gcos > 0.999999 and exact_gerr < 1e-5, f"Ошибка градиента exact_chunked CE: cos={exact_gcos}, err={exact_gerr}"
+    assert torch.equal(corr_chk[valid_m], corr_ref[valid_m]), "Расхождение exact_chunked argmax"
+
+    # 9b. Регрессионная проверка опционального sampled CE (на низкоранговой матрице)
     W_lr = torch.randn(V_test, 32) @ torch.randn(32, D_test) * 0.15 + torch.randn(V_test, D_test) * 0.05
     fv_ce = FastVocabOptimizer(
         lm_head_weight=W_lr,
         gemm_dtype=torch.bfloat16,
+        ce_mode="sampled",
         svd_rank=32,
         ce_pool_hard=512,
         ce_pool_rand=2048,
         ce_batch_fraction=0.5,
     )
-    M_test = 48
-    tgt_ids = torch.randint(0, V_test, (M_test,))
-    tgt_ids[0] = tgt_ids[1] = tgt_ids[2] = 42  # явные дубликаты целевых токенов
     h_base = W_lr[tgt_ids] * 0.8 + torch.randn(M_test, D_test) * 0.25
-    valid_m = torch.ones(M_test, dtype=torch.bool)
-    valid_m[-4:] = False  # часть слотов невалидна
 
     h_exact = h_base.clone().detach().requires_grad_(True)
     ce_exact_vec = F.cross_entropy(F.linear(h_exact, W_lr), tgt_ids, reduction="none")
@@ -302,12 +337,13 @@ def main() -> None:
     assert grad_cos > 0.985, f"Низкая косинусная близость градиента CE: {grad_cos:.4f}"
     assert ce_rel_err < 0.05, f"Слишком большое расхождение CE: {ce_rel_err:.4f}"
 
-    # Краевой случай: 0 валидных токенов -> loss=0, grad=0, без NaN
+    # Краевой случай: 0 валидных токенов -> loss=0, grad=0, без NaN (оба режима)
     h_zero = h_base.clone().detach().requires_grad_(True)
-    ce_z, _ = fv_ce.compute_sampled_ce_from_hidden(h_zero, tgt_ids, torch.zeros_like(valid_m), W_lr)
-    assert torch.isfinite(ce_z).all(), "NaN при пустой маске valid_m"
+    ce_z1, _ = fv_exact.compute_exact_chunked_ce_from_hidden(h_zero, tgt_ids, torch.zeros_like(valid_m), W_full)
+    ce_z2, _ = fv_ce.compute_sampled_ce_from_hidden(h_zero, tgt_ids, torch.zeros_like(valid_m), W_lr)
+    assert torch.isfinite(ce_z1).all() and torch.isfinite(ce_z2).all(), "NaN при пустой маске valid_m"
 
-    # Проверка статической фильтрации примеров батча до decode_hidden (B=4 -> B_ce=2)
+    # Проверка статической фильтрации примеров батча до decode_hidden (B=4 -> B_ce=2) с дефолтным exact_chunked
     seen_batch_sizes = []
 
     class _MiniDec(nn.Module):
@@ -323,17 +359,21 @@ def main() -> None:
             h_ = self.proj(v_in.reshape(b_, n_, -1))
             return h_.unsqueeze(2).expand(b_, n_, 4, D_test).reshape(b_, n_ * 4, D_test)
 
-    mini_dec = _MiniDec(W_lr)
+    mini_dec = _MiniDec(W_full)
     v0_hat_b = torch.randn(4, 17, 8, 128, requires_grad=True)
     t_mat_b = torch.tensor([[0.0] + [0.8] * 16, [0.0] + [0.2] * 16, [0.0] + [0.9] * 16, [0.0] + [0.3] * 16])
     ans_tgt_b = torch.randint(0, V_test, (4, 16 * 4))
-    l_ce_b, acc_b = fv_ce.compute_decoder_ce_loss(
+    l_ce_b, acc_b = fv_exact.compute_decoder_ce_loss(
         decoder=mini_dec, V_0_hat=v0_hat_b, t_mat=t_mat_b, ans_targets=ans_tgt_b, ce_max_tokens=32, ce_batch_fraction=0.5
     )
     l_ce_b.backward()
     assert seen_batch_sizes == [2, 2], f"Ожидался B_ce=2 (fwd+ckpt_bwd), получено: {seen_batch_sizes}"
     assert torch.isfinite(v0_hat_b.grad).all() and float(v0_hat_b.grad.abs().max().item()) > 0.0
-    print(f"    -> ce_exact={loss_exact.item():.4f}, ce_fast={loss_fast.item():.4f} (rel={ce_rel_err:.2%}), grad_cos={grad_cos:.4f}, B_ce={seen_batch_sizes[0]}/4 (OK)", flush=True)
+    print(
+        f"    -> exact_chunked(full-rank): ce={loss_ref.item():.4f}, max_err={exact_ce_err:.2e}, grad_cos={exact_gcos:.6f} | "
+        f"sampled(low-rank): rel={ce_rel_err:.2%}, grad_cos={grad_cos:.4f} | B_ce={seen_batch_sizes[0]}/4 (OK)",
+        flush=True,
+    )
 
     print("[10/10] Checking all 7 matrix_layers variants (PHM, GrassAlign, L*X*R): invariants, grads, EMA...", flush=True)
     for m_var in MATRIX_VARIANTS:

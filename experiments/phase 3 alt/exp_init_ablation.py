@@ -201,6 +201,8 @@ def evaluate_fixed_val(
         "val/sim_gr_hi": [],
         "val/cfg_mid": [],
         "val/cfg_hi": [],
+        "val/cfg_dsim_mid": [],
+        "val/cfg_dsim_hi": [],
         "val/rk_eff": [],
         "val/tok_acc_low": [],
         "val/ce_low": [],
@@ -288,6 +290,11 @@ def evaluate_fixed_val(
 
         acc["val/cfg_mid"].append(float((vh_mid[:, 1:] - vh_mid_u[:, 1:]).norm(p=2, dim=(-2, -1)).mean().item()))
         acc["val/cfg_hi"].append(float((vh_hi[:, 1:] - vh_hi_u[:, 1:]).norm(p=2, dim=(-2, -1)).mean().item()))
+        # CFG-ΔSim: полезность условия = SimGr(cond, V_0) − SimGr(uncond, V_0) (>0 только если промпт помогает)
+        if is_content.any():
+            for tag_d, vh_c, vh_u in (("mid", vh_mid, vh_mid_u), ("hi", vh_hi, vh_hi_u)):
+                d_sim = sim_gr(vh_c[:, 1:], V_0[:, 1:]) - sim_gr(vh_u[:, 1:], V_0[:, 1:])
+                acc[f"val/cfg_dsim_{tag_d}"].append(float(d_sim[is_content].mean().item()))
 
         # VOID F1 на t=0.50
         sim_void = sim_gr(vh_mid[:, 1:], void_dev.view(1, 1, NUM_AXES, AXIS_DIM).expand_as(vh_mid[:, 1:]))
@@ -634,8 +641,8 @@ def render_markdown_report(
         "",
         f"## 2. Итоговые метрики после {args.steps} шагов обучения",
         "",
-        "| Вариант | Val Loss (t=0.5) | Train AUC | SimGr low/mid/hi | CFG mid/hi | VOID F1 | TokAcc low/hi | CE low/hi | GradNorm s1 |",
-        "|---|---:|---:|---|---|---:|---|---|---:|",
+        "| Вариант | Val Loss (t=0.5) | Train AUC | SimGr low/mid/hi | CFG mid/hi | CFG-ΔSim mid/hi | VOID F1 | TokAcc low/hi | CE low/hi | GradNorm s1 |",
+        "|---|---:|---:|---|---|---|---:|---|---|---:|",
     ]
     for v_name in ABLATION_VARIANTS:
         if v_name not in results:
@@ -646,12 +653,15 @@ def render_markdown_report(
         b_auc = base["train_loss_auc"] if base else None
         tok_s = f"{sf.get('val/tok_acc_low', 0.0):.3f} / {sf.get('val/tok_acc_hi', 0.0):.3f}" if "val/tok_acc_low" in sf else "—"
         ce_s = f"{sf.get('val/ce_low', 0.0):.2f} / {sf.get('val/ce_hi', 0.0):.2f}" if "val/ce_low" in sf else "—"
+        dsim_s = (
+            f"{sf['val/cfg_dsim_mid']:+.4f} / {sf.get('val/cfg_dsim_hi', 0.0):+.4f}" if "val/cfg_dsim_mid" in sf else "—"
+        )
         lines.append(
             f"| `{v_name}` | "
             f"{sf['val/loss_total']:.4f}{_delta(sf['val/loss_total'], bf['val/loss_total'] if bf else None, True)} | "
             f"{r['train_loss_auc']:.4f}{_delta(r['train_loss_auc'], b_auc, True)} | "
             f"{sf['val/sim_gr_low']:.3f} / {sf['val/sim_gr_mid']:.3f} / {sf['val/sim_gr_hi']:.3f} | "
-            f"{sf['val/cfg_mid']:.4f} / {sf['val/cfg_hi']:.4f} | "
+            f"{sf['val/cfg_mid']:.4f} / {sf['val/cfg_hi']:.4f} | {dsim_s} | "
             f"{sf['val/void_f1']:.3f} | {tok_s} | {ce_s} | {r['step1_grad_norm']:.2f} |"
         )
 

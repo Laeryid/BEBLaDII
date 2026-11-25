@@ -2,26 +2,131 @@
 Универсальные TPU/GPU-одобренные оптимизации работы со словарём (131,072 x 1024) для Phase 3 Alt.
 
 Все операции построены строго со статическими формами (100% XLA/TPU-совместимы, без веток по
-платформам, без torch.unique/torch.nonzero переменной длины и без host-device sync внутри графа):
+платформам и без torch.unique/torch.nonzero переменной длины):
   1. NoiseRadarHead.compute_dict_stats: преднормированный словарь lm_head_unit в компактном
-     gemm_dtype (BF16/FP16) + 4 равных чанка (32768) -> без FP32-каста весов и пересчёта inv_n.
-  2. Batch-Shared Stratified Sampled Softmax (K_pool = M + K_hard + K_rand, по умолчанию 4096):
-     - единый на батч пул жёстких негативов через низкоранговый SVD-эскиз словаря (rank=64, ~16 MB);
-     - дедупликация булевыми матрицами (static shape) + строго несмещённая importance-поправка
-       +ln(|V_tail| / N_rand_eff) на случайную часть хвоста;
-     - один плотный GEMM (M, 1024) @ (1024, K_pool) вместо (M, 131072).
-  3. Статическая фильтрация примеров батча до decoder.decode_hidden (B_ce = ceil(B * fraction)
-     примеров с максимальным числом активных токенов t < ce_t_max).
+     gemm_dtype (BF16/FP16 на GPU/TPU, FP32 на CPU) + 4 равных чанка (32768).
+     По exp_vocab_fidelity.py: согласие argmax = 1.0000 на всех t, ошибка cos_gap 1.6-3.3%.
+  2. Online Chunked Exact CE (ce_mode="exact_chunked", ПО УМОЛЧАНИЮ):
+     - 1-проходный точный online softmax по чанкам (по умолчанию 16384 -> 8 чанков, ~32 MB пик вместо >530 MB);
+     - одновременно считает точный logsumexp, точный argmax по всем 131K словам и точное направление
+       градиента (E_p[W] - W_tgt) строго в float32 (ADR 125) без повторного прохода в backward;
+     - 0.00% смещения CE, grad_cos = 1.000000, работает на полноранговом словаре в остром режиме.
+  3. Batch-Shared Stratified Sampled Softmax (ce_mode="sampled", опционально для отладки/исследований):
+     - SVD-эскиз строится лениво только при использовании sampled-режима;
+     - при rank=64, K_hard=1536 на острых распределениях (t <= 0.25) даёт bias -30..-40% и grad_cos ~0.75.
+  4. Статическая фильтрация примеров батча до decoder.decode_hidden (B_ce = ceil(B * fraction)
+     примеров, по умолчанию случайно среди имеющих активные токены t < ce_t_max).
 """
 
 from __future__ import annotations
 
 import math
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+class _OnlineChunkedCELinearFn(torch.autograd.Function):
+    """
+    1-проходный точный Online Chunked Cross-Entropy для замороженного словаря lm_head_weight (V, D).
+
+    Вычисляет строго в float32 (ADR 125) по фиксированным чанкам C = chunk_size:
+      - lse_i = log sum_v exp(h_i · W_v)
+      - per_tok_ce_i = lse_i - (h_i · W_{y_i})
+      - is_correct_i = (argmax_v (h_i · W_v) == y_i)
+      - при h.requires_grad: grad_dir_i = sum_v p_{i,v} W_v - W_{y_i} прямо в том же проходе
+        (2 GEMM на словарь суммарно за fwd+bwd, как в полном CE, но с пиковой памятью O(M * C)
+        вместо O(M * V) и без хранения логитов в autograd-графе).
+    """
+
+    @staticmethod
+    def forward(
+        ctx,
+        h_sub: torch.Tensor,
+        tgt_safe: torch.Tensor,
+        lm_head_weight: torch.Tensor,
+        chunk_size: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        if ctx.needs_input_grad[2]:
+            raise RuntimeError(
+                "_OnlineChunkedCELinearFn рассчитан на замороженную lm_head_weight (requires_grad=False)."
+            )
+
+        device = h_sub.device
+        need_grad_h = bool(ctx.needs_input_grad[0])
+        ctx.h_dtype = h_sub.dtype
+
+        with torch.no_grad(), torch.autocast(device_type=device.type, enabled=False):
+            h_f32 = h_sub.detach().float()
+            M, D = h_f32.shape
+            V = int(lm_head_weight.shape[0])
+            c_sz = max(1, int(chunk_size))
+
+            m_run: Optional[torch.Tensor] = None
+            s_run: Optional[torch.Tensor] = None
+            acc_w: Optional[torch.Tensor] = None
+            best_val: Optional[torch.Tensor] = None
+            best_idx: Optional[torch.Tensor] = None
+
+            for start in range(0, V, c_sz):
+                end = min(start + c_sz, V)
+                w_c = lm_head_weight[start:end]
+                if w_c.device != device or w_c.dtype != torch.float32:
+                    w_c = w_c.to(device=device, dtype=torch.float32)
+
+                z_c = F.linear(h_f32, w_c)  # (M, C_cur)
+                m_c, local_idx = z_c.max(dim=-1)  # (M,), (M,)
+
+                if m_run is None:
+                    m_run = m_c
+                    e_c = torch.exp(z_c - m_run.unsqueeze(-1))
+                    s_run = e_c.sum(dim=-1)
+                    if need_grad_h:
+                        acc_w = torch.matmul(e_c, w_c)  # (M, D)
+                    best_val = m_c
+                    best_idx = local_idx
+                else:
+                    better = m_c > best_val
+                    best_val = torch.where(better, m_c, best_val)
+                    best_idx = torch.where(better, local_idx + start, best_idx)
+
+                    m_new = torch.maximum(m_run, m_c)
+                    alpha = torch.exp(m_run - m_new)
+                    e_c = torch.exp(z_c - m_new.unsqueeze(-1))
+                    s_run = s_run * alpha + e_c.sum(dim=-1)
+                    if need_grad_h:
+                        acc_w = acc_w * alpha.unsqueeze(-1) + torch.matmul(e_c, w_c)
+                    m_run = m_new
+
+            w_tgt = lm_head_weight.index_select(0, tgt_safe)
+            if w_tgt.device != device or w_tgt.dtype != torch.float32:
+                w_tgt = w_tgt.to(device=device, dtype=torch.float32)
+
+            z_tgt = (h_f32 * w_tgt).sum(dim=-1)
+            s_safe = s_run.clamp(min=1e-30)
+            lse = m_run + torch.log(s_safe)
+            per_tok_ce = lse - z_tgt
+            is_correct = best_idx == tgt_safe
+
+            if need_grad_h:
+                grad_dir = acc_w / s_safe.unsqueeze(-1) - w_tgt
+                ctx.save_for_backward(grad_dir)
+            else:
+                ctx.save_for_backward(torch.empty(0, device=device, dtype=torch.float32))
+
+        ctx.mark_non_differentiable(is_correct)
+        return per_tok_ce, is_correct
+
+    @staticmethod
+    def backward(ctx, grad_ce: torch.Tensor, _grad_corr: Optional[torch.Tensor]):
+        (grad_dir,) = ctx.saved_tensors
+        if grad_dir.numel() == 0:
+            return None, None, None, None
+        with torch.autocast(device_type=grad_dir.device.type, enabled=False):
+            grad_h = (grad_dir * grad_ce.float().unsqueeze(-1)).to(dtype=ctx.h_dtype)
+        return grad_h, None, None, None
 
 
 class FastVocabOptimizer(nn.Module):
@@ -35,26 +140,42 @@ class FastVocabOptimizer(nn.Module):
         lm_head_weight: torch.Tensor,
         gemm_dtype: torch.dtype = torch.bfloat16,
         vocab_chunk_size: int = 32768,
+        ce_mode: str = "exact_chunked",
+        ce_vocab_chunk_size: int = 16384,
         svd_rank: int = 64,
         svd_niter: int = 2,
         ce_pool_hard: int = 1536,
         ce_pool_rand: int = 2048,
         ce_batch_fraction: float = 0.5,
+        ce_batch_select: str = "random",
     ):
         super().__init__()
+        if ce_mode not in ("exact_chunked", "sampled"):
+            raise ValueError(f"ce_mode должен быть 'exact_chunked' или 'sampled', получено: {ce_mode}")
+        if ce_batch_select not in ("random", "max_active"):
+            raise ValueError(f"ce_batch_select должен быть 'random' или 'max_active', получено: {ce_batch_select}")
+        # 'random' (по умолчанию): несмещённый случайный отбор B_ce примеров среди имеющих >=1 активный токен.
+        # 'max_active' (legacy): примеры с максимумом активных токенов -> систематический перекос в сторону
+        # длинных ответов и низкого t (короткие ответы никогда не получают градиент CE).
+        self.ce_mode = ce_mode
+        self.ce_batch_select = ce_batch_select
         if lm_head_weight.ndim != 2:
             raise ValueError(f"Ожидалась 2D матрица словаря (V, D), получено: {tuple(lm_head_weight.shape)}")
 
         self.vocab_size, self.hidden_size = int(lm_head_weight.shape[0]), int(lm_head_weight.shape[1])
         self.gemm_dtype = gemm_dtype
         self.vocab_chunk_size = int(vocab_chunk_size)
+        self.ce_vocab_chunk_size = int(ce_vocab_chunk_size)
         self.svd_rank = min(int(svd_rank), self.hidden_size, self.vocab_size)
+        self.svd_niter = int(svd_niter)
         self.ce_pool_hard = min(int(ce_pool_hard), self.vocab_size)
         self.ce_pool_rand = min(int(ce_pool_rand), self.vocab_size)
         self.ce_batch_fraction = float(ce_batch_fraction)
 
         self._orig_compute_dict_stats = None
         self._attached_radar: Optional[nn.Module] = None
+        # Ссылка на замороженный словарь без копирования (для ленивого построения SVD при sampled-режиме)
+        self._lm_head_weight_ref: torch.Tensor = lm_head_weight.detach()
 
         with torch.no_grad():
             w_f32 = lm_head_weight.detach().float()
@@ -62,13 +183,20 @@ class FastVocabOptimizer(nn.Module):
             w_unit = F.normalize(w_f32, p=2, dim=-1, eps=1e-6).to(dtype=gemm_dtype).contiguous()
             self.register_buffer("lm_head_unit", w_unit, persistent=False)
 
-            # 2. Низкоранговый SVD-эскиз словаря (rank=64 -> ~16 MB в BF16) для batch-shared hard negatives
-            # W ≈ (U_r * S_r) @ V_r^T, где U_r: (V, r), S_r: (r,), V_r: (D, r)
-            u_r, s_r, v_r = torch.svd_lowrank(w_f32, q=self.svd_rank, niter=int(svd_niter))
-            w_svd_vocab = (u_r * s_r.unsqueeze(0)).to(dtype=gemm_dtype).contiguous()
-            w_svd_proj = v_r.to(dtype=gemm_dtype).contiguous()
-            self.register_buffer("w_svd_vocab", w_svd_vocab, persistent=False)
-            self.register_buffer("w_svd_proj", w_svd_proj, persistent=False)
+        self.register_buffer("w_svd_vocab", None, persistent=False)
+        self.register_buffer("w_svd_proj", None, persistent=False)
+        if self.ce_mode == "sampled":
+            self._ensure_svd_sketch(w_f32=w_f32)
+
+    @torch.no_grad()
+    def _ensure_svd_sketch(self, w_f32: Optional[torch.Tensor] = None) -> None:
+        """Лениво строит низкоранговый SVD-эскиз словаря (только для sampled-режима)."""
+        if self.w_svd_vocab is not None and self.w_svd_proj is not None:
+            return
+        w_src = self._lm_head_weight_ref.float() if w_f32 is None else w_f32
+        u_r, s_r, v_r = torch.svd_lowrank(w_src, q=self.svd_rank, niter=self.svd_niter)
+        self.w_svd_vocab = (u_r * s_r.unsqueeze(0)).to(dtype=self.gemm_dtype).contiguous()
+        self.w_svd_proj = v_r.to(dtype=self.gemm_dtype).contiguous()
 
     @classmethod
     def from_decoder(
@@ -76,11 +204,14 @@ class FastVocabOptimizer(nn.Module):
         decoder: nn.Module,
         gemm_dtype: torch.dtype = torch.bfloat16,
         vocab_chunk_size: int = 32768,
+        ce_mode: str = "exact_chunked",
+        ce_vocab_chunk_size: int = 16384,
         svd_rank: int = 64,
         ce_pool_hard: int = 1536,
         ce_pool_rand: int = 2048,
         ce_batch_fraction: float = 0.5,
         attach: bool = True,
+        ce_batch_select: str = "random",
     ) -> "FastVocabOptimizer":
         if getattr(decoder, "lm_head_weight", None) is None:
             raise RuntimeError("У декодера не задан lm_head_weight (вызовите tie_embeddings перед созданием FastVocabOptimizer).")
@@ -88,10 +219,13 @@ class FastVocabOptimizer(nn.Module):
             lm_head_weight=decoder.lm_head_weight,
             gemm_dtype=gemm_dtype,
             vocab_chunk_size=vocab_chunk_size,
+            ce_mode=ce_mode,
+            ce_vocab_chunk_size=ce_vocab_chunk_size,
             svd_rank=svd_rank,
             ce_pool_hard=ce_pool_hard,
             ce_pool_rand=ce_pool_rand,
             ce_batch_fraction=ce_batch_fraction,
+            ce_batch_select=ce_batch_select,
         )
         if attach:
             opt.attach_to_decoder(decoder)
@@ -175,6 +309,7 @@ class FastVocabOptimizer(nn.Module):
         относительным логитам (z_iv - max_u z_iu) <= 0.
         100% static shapes, без host-device sync.
         """
+        self._ensure_svd_sketch()
         k_take = min(int(k_hard or self.ce_pool_hard), self.vocab_size)
         M, _ = h_sub.shape
         device = h_sub.device
@@ -215,7 +350,8 @@ class FastVocabOptimizer(nn.Module):
         Вычисляет Batch-Shared Stratified Sampled Softmax (100% static shapes) по скрытым векторам h_sub (M, D):
         - Пул pool_ids = [tgt_safe (M) || hard_ids (K_hard) || rand_ids (K_rand)] фиксированной длины K_pool;
         - Дедупликация булевыми матрицами без torch.unique;
-        - Строго несмещённая importance-поправка +ln((V - N_exact_eff) / N_rand_eff) на случайные классы хвоста;
+        - Importance-поправка +ln((V - N_exact_eff) / N_rand_eff) на случайные классы хвоста
+          (несмещённа для суммы Z_tail; CE как log Z слегка занижен по Йенсену);
         - Возвращает (per_tok_ce (M,), is_correct (M,) bool по нескорректированным логитам пула).
         """
         M = h_sub.shape[0]
@@ -279,6 +415,25 @@ class FastVocabOptimizer(nn.Module):
 
         return per_tok_ce, is_correct
 
+    def compute_exact_chunked_ce_from_hidden(
+        self,
+        h_sub: torch.Tensor,
+        tgt_sub: torch.Tensor,
+        valid_sel_mask: torch.Tensor,
+        lm_head_weight: torch.Tensor,
+        chunk_size: Optional[int] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        1-проходный точный Online Chunked Cross-Entropy по всему словарю V (131,072) строго в float32 (ADR 125):
+        - 0.00% смещения CE и grad_cos = 1.000000 на полноранговом словаре в остром режиме;
+        - пиковая память O(M * chunk_size) (~32 MB при M=512, chunk=16384 вместо >530 MB), без хранения логитов;
+        - возвращает (per_tok_ce (M,), is_correct (M,) bool по точному argmax всего словаря).
+        """
+        c_sz = int(self.ce_vocab_chunk_size if chunk_size is None else chunk_size)
+        with torch.no_grad():
+            tgt_safe = torch.where(valid_sel_mask, tgt_sub, torch.zeros_like(tgt_sub)).clamp(0, self.vocab_size - 1)
+        return _OnlineChunkedCELinearFn.apply(h_sub, tgt_safe, lm_head_weight, c_sz)
+
     def compute_decoder_ce_loss(
         self,
         decoder: nn.Module,
@@ -292,14 +447,18 @@ class FastVocabOptimizer(nn.Module):
         use_amp: bool = False,
         amp_dtype: torch.dtype = torch.float16,
         ce_batch_fraction: Optional[float] = None,
-    ) -> Tuple[torch.Tensor, float]:
+        return_acc_tensor: bool = False,
+    ) -> Tuple[torch.Tensor, Union[float, torch.Tensor]]:
         """
         Ускоренный TPU/GPU-совместимый сквозной токенный CE-лосс через замороженный Декодер:
-        1. Статический отбор B_ce = ceil(B * ce_batch_fraction) примеров с максимумом активных токенов
-           ДО тяжёлого 4-слойного decoder.decode_hidden;
+        1. Статический отбор B_ce = ceil(B * ce_batch_fraction) примеров (по умолчанию случайно среди
+           имеющих активные токены; legacy 'max_active' — по максимуму активных токенов) ДО тяжёлого
+           4-слойного decoder.decode_hidden;
         2. Статический отбор ровно M = min(ce_max_tokens, B_ce * L_ans) токенов без torch.where
            переменной длины;
-        3. Batch-Shared Stratified Sampled Softmax (K_pool ~ 4096 вместо 131,072).
+        3. По умолчанию (ce_mode="exact_chunked"): 1-проходный точный Online Chunked CE по всем 131K словам;
+           опционально (ce_mode="sampled"): Batch-Shared Stratified Sampled Softmax.
+        Для PyTorch/XLA (TPU) передавайте return_acc_tensor=True, чтобы избежать .item() host-device sync.
         """
         B = V_0_hat.shape[0]
         device = V_0_hat.device
@@ -316,7 +475,15 @@ class FastVocabOptimizer(nn.Module):
         b_ce = max(1, min(B, int(math.ceil(B * frac))))
         if b_ce < B:
             active_per_sample = valid_mask.to(torch.float32).sum(dim=1)
-            top_b = torch.topk(active_per_sample, k=b_ce, dim=0).indices
+            if self.ce_batch_select == "max_active":
+                priority_b = active_per_sample
+            else:
+                # Несмещённый статический отбор: любой пример с >=1 активным токеном имеет равный шанс
+                # (2.0 + U[0,1) > U[0,1)), без зависимости от длины ответа и числа ячеек с малым t.
+                priority_b = (active_per_sample > 0).to(torch.float32) * 2.0 + torch.rand(
+                    B, device=device, dtype=torch.float32
+                )
+            top_b = torch.topk(priority_b, k=b_ce, dim=0).indices
             V_ans_sel = V_ans_hat.index_select(0, top_b)
             valid_sel = valid_mask.index_select(0, top_b)
             ans_sel = ans_targets.index_select(0, top_b)
@@ -350,13 +517,21 @@ class FastVocabOptimizer(nn.Module):
         t_sub = t_sel.reshape(total_slots).index_select(0, sel_idx)
         valid_sub = valid_flat.index_select(0, sel_idx)
 
-        # 4. Batch-Shared Stratified Sampled Softmax
-        per_tok_ce, is_correct = self.compute_sampled_ce_from_hidden(
-            h_sub=h_sub,
-            tgt_sub=tgt_sub,
-            valid_sel_mask=valid_sub,
-            lm_head_weight=decoder.lm_head_weight,
-        )
+        # 4. Точный 1-проходный Online Chunked CE (по умолчанию) или опциональный Sampled Softmax
+        if self.ce_mode == "exact_chunked":
+            per_tok_ce, is_correct = self.compute_exact_chunked_ce_from_hidden(
+                h_sub=h_sub,
+                tgt_sub=tgt_sub,
+                valid_sel_mask=valid_sub,
+                lm_head_weight=decoder.lm_head_weight,
+            )
+        else:
+            per_tok_ce, is_correct = self.compute_sampled_ce_from_hidden(
+                h_sub=h_sub,
+                tgt_sub=tgt_sub,
+                valid_sel_mask=valid_sub,
+                lm_head_weight=decoder.lm_head_weight,
+            )
 
         with torch.autocast(device_type=device.type, enabled=False):
             w_t = torch.clamp((ce_t_max - t_sub) / max(ce_t_max, 1e-6), min=0.0, max=1.0) ** 2
@@ -376,6 +551,6 @@ class FastVocabOptimizer(nn.Module):
             with torch.no_grad():
                 v_cnt = valid_sub.to(torch.float32).sum()
                 tok_acc_t = (is_correct & valid_sub).to(torch.float32).sum() / v_cnt.clamp(min=1.0)
-                tok_acc = float(tok_acc_t.item())
+                tok_acc: Union[float, torch.Tensor] = tok_acc_t if return_acc_tensor else float(tok_acc_t.item())
 
         return l_ce, tok_acc

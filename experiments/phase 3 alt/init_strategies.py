@@ -434,7 +434,15 @@ def apply_idea5_kmeans_ffn(
     n_grass = 0
 
     for layer in model.layers:
-        if include_full and isinstance(layer, FullSABlock) and isinstance(layer.gate_proj, SphereLinear):
+        is_full_dense_ffn = (
+            include_full
+            and hasattr(layer, "gate_proj")
+            and hasattr(layer, "up_proj")
+            and isinstance(layer.gate_proj, SphereLinear)
+            and isinstance(layer.up_proj, SphereLinear)
+            and layer.gate_proj.in_features == HIDDEN_SIZE
+        )
+        if is_full_dense_ffn:
             K_ffn = layer.gate_proj.out_features
             # Подвыборка для разнообразия между слоями
             m_sub = min(cells_unit.shape[0], max(K_ffn * 3, 2048))

@@ -36,6 +36,7 @@ import glob
 import math
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -52,8 +53,15 @@ from torch.utils.data.distributed import DistributedSampler
 
 
 # %% Настройка путей и импорт общих утилит Plan C / Phase 3
-ALT_DIR = Path(__file__).resolve().parent
-PROJECT_ROOT = ALT_DIR.parents[1]
+if "__file__" in globals():
+    ALT_DIR = Path(__file__).resolve().parent
+    PROJECT_ROOT = ALT_DIR.parents[1]
+elif os.path.exists("/kaggle/working/BEBLaDII"):
+    PROJECT_ROOT = Path("/kaggle/working/BEBLaDII")
+    ALT_DIR = PROJECT_ROOT / "experiments" / "phase 3 alt"
+else:
+    PROJECT_ROOT = Path.cwd()
+    ALT_DIR = PROJECT_ROOT / "experiments" / "phase 3 alt"
 PHASE3_DIR = PROJECT_ROOT / "experiments" / "phase 3"
 for _p in (str(PROJECT_ROOT), str(PHASE3_DIR), str(ALT_DIR)):
     if _p not in sys.path:
@@ -1267,6 +1275,7 @@ def create_alt_optimizers(
             or name.endswith(".v_gate")
             or name.endswith(".ls_attn")
             or name.endswith(".ls_mlp")
+            or name.endswith(".score_temp")
             or ("_norm" in name and "norm_emb" not in name)
             or ("q_norm." in name)
             or ("k_norm." in name)
@@ -1277,6 +1286,7 @@ def create_alt_optimizers(
             or "dca_kv." in name
             or "final_dca." in name
             or "norm_emb" in name
+            or "axis_mix" in name
             or name.endswith(".bias")
             or param.ndim < 2
             or "mlp.3." in name
@@ -1392,12 +1402,32 @@ def build_or_load_latent_cache(
 
 
 # %% 7. Чекпоинты Phase 3 Alt и основной цикл обучения
-def find_latest_alt_checkpoint(checkpoint_dir: str) -> Optional[str]:
+def find_latest_alt_checkpoint(checkpoint_dir: str, gcs_dir: Optional[str] = None) -> Optional[str]:
     local_files = glob.glob(os.path.join(checkpoint_dir, "phase3_alt_step_*.pt"))
-    if not local_files:
-        return None
-    local_files.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
-    return local_files[-1]
+    if local_files:
+        local_files.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
+        return local_files[-1]
+
+    if gcs_dir:
+        try:
+            res = subprocess.run(
+                ["gsutil", "ls", gcs_dir.rstrip("/") + "/phase3_alt_step_*.pt"],
+                capture_output=True,
+                text=True,
+            )
+            if res.returncode == 0 and res.stdout.strip():
+                remote_files = [x.strip() for x in res.stdout.strip().splitlines() if x.strip()]
+                remote_files.sort(key=lambda f: int(re.findall(r"\d+", os.path.basename(f))[-1]))
+                latest = remote_files[-1]
+                os.makedirs(checkpoint_dir, exist_ok=True)
+                dest = os.path.join(checkpoint_dir, os.path.basename(latest))
+                print(f"[GCS Resume] Скачивание последнего чекпоинта: {latest} -> {dest}", flush=True)
+                dl = subprocess.run(["gsutil", "cp", latest, dest], capture_output=True, text=True)
+                if dl.returncode == 0 and os.path.exists(dest):
+                    return dest
+        except Exception as e:
+            print(f"[GCS Resume Warning] {e}", flush=True)
+    return None
 
 
 def load_alt_checkpoint(
@@ -1476,7 +1506,8 @@ def run_alt_training_loop(
         muon_p = sum(p.numel() for g in opt_muon.param_groups for p in g["params"]) if opt_muon else 0
         adam_p = sum(p.numel() for g in opt_adamw.param_groups for p in g["params"])
         print(
-            f"=== Старт обучения Phase 3 Alt (preset={args.arch_preset}, device={env.device}, "
+            f"=== Старт обучения Phase 3 Alt (preset={args.arch_preset}, matrix={args.matrix_mode}, "
+            f"init={args.init_mode}(damp={args.wiener_damp}), device={env.device}, "
             f"amp={env.use_amp}/{env.amp_dtype}, params={n_params/1e6:.2f}M "
             f"[Muon={muon_p/1e6:.2f}M, AdamW={adam_p/1e6:.2f}M], "
             f"micro_batch={args.batch_size}, grad_accum={args.grad_accum_steps}, "
@@ -1723,6 +1754,20 @@ def run_alt_training_loop(
                 run_generation_check=(eval_dec is not None and not args.no_gen_check),
                 gen_steps=args.gen_steps,
             )
+            if int(args.cfg_dsim_batches) > 0:
+                val_res.update(
+                    evaluate_cfg_dsim(
+                        model=raw_model,
+                        encoder=encoder,
+                        val_dataloader=val_dataloader,
+                        stopword_mask=sw_dev,
+                        sep_concept=sep_cpu,
+                        device=env.device,
+                        use_amp=env.use_amp,
+                        amp_dtype=env.amp_dtype,
+                        max_batches=int(args.cfg_dsim_batches),
+                    )
+                )
             if ema is not None:
                 ema.restore(raw_model)
 
@@ -1731,6 +1776,7 @@ def run_alt_training_loop(
                 f"  [Alt Eval @ {step}] Sim_Gr={val_res['val/sim_gr_denoising']:.4f} (hi={val_res['val/sim_gr_hi']:.4f}) | "
                 f"TokAcc={val_res.get('val/tok_acc_low', 0.0):.3f} (hi={val_res.get('val/tok_acc_hi', 0.0):.3f}, CE_hi={val_res.get('val/ce_loss_hi', 0.0):.2f}) | "
                 f"CFG={val_res['val/cfg_contrast']:.4f} (hi={val_res['val/cfg_contrast_hi']:.4f}) | "
+                f"CFG_dSim(t50/t75)={val_res.get('val/cfg_dsim_t50', 0.0):+.4f}/{val_res.get('val/cfg_dsim_t75', 0.0):+.4f} | "
                 f"VOID_F1={val_res['val/void_f1']:.4f} (pm1={val_res['val/void_start_pm1']:.3f}) | "
                 f"radar={val_res['val/radar_sigma_cell']:.3f} | "
                 f"sink_c={val_res['val/sink_attn_content']:.3f} (hi={val_res['val/sink_attn_content_hi']:.3f}) | "
@@ -1791,6 +1837,90 @@ def run_alt_training_loop(
 
 
 # %% 8. CLI и точка входа
+@torch.no_grad()
+def evaluate_cfg_dsim(
+    model: nn.Module,
+    encoder: nn.Module,
+    val_dataloader: DataLoader,
+    stopword_mask: torch.Tensor,
+    sep_concept: torch.Tensor,
+    device: torch.device,
+    use_amp: bool,
+    amp_dtype: torch.dtype,
+    max_batches: int = 4,
+    t_levels: Tuple[float, ...] = (0.50, 0.75),
+    seed: int = 4242,
+) -> Dict[str, float]:
+    """
+    Полезность условия (CFG-ΔSim): ΔSim(t) = SimGr(V̂_cond, V_0) − SimGr(V̂_uncond, V_0) на контентных ячейках.
+    В отличие от `cfg_contrast` (норма ||V̂_cond − V̂_uncond||, меряет только расхождение веток) эта метрика
+    положительна лишь тогда, когда промпт реально приближает предсказание к цели. Шум фиксирован seed'ом.
+    """
+    raw_model = getattr(model, "module", model)
+    was_training = raw_model.training
+    raw_model.eval()
+    sw_dev = stopword_mask.to(device)
+    sep_c, _ = canonicalize_cell_basis(sep_concept.float())
+    gen = torch.Generator(device="cpu").manual_seed(seed)
+    acc: Dict[float, List[float]] = {t: [] for t in t_levels}
+    sim_c: Dict[float, List[float]] = {t: [] for t in t_levels}
+    in_dtype = amp_dtype if use_amp else torch.float32
+
+    for b_idx, batch in enumerate(val_dataloader):
+        if b_idx >= max_batches:
+            break
+        prompt_ids = batch["prompt_ids"].to(device)
+        ans_ids = batch["ans_ids"].to(device)
+        n_real_prompt = batch["n_real_prompt"].to(device)
+        n_real_ans = batch["n_real_ans"].to(device)
+        B = prompt_ids.shape[0]
+        w_p = batch["prompt_weights"].to(device) if "prompt_weights" in batch else make_pooling_weights(prompt_ids, sw_dev)
+        w_a = batch["ans_weights"].to(device) if "ans_weights" in batch else make_pooling_weights(ans_ids, sw_dev)
+        with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+            V_prompt_raw = encoder(prompt_ids, w_p).float()
+            V_ans_raw = encoder(ans_ids, w_a).float()
+        V_prompt, _ = canonicalize_cell_basis(V_prompt_raw)
+        V_ans, _ = canonicalize_cell_basis(V_ans_raw)
+        sep_exp = sep_c.to(device).view(1, 1, NUM_AXES, AXIS_DIM).expand(B, 1, NUM_AXES, AXIS_DIM)
+        V_0 = torch.cat([sep_exp, V_ans], dim=1)
+        is_content = n_real_ans > 0
+        if not bool(is_content.any()):
+            continue
+        p_valid = n_real_prompt > 0
+        noise = (torch.randn(tuple(V_0.shape), generator=gen) * SIGMA_DATA).to(device)
+
+        for t_val in t_levels:
+            t_mat = torch.full((B, V_0.shape[1]), float(t_val), device=device, dtype=torch.float32)
+            t_mat[:, 0] = 0.0
+            V_t = (1.0 - t_mat[..., None, None]) * V_0 + t_mat[..., None, None] * noise
+            V_t[:, 0] = sep_exp[:, 0]
+            outs = []
+            for cond in (True, False):
+                with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                    vh, _, _ = raw_model(
+                        V_t=V_t.to(in_dtype),
+                        t_mat=t_mat,
+                        V_prompt=V_prompt.to(in_dtype),
+                        prompt_valid_mask=p_valid,
+                        prompt_attn_mask=p_valid if cond else torch.zeros_like(p_valid),
+                        m_prompt=torch.ones(B, device=device) if cond else torch.zeros(B, device=device),
+                        radar_sigma=None,
+                        return_sink_weights=False,
+                    )
+                outs.append(sim_gr(vh.float()[:, 1:], V_0[:, 1:])[is_content])
+            sim_c[t_val].append(float(outs[0].mean().item()))
+            acc[t_val].append(float((outs[0] - outs[1]).mean().item()))
+
+    if was_training:
+        raw_model.train()
+    res: Dict[str, float] = {}
+    for t_val in t_levels:
+        tag = f"{int(round(t_val * 100)):02d}"
+        res[f"val/cfg_dsim_t{tag}"] = float(np.mean(acc[t_val])) if acc[t_val] else 0.0
+        res[f"val/sim_cond_t{tag}"] = float(np.mean(sim_c[t_val])) if sim_c[t_val] else 0.0
+    return res
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="BEBLaDII Phase 3 Alt: Grassmannian 2D Attention (R^128) + Full SA + 2x GrassCA + 3-slot DCA"
@@ -1802,8 +1932,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cpu-bf16", "--cpu_bf16", dest="cpu_bf16", action="store_true", help="Включить bfloat16 autocast на CPU")
     parser.add_argument("--num-threads", "--num_threads", dest="num_threads", type=int, default=0, help="Ограничить число CPU-потоков PyTorch (0 = по умолчанию)")
 
-    # Архитектура
+    # Архитектура и матричные оптимизации
     parser.add_argument("--arch-preset", "--arch_preset", dest="arch_preset", type=str, default="standard", choices=list(ARCH_PRESETS.keys()))
+    parser.add_argument(
+        "--matrix-mode", "--matrix_mode", dest="matrix_mode", type=str, default="safe",
+        choices=["dense", "safe", "ultra"],
+        help="Режим матричных оптимизаций: dense (базовые FullSA/GrassFull), safe (PHM Q/KV/O + GrassAlign + L*X*R, плотный FFN), ultra (PHM также в FFN)",
+    )
+    parser.add_argument("--phm-rank", "--phm_rank", dest="phm_rank", type=int, default=4)
+    parser.add_argument("--phm-alpha", "--phm_alpha", dest="phm_alpha", type=float, default=0.25)
+    parser.add_argument(
+        "--init-mode", "--init_mode", dest="init_mode", type=str, default="all_5",
+        choices=["none", "compat", "all_geo", "all_5", "idea4_wiener_head", "idea5_kmeans_ffn"],
+        help="Геометрическая/data-driven инициализация весов при старте с нуля",
+    )
+    parser.add_argument("--wiener-damp", "--wiener_damp", dest="wiener_damp", type=float, default=0.7, help="Демпфирование Винеровского фильтра beta_k в OutputHead")
+    parser.add_argument("--init-samples", "--init_samples", dest="init_samples", type=int, default=128, help="Число примеров для data-driven инициализации (Wiener + K-Means)")
+    parser.add_argument("--init-seed", "--init_seed", dest="init_seed", type=int, default=1000)
     parser.add_argument("--full-ffn-dim", "--full_ffn_dim", dest="full_ffn_dim", type=int, default=None)
     parser.add_argument("--grass-ffn-dim", "--grass_ffn_dim", dest="grass_ffn_dim", type=int, default=None)
     parser.add_argument("--num-sub-heads", "--num_sub_heads", dest="num_sub_heads", type=int, default=None)
@@ -1843,9 +1988,24 @@ def parse_args() -> argparse.Namespace:
         "--no-fast-vocab", "--no_fast_vocab", dest="no_fast_vocab", action="store_true",
         help="Отключить TPU/GPU-оптимизацию словаря (откат к базовому FP32 радару и полному 131K CE)",
     )
+    parser.add_argument(
+        "--ce-mode", "--ce_mode", dest="ce_mode", type=str, default="exact_chunked",
+        choices=["exact_chunked", "sampled"],
+        help="Режим CE-лосса в FastVocabOptimizer: exact_chunked (1-проходный точный online CE, по умолчанию) или sampled (SVD-пул).",
+    )
+    parser.add_argument("--ce-vocab-chunk-size", "--ce_vocab_chunk_size", dest="ce_vocab_chunk_size", type=int, default=16384)
     parser.add_argument("--ce-pool-hard", "--ce_pool_hard", dest="ce_pool_hard", type=int, default=1536)
     parser.add_argument("--ce-pool-rand", "--ce_pool_rand", dest="ce_pool_rand", type=int, default=2048)
     parser.add_argument("--ce-batch-fraction", "--ce_batch_fraction", dest="ce_batch_fraction", type=float, default=0.5)
+    parser.add_argument(
+        "--ce-batch-select", "--ce_batch_select", dest="ce_batch_select", type=str, default="random",
+        choices=["random", "max_active"],
+        help="Отбор B_ce примеров для CE: random (несмещённо, по умолчанию) или max_active (legacy, перекос к длинным ответам).",
+    )
+    parser.add_argument(
+        "--cfg-dsim-batches", "--cfg_dsim_batches", dest="cfg_dsim_batches", type=int, default=4,
+        help="Число val-батчей для метрики CFG-ΔSim (SimGr(cond)-SimGr(uncond)) при eval; 0 = выкл.",
+    )
     parser.add_argument("--vocab-svd-rank", "--vocab_svd_rank", dest="vocab_svd_rank", type=int, default=64)
 
     # Логирование, чекпоинты, multi-GPU
@@ -1860,6 +2020,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gcs-dir", "--gcs_dir", dest="gcs_dir", type=str, default="")
     parser.add_argument("--no-gcs", "--no_gcs", dest="no_gcs", action="store_true")
     parser.add_argument("--wandb", type=str, default="auto", choices=["auto", "online", "disabled"])
+    parser.add_argument("--wandb-name", "--wandb_name", dest="wandb_name", type=str, default="")
     parser.add_argument("--use-dataparallel", "--use_dataparallel", dest="use_dataparallel", action="store_true", default=True)
     parser.add_argument("--no-dataparallel", "--no_dataparallel", dest="no_dataparallel", action="store_true")
     args, _ = parser.parse_known_args()
@@ -1932,6 +2093,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         args.save_every = 2
         args.lr_warmup_steps = 1
         args.gen_steps = 2
+        args.init_samples = min(args.init_samples, 8)
         args.wandb = "disabled"
         args.resume_ckpt = ""
         sync_gcs_flag = False
@@ -1947,9 +2109,14 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             try:
                 import wandb
                 wandb.login(key=api_key)
+                run_name = (
+                    args.wandb_name.strip()
+                    if getattr(args, "wandb_name", "").strip()
+                    else f"phase3-alt-{args.arch_preset}-{args.matrix_mode}-{args.init_mode}-{env.device.type}-{int(time.time())}"
+                )
                 wandb.init(
                     project="BEBLaDII-Phase3-Alt-PlanC",
-                    name=f"phase3-alt-{args.arch_preset}-{env.device.type}-{int(time.time())}",
+                    name=run_name,
                     config=vars(args),
                 )
                 use_wandb = True
@@ -1970,18 +2137,25 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         fast_vocab = FastVocabOptimizer.from_decoder(
             decoder=decoder,
             gemm_dtype=fv_dtype,
+            ce_mode=args.ce_mode,
+            ce_vocab_chunk_size=args.ce_vocab_chunk_size,
             svd_rank=args.vocab_svd_rank,
             ce_pool_hard=args.ce_pool_hard,
             ce_pool_rand=args.ce_pool_rand,
             ce_batch_fraction=args.ce_batch_fraction,
             attach=True,
+            ce_batch_select=args.ce_batch_select,
         )
         if is_main_process:
+            ce_desc = (
+                f"chunk={fast_vocab.ce_vocab_chunk_size}"
+                if fast_vocab.ce_mode == "exact_chunked"
+                else f"svd_rank={fast_vocab.svd_rank}, pool={args.ce_max_tokens}+{fast_vocab.ce_pool_hard}+{fast_vocab.ce_pool_rand}"
+            )
             print(
                 f"[FastVocab] Подключён за {time.time() - fv_t0:.2f}s "
-                f"(dtype={fv_dtype}, svd_rank={fast_vocab.svd_rank}, "
-                f"ce_pool={args.ce_max_tokens}+{fast_vocab.ce_pool_hard}+{fast_vocab.ce_pool_rand}, "
-                f"ce_batch_frac={fast_vocab.ce_batch_fraction:.2f})",
+                f"(radar_dtype={fv_dtype}, ce_mode={fast_vocab.ce_mode}[{ce_desc}], "
+                f"ce_batch_frac={fast_vocab.ce_batch_fraction:.2f}, ce_batch_select={fast_vocab.ce_batch_select})",
                 flush=True,
             )
 
@@ -1993,32 +2167,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
     else:
         stopword_mask = torch.zeros(131072, dtype=torch.bool)
 
-    # 2. Создание гибридного Грассманианового ядра диффузии
-    model = GrassmannianAltDiffusionCore(
-        void_ref=void_concept,
-        preset=args.arch_preset,
-        full_ffn_dim=args.full_ffn_dim,
-        grass_ffn_dim=args.grass_ffn_dim,
-        num_sub_heads=args.num_sub_heads,
-        local_radius=args.local_radius,
-    ).to(env.device)
-
-    ema = EMAModel(model, decay=args.ema_decay, device=env.device) if not args.no_ema else None
-    opt_muon, opt_adamw = create_alt_optimizers(
-        model, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr, scale_1d_lr=args.scale_1d_lr
-    )
-
-    start_step = 0
-    resume_path = None
-    if args.resume_ckpt:
-        if args.resume_ckpt == "auto":
-            resume_path = find_latest_alt_checkpoint(env.checkpoint_dir)
-        else:
-            resume_path = args.resume_ckpt
-    if resume_path and os.path.exists(resume_path):
-        start_step = load_alt_checkpoint(resume_path, model, opt_muon, opt_adamw, env.device, ema=ema)
-
-    # 3. Датасеты (Phase 6 parquet по умолчанию)
+    # 2. Датасеты (Phase 6 parquet по умолчанию) — готовим до умной инициализации
     train_path = args.data_path if args.data_path != "auto" else env.train_data_path
     val_path = args.val_data_path if args.val_data_path != "auto" else env.val_data_path
     max_rows = 32 if args.smoke_test else (args.max_train_rows if args.max_train_rows > 0 else None)
@@ -2050,6 +2199,86 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         )
     else:
         train_dataset = raw_train_dataset
+
+    # 3. Создание гибридного Грассманианового ядра диффузии (с матричными оптимизациями)
+    from matrix_layers import build_matrix_alt_core
+    from init_strategies import apply_init_strategy, verify_init_invariants
+
+    matrix_variant_map = {
+        "dense": "ref_dense",
+        "safe": "all_matrix_safe",
+        "ultra": "all_matrix_ultra",
+    }
+    model = build_matrix_alt_core(
+        void_ref=void_concept,
+        variant=matrix_variant_map[args.matrix_mode],
+        preset=args.arch_preset,
+        phm_rank=args.phm_rank,
+        cross_alpha=args.phm_alpha,
+        full_ffn_dim=args.full_ffn_dim,
+        grass_ffn_dim=args.grass_ffn_dim,
+        num_sub_heads=args.num_sub_heads,
+        local_radius=args.local_radius,
+    ).to(env.device)
+
+    resume_path = None
+    if args.resume_ckpt and args.resume_ckpt.lower() != "none":
+        if args.resume_ckpt == "auto":
+            resume_path = find_latest_alt_checkpoint(
+                env.checkpoint_dir, env.gcs_checkpoints_dir if sync_gcs_flag else None
+            )
+        else:
+            resume_path = args.resume_ckpt
+    has_resume_ckpt = bool(resume_path and os.path.exists(resume_path))
+
+    # При старте с нуля применяем геометрическую/data-driven инициализацию ДО создания EMA
+    if (not has_resume_ckpt) and args.init_mode != "none":
+        t_init0 = time.time()
+        init_items = None
+        if args.init_mode in ("compat", "all_5", "idea4_wiener_head", "idea5_kmeans_ffn"):
+            if isinstance(train_dataset, PrecomputedLatentDataset):
+                init_items = train_dataset.items[: args.init_samples]
+            else:
+                init_cache = build_or_load_latent_cache(
+                    raw_dataset=raw_train_dataset,
+                    encoder=encoder,
+                    stopword_mask=stopword_mask,
+                    device=env.device,
+                    use_amp=env.use_amp,
+                    amp_dtype=env.amp_dtype,
+                    num_samples=min(args.init_samples, len(raw_train_dataset)),
+                    cache_path=None,
+                )
+                init_items = init_cache.items
+
+        init_info = apply_init_strategy(
+            model=model,
+            strategy_name=args.init_mode,
+            void_ref=void_concept,
+            sep_concept=sep_concept,
+            train_items=init_items,
+            wiener_damp=args.wiener_damp,
+            base_seed=args.init_seed,
+        )
+        if is_ddp:
+            for p in model.parameters():
+                dist.broadcast(p.data, src=0)
+        if is_main_process:
+            inv = verify_init_invariants(model, sep_concept=sep_concept, device=env.device)
+            print(
+                f"[Init] mode={args.init_mode} (damp={args.wiener_damp}) применена за {time.time() - t_init0:.2f}s | "
+                f"sph_err={inv['max_sph_err']:.2e} | cfg_leak={inv['cfg_leak_diff']:.2e} | info={init_info}",
+                flush=True,
+            )
+
+    ema = EMAModel(model, decay=args.ema_decay, device=env.device) if not args.no_ema else None
+    opt_muon, opt_adamw = create_alt_optimizers(
+        model, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr, scale_1d_lr=args.scale_1d_lr
+    )
+
+    start_step = 0
+    if has_resume_ckpt and resume_path is not None:
+        start_step = load_alt_checkpoint(resume_path, model, opt_muon, opt_adamw, env.device, ema=ema)
 
     sampler = (
         DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
@@ -2129,5 +2358,58 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             dist.destroy_process_group()
 
 
+# %% 9. Конфигурация запуска (Kaggle / Notebook)
+TRAINING_CONFIG: Dict[str, Any] = {
+    "smoke_test": False,
+    "device": "auto",
+    "use_dataparallel": True,
+    "arch_preset": "standard",
+    "matrix_mode": "safe",
+    "phm_rank": 4,
+    "phm_alpha": 0.25,
+    "init_mode": "all_5",
+    "wiener_damp": 0.7,
+    "init_samples": 128,
+    "data_path": "auto",
+    "val_data_path": "auto",
+    "batch_size": 16,
+    "grad_accum_steps": 4,
+    "max_steps": 3000,
+    "muon_lr": 1e-3,
+    "adamw_lr": 3e-4,
+    "scale_1d_lr": 1.2e-3,
+    "lr_warmup_steps": 500,
+    "ema_decay": 0.999,
+    "log_every": 20,
+    "eval_every": 500,
+    "eval_batches": 16,
+    "cfg_dsim_batches": 4,
+    "gen_steps": 20,
+    "save_every": 500,
+    "resume_ckpt": "auto",
+    "gcs_dir": "gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/safe_all5/checkpoints/",
+    "no_gcs": False,
+    "wandb": "auto",
+    "wandb_name": "",
+    "elastic_drop_prob": 0.0,
+    "rollout_prob": 0.35,
+    "rollout_start_step": 1000,
+    "ce_weight": 0.05,
+    "ce_warmup_steps": 300,
+    "ce_max_tokens": 512,
+    "ce_t_max": 0.50,
+    "ce_stopword_weight": 0.25,
+    "ce_mode": "exact_chunked",
+    "ce_vocab_chunk_size": 16384,
+    "ce_batch_fraction": 0.5,
+    "ce_batch_select": "random",
+}
+
 if __name__ == "__main__":
-    main()
+    cli_args = parse_args()
+    is_notebook = any("ipykernel" in m for m in sys.modules)
+    if is_notebook:
+        for k, v in TRAINING_CONFIG.items():
+            if hasattr(cli_args, k):
+                setattr(cli_args, k, v)
+    main(cli_args)
