@@ -81,8 +81,12 @@ from storage.components.plan_c_layers import (
 from storage.components.tokenizer import get_tokenizer
 
 from train_phase3 import (
+    AxisBlockAdaLN,
     ConditionEmbedder,
+    ConditionEmbedderV2,
+    DEFAULT_AXIS_SIGMA,
     EMAModel,
+    FourierTimeEmbedding,
     GrassmannianOutputHead,
     N_ANS,
     N_CANVAS,
@@ -92,13 +96,17 @@ from train_phase3 import (
     PerHeadRMSNorm,
     PromptAnswerDataset,
     SIGMA_DATA,
+    SIGMA_NOISE,
     _clamp_fp16_safe,
     _clamp_swiglu,
     _compute_adaln_stats,
     _init_soft_gate_adaln,
+    add_axis_shifted_noise,
     apply_prompt_dropout,
     block_ar_sample,
     build_rollout_noisy_canvas,
+    clip_phase3_grads,
+    compute_axis_t,
     compute_decoder_ce_loss,
     compute_phase3_loss,
     compute_radar_sigma,
@@ -379,6 +387,65 @@ def _repeat_adaln_stats_to_4096(
     return sm.repeat(1, rep), sm2.repeat(1, rep), cnt
 
 
+def _safe_log_axis_norm(x: torch.Tensor) -> torch.Tensor:
+    """Безопасный log1p(||x||_2) в float32 с +1e-8 под корнем (защита от NaN-градиента при x == 0, §3.4)."""
+    return torch.log1p(torch.sqrt(x.float().pow(2).sum(dim=-1, keepdim=True) + 1e-8))
+
+
+def _axis_rad_feat(x: torch.Tensor) -> torch.Tensor:
+    """2D-радиусный признак оси [abs_ln, rel_ln] для Energy-Gated SwiGLU (§3.4)."""
+    abs_ln = _safe_log_axis_norm(x)
+    rel_ln = abs_ln - abs_ln.mean(dim=-2, keepdim=True)
+    return torch.cat([abs_ln, rel_ln], dim=-1).to(x.dtype)
+
+
+@torch.no_grad()
+def _init_blockdiag_sphere(
+    layer: SphereLinear,
+    blocks: List[Tuple[Tuple[int, int], Tuple[int, int]]],
+    alpha: float = 0.15,
+    extra_out_range: Optional[Tuple[int, int]] = None,
+    extra_out_scale: float = 0.10,
+) -> None:
+    """
+    Блочно-диагональная инициализация SphereLinear по границам [96 sem | 16 syn | 16 pos] (§1):
+    внутри каждого блока — ортогональная матрица с весом sqrt(1 - alpha^2),
+    вне блоков — случайный cross-talk с весом alpha, с проекцией строк на единичную сферу.
+    """
+    M, N = int(layer.out_features), int(layer.in_features)
+    dev = layer.q_weight.device
+    dtype = layer.q_weight.dtype
+
+    diag_w = math.sqrt(max(0.0, 1.0 - float(alpha) ** 2))
+    W_blk = torch.zeros(M, N, dtype=torch.float32)
+    mask_blk = torch.zeros(M, N, dtype=torch.bool)
+    for (o0, o1), (i0, i1) in blocks:
+        m_b, n_b = o1 - o0, i1 - i0
+        mat = torch.empty(m_b, n_b, dtype=torch.float32)
+        nn.init.orthogonal_(mat)
+        # Нормируем строки блока до единичной нормы (при m_b > n_b orthogonal_ даёт норму < 1)
+        mat = F.normalize(mat, p=2, dim=-1, eps=1e-8)
+        W_blk[o0:o1, i0:i1] = mat
+        mask_blk[o0:o1, i0:i1] = True
+
+    W_off = torch.randn(M, N, dtype=torch.float32)
+    W_off = W_off.masked_fill(mask_blk, 0.0)
+    off_norms = W_off.norm(p=2, dim=-1, keepdim=True)
+    has_off = off_norms > 1e-8
+    W_off = torch.where(has_off, W_off / off_norms.clamp(min=1e-8), torch.zeros_like(W_off))
+
+    has_blk = mask_blk.any(dim=-1, keepdim=True)
+    W = torch.where(has_blk, diag_w * W_blk + float(alpha) * W_off, W_off)
+    # Если строка полностью без блока и без off (краевой случай), используем случайный единичный вектор
+    row_n = W.norm(p=2, dim=-1, keepdim=True)
+    W = torch.where(row_n > 1e-8, W / row_n.clamp(min=1e-8), F.normalize(torch.randn(M, N), p=2, dim=-1, eps=1e-8))
+
+    layer.q_weight.data.copy_(W.to(device=dev, dtype=dtype))
+    if extra_out_range is not None:
+        r0, r1 = extra_out_range
+        layer.row_scale.data[r0:r1].mul_(float(extra_out_scale))
+
+
 def _apply_cell_rope_to_vectors(
     x: torch.Tensor,
     cos: torch.Tensor,
@@ -386,23 +453,209 @@ def _apply_cell_rope_to_vectors(
 ) -> torch.Tensor:
     """
     Применяет RoPE с ОДИНАКОВЫМ позиционным углом клетки i ко всем K=8 векторам этой клетки.
-    x: (B, H, N, K, d_h), cos/sin: (N, d_h).
-    Внутри одной клетки относительный угол равен 0 -> порядок осей k=0..7 не искажается.
+    x: (B, H, N, K, d_h); cos/sin: (N, d_h) или батчевые (B, N, d_h) для правого выравнивания промпта (§4).
     """
-    cos_b = cos.to(dtype=x.dtype).view(1, 1, x.shape[2], 1, x.shape[4])
-    sin_b = sin.to(dtype=x.dtype).view(1, 1, x.shape[2], 1, x.shape[4])
+    if cos.ndim == 2:
+        cos_b = cos.to(dtype=x.dtype).view(1, 1, x.shape[2], 1, x.shape[4])
+        sin_b = sin.to(dtype=x.dtype).view(1, 1, x.shape[2], 1, x.shape[4])
+    else:
+        cos_b = cos.to(dtype=x.dtype).view(x.shape[0], 1, x.shape[2], 1, x.shape[4])
+        sin_b = sin.to(dtype=x.dtype).view(x.shape[0], 1, x.shape[2], 1, x.shape[4])
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     rot = torch.cat((-x2, x1), dim=-1)
     return (x * cos_b) + (rot * sin_b)
 
 
+def _get_right_aligned_prompt_rope(
+    rope_grass: RotaryEmbedding128,
+    x: torch.Tensor,
+    prompt_valid_mask: Optional[torch.Tensor],
+    rope_offset: int = N_PROMPT,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Правое выравнивание RoPE-позиций промпта вплотную к SEP (§4):
+    реальные клетки 0..L_p-1 получают позиции (rope_offset - L_p)..(rope_offset - 1),
+    т.е. последний токен промпта всегда на позиции 63, SEP на 64, ответ с 65 (инвариантно к Dynamic Crop!).
+    """
+    N_p = x.shape[1]
+    max_pos = max(int(rope_offset), N_p)
+    cos_all, sin_all = rope_grass(x, max_pos)
+    if prompt_valid_mask is None:
+        return cos_all[:N_p], sin_all[:N_p]
+    L_p = prompt_valid_mask.long().sum(dim=-1, keepdim=True).clamp(min=1, max=max_pos)  # (B, 1)
+    shift = max_pos - L_p
+    pos_p = (torch.arange(N_p, device=x.device).unsqueeze(0) + shift).clamp(0, max_pos - 1)  # (B, N_p)
+    return cos_all[pos_p], sin_all[pos_p]
+
+
+class PHMLinear(nn.Module):
+    """
+    Факторизованный 2D-линейный слой над ячейкой X in R^{K_in x D_in}:
+        Y = sum_{m=1..r} A_m @ X @ F_m^T  in R^{K_out x D_out}
+    Вычисляется за 2 плотных GEMM, полностью совместим со SphereLinear, OrthMuon и EMA.
+    """
+
+    def __init__(
+        self,
+        in_axes: int = NUM_AXES,
+        in_dim: int = AXIS_DIM,
+        out_axes: int = NUM_AXES,
+        out_dim: int = AXIS_DIM,
+        rank: int = 4,
+        cross_alpha: float = 0.25,
+    ):
+        super().__init__()
+        self.in_axes = int(in_axes)
+        self.in_dim = int(in_dim)
+        self.out_axes = int(out_axes)
+        self.out_dim = int(out_dim)
+        self.rank = int(rank)
+        self.in_features = self.in_axes * self.in_dim
+        self.out_features = self.out_axes * self.out_dim
+
+        self.f_proj = SphereLinear(self.in_dim, self.rank * self.out_dim, bias=False)
+        self.axis_mix = nn.Parameter(torch.empty(self.out_axes, self.in_axes * self.rank))
+        self._init_axis_mix(cross_alpha=cross_alpha)
+
+    @torch.no_grad()
+    def _init_axis_mix(self, cross_alpha: float = 0.25) -> None:
+        A = torch.zeros(self.out_axes, self.in_axes, self.rank, dtype=torch.float32)
+        if self.rank == 1 or cross_alpha <= 0.0:
+            if self.out_axes == self.in_axes:
+                A[:, :, 0] = torch.eye(self.out_axes, dtype=torch.float32)
+            else:
+                nn.init.orthogonal_(A[:, :, 0])
+        else:
+            main_w = math.sqrt(max(0.0, 1.0 - cross_alpha ** 2))
+            if self.out_axes == self.in_axes:
+                A[:, :, 0] = main_w * torch.eye(self.out_axes, dtype=torch.float32)
+            else:
+                nn.init.orthogonal_(A[:, :, 0])
+                A[:, :, 0].mul_(main_w)
+            noise = torch.randn(self.out_axes, self.in_axes, self.rank - 1, dtype=torch.float32)
+            noise_norm = noise.flatten(1).norm(p=2, dim=-1, keepdim=True).clamp(min=1e-6).view(self.out_axes, 1, 1)
+            A[:, :, 1:] = (noise / noise_norm) * cross_alpha
+        self.axis_mix.copy_(A.reshape(self.out_axes, self.in_axes * self.rank))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        was_3d = x.ndim == 3
+        if was_3d:
+            B, N, _ = x.shape
+            x4 = x.view(B, N, self.in_axes, self.in_dim)
+        else:
+            B, N, _, _ = x.shape
+            x4 = x
+
+        h = self.f_proj(x4)
+        h_mat = h.reshape(B * N, self.in_axes * self.rank, self.out_dim)
+        a_mat = self.axis_mix.to(dtype=h_mat.dtype)
+        y4 = torch.matmul(a_mat, h_mat).view(B, N, self.out_axes, self.out_dim)
+        if was_3d:
+            return y4.reshape(B, N, self.out_features)
+        return y4
+
+
+class GrassmannianOutputHeadV2(nn.Module):
+    """
+    EDM-подобная поосевая выходная голова Phase 3 Alt v2 (§2.2):
+    - Аналитическая Винеровская база c_skip_base(t_k), c_out_base(t_k) по буферу axis_sigma (8,) и SIGMA_NOISE;
+    - Обучаемые per-axis `lambda_keep` (bias -3.0, защита чистых якорей t_i=0 без оракула t_local)
+      и `out_gain_mod` в AxisBlockAdaLN(num_mods=2, extra_dim=16);
+    - Компактный PHMLinear(8, 128, 8, 128, rank=8) со стартовым output_gain=0.1 (~170K вместо 1.57M).
+    """
+
+    def __init__(
+        self,
+        cond_dim: int = 256,
+        adaln_bottleneck_r: int = 64,
+        axis_sigma: Tuple[float, ...] = DEFAULT_AXIS_SIGMA,
+        sigma_noise: float = SIGMA_NOISE,
+        axis_shift_delta: float = 0.35,
+        phm_rank: int = 8,
+        keep_bias: float = -3.0,
+        output_gain_init: float = 0.1,
+    ):
+        super().__init__()
+        self.sigma_noise = float(sigma_noise)
+        self.axis_shift_delta = float(axis_shift_delta)
+        self.keep_bias = float(keep_bias)
+        self.register_buffer("axis_sigma", torch.tensor(list(axis_sigma), dtype=torch.float32), persistent=True)
+
+        self.norm = RMSNorm(AXIS_DIM)
+        self.adaln_out = AxisBlockAdaLN(
+            cond_dim=cond_dim,
+            num_mods=2,
+            bottleneck_r=adaln_bottleneck_r,
+            gate_indices=(),
+            extra_dim=2 * NUM_AXES,
+        )
+        self.out_proj = PHMLinear(
+            in_axes=NUM_AXES,
+            in_dim=AXIS_DIM,
+            out_axes=NUM_AXES,
+            out_dim=AXIS_DIM,
+            rank=int(phm_rank),
+            cross_alpha=0.25,
+        )
+        self.output_gain = nn.Parameter(torch.full((NUM_AXES, 1), float(output_gain_init)))
+
+    def forward(
+        self,
+        x_ans: torch.Tensor,
+        V_t: torch.Tensor,
+        t_mat: torch.Tensor,
+        c: torch.Tensor,
+    ) -> torch.Tensor:
+        B, N, K, D = V_t.shape
+        x4 = x_ans.view(B, N, K, D) if x_ans.ndim == 3 else x_ans
+        (shift_out, scale_out), extra = self.adaln_out(c, x4.dtype)
+        keep_logit, out_gain_mod = extra.chunk(2, dim=-1)  # каждый (B, N, 8)
+
+        h = self.norm(x4) * (1.0 + scale_out) + shift_out
+        delta = self.out_proj(h).float() * self.output_gain.float().view(1, 1, K, 1)
+
+        t_bar = ConditionEmbedder.extract_t_global(t_mat, B, N)  # (B, N)
+        t_k = compute_axis_t(t_bar, delta=self.axis_shift_delta, num_axes=K)  # (B, N, 8)
+        s_k = self.axis_sigma.to(device=V_t.device, dtype=torch.float32).view(1, 1, K)
+        s_n = self.sigma_noise
+
+        denom_sq = ((1.0 - t_k) * s_k) ** 2 + (t_k * s_n) ** 2 + 1e-12
+        c_skip_base = (1.0 - t_k) * (s_k ** 2) / denom_sq
+        c_out_base = (t_k * s_k * s_n) / torch.sqrt(denom_sq)
+
+        lam_keep = torch.sigmoid(keep_logit.float() + self.keep_bias)
+        c_skip = c_skip_base + (1.0 - c_skip_base) * lam_keep
+        c_out = c_out_base * (1.0 - lam_keep) * (1.0 + 0.5 * torch.tanh(out_gain_mod.float()))
+
+        if N > 0:
+            # Точное тождество на ячейке 0 (SEP) без оракульного t_local
+            sep_mask = torch.zeros((1, N, 1), device=V_t.device, dtype=torch.bool)
+            sep_mask[:, 0, :] = True
+            c_skip = torch.where(sep_mask, torch.ones_like(c_skip), c_skip)
+            c_out = torch.where(sep_mask, torch.zeros_like(c_out), c_out)
+
+        V_0_raw = c_skip.unsqueeze(-1) * V_t.float() + c_out.unsqueeze(-1) * delta
+        return clamp_to_unit_ball(V_0_raw)
+
+
 # %% 3. Блоки Грассманианового внимания в R^128 и Full-1024 внимания
+_SEM_SYN_POS_BLOCKS_128: List[Tuple[Tuple[int, int], Tuple[int, int]]] = [
+    ((0, 96), (0, 96)),
+    ((96, 112), (96, 112)),
+    ((112, 128), (112, 128)),
+]
+_SEM_SYN_BLOCKS_112: List[Tuple[Tuple[int, int], Tuple[int, int]]] = [
+    ((0, 96), (0, 96)),
+    ((96, 112), (96, 112)),
+]
+
+
 class GrassmannianPromptAdapterLayer(nn.Module):
     """
     Один слой легкого Грассманианового PromptAdapter в R^128:
-    Full векторное внимание по всем 8*N_p=512 базисным векторам промпта (общие 128x128 веса)
-    + Shared Axis-wise SwiGLU FFN + LayerScale.
+    Full векторное внимание по всем 8*N_p базисным векторам промпта (общие 128x128 веса)
+    + Shared Axis-wise (Energy-Gated) SwiGLU FFN + LayerScale.
     """
 
     def __init__(
@@ -411,11 +664,14 @@ class GrassmannianPromptAdapterLayer(nn.Module):
         ffn_dim: int = 512,
         num_sub_heads: int = 4,
         init_layer_scale: float = 0.02,
+        use_energy_gate: bool = False,
+        blockdiag_alpha: float = 0.0,
     ):
         super().__init__()
         self.axis_dim = axis_dim
         self.num_sub_heads = num_sub_heads
         self.sub_head_dim = axis_dim // num_sub_heads
+        self.use_energy_gate = bool(use_energy_gate)
 
         self.attn_norm = RMSNorm(axis_dim)
         self.norm_emb = nn.Linear(1, axis_dim)
@@ -425,6 +681,11 @@ class GrassmannianPromptAdapterLayer(nn.Module):
         self.q_proj = SphereLinear(axis_dim, axis_dim, bias=False)
         self.kv_proj = SphereLinear(axis_dim, axis_dim, bias=False)
         self.o_proj = SphereLinear(axis_dim, axis_dim, bias=False)
+        if blockdiag_alpha > 0.0 and axis_dim == 128:
+            _init_blockdiag_sphere(self.q_proj, _SEM_SYN_POS_BLOCKS_128, alpha=blockdiag_alpha)
+            _init_blockdiag_sphere(self.kv_proj, _SEM_SYN_POS_BLOCKS_128, alpha=blockdiag_alpha)
+            _init_blockdiag_sphere(self.o_proj, _SEM_SYN_POS_BLOCKS_128, alpha=blockdiag_alpha)
+
         self.q_norm = PerHeadRMSNorm(num_sub_heads, self.sub_head_dim)
         self.k_norm = PerHeadRMSNorm(num_sub_heads, self.sub_head_dim)
         self.v_gate = nn.Parameter(torch.ones(1, num_sub_heads, 1, self.sub_head_dim))
@@ -433,6 +694,12 @@ class GrassmannianPromptAdapterLayer(nn.Module):
         self.gate_proj = SphereLinear(axis_dim, ffn_dim, bias=False)
         self.up_proj = SphereLinear(axis_dim, ffn_dim, bias=False)
         self.down_proj = SphereLinear(ffn_dim, axis_dim, bias=False)
+        if self.use_energy_gate:
+            self.w_rad: Optional[nn.Linear] = nn.Linear(2, ffn_dim)
+            nn.init.zeros_(self.w_rad.weight)
+            nn.init.zeros_(self.w_rad.bias)
+        else:
+            self.w_rad = None
 
         self.ls_attn = nn.Parameter(torch.full((axis_dim,), init_layer_scale))
         self.ls_mlp = nn.Parameter(torch.full((axis_dim,), init_layer_scale))
@@ -448,8 +715,8 @@ class GrassmannianPromptAdapterLayer(nn.Module):
         B, N_p, K, D = x.shape
         H, dh = self.num_sub_heads, self.sub_head_dim
 
-        # Сохраняем информацию об энергии оси ||v_k|| перед RMSNorm (O(8)-эквивариантно)
-        log_norm = torch.log1p(x.float().norm(p=2, dim=-1, keepdim=True)).to(x.dtype)
+        # Сохраняем информацию об энергии оси ||v_k|| перед RMSNorm (O(8)-эквивариантно, без NaN при x==0)
+        log_norm = _safe_log_axis_norm(x).to(x.dtype)
         h = self.attn_norm(x) + self.norm_emb(log_norm)
 
         q = self.q_proj(h).view(B, N_p, K, H, dh).permute(0, 3, 1, 2, 4)
@@ -469,7 +736,10 @@ class GrassmannianPromptAdapterLayer(nn.Module):
         x = x + self.ls_attn.to(x.dtype) * self.o_proj(attn_out)
 
         h_mlp = self.mlp_norm(x)
-        gated = _clamp_swiglu(self.gate_proj(h_mlp), self.up_proj(h_mlp))
+        gate_pre = self.gate_proj(h_mlp)
+        if self.w_rad is not None:
+            gate_pre = gate_pre + self.w_rad(_axis_rad_feat(x))
+        gated = _clamp_swiglu(gate_pre, self.up_proj(h_mlp))
         mlp_out = _clamp_fp16_safe(self.down_proj(gated))
         x = x + self.ls_mlp.to(x.dtype) * mlp_out
         return x
@@ -485,8 +755,14 @@ class GrassmannianPromptAdapter(nn.Module):
         ffn_dim: int = 512,
         num_sub_heads: int = 4,
         init_layer_scale: float = 0.02,
+        prompt_right_align: bool = False,
+        rope_offset: int = N_PROMPT,
+        use_energy_gate: bool = False,
+        blockdiag_alpha: float = 0.0,
     ):
         super().__init__()
+        self.prompt_right_align = bool(prompt_right_align)
+        self.rope_offset = int(rope_offset)
         self.layers = nn.ModuleList(
             [
                 GrassmannianPromptAdapterLayer(
@@ -494,6 +770,8 @@ class GrassmannianPromptAdapter(nn.Module):
                     ffn_dim=ffn_dim,
                     num_sub_heads=num_sub_heads,
                     init_layer_scale=init_layer_scale,
+                    use_energy_gate=use_energy_gate,
+                    blockdiag_alpha=blockdiag_alpha,
                 )
                 for _ in range(num_layers)
             ]
@@ -507,8 +785,13 @@ class GrassmannianPromptAdapter(nn.Module):
     ) -> torch.Tensor:
         # V_prompt: (B, N_p, 8, 128) -> x: (B, N_p, 8, 128)
         B, N_p, K, _ = V_prompt.shape
-        x = (V_prompt.float() / SIGMA_DATA).to(V_prompt.dtype)
-        cos, sin = rope_grass(x, N_p)
+        x = (V_prompt.float() / SIGMA_NOISE).to(V_prompt.dtype)
+        if self.prompt_right_align and prompt_valid_mask is not None:
+            cos, sin = _get_right_aligned_prompt_rope(
+                rope_grass, x, prompt_valid_mask, rope_offset=self.rope_offset
+            )
+        else:
+            cos, sin = rope_grass(x, N_p)
 
         attn_mask = None
         if prompt_valid_mask is not None:
@@ -529,12 +812,8 @@ class GrassmannianSABlock(nn.Module):
     """
     Блок Грассманианового векторного внимания в R^128:
     - Вход: стек `[x_in, h_ca, x_prev]` формы `(B, N, 8, 128)` -> `dca_q` и `dca_kv` (PerAxisGRNv3).
-    - Каждый базисный вектор v_{i,k} in R^128 видит ВСЕ 8 векторов соседних клеток v_{j,0..7}
-      (включая 7 остальных векторов своей клетки при j == i) через общие проекции 128x128!
-    - При `local_radius is not None`: быстрое явное оконное внимание (W = 2*r + 1 клеток +
-      ровно 1 копия якоря SEP без дублирования), что в ~9-12x быстрее плотной 1024x1024 матрицы.
-    - При `local_radius is None`: полное векторное внимание по всем 8*N=1024 векторам холста.
-    - Shared Axis-wise SwiGLU FFN (128 -> ffn_dim -> 128) + O(8)-эквивариантный Soft-Gate AdaLN.
+    - Поддерживает v1 (4x32d + Linear AdaLN) и v2 (8x16d [6 sem | 1 syn | 1 pos] + блочно-диагональный
+      старт + AxisBlockAdaLN D2 r=64 + Energy-Gated SwiGLU).
     """
 
     def __init__(
@@ -545,12 +824,19 @@ class GrassmannianSABlock(nn.Module):
         local_radius: Optional[int] = 6,
         has_ca: bool = True,
         cond_dim: int = 256,
+        adaln_type: str = "linear",
+        adaln_bottleneck_r: int = 64,
+        use_energy_gate: bool = False,
+        blockdiag_alpha: float = 0.0,
     ):
         super().__init__()
         self.axis_dim = axis_dim
         self.num_sub_heads = num_sub_heads
         self.sub_head_dim = axis_dim // num_sub_heads
         self.local_radius = local_radius
+        self.adaln_type = adaln_type
+        self.adaln_bottleneck_r = int(adaln_bottleneck_r)
+        self.use_energy_gate = bool(use_energy_gate)
 
         self.dca_q = PerAxisGRNv3(NUM_AXES, axis_dim, has_ca=has_ca)
         self.dca_kv = PerAxisGRNv3(NUM_AXES, axis_dim, has_ca=has_ca)
@@ -567,6 +853,11 @@ class GrassmannianSABlock(nn.Module):
         self.q_proj = SphereLinear(axis_dim, axis_dim, bias=False)
         self.kv_proj = SphereLinear(axis_dim, axis_dim, bias=False)
         self.o_proj = SphereLinear(axis_dim, axis_dim, bias=False)
+        if blockdiag_alpha > 0.0 and axis_dim == 128:
+            _init_blockdiag_sphere(self.q_proj, _SEM_SYN_POS_BLOCKS_128, alpha=blockdiag_alpha)
+            _init_blockdiag_sphere(self.kv_proj, _SEM_SYN_POS_BLOCKS_128, alpha=blockdiag_alpha)
+            _init_blockdiag_sphere(self.o_proj, _SEM_SYN_POS_BLOCKS_128, alpha=blockdiag_alpha)
+
         self.q_norm = PerHeadRMSNorm(num_sub_heads, self.sub_head_dim)
         self.k_norm = PerHeadRMSNorm(num_sub_heads, self.sub_head_dim)
         self.v_gate = nn.Parameter(torch.ones(1, num_sub_heads, 1, self.sub_head_dim))
@@ -575,9 +866,24 @@ class GrassmannianSABlock(nn.Module):
         self.gate_proj = SphereLinear(axis_dim, ffn_dim, bias=False)
         self.up_proj = SphereLinear(axis_dim, ffn_dim, bias=False)
         self.down_proj = SphereLinear(ffn_dim, axis_dim, bias=False)
+        if self.use_energy_gate:
+            self.w_rad: Optional[nn.Linear] = nn.Linear(2, ffn_dim)
+            nn.init.zeros_(self.w_rad.weight)
+            nn.init.zeros_(self.w_rad.bias)
+        else:
+            self.w_rad = None
 
-        self.adaln_proj = nn.Linear(cond_dim, 6 * axis_dim)
-        _init_soft_gate_adaln(self.adaln_proj, axis_dim, gate_bias=0.02)
+        if adaln_type == "axis_block":
+            self.adaln_proj: nn.Module = AxisBlockAdaLN(
+                cond_dim=cond_dim,
+                num_mods=6,
+                bottleneck_r=self.adaln_bottleneck_r,
+                gate_indices=(2, 5),
+                gate_bias=0.02,
+            )
+        else:
+            self.adaln_proj = nn.Linear(cond_dim, 6 * axis_dim)
+            _init_soft_gate_adaln(self.adaln_proj, axis_dim, gate_bias=0.02)
 
         if local_radius is not None:
             self.register_buffer(
@@ -587,6 +893,28 @@ class GrassmannianSABlock(nn.Module):
             )
         else:
             self.register_buffer("win_mask_default", None, persistent=False)
+
+    def _compute_adaln_mods(
+        self, c: torch.Tensor, out_dtype: torch.dtype, m_active: torch.Tensor
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ]:
+        B, N, _ = c.shape
+        if isinstance(self.adaln_proj, AxisBlockAdaLN):
+            s_msa, sc_msa, g_msa, s_mlp, sc_mlp, g_mlp = self.adaln_proj(c, out_dtype)
+            M = torch.cat([s_msa, sc_msa, s_mlp, sc_mlp], dim=-1).reshape(B, N, 4 * HIDDEN_SIZE)
+            stats = _compute_adaln_stats(M, m_active)
+            return s_msa, sc_msa, g_msa, s_mlp, sc_mlp, g_mlp, stats
+        mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(out_dtype)
+        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
+        M = torch.cat([shift_msa, scale_msa, shift_mlp, scale_mlp], dim=-1)
+        stats = _repeat_adaln_stats_to_4096(_compute_adaln_stats(M, m_active))
+        return (
+            shift_msa.unsqueeze(2), scale_msa.unsqueeze(2), gate_msa.unsqueeze(2),
+            shift_mlp.unsqueeze(2), scale_mlp.unsqueeze(2), gate_mlp.unsqueeze(2),
+            stats,
+        )
 
     @staticmethod
     def _build_window_mask(
@@ -661,25 +989,14 @@ class GrassmannianSABlock(nn.Module):
         B, N, K, D = x_prev.shape
         H, dh = self.num_sub_heads, self.sub_head_dim
 
-        mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(x_prev.dtype)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
-        M = torch.cat([shift_msa, scale_msa, shift_mlp, scale_mlp], dim=-1)
-        stats = _repeat_adaln_stats_to_4096(_compute_adaln_stats(M, m_active))
-
-        # Broadcasting AdaLN по 8 осям (O(8)-эквивариантно)
-        s_msa = shift_msa.unsqueeze(2)
-        sc_msa = scale_msa.unsqueeze(2)
-        g_msa = gate_msa.unsqueeze(2)
-        s_mlp = shift_mlp.unsqueeze(2)
-        sc_mlp = scale_mlp.unsqueeze(2)
-        g_mlp = gate_mlp.unsqueeze(2)
+        s_msa, sc_msa, g_msa, s_mlp, sc_mlp, g_mlp, stats = self._compute_adaln_mods(c, x_prev.dtype, m_active)
 
         # 3-слотовый поосевой DCA: отдельные композиции для Q и Shared KV
         x_q = self.dca_q(x_in, h_ca, x_prev)
         x_kv = self.dca_kv(x_in, h_ca, x_prev)
 
-        ln_q = torch.log1p(x_q.float().norm(p=2, dim=-1, keepdim=True)).to(x_q.dtype)
-        ln_kv = torch.log1p(x_kv.float().norm(p=2, dim=-1, keepdim=True)).to(x_kv.dtype)
+        ln_q = _safe_log_axis_norm(x_q).to(x_q.dtype)
+        ln_kv = _safe_log_axis_norm(x_kv).to(x_kv.dtype)
         h_q = (self.attn_norm_q(x_q) + self.norm_emb_q(ln_q)) * (1.0 + sc_msa) + s_msa
         h_kv = (self.attn_norm_kv(x_kv) + self.norm_emb_kv(ln_kv)) * (1.0 + sc_msa) + s_msa
 
@@ -707,7 +1024,10 @@ class GrassmannianSABlock(nn.Module):
         x = x_prev + g_msa * self.o_proj(attn_out)
 
         h_mlp = self.mlp_norm(x) * (1.0 + sc_mlp) + s_mlp
-        gated = _clamp_swiglu(self.gate_proj(h_mlp), self.up_proj(h_mlp))
+        gate_pre = self.gate_proj(h_mlp)
+        if self.w_rad is not None:
+            gate_pre = gate_pre + self.w_rad(_axis_rad_feat(x))
+        gated = _clamp_swiglu(gate_pre, self.up_proj(h_mlp))
         mlp_out = _clamp_fp16_safe(self.down_proj(gated))
         x = x + g_mlp * mlp_out
         return x, stats
@@ -715,13 +1035,11 @@ class GrassmannianSABlock(nn.Module):
 
 class GrassmannianCABlock(nn.Module):
     """
-    Грассманианов блок Cross-Attention на промпт в R^128:
-    - Каждый из 8 векторов ответа v_{i,k} in R^128 делает CA ко всем 8*N_p=512 базисным
-      векторам промпта p_{j,m} in R^128 + Zero-Vector Sink `k_sink` (v_sink == 0).
-    - Использует 1 экземпляр `PerAxisGRNv3` (`dca_q`) на входном стеке `[x_in, h_ca, x_prev]`.
-    - Shared KV + Split K/V Channel Gating + Token-Centered Contrast строго на K_p (ADR 135).
-    - Однократный float32 softmax (ADR 136) + Cross-Gated SwiGLU FFN в R^128 (ADR 110).
-    - Возвращает чистую дельту `ca_delta` для обновления слота `h_ca` в DCA-пробросе.
+    Грассманианов блок Cross-Attention на промпт в R^128 (v1: 4x32d=128d; v2: 7x16d=112d без pos):
+    - Кэширование (k_full, v_p, attn_mask) промпта до цикла диффузии (§7.1);
+    - Пропуск вычислений на безусловной ветке при инференсе и в 2B-батчевом CFG (§§7.2–7.3);
+    - Правое выравнивание RoPE-позиций промпта вплотную к SEP (§4);
+    - AxisBlockAdaLN D2 r=64 (§3.3) и Energy-Gated Cross-Gated SwiGLU (§3.4, 100% физическая изоляция CFG).
     """
 
     def __init__(
@@ -729,15 +1047,28 @@ class GrassmannianCABlock(nn.Module):
         axis_dim: int = AXIS_DIM,
         ffn_dim: int = 512,
         num_sub_heads: int = 4,
+        qk_dim: Optional[int] = None,
         rope_offset: int = N_PROMPT,
         has_ca: bool = False,
         cond_dim: int = 256,
+        prompt_right_align: bool = False,
+        adaln_type: str = "linear",
+        adaln_bottleneck_r: int = 64,
+        use_energy_gate: bool = False,
+        blockdiag_alpha: float = 0.0,
     ):
         super().__init__()
-        self.axis_dim = axis_dim
-        self.num_sub_heads = num_sub_heads
-        self.sub_head_dim = axis_dim // num_sub_heads
-        self.rope_offset = rope_offset
+        self.axis_dim = int(axis_dim)
+        self.qk_dim = int(axis_dim if qk_dim is None else qk_dim)
+        self.num_sub_heads = int(num_sub_heads)
+        if self.qk_dim % self.num_sub_heads != 0:
+            raise ValueError(f"qk_dim={self.qk_dim} не делится на num_sub_heads={self.num_sub_heads}")
+        self.sub_head_dim = self.qk_dim // self.num_sub_heads
+        self.rope_offset = int(rope_offset)
+        self.prompt_right_align = bool(prompt_right_align)
+        self.adaln_type = adaln_type
+        self.adaln_bottleneck_r = int(adaln_bottleneck_r)
+        self.use_energy_gate = bool(use_energy_gate)
 
         self.dca_q = PerAxisGRNv3(NUM_AXES, axis_dim, has_ca=has_ca)
 
@@ -747,24 +1078,203 @@ class GrassmannianCABlock(nn.Module):
         nn.init.zeros_(self.norm_emb_q.weight)
         nn.init.zeros_(self.norm_emb_q.bias)
 
-        self.q_proj = SphereLinear(axis_dim, axis_dim, bias=False)
-        self.kv_proj = SphereLinear(axis_dim, axis_dim, bias=False)
-        self.o_proj = SphereLinear(axis_dim, axis_dim, bias=False)
-        self.q_norm = PerHeadRMSNorm(num_sub_heads, self.sub_head_dim)
-        self.k_norm = PerHeadRMSNorm(num_sub_heads, self.sub_head_dim)
-        self.v_gate = nn.Parameter(torch.ones(1, num_sub_heads, 1, self.sub_head_dim))
+        self.q_proj = SphereLinear(self.qk_dim, self.qk_dim, bias=False)
+        self.kv_proj = SphereLinear(self.qk_dim, self.qk_dim, bias=False)
+        self.o_proj = SphereLinear(self.qk_dim, self.axis_dim, bias=False)
+        if blockdiag_alpha > 0.0:
+            if self.qk_dim == 112:
+                _init_blockdiag_sphere(self.q_proj, _SEM_SYN_BLOCKS_112, alpha=blockdiag_alpha)
+                _init_blockdiag_sphere(self.kv_proj, _SEM_SYN_BLOCKS_112, alpha=blockdiag_alpha)
+                _init_blockdiag_sphere(
+                    self.o_proj,
+                    _SEM_SYN_BLOCKS_112,
+                    alpha=blockdiag_alpha,
+                    extra_out_range=(112, 128),
+                    extra_out_scale=0.10,
+                )
+            elif self.qk_dim == 128:
+                _init_blockdiag_sphere(self.q_proj, _SEM_SYN_POS_BLOCKS_128, alpha=blockdiag_alpha)
+                _init_blockdiag_sphere(self.kv_proj, _SEM_SYN_POS_BLOCKS_128, alpha=blockdiag_alpha)
+                _init_blockdiag_sphere(self.o_proj, _SEM_SYN_POS_BLOCKS_128, alpha=blockdiag_alpha)
+
+        self.q_norm = PerHeadRMSNorm(self.num_sub_heads, self.sub_head_dim)
+        self.k_norm = PerHeadRMSNorm(self.num_sub_heads, self.sub_head_dim)
+        self.v_gate = nn.Parameter(torch.ones(1, self.num_sub_heads, 1, self.sub_head_dim))
 
         # Zero-Vector Attention Sink (без RoPE, v_sink == 0)
-        self.k_sink = nn.Parameter(torch.randn(1, num_sub_heads, 1, self.sub_head_dim) * 0.02)
+        self.k_sink = nn.Parameter(torch.randn(1, self.num_sub_heads, 1, self.sub_head_dim) * 0.02)
 
         self.mlp_norm = RMSNorm(axis_dim)
         self.gate_proj = SphereLinear(axis_dim, ffn_dim, bias=False)
         self.w_canvas_gate = SphereLinear(axis_dim, ffn_dim, bias=False)
         self.up_proj = SphereLinear(axis_dim, ffn_dim, bias=False)
         self.down_proj = SphereLinear(ffn_dim, axis_dim, bias=False)
+        if self.use_energy_gate:
+            self.w_rad: Optional[nn.Linear] = nn.Linear(2, ffn_dim)
+            nn.init.zeros_(self.w_rad.weight)
+            nn.init.zeros_(self.w_rad.bias)
+        else:
+            self.w_rad = None
 
-        self.adaln_proj = nn.Linear(cond_dim, 6 * axis_dim)
-        _init_soft_gate_adaln(self.adaln_proj, axis_dim, gate_bias=0.02)
+        if adaln_type == "axis_block":
+            self.adaln_proj: nn.Module = AxisBlockAdaLN(
+                cond_dim=cond_dim,
+                num_mods=6,
+                bottleneck_r=self.adaln_bottleneck_r,
+                gate_indices=(2, 5),
+                gate_bias=0.02,
+            )
+        else:
+            self.adaln_proj = nn.Linear(cond_dim, 6 * axis_dim)
+            _init_soft_gate_adaln(self.adaln_proj, axis_dim, gate_bias=0.02)
+
+    def _compute_adaln_mods(
+        self, c: torch.Tensor, out_dtype: torch.dtype, m_active: torch.Tensor
+    ) -> Tuple[
+        torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor,
+        Tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+    ]:
+        B, N, _ = c.shape
+        if isinstance(self.adaln_proj, AxisBlockAdaLN):
+            s_ca, sc_ca, g_ca, s_mlp, sc_mlp, g_mlp = self.adaln_proj(c, out_dtype)
+            M = torch.cat([s_ca, sc_ca, s_mlp, sc_mlp], dim=-1).reshape(B, N, 4 * HIDDEN_SIZE)
+            stats = _compute_adaln_stats(M, m_active)
+            return s_ca, sc_ca, g_ca, s_mlp, sc_mlp, g_mlp, stats
+        mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(out_dtype)
+        shift_ca, scale_ca, gate_ca, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
+        M = torch.cat([shift_ca, scale_ca, shift_mlp, scale_mlp], dim=-1)
+        stats = _repeat_adaln_stats_to_4096(_compute_adaln_stats(M, m_active))
+        return (
+            shift_ca.unsqueeze(2), scale_ca.unsqueeze(2), gate_ca.unsqueeze(2),
+            shift_mlp.unsqueeze(2), scale_mlp.unsqueeze(2), gate_mlp.unsqueeze(2),
+            stats,
+        )
+
+    def prepare_prompt_kv(
+        self,
+        x_prompt: torch.Tensor,
+        rope_grass: RotaryEmbedding128,
+        prompt_attn_mask: torch.Tensor,
+        prompt_valid_mask: Optional[torch.Tensor] = None,
+    ) -> Dict[str, Any]:
+        """Однократно готовит (k_full, v_p, attn_mask) промпта для данного CA-слоя (§7.1)."""
+        B, N_p, K, _ = x_prompt.shape
+        H, dh = self.num_sub_heads, self.sub_head_dim
+
+        h_prompt_in = self.prompt_norm(x_prompt)[..., : self.qk_dim]
+        u_p = self.kv_proj(h_prompt_in).view(B, N_p, K, H, dh).permute(0, 3, 1, 2, 4)
+        u_p_flat = u_p.reshape(B, H, N_p * K, dh)
+
+        p_vec_mask = prompt_attn_mask.unsqueeze(-1).expand(B, N_p, K).reshape(B, N_p * K)
+        mask_p_f = p_vec_mask.float().view(B, 1, N_p * K, 1)
+        denom = mask_p_f.sum(dim=2, keepdim=True).clamp(min=1.0)
+        u_p_mean = (u_p_flat.float() * mask_p_f).sum(dim=2, keepdim=True) / denom
+        u_p_centered = (u_p_flat.float() - 0.5 * u_p_mean).to(u_p_flat.dtype)
+
+        k_p = self.k_norm(u_p_centered).view(B, H, N_p, K, dh)
+        v_p = u_p_flat * self.v_gate.to(u_p_flat.dtype)  # V никогда не проходит через RoPE
+
+        if self.prompt_right_align:
+            rope_mask = prompt_valid_mask if prompt_valid_mask is not None else prompt_attn_mask
+            cos_p, sin_p = _get_right_aligned_prompt_rope(
+                rope_grass, x_prompt, rope_mask, rope_offset=self.rope_offset
+            )
+        else:
+            cos_all, sin_all = rope_grass(x_prompt, max(self.rope_offset, N_p))
+            cos_p, sin_p = cos_all[:N_p], sin_all[:N_p]
+
+        k_p_rot = _apply_cell_rope_to_vectors(k_p, cos_p, sin_p).reshape(B, H, N_p * K, dh)
+        k_sink_exp = self.k_norm(self.k_sink.to(k_p_rot.dtype)).expand(B, -1, -1, -1)
+        k_full = torch.cat([k_p_rot, k_sink_exp], dim=2)  # (B, H, N_p*K + 1, dh)
+
+        attn_mask = torch.zeros(B, 1, 1, N_p * K + 1, device=x_prompt.device, dtype=torch.float32)
+        attn_mask[:, :, :, : N_p * K] = attn_mask[:, :, :, : N_p * K].masked_fill(
+            ~p_vec_mask[:, None, None, :], -10000.0
+        )
+        return {
+            "k_full": k_full,
+            "v_p": v_p,
+            "attn_mask": attn_mask,
+            "n_p_k": N_p * K,
+        }
+
+    def _forward_core(
+        self,
+        x_in: torch.Tensor,
+        h_ca_prev: Optional[torch.Tensor],
+        x_prev: torch.Tensor,
+        x_prompt: torch.Tensor,
+        c: torch.Tensor,
+        rope_grass: RotaryEmbedding128,
+        prompt_attn_mask: torch.Tensor,
+        m_active: torch.Tensor,
+        return_sink_weights: bool = False,
+        prompt_valid_mask: Optional[torch.Tensor] = None,
+        prompt_kv_cache: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
+        B, N_a, K, D = x_prev.shape
+        H, dh = self.num_sub_heads, self.sub_head_dim
+
+        s_ca, sc_ca, g_ca, s_mlp, sc_mlp, g_mlp, stats = self._compute_adaln_mods(c, x_prev.dtype, m_active)
+
+        x_q = self.dca_q(x_in, h_ca_prev, x_prev)
+        ln_q = _safe_log_axis_norm(x_q).to(x_q.dtype)
+        h_ans_in = (self.ca_norm(x_q) + self.norm_emb_q(ln_q)) * (1.0 + sc_ca) + s_ca
+
+        q = self.q_proj(h_ans_in[..., : self.qk_dim]).view(B, N_a, K, H, dh).permute(0, 3, 1, 2, 4)
+        q = self.q_norm(q.reshape(B, H, N_a * K, dh)).view(B, H, N_a, K, dh)
+
+        cos_all, sin_all = rope_grass(x_prev, self.rope_offset + N_a)
+        cos_a = cos_all[self.rope_offset : self.rope_offset + N_a]
+        sin_a = sin_all[self.rope_offset : self.rope_offset + N_a]
+        q_rot = _apply_cell_rope_to_vectors(q, cos_a, sin_a).reshape(B, H, N_a * K, dh)
+
+        if prompt_kv_cache is not None:
+            k_full = prompt_kv_cache["k_full"]
+            v_p = prompt_kv_cache["v_p"]
+            attn_mask = prompt_kv_cache["attn_mask"]
+            n_p_k = int(prompt_kv_cache["n_p_k"])
+        else:
+            kv_dict = self.prepare_prompt_kv(
+                x_prompt=x_prompt,
+                rope_grass=rope_grass,
+                prompt_attn_mask=prompt_attn_mask,
+                prompt_valid_mask=prompt_valid_mask,
+            )
+            k_full = kv_dict["k_full"]
+            v_p = kv_dict["v_p"]
+            attn_mask = kv_dict["attn_mask"]
+            n_p_k = int(kv_dict["n_p_k"])
+
+        # Однократный расчёт softmax в float32 (ADR 136)
+        scores = torch.matmul(q_rot.float(), k_full.float().transpose(-2, -1)) / math.sqrt(dh)
+        scores = scores + attn_mask
+        probs = F.softmax(scores, dim=-1)
+
+        sink_weights = None
+        if return_sink_weights:
+            sink_weights = probs[:, :, :, -1].view(B, H, N_a, K).mean(dim=(1, 3))
+
+        # v_sink == 0 -> учитываем только первые n_p_k ключей промпта
+        attn_out = torch.matmul(probs[:, :, :, :n_p_k].to(v_p.dtype), v_p)
+        attn_out = attn_out.view(B, H, N_a, K, dh).permute(0, 2, 3, 1, 4).reshape(B, N_a, K, self.qk_dim)
+        h_ca = self.o_proj(attn_out)
+        delta_attn = g_ca * h_ca
+        x_mid = x_prev + delta_attn
+
+        # Cross-Gated (Energy-Gated) SwiGLU FFN в R^128: val строго из h_ca (физическая изоляция при CFG dropout)
+        x_tilde = self.mlp_norm(x_mid) * (1.0 + sc_mlp) + s_mlp
+        gate_pre = self.gate_proj(h_ca).float() + self.w_canvas_gate(x_tilde).float()
+        if self.w_rad is not None:
+            gate_pre = gate_pre + self.w_rad(_axis_rad_feat(x_mid)).float()
+        prod = F.silu(gate_pre) * self.up_proj(h_ca).float()
+        gated = torch.clamp(prod, -65000.0, 65000.0).to(x_prev.dtype)
+        ffn_out = _clamp_fp16_safe(self.down_proj(gated))
+        delta_mlp = g_mlp * ffn_out
+
+        ca_delta = delta_attn + delta_mlp
+        x_out = x_prev + ca_delta
+        return x_out, ca_delta, stats, sink_weights
 
     def forward(
         self,
@@ -777,97 +1287,80 @@ class GrassmannianCABlock(nn.Module):
         prompt_attn_mask: torch.Tensor,
         m_active: torch.Tensor,
         return_sink_weights: bool = False,
+        prompt_valid_mask: Optional[torch.Tensor] = None,
+        prompt_kv_cache: Optional[Dict[str, Any]] = None,
+        infer_cond_half: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
-        B, N_a, K, D = x_prev.shape
-        N_p = x_prompt.shape[1]
-        H, dh = self.num_sub_heads, self.sub_head_dim
+        B, N_a, _, _ = x_prev.shape
 
-        mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(x_prev.dtype)
-        shift_ca, scale_ca, gate_ca, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
-        M = torch.cat([shift_ca, scale_ca, shift_mlp, scale_mlp], dim=-1)
-        stats = _repeat_adaln_stats_to_4096(_compute_adaln_stats(M, m_active))
+        # §§7.2–7.3: на инференсе (вне XLA) пропускаем CA на безусловной ветке (математически тождественно 0)
+        if (not self.training) and (x_prev.device.type != "xla"):
+            if infer_cond_half:
+                b_half = B // 2
+                h_ca_c = h_ca_prev[:b_half] if h_ca_prev is not None else None
+                xp_c = x_prompt[:b_half] if x_prompt.shape[0] > b_half else x_prompt
+                pvm_c = (
+                    prompt_valid_mask[:b_half]
+                    if (prompt_valid_mask is not None and prompt_valid_mask.shape[0] > b_half)
+                    else prompt_valid_mask
+                )
+                pam_c = prompt_attn_mask[:b_half] if prompt_attn_mask.shape[0] > b_half else prompt_attn_mask
+                x_out_c, ca_delta_c, stats_c, sw_c = self._forward_core(
+                    x_in=x_in[:b_half],
+                    h_ca_prev=h_ca_c,
+                    x_prev=x_prev[:b_half],
+                    x_prompt=xp_c,
+                    c=c[:b_half],
+                    rope_grass=rope_grass,
+                    prompt_attn_mask=pam_c,
+                    m_active=m_active[:b_half],
+                    return_sink_weights=return_sink_weights,
+                    prompt_valid_mask=pvm_c,
+                    prompt_kv_cache=prompt_kv_cache,
+                )
+                x_out_u = x_prev[b_half:]
+                ca_delta_u = torch.zeros_like(x_out_u)
+                x_out = torch.cat([x_out_c, x_out_u], dim=0)
+                ca_delta = torch.cat([ca_delta_c, ca_delta_u], dim=0)
+                if return_sink_weights and sw_c is not None:
+                    sw_u = torch.ones((B - b_half, N_a), device=x_prev.device, dtype=sw_c.dtype)
+                    sw = torch.cat([sw_c, sw_u], dim=0)
+                else:
+                    sw = None
+                return x_out, ca_delta, stats_c, sw
 
-        s_ca = shift_ca.unsqueeze(2)
-        sc_ca = scale_ca.unsqueeze(2)
-        g_ca = gate_ca.unsqueeze(2)
-        s_mlp = shift_mlp.unsqueeze(2)
-        sc_mlp = scale_mlp.unsqueeze(2)
-        g_mlp = gate_mlp.unsqueeze(2)
+            if not bool(prompt_attn_mask.any()):
+                dev = x_prev.device
+                zero_stats = (
+                    torch.zeros(1, 4 * HIDDEN_SIZE, device=dev, dtype=torch.float32),
+                    torch.zeros(1, 4 * HIDDEN_SIZE, device=dev, dtype=torch.float32),
+                    torch.zeros(1, device=dev, dtype=torch.float32),
+                )
+                sw_ones = (
+                    torch.ones((B, N_a), device=dev, dtype=torch.float32) if return_sink_weights else None
+                )
+                return x_prev, torch.zeros_like(x_prev), zero_stats, sw_ones
 
-        x_q = self.dca_q(x_in, h_ca_prev, x_prev)
-        ln_q = torch.log1p(x_q.float().norm(p=2, dim=-1, keepdim=True)).to(x_q.dtype)
-        h_ans_in = (self.ca_norm(x_q) + self.norm_emb_q(ln_q)) * (1.0 + sc_ca) + s_ca
-        h_prompt_in = self.prompt_norm(x_prompt)
-
-        q = self.q_proj(h_ans_in).view(B, N_a, K, H, dh).permute(0, 3, 1, 2, 4)
-        u_p = self.kv_proj(h_prompt_in).view(B, N_p, K, H, dh).permute(0, 3, 1, 2, 4)
-        u_p_flat = u_p.reshape(B, H, N_p * K, dh)
-
-        # Маска активных (не-VOID) векторов промпта: (B, N_p * K)
-        p_vec_mask = prompt_attn_mask.unsqueeze(-1).expand(B, N_p, K).reshape(B, N_p * K)
-        mask_p_f = p_vec_mask.float().view(B, 1, N_p * K, 1)
-        denom = mask_p_f.sum(dim=2, keepdim=True).clamp(min=1.0)
-        # Token-Centered Contrast строго на ветке ключей K_p (ADR 135)
-        u_p_mean = (u_p_flat.float() * mask_p_f).sum(dim=2, keepdim=True) / denom
-        u_p_centered = (u_p_flat.float() - 0.5 * u_p_mean).to(u_p_flat.dtype)
-
-        q = self.q_norm(q.reshape(B, H, N_a * K, dh)).view(B, H, N_a, K, dh)
-        k_p = self.k_norm(u_p_centered).view(B, H, N_p, K, dh)
-        v_p = u_p_flat * self.v_gate.to(u_p_flat.dtype)  # V никогда не проходит через RoPE
-
-        cos_all, sin_all = rope_grass(x_prev, self.rope_offset + N_a)
-        cos_p, sin_p = cos_all[:N_p], sin_all[:N_p]
-        cos_a = cos_all[self.rope_offset : self.rope_offset + N_a]
-        sin_a = sin_all[self.rope_offset : self.rope_offset + N_a]
-
-        q_rot = _apply_cell_rope_to_vectors(q, cos_a, sin_a).reshape(B, H, N_a * K, dh)
-        k_p_rot = _apply_cell_rope_to_vectors(k_p, cos_p, sin_p).reshape(B, H, N_p * K, dh)
-
-        k_sink_exp = self.k_norm(self.k_sink.to(k_p_rot.dtype)).expand(B, -1, -1, -1)
-        k_full = torch.cat([k_p_rot, k_sink_exp], dim=2)  # (B, H, N_p*K + 1, dh)
-
-        attn_mask = torch.zeros(B, 1, 1, N_p * K + 1, device=x_prev.device, dtype=torch.float32)
-        attn_mask[:, :, :, : N_p * K] = attn_mask[:, :, :, : N_p * K].masked_fill(
-            ~p_vec_mask[:, None, None, :], -10000.0
+        return self._forward_core(
+            x_in=x_in,
+            h_ca_prev=h_ca_prev,
+            x_prev=x_prev,
+            x_prompt=x_prompt,
+            c=c,
+            rope_grass=rope_grass,
+            prompt_attn_mask=prompt_attn_mask,
+            m_active=m_active,
+            return_sink_weights=return_sink_weights,
+            prompt_valid_mask=prompt_valid_mask,
+            prompt_kv_cache=prompt_kv_cache,
         )
-
-        # Однократный расчёт softmax в float32 (ADR 136)
-        scores = torch.matmul(q_rot.float(), k_full.float().transpose(-2, -1)) / math.sqrt(dh)
-        scores = scores + attn_mask
-        probs = F.softmax(scores, dim=-1)
-
-        sink_weights = None
-        if return_sink_weights:
-            # Средняя доля внимания в k_sink по головам H и 8 базисным векторам клетки -> (B, N_a)
-            sink_weights = probs[:, :, :, -1].view(B, H, N_a, K).mean(dim=(1, 3))
-
-        # v_sink == 0 -> учитываем только первые N_p*K ключей промпта
-        attn_out = torch.matmul(probs[:, :, :, : N_p * K].to(v_p.dtype), v_p)
-        attn_out = attn_out.view(B, H, N_a, K, dh).permute(0, 2, 3, 1, 4).reshape(B, N_a, K, D)
-        h_ca = self.o_proj(attn_out)
-        delta_attn = g_ca * h_ca
-        x_mid = x_prev + delta_attn
-
-        # Cross-Gated SwiGLU FFN в R^128: val строго из h_ca (физическая изоляция при CFG dropout)
-        x_tilde = self.mlp_norm(x_mid) * (1.0 + sc_mlp) + s_mlp
-        gate_pre = self.gate_proj(h_ca).float() + self.w_canvas_gate(x_tilde).float()
-        prod = F.silu(gate_pre) * self.up_proj(h_ca).float()
-        gated = torch.clamp(prod, -65000.0, 65000.0).to(x_prev.dtype)
-        ffn_out = _clamp_fp16_safe(self.down_proj(gated))
-        delta_mlp = g_mlp * ffn_out
-
-        ca_delta = delta_attn + delta_mlp
-        x_out = x_prev + ca_delta
-        return x_out, ca_delta, stats, sink_weights
 
 
 class FullSABlock(nn.Module):
     """
     Полный интеграторский слой (1024d):
     - Получает стек `[x_in, h_ca, x_prev]` формы `(B, N, 8, 128)` -> 2x `PerAxisGRNv3` (`dca_q`, `dca_kv`).
-    - Переходит в полное 1024-мерное пространство клетки: Full SA (8 голов x 128d, Shared KV,
-      PerHeadRMSNorm, RoPE) + полноценный SwiGLU FFN (`1024 -> full_ffn_dim -> 1024`) + Soft-Gate AdaLN.
-    - Возвращает обновленный тензор в форме `(B, N, 8, 128)`.
+    - Поддерживает как плотный `Linear` AdaLN (v1), так и `AxisBlockAdaLN` D2 r=64 (v2).
     """
 
     def __init__(
@@ -877,11 +1370,15 @@ class FullSABlock(nn.Module):
         num_heads: int = 8,
         has_ca: bool = True,
         cond_dim: int = 256,
+        adaln_type: str = "linear",
+        adaln_bottleneck_r: int = 64,
     ):
         super().__init__()
         self.hidden_size = hidden_size
         self.num_heads = num_heads
         self.head_dim = hidden_size // num_heads
+        self.adaln_type = adaln_type
+        self.adaln_bottleneck_r = int(adaln_bottleneck_r)
 
         self.dca_q = PerAxisGRNv3(NUM_AXES, AXIS_DIM, has_ca=has_ca)
         self.dca_kv = PerAxisGRNv3(NUM_AXES, AXIS_DIM, has_ca=has_ca)
@@ -900,8 +1397,17 @@ class FullSABlock(nn.Module):
         self.up_proj = SphereLinear(hidden_size, intermediate_size, bias=False)
         self.down_proj = SphereLinear(intermediate_size, hidden_size, bias=False)
 
-        self.adaln_proj = nn.Linear(cond_dim, 6 * hidden_size)
-        _init_soft_gate_adaln(self.adaln_proj, hidden_size, gate_bias=0.02)
+        if adaln_type == "axis_block":
+            self.adaln_proj: nn.Module = AxisBlockAdaLN(
+                cond_dim=cond_dim,
+                num_mods=6,
+                bottleneck_r=self.adaln_bottleneck_r,
+                gate_indices=(2, 5),
+                gate_bias=0.02,
+            )
+        else:
+            self.adaln_proj = nn.Linear(cond_dim, 6 * hidden_size)
+            _init_soft_gate_adaln(self.adaln_proj, hidden_size, gate_bias=0.02)
 
     def forward(
         self,
@@ -916,8 +1422,17 @@ class FullSABlock(nn.Module):
         B, N, K, D = x_prev.shape
         C = K * D
 
-        mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(x_prev.dtype)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
+        if isinstance(self.adaln_proj, AxisBlockAdaLN):
+            s_msa, sc_msa, g_msa, s_mlp, sc_mlp, g_mlp = self.adaln_proj(c, x_prev.dtype)
+            shift_msa = s_msa.reshape(B, N, C)
+            scale_msa = sc_msa.reshape(B, N, C)
+            gate_msa = g_msa.reshape(B, N, C)
+            shift_mlp = s_mlp.reshape(B, N, C)
+            scale_mlp = sc_mlp.reshape(B, N, C)
+            gate_mlp = g_mlp.reshape(B, N, C)
+        else:
+            mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(x_prev.dtype)
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
         M = torch.cat([shift_msa, scale_msa, shift_mlp, scale_mlp], dim=-1)
         stats = _compute_adaln_stats(M, m_active)
 
@@ -1014,12 +1529,18 @@ ARCH_PRESETS: Dict[str, Dict[str, Any]] = {
 
 class GrassmannianAltDiffusionCore(nn.Module):
     """
-    Альтернативное условное ядро диффузии Фазы 3 Plan C:
-    - Гибридный стек из слоев Грассманианового векторного внимания (R^128),
-      2x Грассманианового CA_Prompt (R^128) и слоев Full Attention (1024d);
-    - Поосевой 3-слотовый DCA-проброс `[x_in, h_ca, x_prev]` в каждом блоке;
-    - 100% совместимость интерфейса (`encode_prompt`, `forward_with_cached_prompt`, `forward`)
-      с лоссами, сэмплерами и Evaluation Gate из `train_phase3.py`.
+    Альтернативное условное ядро диффузии Фазы 3 Plan C (поддержка v1 и v2 по §9):
+    - v2 (по умолчанию):
+      * 3-блочная структура [96 sem | 16 syn | 16 pos]: 8x16d в GrassSA/PA + 7x16d (112d) без pos в GrassCA;
+      * Блочно-диагональный старт (alpha=0.15) в GrassSA/PA/CA;
+      * Правое выравнивание промпта (последний токен на pos=63, SEP=64) + RoPE base=500;
+      * ConditionEmbedderV2 (Fourier 64d + 19 датчиков) + AxisBlockAdaLN (D2, r=64);
+      * Energy-Gated SwiGLU (rad_feat = [abs_ln, rel_ln]) во всех поосевых FFN;
+      * GrassmannianOutputHeadV2 (EDM поосевой c_skip/c_out + lambda_keep + PHMLinear r=8);
+      * Поосевой SD3 log-SNR shift (axis_shift_delta = 0.35).
+    - Этап 1 инференс (работает и для v1, и для v2):
+      * prepare_prompt_cache (кэш KV промпта по всем CA-слоям);
+      * forward_cfg_batched (2B батч с пропуском GrassCA на uncond).
     """
 
     def __init__(
@@ -1031,11 +1552,23 @@ class GrassmannianAltDiffusionCore(nn.Module):
         num_sub_heads: Optional[int] = None,
         local_radius: Optional[int] = None,
         cond_dim: int = 256,
+        arch_version: str = "v2",
+        axis_shift_delta: Optional[float] = None,
+        adaln_bottleneck_r: int = 64,
+        prompt_right_align: Optional[bool] = None,
+        blockdiag_alpha: Optional[float] = None,
+        output_head_phm_rank: int = 8,
     ):
         super().__init__()
         if preset not in ARCH_PRESETS:
             raise ValueError(f"Неизвестный пресет архитектуры: {preset}. Доступны: {list(ARCH_PRESETS)}")
+        if arch_version not in ("v1", "v2"):
+            raise ValueError(f"Неизвестная версия архитектуры: {arch_version}. Доступны: ('v1', 'v2')")
+
+        is_v2 = arch_version == "v2"
         cfg = dict(ARCH_PRESETS[preset])
+        if is_v2 and num_sub_heads is None:
+            cfg["num_sub_heads"] = 8  # 8 x 16d = [6 sem | 1 syn | 1 pos]
         if full_ffn_dim is not None:
             cfg["full_ffn_dim"] = int(full_ffn_dim)
         if grass_ffn_dim is not None:
@@ -1046,21 +1579,41 @@ class GrassmannianAltDiffusionCore(nn.Module):
             cfg["local_radius"] = int(local_radius)
 
         self.preset = preset
+        self.arch_version = arch_version
         self.arch_cfg = cfg
         self.hidden_size = HIDDEN_SIZE
         self.num_sub_heads = cfg["num_sub_heads"]
         self.sub_head_dim = AXIS_DIM // self.num_sub_heads
         self.stack_spec: List[str] = list(cfg["stack"])
 
+        self.axis_shift_delta = (0.35 if is_v2 else 0.0) if axis_shift_delta is None else float(axis_shift_delta)
+        self.prompt_right_align = is_v2 if prompt_right_align is None else bool(prompt_right_align)
+        self.blockdiag_alpha = (0.15 if is_v2 else 0.0) if blockdiag_alpha is None else float(blockdiag_alpha)
+        self.adaln_type = "axis_block" if is_v2 else "linear"
+        self.adaln_bottleneck_r = int(adaln_bottleneck_r)
+        self.use_energy_gate = is_v2
+        self.ca_num_sub_heads = 7 if (is_v2 and self.sub_head_dim == 16) else self.num_sub_heads
+        self.ca_qk_dim = 112 if (is_v2 and self.sub_head_dim == 16) else AXIS_DIM
+
+        rope_grass_base = 500.0 if is_v2 else 10000.0
         self.rope_full = RotaryEmbedding128(dim=AXIS_DIM, max_seq_len=512)
-        self.rope_grass = RotaryEmbedding128(dim=self.sub_head_dim, max_seq_len=512)
-        self.cond_embedder = ConditionEmbedder(void_ref=void_ref, cond_dim=cond_dim)
+        self.rope_grass = RotaryEmbedding128(dim=self.sub_head_dim, max_seq_len=512, base=rope_grass_base)
+
+        if is_v2:
+            self.cond_embedder: nn.Module = ConditionEmbedderV2(void_ref=void_ref, cond_dim=cond_dim)
+        else:
+            self.cond_embedder = ConditionEmbedder(void_ref=void_ref, cond_dim=cond_dim)
+
         self.prompt_adapter = GrassmannianPromptAdapter(
             num_layers=cfg["prompt_layers"],
             axis_dim=AXIS_DIM,
             ffn_dim=cfg["grass_ffn_dim"],
             num_sub_heads=self.num_sub_heads,
             init_layer_scale=0.02,
+            prompt_right_align=self.prompt_right_align,
+            rope_offset=N_PROMPT,
+            use_energy_gate=self.use_energy_gate,
+            blockdiag_alpha=self.blockdiag_alpha,
         )
 
         layers: List[nn.Module] = []
@@ -1075,6 +1628,10 @@ class GrassmannianAltDiffusionCore(nn.Module):
                         local_radius=cfg["local_radius"],
                         has_ca=seen_ca,
                         cond_dim=cond_dim,
+                        adaln_type=self.adaln_type,
+                        adaln_bottleneck_r=self.adaln_bottleneck_r,
+                        use_energy_gate=self.use_energy_gate,
+                        blockdiag_alpha=self.blockdiag_alpha,
                     )
                 )
             elif kind == "grass_full":
@@ -1086,6 +1643,10 @@ class GrassmannianAltDiffusionCore(nn.Module):
                         local_radius=None,
                         has_ca=seen_ca,
                         cond_dim=cond_dim,
+                        adaln_type=self.adaln_type,
+                        adaln_bottleneck_r=self.adaln_bottleneck_r,
+                        use_energy_gate=self.use_energy_gate,
+                        blockdiag_alpha=self.blockdiag_alpha,
                     )
                 )
             elif kind == "grass_ca":
@@ -1093,10 +1654,16 @@ class GrassmannianAltDiffusionCore(nn.Module):
                     GrassmannianCABlock(
                         axis_dim=AXIS_DIM,
                         ffn_dim=cfg["grass_ffn_dim"],
-                        num_sub_heads=self.num_sub_heads,
+                        num_sub_heads=self.ca_num_sub_heads,
+                        qk_dim=self.ca_qk_dim,
                         rope_offset=N_PROMPT,
                         has_ca=seen_ca,
                         cond_dim=cond_dim,
+                        prompt_right_align=self.prompt_right_align,
+                        adaln_type=self.adaln_type,
+                        adaln_bottleneck_r=self.adaln_bottleneck_r,
+                        use_energy_gate=self.use_energy_gate,
+                        blockdiag_alpha=self.blockdiag_alpha,
                     )
                 )
                 seen_ca = True
@@ -1108,6 +1675,8 @@ class GrassmannianAltDiffusionCore(nn.Module):
                         num_heads=NUM_AXES,
                         has_ca=seen_ca,
                         cond_dim=cond_dim,
+                        adaln_type=self.adaln_type,
+                        adaln_bottleneck_r=self.adaln_bottleneck_r,
                     )
                 )
             else:
@@ -1116,7 +1685,19 @@ class GrassmannianAltDiffusionCore(nn.Module):
         self.layers = nn.ModuleList(layers)
         # Финальный DCA-миксер перед OutputHead: видит [x_in, последний h_ca, x_last]
         self.final_dca = PerAxisGRNv3(NUM_AXES, AXIS_DIM, has_ca=seen_ca)
-        self.output_head = GrassmannianOutputHead(hidden_size=HIDDEN_SIZE, cond_dim=cond_dim)
+        if is_v2:
+            self.output_head: nn.Module = GrassmannianOutputHeadV2(
+                cond_dim=cond_dim,
+                adaln_bottleneck_r=self.adaln_bottleneck_r,
+                axis_sigma=DEFAULT_AXIS_SIGMA,
+                sigma_noise=SIGMA_NOISE,
+                axis_shift_delta=self.axis_shift_delta,
+                phm_rank=int(output_head_phm_rank),
+                keep_bias=-3.0,
+                output_gain_init=0.1,
+            )
+        else:
+            self.output_head = GrassmannianOutputHead(hidden_size=HIDDEN_SIZE, cond_dim=cond_dim)
 
     def encode_prompt(
         self,
@@ -1125,6 +1706,31 @@ class GrassmannianAltDiffusionCore(nn.Module):
     ) -> torch.Tensor:
         """Однократное кодирование промпта в (B, N_p, 8, 128) через GrassmannianPromptAdapter."""
         return self.prompt_adapter(V_prompt, self.rope_grass, prompt_valid_mask=prompt_valid_mask)
+
+    def prepare_prompt_cache(
+        self,
+        V_prompt: torch.Tensor,
+        prompt_valid_mask: torch.Tensor,
+    ) -> Dict[str, Any]:
+        """
+        Однократно кодирует промпт и кэширует (k_full, v_p, attn_mask) для каждого GrassmannianCABlock (§7.1).
+        На 20-40 шагах инференса вся проекция промпта выполняется ровно 1 раз вместо 40-80.
+        """
+        x_prompt = self.encode_prompt(V_prompt, prompt_valid_mask=prompt_valid_mask)
+        ca_kv: Dict[int, Dict[str, Any]] = {}
+        for idx, layer in enumerate(self.layers):
+            if isinstance(layer, GrassmannianCABlock):
+                ca_kv[idx] = layer.prepare_prompt_kv(
+                    x_prompt=x_prompt,
+                    rope_grass=self.rope_grass,
+                    prompt_attn_mask=prompt_valid_mask,
+                    prompt_valid_mask=prompt_valid_mask,
+                )
+        return {
+            "x_prompt": x_prompt,
+            "prompt_valid_mask": prompt_valid_mask,
+            "ca_kv": ca_kv,
+        }
 
     def forward_with_cached_prompt(
         self,
@@ -1135,23 +1741,38 @@ class GrassmannianAltDiffusionCore(nn.Module):
         m_prompt: torch.Tensor,
         radar_sigma: Optional[torch.Tensor] = None,
         return_sink_weights: bool = False,
+        prompt_valid_mask: Optional[torch.Tensor] = None,
+        prompt_cache: Optional[Dict[str, Any]] = None,
+        infer_cond_half: bool = False,
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor], Optional[torch.Tensor]]:
         B, N_a, K, D = V_t.shape
         m_active = t_mat > 1e-3
 
         c = self.cond_embedder(V_t, t_mat, m_prompt, radar_sigma=radar_sigma)
-        x_in = (V_t.float() / SIGMA_DATA).to(V_t.dtype)  # (B, N_a, 8, 128)
+        x_in = (V_t.float() / SIGMA_NOISE).to(V_t.dtype)  # (B, N_a, 8, 128)
         x_cur = x_in
         h_ca: Optional[torch.Tensor] = None
 
         cos_full, sin_full = self.rope_full(x_in, N_a)
         cos_grass, sin_grass = self.rope_grass(x_in, N_a)
 
+        ca_kv_map = prompt_cache.get("ca_kv") if isinstance(prompt_cache, dict) else None
+        p_valid_eff = (
+            prompt_valid_mask
+            if prompt_valid_mask is not None
+            else (prompt_cache.get("prompt_valid_mask") if isinstance(prompt_cache, dict) else None)
+        )
+
         sum_m_list, sum_m2_list, count_list = [], [], []
         sink_list = []
 
-        for layer in self.layers:
+        for idx, layer in enumerate(self.layers):
             if isinstance(layer, GrassmannianCABlock):
+                kv_c = None
+                if ca_kv_map is not None and idx in ca_kv_map:
+                    # Кэш валиден для условного батча или для cond-половины в режиме 2B
+                    if infer_cond_half or bool(prompt_attn_mask.any()):
+                        kv_c = ca_kv_map[idx]
                 x_cur, ca_delta, stats, sw = layer(
                     x_in=x_in,
                     h_ca_prev=h_ca,
@@ -1162,8 +1783,10 @@ class GrassmannianAltDiffusionCore(nn.Module):
                     prompt_attn_mask=prompt_attn_mask,
                     m_active=m_active,
                     return_sink_weights=return_sink_weights,
+                    prompt_valid_mask=p_valid_eff,
+                    prompt_kv_cache=kv_c,
+                    infer_cond_half=infer_cond_half,
                 )
-                # Обновляем слот ближайшего CA чистой дельтой сигнала промпта
                 h_ca = ca_delta
                 if sw is not None:
                     sink_list.append(sw)
@@ -1191,8 +1814,11 @@ class GrassmannianAltDiffusionCore(nn.Module):
             sum_m2_list.append(stats[1])
             count_list.append(stats[2])
 
-        x_out = self.final_dca(x_in, h_ca, x_cur).reshape(B, N_a, K * D)
-        V_0_hat = self.output_head(x_out, V_t, t_mat, c)
+        x_out_4d = self.final_dca(x_in, h_ca, x_cur)
+        if isinstance(self.output_head, GrassmannianOutputHeadV2):
+            V_0_hat = self.output_head(x_out_4d, V_t, t_mat, c)
+        else:
+            V_0_hat = self.output_head(x_out_4d.reshape(B, N_a, K * D), V_t, t_mat, c)
         sink_weights = torch.stack(sink_list, dim=1) if sink_list else None  # (B, 2, N_a)
 
         num_layers = len(self.layers)
@@ -1200,6 +1826,48 @@ class GrassmannianAltDiffusionCore(nn.Module):
         sum_m2_pack = torch.stack(sum_m2_list, dim=1)                     # (1, L, 4096)
         count_pack = torch.stack(count_list, dim=0).view(1, num_layers)   # (1, L)
         return V_0_hat, (sum_m_pack, sum_m2_pack, count_pack), sink_weights
+
+    def forward_cfg_batched(
+        self,
+        V_t: torch.Tensor,
+        t_mat: torch.Tensor,
+        x_prompt: torch.Tensor,
+        prompt_attn_mask: torch.Tensor,
+        prompt_cache: Optional[Dict[str, Any]] = None,
+        radar_sigma: Optional[torch.Tensor] = None,
+        return_sink_weights: bool = False,
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+        """
+        Единый батч 2B = [cond || uncond] на инференсе (§§7.2–7.3):
+        - Все SA / FullSA / ConditionEmbedder / OutputHead работают плотным батчем 2B;
+        - Внутри GrassmannianCABlock вычисляется строго первая половина [:B] (cond) с кэшем KV,
+          а для [B:] (uncond) CA пропускается с математически тождественным нулём.
+        """
+        B = V_t.shape[0]
+        device = V_t.device
+        V_t_2b = torch.cat([V_t, V_t], dim=0)
+        t_mat_2b = torch.cat([t_mat, t_mat], dim=0)
+        m_2b = torch.cat(
+            [torch.ones(B, device=device, dtype=torch.float32), torch.zeros(B, device=device, dtype=torch.float32)],
+            dim=0,
+        )
+        rad_2b = torch.cat([radar_sigma, radar_sigma], dim=0) if radar_sigma is not None else None
+
+        v0_2b, _, sw_2b = self.forward_with_cached_prompt(
+            V_t=V_t_2b,
+            t_mat=t_mat_2b,
+            x_prompt=x_prompt,
+            prompt_attn_mask=prompt_attn_mask,
+            m_prompt=m_2b,
+            radar_sigma=rad_2b,
+            return_sink_weights=return_sink_weights,
+            prompt_cache=prompt_cache,
+            infer_cond_half=(not self.training) and (device.type != "xla"),
+        )
+        v0_cond = v0_2b[:B]
+        v0_uncond = v0_2b[B:]
+        sw_cond = sw_2b[:B] if sw_2b is not None else None
+        return v0_cond, v0_uncond, sw_cond
 
     def forward(
         self,
@@ -1221,7 +1889,50 @@ class GrassmannianAltDiffusionCore(nn.Module):
             m_prompt=m_prompt,
             radar_sigma=radar_sigma,
             return_sink_weights=return_sink_weights,
+            prompt_valid_mask=prompt_valid_mask,
         )
+
+    def set_diagnostics_capture(self, enabled: bool) -> None:
+        """Включает/сбрасывает сбор активаций h_r (AxisBlockAdaLN) и 19 датчиков для val-диагностики (§3.3)."""
+        if isinstance(self.cond_embedder, ConditionEmbedderV2):
+            self.cond_embedder._capture_sensors = bool(enabled)
+            if enabled:
+                self.cond_embedder._captured_sensors = []
+        for mod in self.modules():
+            if isinstance(mod, AxisBlockAdaLN):
+                mod._capture_hr = bool(enabled)
+                if enabled:
+                    mod._captured_hr = []
+
+    @torch.no_grad()
+    def collect_v2_diagnostics(self) -> Dict[str, float]:
+        """Возвращает агрегированную диагностику эффективного ранга AxisBlockAdaLN и датчиков (§3.3)."""
+        r_effs, k99s, tails, deads = [], [], [], []
+        for mod in self.modules():
+            if isinstance(mod, AxisBlockAdaLN):
+                st = mod.compute_rank_stats()
+                if st:
+                    r_effs.append(st["r_eff"])
+                    k99s.append(st["k_99"])
+                    tails.append(st["tail_ratio"])
+                    deads.append(st["dead_frac"])
+                mod._captured_hr = []
+        out: Dict[str, float] = {}
+        if r_effs:
+            out["val/adaln_r_eff_mean"] = float(np.mean(r_effs))
+            out["val/adaln_r_eff_max"] = float(np.max(r_effs))
+            out["val/adaln_k99_max"] = float(np.max(k99s))
+            out["val/adaln_tail_mean"] = float(np.mean(tails))
+            out["val/adaln_dead_mean"] = float(np.mean(deads))
+        if isinstance(self.cond_embedder, ConditionEmbedderV2):
+            simp = self.cond_embedder.compute_sensor_importance()
+            self.cond_embedder._captured_sensors = []
+            if simp:
+                out["val/sensor_imp_max"] = float(max(simp.values()))
+                out["val/sensor_imp_min"] = float(min(simp.values()))
+                out["val/sensor_imp_offdiag"] = float(simp.get("offdiag_ratio", 0.0))
+                out["val/sensor_imp_blk_sem"] = float(simp.get("blk_sem", 0.0))
+        return out
 
     @torch.no_grad()
     def get_dca_summary(self) -> Dict[str, float]:
@@ -1250,14 +1961,15 @@ def create_alt_optimizers(
     adamw_lr: float = 3e-4,
     scale_1d_lr: float = 1.2e-3,
     weight_decay: float = 0.01,
+    orthmuon_sphere_scale: bool = True,
+    orthmuon_c_base: float = 2.26,
 ) -> Tuple[Optional[OrthMuon], torch.optim.AdamW]:
     """
     Распределение параметров:
-    1. OrthMuon (sphere=True, wd=0.0): все *.q_weight (SphereLinear в Grass/Full/CA/PromptAdapter).
-    2. AdamW (scale_1d_lr, wd=0.0): row_scale, v_gate, RMSNorm/QK-norm, ls_attn/ls_mlp.
-    3. AdamW (adamw_lr, wd=0.0): все параметры DCA (dca_q, dca_kv, final_dca — чтобы WD не гасил
-       identity-вес b_prev=1.0), bias, LayerNorm, norm_emb.
-    4. AdamW (adamw_lr, wd=weight_decay): матрицы AdaLN, ConditionEmbedder, OutputHead, k_sink.
+    1. OrthMuon (sphere=True, sphere_scale=True, c_base=2.26, wd=0.0): все *.q_weight.
+    2. AdamW (scale_1d_lr, wd=0.0): row_scale, v_gate, RMSNorm/QK-norm, ls_attn/ls_mlp, score_temp, output_gain.
+    3. AdamW (adamw_lr, wd=0.0): DCA, norm_emb, w_rad, axis_mix, bias, LayerNorm.
+    4. AdamW (adamw_lr, wd=weight_decay): AdaLN, ConditionEmbedder, OutputHead, k_sink.
     """
     raw_model = getattr(model, "module", model)
     sphere_params = []
@@ -1276,9 +1988,11 @@ def create_alt_optimizers(
             or name.endswith(".ls_attn")
             or name.endswith(".ls_mlp")
             or name.endswith(".score_temp")
+            or name.endswith(".output_gain")
             or ("_norm" in name and "norm_emb" not in name)
             or ("q_norm." in name)
             or ("k_norm." in name)
+            or name.endswith("output_head.norm.weight")
         ):
             scale_1d_params.append(param)
         elif (
@@ -1286,6 +2000,7 @@ def create_alt_optimizers(
             or "dca_kv." in name
             or "final_dca." in name
             or "norm_emb" in name
+            or ".w_rad." in name
             or "axis_mix" in name
             or name.endswith(".bias")
             or param.ndim < 2
@@ -1298,10 +2013,21 @@ def create_alt_optimizers(
     opt_muon = None
     if sphere_params:
         opt_muon = OrthMuon(
-            [{"params": sphere_params, "lr": muon_lr, "weight_decay": 0.0, "sphere": True}],
+            [
+                {
+                    "params": sphere_params,
+                    "lr": muon_lr,
+                    "weight_decay": 0.0,
+                    "sphere": True,
+                    "sphere_scale": bool(orthmuon_sphere_scale),
+                    "sphere_c_base": float(orthmuon_c_base),
+                }
+            ],
             lr=muon_lr,
             momentum=0.95,
             ns_steps=5,
+            sphere_scale=bool(orthmuon_sphere_scale),
+            sphere_c_base=float(orthmuon_c_base),
         )
 
     adamw_groups = []
@@ -1381,16 +2107,17 @@ def build_or_load_latent_cache(
         va_cpu = va.to(torch.float16).cpu()
 
         for i in range(p_ids.shape[0]):
-            items.append(
-                {
-                    "V_prompt": vp_cpu[i],
-                    "V_ans": va_cpu[i],
-                    "ans_targets": batch["ans_targets"][i],
-                    "n_real_prompt": batch["n_real_prompt"][i],
-                    "i_last": batch["i_last"][i],
-                    "w_cell": batch["w_cell"][i],
-                }
-            )
+            item_dict: Dict[str, torch.Tensor] = {
+                "V_prompt": vp_cpu[i],
+                "V_ans": va_cpu[i],
+                "ans_targets": batch["ans_targets"][i],
+                "n_real_prompt": batch["n_real_prompt"][i],
+                "i_last": batch["i_last"][i],
+                "w_cell": batch["w_cell"][i],
+            }
+            if "is_content_word_cell" in batch:
+                item_dict["is_content_word_cell"] = batch["is_content_word_cell"][i]
+            items.append(item_dict)
         if (b_idx + 1) % 10 == 0 or len(items) == n:
             print(f"  [Latent Cache] {len(items)}/{n} ({time.time() - t0:.1f}s)", flush=True)
 
@@ -1458,6 +2185,103 @@ def load_alt_checkpoint(
     step = int(ckpt.get("step", 0))
     print(f"[Resume] Восстановлено состояние Phase 3 Alt с шага {step} ({path}).", flush=True)
     return step
+
+
+def crop_batch_for_gpu(
+    V_prompt: torch.Tensor,
+    V_0: torch.Tensor,
+    p_valid: torch.Tensor,
+    i_last: torch.Tensor,
+    w_cell: torch.Tensor,
+    ans_targets: torch.Tensor,
+    is_cw_cell: Optional[torch.Tensor] = None,
+    full_prob: float = 0.25,
+    align: int = 8,
+    void_pad: int = 8,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, Optional[torch.Tensor]]:
+    """
+    GPU/CPU Dynamic Crop батча по фактической длине (L_p, i_last) (§7.5):
+    - С вероятностью `full_prob` (25%) оставляет полный холст (64 / 128) против сдвига распределения длины;
+    - Иначе обрезает промпт до кратного `align` (min 8) и холст до `min(128, max(i_last) + void_pad)` (кратно `align`);
+    - Отключается на XLA/TPU для сохранения 100% статического графа.
+    """
+    if V_0.device.type == "xla" or float(torch.rand(1).item()) < float(full_prob):
+        return V_prompt, V_0, p_valid, w_cell, ans_targets, is_cw_cell
+
+    max_lp = max(1, int(p_valid.sum(dim=-1).max().item()))
+    n_p_crop = min(V_prompt.shape[1], max(align, ((max_lp + align - 1) // align) * align))
+
+    max_la = max(1, int(i_last.max().item()))
+    n_a_raw = max_la + 1 + void_pad  # +1 за SEP на pos 0
+    n_a_crop = min(V_0.shape[1], max(align * 2, ((n_a_raw + align - 1) // align) * align))
+
+    V_prompt_c = V_prompt[:, :n_p_crop]
+    p_valid_c = p_valid[:, :n_p_crop]
+    V_0_c = V_0[:, :n_a_crop]
+    w_cell_c = w_cell[:, :n_a_crop]
+    ans_targets_c = ans_targets[:, : (n_a_crop - 1) * 4]
+    is_cw_c = is_cw_cell[:, :n_a_crop] if is_cw_cell is not None else None
+    return V_prompt_c, V_0_c, p_valid_c, w_cell_c, ans_targets_c, is_cw_c
+
+
+class LengthBucketBatchSampler:
+    """Группирует примеры близкой длины внутри мега-чанков для максимальной экономии GPU Dynamic Crop (§7.5)."""
+
+    def __init__(
+        self,
+        lengths: List[int],
+        batch_size: int,
+        drop_last: bool = True,
+        megabatch_mult: int = 16,
+    ):
+        self.lengths = list(lengths)
+        self.batch_size = int(batch_size)
+        self.drop_last = bool(drop_last)
+        self.megabatch_mult = max(1, int(megabatch_mult))
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self):
+        gen = torch.Generator()
+        gen.manual_seed(1337 + self.epoch)
+        n = len(self.lengths)
+        perm = torch.randperm(n, generator=gen).tolist()
+        mega_sz = self.batch_size * self.megabatch_mult
+        batches: List[List[int]] = []
+        for s in range(0, n, mega_sz):
+            chunk = perm[s : s + mega_sz]
+            chunk.sort(key=lambda idx: self.lengths[idx])
+            for b in range(0, len(chunk), self.batch_size):
+                batch = chunk[b : b + self.batch_size]
+                if len(batch) == self.batch_size or (not self.drop_last and len(batch) > 0):
+                    batches.append(batch)
+        b_perm = torch.randperm(len(batches), generator=gen).tolist()
+        for bi in b_perm:
+            yield batches[bi]
+
+    def __len__(self) -> int:
+        if self.drop_last:
+            return len(self.lengths) // self.batch_size
+        return (len(self.lengths) + self.batch_size - 1) // self.batch_size
+
+
+def _infer_content_word_mask_from_targets(
+    ans_targets: torch.Tensor,
+    stopword_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Fallback-восстановление маски is_content_word_cell (B, N_canvas) из ans_targets для старых кэшей."""
+    B, T = ans_targets.shape
+    n_ans = T // 4
+    cells = ans_targets.view(B, n_ans, 4)
+    non_pad = (cells != PAD_TOKEN_ID) & (cells != -100)
+    safe_ids = cells.clamp(0, stopword_mask.numel() - 1)
+    non_stop = non_pad & (~stopword_mask[safe_ids])
+    n_np = non_pad.float().sum(dim=-1)
+    n_ns = non_stop.float().sum(dim=-1)
+    is_cw_ans = (n_np > 0) & (n_ns >= 0.5 * n_np.clamp(min=1.0))
+    return torch.cat([torch.zeros((B, 1), device=ans_targets.device, dtype=torch.bool), is_cw_ans], dim=1)
 
 
 def run_alt_training_loop(
@@ -1544,7 +2368,13 @@ def run_alt_training_loop(
             i_last = batch["i_last"].to(env.device, non_blocking=True)
             w_cell = batch["w_cell"].to(env.device, non_blocking=True)
             ans_targets = batch["ans_targets"].to(env.device, non_blocking=True)
+            is_cw_cell = (
+                batch["is_content_word_cell"].to(env.device, non_blocking=True)
+                if "is_content_word_cell" in batch
+                else _infer_content_word_mask_from_targets(ans_targets, sw_dev)
+            )
             B = n_real_prompt.shape[0]
+            axis_shift_delta = float(getattr(raw_model, "axis_shift_delta", 0.0))
 
             # 1. Получаем канонизированные латенты (из кэша RAM или on-the-fly через Encoder)
             with torch.no_grad():
@@ -1572,8 +2402,20 @@ def run_alt_training_loop(
 
                 sep_exp = sep_cpu.to(device=env.device, dtype=torch.float32).view(1, 1, 8, 128).expand(B, 1, 8, 128)
                 V_0 = torch.cat([sep_exp, V_ans], dim=1)
-
                 p_valid = n_real_prompt > 0
+
+                if getattr(args, "gpu_dynamic_crop", False) and env.device.type != "xla":
+                    V_prompt, V_0, p_valid, w_cell, ans_targets, is_cw_cell = crop_batch_for_gpu(
+                        V_prompt=V_prompt,
+                        V_0=V_0,
+                        p_valid=p_valid,
+                        i_last=i_last,
+                        w_cell=w_cell,
+                        ans_targets=ans_targets,
+                        is_cw_cell=is_cw_cell,
+                        full_prob=float(getattr(args, "gpu_dynamic_crop_full_prob", 0.25)),
+                    )
+
                 p_attn_mask, m_prompt = apply_prompt_dropout(p_valid)
 
                 use_rollout = (
@@ -1595,9 +2437,14 @@ def run_alt_training_loop(
                         amp_dtype=env.amp_dtype,
                     )
                 else:
-                    t_mat = sample_mixed_noise_schedule(B, env.device, i_last=i_last)
-                    noise = torch.randn_like(V_0, dtype=torch.float32) * SIGMA_DATA
-                    V_t = (1.0 - t_mat.unsqueeze(-1).unsqueeze(-1)) * V_0.float() + t_mat.unsqueeze(-1).unsqueeze(-1) * noise
+                    t_mat = sample_mixed_noise_schedule(B, env.device, i_last=i_last, seq_len=V_0.shape[1])
+                    V_t = add_axis_shifted_noise(
+                        V_0,
+                        t_mat,
+                        torch.randn_like(V_0, dtype=torch.float32),
+                        delta=axis_shift_delta,
+                        sigma_noise=SIGMA_NOISE,
+                    )
                     V_t[:, 0] = sep_exp[:, 0].float()
                     radar_sigma = (
                         compute_radar_sigma(radar_decoder, V_t, use_amp=env.use_amp, amp_dtype=env.amp_dtype)
@@ -1635,6 +2482,13 @@ def run_alt_training_loop(
                     step=step,
                     m_prompt=m_prompt,
                     sink_weights=sink_weights,
+                    is_content_word_cell=is_cw_cell,
+                    spec_diag_weight=float(getattr(args, "spec_diag_weight", 0.05)),
+                    orth_offdiag_weight=float(getattr(args, "orth_offdiag_weight", 0.05)),
+                    anchor_weight=float(getattr(args, "anchor_weight", 0.15 if raw_model.arch_version == "v2" else 0.0)),
+                    axis_shift_delta=axis_shift_delta,
+                    basis_high_t_mode=str(getattr(args, "basis_high_t_mode", "sign_only" if raw_model.arch_version == "v2" else "none")),
+                    static_xla_bary=True,
                     world_size=world_size,
                 )
 
@@ -1692,18 +2546,28 @@ def run_alt_training_loop(
             for k, v in m_dict.items():
                 accum_metrics[k] = accum_metrics.get(k, 0.0) + v / float(args.grad_accum_steps)
 
-        # Шаг оптимизаторов
+        # Шаг оптимизаторов с раздельным grad_clip (AdamW=1.0, Sphere=10.0, §5.1)
         if scaler is not None:
             if opt_muon is not None:
                 scaler.unscale_(opt_muon)
             scaler.unscale_(opt_adamw)
-            torch.nn.utils.clip_grad_norm_(raw_model.parameters(), max_norm=1.0)
+            clip_phase3_grads(
+                opt_muon,
+                opt_adamw,
+                adamw_max_norm=float(getattr(args, "adamw_grad_clip", 1.0)),
+                sphere_max_norm=float(getattr(args, "sphere_grad_clip", 10.0)),
+            )
             if opt_muon is not None:
                 scaler.step(opt_muon)
             scaler.step(opt_adamw)
             scaler.update()
         else:
-            torch.nn.utils.clip_grad_norm_(raw_model.parameters(), max_norm=1.0)
+            clip_phase3_grads(
+                opt_muon,
+                opt_adamw,
+                adamw_max_norm=float(getattr(args, "adamw_grad_clip", 1.0)),
+                sphere_max_norm=float(getattr(args, "sphere_grad_clip", 10.0)),
+            )
             if opt_muon is not None:
                 opt_muon.step()
             opt_adamw.step()
@@ -1737,6 +2601,7 @@ def run_alt_training_loop(
         if is_main_process and val_dataloader is not None and (step % args.eval_every == 0):
             if ema is not None:
                 ema.apply_shadow(raw_model)
+            raw_model.set_diagnostics_capture(True)
             eval_dec = decoder if (not args.no_eval_decoder) else None
             val_res = evaluate_phase3(
                 model=raw_model,
@@ -1754,6 +2619,8 @@ def run_alt_training_loop(
                 run_generation_check=(eval_dec is not None and not args.no_gen_check),
                 gen_steps=args.gen_steps,
             )
+            raw_model.set_diagnostics_capture(False)
+            val_res.update(raw_model.collect_v2_diagnostics())
             if int(args.cfg_dsim_batches) > 0:
                 val_res.update(
                     evaluate_cfg_dsim(
@@ -1778,10 +2645,17 @@ def run_alt_training_loop(
                 f"CFG={val_res['val/cfg_contrast']:.4f} (hi={val_res['val/cfg_contrast_hi']:.4f}) | "
                 f"CFG_dSim(t50/t75)={val_res.get('val/cfg_dsim_t50', 0.0):+.4f}/{val_res.get('val/cfg_dsim_t75', 0.0):+.4f} | "
                 f"VOID_F1={val_res['val/void_f1']:.4f} (pm1={val_res['val/void_start_pm1']:.3f}) | "
+                f"orth={val_res.get('val/orth_err', 0.0):.3f} spec={val_res.get('val/spec_l1', 0.0):.4f} | "
+                f"blk(s/y/p)={val_res.get('val/err_sem', 0.0):.4f}/{val_res.get('val/err_syn', 0.0):.4f}/{val_res.get('val/err_pos', 0.0):.4f} | "
                 f"radar={val_res['val/radar_sigma_cell']:.3f} | "
                 f"sink_c={val_res['val/sink_attn_content']:.3f} (hi={val_res['val/sink_attn_content_hi']:.3f}) | "
                 f"rk={val_res['val/rk_eff_content']:.2f} | "
-                f"adaln_min={val_res['val/sigma_adaln_min']:.2e}",
+                f"adaln_min={val_res['val/sigma_adaln_min']:.2e}"
+                + (
+                    f" (r_eff={val_res['val/adaln_r_eff_mean']:.1f}/k99={val_res['val/adaln_k99_max']:.0f})"
+                    if "val/adaln_r_eff_mean" in val_res
+                    else ""
+                ),
                 flush=True,
             )
             for idx_g, gs in enumerate(gen_samples):
@@ -1887,12 +2761,13 @@ def evaluate_cfg_dsim(
         if not bool(is_content.any()):
             continue
         p_valid = n_real_prompt > 0
-        noise = (torch.randn(tuple(V_0.shape), generator=gen) * SIGMA_DATA).to(device)
+        delta = float(getattr(raw_model, "axis_shift_delta", 0.0))
+        noise_eps = torch.randn(tuple(V_0.shape), generator=gen).to(device)
 
         for t_val in t_levels:
             t_mat = torch.full((B, V_0.shape[1]), float(t_val), device=device, dtype=torch.float32)
             t_mat[:, 0] = 0.0
-            V_t = (1.0 - t_mat[..., None, None]) * V_0 + t_mat[..., None, None] * noise
+            V_t = add_axis_shifted_noise(V_0, t_mat, noise_eps, delta=delta, sigma_noise=SIGMA_NOISE)
             V_t[:, 0] = sep_exp[:, 0]
             outs = []
             for cond in (True, False):
@@ -1934,6 +2809,19 @@ def parse_args() -> argparse.Namespace:
 
     # Архитектура и матричные оптимизации
     parser.add_argument("--arch-preset", "--arch_preset", dest="arch_preset", type=str, default="standard", choices=list(ARCH_PRESETS.keys()))
+    parser.add_argument("--arch-version", "--arch_version", dest="arch_version", type=str, default="v2", choices=["v1", "v2"])
+    parser.add_argument("--axis-shift-delta", "--axis_shift_delta", dest="axis_shift_delta", type=float, default=None, help="SD3-shift по осям (по умолчанию 0.35 в v2, 0.0 в v1)")
+    parser.add_argument("--adaln-bottleneck-r", "--adaln_bottleneck_r", dest="adaln_bottleneck_r", type=int, default=64)
+    parser.add_argument("--output-head-phm-rank", "--output_head_phm_rank", dest="output_head_phm_rank", type=int, default=8)
+    parser.add_argument("--spec-diag-weight", "--spec_diag_weight", dest="spec_diag_weight", type=float, default=0.05)
+    parser.add_argument("--orth-offdiag-weight", "--orth_offdiag_weight", dest="orth_offdiag_weight", type=float, default=0.05)
+    parser.add_argument("--anchor-weight", "--anchor_weight", dest="anchor_weight", type=float, default=0.15)
+    parser.add_argument("--basis-high-t-mode", "--basis_high_t_mode", dest="basis_high_t_mode", type=str, default="sign_only", choices=["none", "decay", "sign_only"])
+    parser.add_argument("--adamw-grad-clip", "--adamw_grad_clip", dest="adamw_grad_clip", type=float, default=1.0)
+    parser.add_argument("--sphere-grad-clip", "--sphere_grad_clip", dest="sphere_grad_clip", type=float, default=10.0)
+    parser.add_argument("--orthmuon-c-base", "--orthmuon_c_base", dest="orthmuon_c_base", type=float, default=2.26)
+    parser.add_argument("--gpu-dynamic-crop", "--gpu_dynamic_crop", dest="gpu_dynamic_crop", action="store_true", default=False)
+    parser.add_argument("--gpu-dynamic-crop-full-prob", "--gpu_dynamic_crop_full_prob", dest="gpu_dynamic_crop_full_prob", type=float, default=0.25)
     parser.add_argument(
         "--matrix-mode", "--matrix_mode", dest="matrix_mode", type=str, default="safe",
         choices=["dense", "safe", "ultra"],
@@ -2219,6 +3107,10 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         grass_ffn_dim=args.grass_ffn_dim,
         num_sub_heads=args.num_sub_heads,
         local_radius=args.local_radius,
+        arch_version=args.arch_version,
+        axis_shift_delta=args.axis_shift_delta,
+        adaln_bottleneck_r=args.adaln_bottleneck_r,
+        output_head_phm_rank=args.output_head_phm_rank,
     ).to(env.device)
 
     resume_path = None
@@ -2271,9 +3163,14 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
                 flush=True,
             )
 
-    ema = EMAModel(model, decay=args.ema_decay, device=env.device) if not args.no_ema else None
+    ema = EMAModel(model, decay=args.ema_decay, device=env.device, warmup=True) if not args.no_ema else None
     opt_muon, opt_adamw = create_alt_optimizers(
-        model, muon_lr=args.muon_lr, adamw_lr=args.adamw_lr, scale_1d_lr=args.scale_1d_lr
+        model,
+        muon_lr=args.muon_lr,
+        adamw_lr=args.adamw_lr,
+        scale_1d_lr=args.scale_1d_lr,
+        orthmuon_sphere_scale=True,
+        orthmuon_c_base=float(getattr(args, "orthmuon_c_base", 2.26)),
     )
 
     start_step = 0
@@ -2285,15 +3182,40 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         if is_ddp
         else None
     )
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=args.batch_size,
-        shuffle=(sampler is None),
-        sampler=sampler,
-        num_workers=env.num_workers,
-        pin_memory=env.pin_memory,
-        drop_last=(len(train_dataset) >= args.batch_size),
+    use_bucket = (
+        getattr(args, "gpu_dynamic_crop", False)
+        and (not is_ddp)
+        and env.device.type != "xla"
+        and len(train_dataset) >= args.batch_size
     )
+    if use_bucket:
+        if isinstance(train_dataset, PrecomputedLatentDataset):
+            ds_lengths = [int(it["i_last"].item()) for it in train_dataset.items]
+        else:
+            ds_lengths = [len(a) for _, a in getattr(train_dataset, "pairs", [])]
+        if len(ds_lengths) == len(train_dataset):
+            bucket_sampler = LengthBucketBatchSampler(
+                ds_lengths, batch_size=args.batch_size, drop_last=True
+            )
+            train_loader = DataLoader(
+                train_dataset,
+                batch_sampler=bucket_sampler,
+                num_workers=env.num_workers,
+                pin_memory=env.pin_memory,
+            )
+            sampler = bucket_sampler  # type: ignore[assignment]
+        else:
+            use_bucket = False
+    if not use_bucket:
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=args.batch_size,
+            shuffle=(sampler is None),
+            sampler=sampler,
+            num_workers=env.num_workers,
+            pin_memory=env.pin_memory,
+            drop_last=(len(train_dataset) >= args.batch_size),
+        )
 
     val_loader = None
     if is_main_process and val_path and os.path.exists(val_path):
@@ -2364,6 +3286,19 @@ TRAINING_CONFIG: Dict[str, Any] = {
     "device": "auto",
     "use_dataparallel": True,
     "arch_preset": "standard",
+    "arch_version": "v2",
+    "axis_shift_delta": 0.35,
+    "adaln_bottleneck_r": 64,
+    "output_head_phm_rank": 8,
+    "spec_diag_weight": 0.05,
+    "orth_offdiag_weight": 0.05,
+    "anchor_weight": 0.15,
+    "basis_high_t_mode": "sign_only",
+    "adamw_grad_clip": 1.0,
+    "sphere_grad_clip": 10.0,
+    "orthmuon_c_base": 2.26,
+    "gpu_dynamic_crop": True,
+    "gpu_dynamic_crop_full_prob": 0.25,
     "matrix_mode": "safe",
     "phm_rank": 4,
     "phm_alpha": 0.25,
@@ -2387,7 +3322,7 @@ TRAINING_CONFIG: Dict[str, Any] = {
     "gen_steps": 20,
     "save_every": 500,
     "resume_ckpt": "auto",
-    "gcs_dir": "gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/safe_all5/checkpoints/",
+    "gcs_dir": "gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/v2_safe_all5/checkpoints/",
     "no_gcs": False,
     "wandb": "auto",
     "wandb_name": "",

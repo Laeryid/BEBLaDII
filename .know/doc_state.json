@@ -264,8 +264,8 @@
         "mtime": 1794734892.705766
     },
     ".know\\doc_config.json": {
-        "hash": "2f3fdf32e93bdfd12f190496236afb3e12483792942b9e3507952d14ffc6217b",
-        "mtime": 1795630122.3640947
+        "hash": "b9d504b6bd1522f0751593ef5e120f6e845659312a8e11ffb0e13bfe16516fd6",
+        "mtime": 1795641739.1088703
     },
     "storage\\components\\plan_c_layers.py": {
         "hash": "e1051a38d58daffb3fdca7ce2cbc770c2e55d882f172705b14ce3b93540aa4f4",
@@ -496,8 +496,8 @@
         "mtime": 1794743131.402553
     },
     "experiments\\phase 3\\train_phase3.py": {
-        "hash": "70772b000f64d10fb04c38411809bdf149ca490563e81d508c0e998bc346e3ba",
-        "mtime": 1795455907.0247552
+        "hash": "2ab4ddb96cb61928bafa56631e70549c65fcd7f290bdc363c716fdd5fd69f82c",
+        "mtime": 1795640512.1822054
     },
     "experiments\\phase 3\\train_phase3_tpu.py": {
         "hash": "7fc8ad1232dfc1305ca76bee02fc49142334dfb2e3bcb023dfb0376ebc2a1dd6",

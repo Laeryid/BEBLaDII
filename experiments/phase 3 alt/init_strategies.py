@@ -29,6 +29,7 @@ from train_phase3_alt import (
     FullSABlock,
     GrassmannianAltDiffusionCore,
     GrassmannianCABlock,
+    GrassmannianOutputHeadV2,
     GrassmannianSABlock,
     HIDDEN_SIZE,
     N_CANVAS,
@@ -97,25 +98,40 @@ def apply_idea1_ca_copy(
     for layer in model.layers:
         if not isinstance(layer, GrassmannianCABlock):
             continue
-        d = layer.axis_dim
-        R = _random_orthogonal(d, gen)  # (128, 128), строки и столбцы ортонормированы
-        noise_q = torch.randn(d, d, generator=gen, dtype=torch.float32) * (eps / math.sqrt(d))
+        d_qk = int(getattr(layer, "qk_dim", layer.axis_dim))
+        d_out = int(layer.axis_dim)
+        if d_qk == 112:
+            # В v2 сохраняем блочную изоляцию [96 sem | 16 syn] с ортогональными блоками
+            R = torch.zeros(112, 112, dtype=torch.float32)
+            R[:96, :96] = _random_orthogonal(96, gen)
+            R[96:112, 96:112] = _random_orthogonal(16, gen)
+        else:
+            R = _random_orthogonal(d_qk, gen)
+        noise_q = torch.randn(d_qk, d_qk, generator=gen, dtype=torch.float32) * (eps / math.sqrt(d_qk))
 
         W_kv = R
-        W_q = _norm_rows(R + noise_q)  # относительная норма шума на строку ~ eps
-        W_o = R.T
+        W_q = _norm_rows(R + noise_q)
 
         kv_scale = float(layer.kv_proj.row_scale.float().mean().item())
         q_scale = float(layer.q_proj.row_scale.float().mean().item())
-        o_scale = float(layer.o_proj.row_scale.float().mean().item())
+        o_scale = float(layer.o_proj.row_scale.float()[:d_qk].mean().item())
 
         _set_sphere_weight(layer.kv_proj, W_kv, uniform_scale=kv_scale)
         _set_sphere_weight(layer.q_proj, W_q, uniform_scale=q_scale)
-        _set_sphere_weight(layer.o_proj, W_o, uniform_scale=o_scale)
+
+        if d_out == d_qk:
+            _set_sphere_weight(layer.o_proj, R.T, uniform_scale=o_scale)
+        else:
+            # o_proj (112 -> 128): первые 112 строк = R^T, хвост 112:128 = малый cross-talk (scale * 0.10)
+            W_o = torch.zeros(d_out, d_qk, dtype=torch.float32)
+            W_o[:d_qk, :] = R.T
+            W_o[d_qk:, :] = _norm_rows(torch.randn(d_out - d_qk, d_qk, generator=gen, dtype=torch.float32))
+            _set_sphere_weight(layer.o_proj, W_o, uniform_scale=o_scale)
+            layer.o_proj.row_scale.data[d_qk:].mul_(0.10)
 
         # k_sink выравниваем с образом главной оси void_concept в пространстве ключей R
-        k_void = (v_void_0 @ R.T).view(1, layer.num_sub_heads, 1, layer.sub_head_dim)
-        # Масштабируем до стандартного ~0.02, но с нужным направлением (k_norm затем отнормирует)
+        v_void_sub = F.normalize(v_void_0[:d_qk], p=2, dim=-1, eps=1e-8)
+        k_void = (v_void_sub @ R.T).view(1, layer.num_sub_heads, 1, layer.sub_head_dim)
         k_void = F.normalize(k_void, p=2, dim=-1, eps=1e-8) * (0.02 * math.sqrt(layer.sub_head_dim))
         layer.k_sink.data.copy_(k_void.to(device=layer.k_sink.device, dtype=layer.k_sink.dtype))
         n_blocks += 1
@@ -140,17 +156,24 @@ def apply_idea2_sa_denoise_gs(
         d = layer.axis_dim
         H = layer.num_sub_heads
         dh = layer.sub_head_dim
-        R = _random_orthogonal(d, gen)
+        if d == 128 and H == 8 and dh == 16:
+            # В v2 сохраняем блочную структуру [96 sem (6x16) | 16 syn | 16 pos]
+            R = torch.zeros(128, 128, dtype=torch.float32)
+            R[:96, :96] = _random_orthogonal(96, gen)
+            R[96:112, 96:112] = _random_orthogonal(16, gen)
+            R[112:128, 112:128] = _random_orthogonal(16, gen)
+            signs = torch.ones(128, dtype=torch.float32)
+            # В sem (6 голов): 3 притягивающие (+), 3 Грама-Шмидта (-); syn и pos: притягивающие (+)
+            signs[3 * 16 : 6 * 16] = -1.0
+        else:
+            R = _random_orthogonal(d, gen)
+            half_pos = (H // 2) * dh
+            signs = torch.ones(d, dtype=torch.float32)
+            signs[half_pos:] = -1.0
         noise_q = torch.randn(d, d, generator=gen, dtype=torch.float32) * (eps / math.sqrt(d))
 
         W_kv = R
         W_q = _norm_rows(R + noise_q)
-
-        # Половина подголов: +R_h^T (притягивающий Non-Local Means деноизер),
-        # вторая половина:  -R_h^T (отталкивающий шаг Грама-Шмидта).
-        half_pos = (H // 2) * dh
-        signs = torch.ones(d, dtype=torch.float32)
-        signs[half_pos:] = -1.0
         W_o = R.T * signs.unsqueeze(0)  # строки остаются строго единичной нормы!
 
         kv_scale = float(layer.kv_proj.row_scale.float().mean().item())
@@ -295,6 +318,16 @@ def apply_idea4_wiener_output_head(
     damp: float = 1.0,
     seed: int = 404,
 ) -> Dict[str, Any]:
+    if isinstance(model.output_head, GrassmannianOutputHeadV2):
+        # В v2 EDM-голова уже встроена аналитически через c_skip_base(t_k)/c_out_base(t_k) по axis_sigma.
+        # При наличии эмпирического axis_rms можно синхронизировать буфер axis_sigma.
+        axis_rms = wiener_info["axis_rms"].float().clamp(min=1e-4)
+        model.output_head.axis_sigma.copy_(axis_rms.to(device=model.output_head.axis_sigma.device))
+        return {
+            "idea4_mode": "edm_v2_axis_sigma",
+            "idea4_axis_rms": [round(float(x), 5) for x in axis_rms.tolist()],
+        }
+
     gen = torch.Generator(device="cpu").manual_seed(seed)
     betas: torch.Tensor = wiener_info["betas"].float() * float(damp)  # (8,)
 

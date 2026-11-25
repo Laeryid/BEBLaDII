@@ -1,9 +1,9 @@
 """
-Скрипт экспорта train_phase3_alt.py в два готовых Kaggle GPU блокнота (A/B «3000 шагов правды»):
+Скрипт экспорта train_phase3_alt.py в два готовых Kaggle GPU блокнота (A/B «3000 шагов правды», v2):
   1. experiments/phase 3 alt/Kaggle/train_phase3_alt_safe_notebook.ipynb
-     — Основная боевая связка: standard + safe (29.71M) + all_5 (damp=0.7) + Online Chunked Exact CE + NoiseRadar BF16/FP16.
+     — Основная боевая связка: standard + v2 + safe (22.94M) + all_5 (damp=0.7) + GPU Dynamic Crop + Online Chunked Exact CE + NoiseRadar BF16/FP16.
   2. experiments/phase 3 alt/Kaggle/train_phase3_alt_control_notebook.ipynb
-     — Консервативный контроль: standard + dense (38.58M) + idea4_wiener_head (damp=0.7) + Online Chunked Exact CE + NoiseRadar BF16/FP16.
+     — Консервативный контроль: standard + v2 + dense (31.81M) + idea4_wiener_head (damp=0.7) + GPU Dynamic Crop + Online Chunked Exact CE + NoiseRadar BF16/FP16.
 
 Запуск:
   .venv\\Scripts\\python.exe -B "experiments\\phase 3 alt\\export_to_notebook.py"
@@ -21,46 +21,58 @@ from typing import Any, Dict, List
 PROFILES: Dict[str, Dict[str, Any]] = {
     "safe": {
         "filename": "train_phase3_alt_safe_notebook.ipynb",
-        "title": "BEBLaDII Phase 3 Alt (Plan C) — Боевой прогон `standard + safe (29.71M) + all_5`",
+        "title": "BEBLaDII Phase 3 Alt v2 (Plan C) — Боевой прогон `standard + v2 + safe (22.94M) + all_5`",
         "subtitle": (
-            "- **Архитектура:** `standard` + `matrix_mode=safe` (`29.71M`, PHM `r=4` в Q/KV/O + плотный `1024d` SwiGLU FFN + `GrassAlign` + `L·X·R`)\n"
+            "- **Архитектура v2:** `standard` + `arch_version=v2` + `matrix_mode=safe` (`22.94M`, PHM `r=4` в Q/KV/O + плотный `1024d` Energy-Gated SwiGLU FFN + `GrassAlign (2×16d)` + `L·X·R`, `8×16d` SA / `7×16d` CA без `pos`, `AxisBlockAdaLN (r=64)`, `ConditionEmbedderV2 (Fourier 64 + 19 датчиков)`, `GrassmannianOutputHeadV2 (EDM/Винер + PHM r=8 + lambda_keep)`, правое выравнивание промпта `pos=63`, `rope_grass_base=500`)\n"
+            "- **Обучение (Этап 0 + v2):** `OrthMuon (sphere_scale, c_base=2.26)`, раздельный `grad_clip (adamw=1.0, sphere=10.0)`, `EMAModel (warmup=True)`, SD3-shift по осям (`axis_shift_delta=0.35`), лоссы `spec_diag=0.05`, `orth_offdiag=0.05`, `anchor=0.15`, `basis_high_t_mode=sign_only`, статический XLA `L_bary` + фильтр стоп-клеток, `GPU Dynamic Crop (full_prob=0.25)` + `LengthBucketBatchSampler`\n"
+            "- **Инференс (Этап 1):** Procrustes CFG (`8×8 SVD fp32`), `t_grid=sd3 (shift=0.55)`, `limited_cfg=[0.25, 0.95]`, кэш KV промпта + батчевый `2B` CFG с пропуском `uncond` в `GrassCA`, маскированный `NoiseRadar (~locked)` + `crystal_lock_max_t=0.15` + early-stop по `VOID`-хвосту\n"
             "- **Инициализация:** `all_5` (`wiener_damp=0.7`, `init_samples=128`)\n"
             "- **Словарь:** `NoiseRadar` в нативном `FP16/BF16` + 1-проходный точный `Online Chunked Exact CE` (`chunk=16384`, `0%` смещения) + случайный отбор `B_ce` (`ce_batch_select=random`, `0.5`)\n"
-            "- **Валидация:** `SimGr(low/hi)`, `CFG-ΔSim(t50/t75)`, `TokAcc/CE`, живая генерация `t=1→0` каждые 500 шагов\n"
-            "- **GCS чекпоинты:** `gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/safe_all5/checkpoints/`\n"
+            "- **Валидация:** `SimGr(low/hi)`, `CFG-ΔSim(t50/t75)`, `TokAcc/CE`, `orth_err / spec_l1`, `blk(sem/syn/pos)`, `adaln r_eff/k99`, живая генерация `t=1→0` каждые 500 шагов\n"
+            "- **GCS чекпоинты:** `gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/v2_safe_all5/checkpoints/`\n"
             "- **Подключите в Kaggle Input:** `bogdanbuliakov/bebladii-planc-phase1-data` и `bogdanbuliakov/bebladii-planc-phase2-data` (ничего нового по словарю добавлять не нужно!)\n"
             "- **Секреты Kaggle:** `WANDB_API_KEY`, `GCP_SA_JSON`"
         ),
         "config_overrides": {
             "arch_preset": "standard",
+            "arch_version": "v2",
+            "axis_shift_delta": 0.35,
+            "gpu_dynamic_crop": True,
+            "gpu_dynamic_crop_full_prob": 0.25,
             "matrix_mode": "safe",
             "init_mode": "all_5",
             "wiener_damp": 0.7,
             "max_steps": 3000,
-            "gcs_dir": "gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/safe_all5/checkpoints/",
-            "wandb_name": "phase3-alt-standard-safe-all5",
+            "gcs_dir": "gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/v2_safe_all5/checkpoints/",
+            "wandb_name": "phase3-alt-v2-standard-safe-all5",
         },
     },
     "control": {
         "filename": "train_phase3_alt_control_notebook.ipynb",
-        "title": "BEBLaDII Phase 3 Alt (Plan C) — Консервативный контроль A/B `standard + dense (38.58M) + idea4`",
+        "title": "BEBLaDII Phase 3 Alt v2 (Plan C) — Консервативный контроль A/B `standard + v2 + dense (31.81M) + idea4`",
         "subtitle": (
-            "- **Назначение:** консервативный эталон для A/B-сравнения с `safe + all_5` на одинаковых данных, расписании, `Online Chunked Exact CE` и `CFG-ΔSim`\n"
-            "- **Архитектура:** `standard` + `matrix_mode=dense` (`38.58M`, без PHM / GrassAlign / L·X·R)\n"
+            "- **Назначение:** консервативный эталон v2 для A/B-сравнения с `v2 + safe + all_5` на одинаковых данных, расписании, `GPU Dynamic Crop`, `Online Chunked Exact CE` и `CFG-ΔSim`\n"
+            "- **Архитектура v2:** `standard` + `arch_version=v2` + `matrix_mode=dense` (`31.81M`, без PHM в Q/KV/O / GrassAlign / L·X·R, со всеми улучшениями v2: `8×16d`/`7×16d`, `AxisBlockAdaLN`, `ConditionEmbedderV2`, `OutputHeadV2`, `Energy-Gated SwiGLU`)\n"
+            "- **Обучение (Этап 0 + v2):** `OrthMuon (sphere_scale, c_base=2.26)`, раздельный `grad_clip`, `EMAModel (warmup=True)`, `axis_shift_delta=0.35`, `spec_diag=0.05`, `orth_offdiag=0.05`, `anchor=0.15`, `GPU Dynamic Crop (full_prob=0.25)`\n"
+            "- **Инференс (Этап 1):** Procrustes CFG, `t_grid=sd3`, `limited_cfg=[0.25, 0.95]`, кэш KV + батчевый `2B` CFG с пропуском `uncond` в `GrassCA`, маскированный `NoiseRadar (~locked)`\n"
             "- **Инициализация:** `idea4_wiener_head` (`wiener_damp=0.7`, `init_samples=128` — чистая Винеровская инициализация без `idea1/2/3/5`)\n"
             "- **Словарь:** `NoiseRadar` в нативном `FP16/BF16` + 1-проходный точный `Online Chunked Exact CE` (`chunk=16384`) + случайный отбор `B_ce` (`random`, `0.5`)\n"
-            "- **GCS чекпоинты:** `gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/control_dense_idea4/checkpoints/`\n"
+            "- **GCS чекпоинты:** `gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/v2_control_dense_idea4/checkpoints/`\n"
             "- **Подключите в Kaggle Input:** `bogdanbuliakov/bebladii-planc-phase1-data` и `bogdanbuliakov/bebladii-planc-phase2-data`\n"
             "- **Секреты Kaggle:** `WANDB_API_KEY`, `GCP_SA_JSON`"
         ),
         "config_overrides": {
             "arch_preset": "standard",
+            "arch_version": "v2",
+            "axis_shift_delta": 0.35,
+            "gpu_dynamic_crop": True,
+            "gpu_dynamic_crop_full_prob": 0.25,
             "matrix_mode": "dense",
             "init_mode": "idea4_wiener_head",
             "wiener_damp": 0.7,
             "max_steps": 3000,
-            "gcs_dir": "gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/control_dense_idea4/checkpoints/",
-            "wandb_name": "phase3-alt-standard-dense-idea4-control",
+            "gcs_dir": "gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/v2_control_dense_idea4/checkpoints/",
+            "wandb_name": "phase3-alt-v2-standard-dense-idea4-control",
         },
     },
 }

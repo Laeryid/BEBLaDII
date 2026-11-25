@@ -1572,6 +1572,21 @@
       "depends_on": [],
       "summary": "ADR 143: Оптимизация словаря 131K × 1024 (FastVocabOptimizer): принятие NoiseRadar BF16 и случайного B_ce, отказ от Sampled Softmax (SVD rank=64) в пользу 1-проходного Online Chunked Exact CE",
       "status": "accepted"
+    },
+    "decisions/144_phase3_alt_v2_training_inference_and_architecture_optimizations.md": {
+      "description": "ADR 144: Фаза 3 Alt v2 (Plan C): оптимизации обучения (Этап 0), инференса (Этап 1) и архитектуры v2 (Этап 2) (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "KI_experiments.md",
+        "decisions/034_angular_loss_for_output_projector.md",
+        "decisions/035_centered_cosine_and_contrastive_neighbor_loss.md",
+        "decisions/036_replacing_infonce_with_rkd.md",
+        "decisions/037_phase3_failure_and_plan_b_skip_connections.md"
+      ],
+      "summary": "ADR 144: Фаза 3 Alt v2 (Plan C): оптимизации обучения (Этап 0), инференса (Этап 1) и архитектуры v2 (Этап 2)",
+      "status": "accepted"
     }
   },
   "knowledge_system": {

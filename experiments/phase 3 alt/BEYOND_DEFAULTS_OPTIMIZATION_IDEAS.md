@@ -55,7 +55,10 @@
    - `PromptAdapter` (2 слоя с `pos`-головой) предварительно переводит внутриклеточный порядок слов промпта в контекстуализированные `0:112`.
    - `o_proj (112 → 128)`: блочно-диагональный старт на `0:112` и малый cross-talk (`α = 0.1`) в `112:128` (не копирует чужую фазу, но при желании подсказывает лексическую метку `mu_pos`).
 4. **Диагностика и метрики:**
-   - Перед реализацией Этапа 2: скрипт на 100 батчах энкодера для замера реальных долей энергии `[sem | syn | pos]` по осям `k=0..7` и на `VOID`.
+   - **Выполнено (160 примеров кэша, `11 297` контентных клеток, `9 023` `VOID`):**
+     - Контент (`E[Tr(G)] = 2.461`): **`sem = 66.50% | syn = 15.18% | pos = 18.33%`** (плотность на канал `×1e3`: `2.13 | 2.92 | 3.52` — `pos` самый плотный).
+     - `VOID` (`E[Tr(G)] = 0.046`): **`sem = 0.00% | syn = 50.07% | pos = 49.93%`** (семантический блок строго нулевой → `block_energies` в §3.2 мгновенно отличает `VOID`).
+     - `SEP` (`E[Tr(G)] = 2.528`): `sem = 78.99% | syn = 4.56% | pos = 16.45%`.
    - В валидации: раздельные метрики `val/err_sem`, `val/err_syn`, `val/err_pos` (и при необходимости повышение веса `pos` в `L_basis` при $t < 0.5$).
 
 ---
@@ -70,15 +73,18 @@
 Сейчас `noise = randn_like(V_0) * 0.05` одинаково по всем 8 осям и всем $t$. Так как реальные энергии осей резко убывают ($\sigma_0 > \sigma_1 > \dots > \sigma_7$), на $t = 0.4$ ось `k=0` уже хорошо видна, а оси `k=5..7` полностью утоплены в шуме. При этом спектральный prior ($\sigma_k \neq 0.05$) на текущем этапе **отклонён**: замороженный `NoiseRadarHead` обучался отличать убывающий спектр чистой клетки от плоского спектра изотропного шума `0.05` — спектральный prior при $t=1$ введёт радар в OOD.
 
 #### Принятое решение
-1. **Рациональный сдвиг log-SNR по осям (SD3-shift) при стандартном `SIGMA_DATA = 0.05`:**
-   $$t_k(t) = \frac{s_k\, t}{1 + (s_k - 1)\, t}, \qquad s_k = \exp\!\big(\text{linspace}(-\delta,\, +\delta,\, 8)\big), \quad \delta \approx 0.7$$
-   - Точно сохраняет граничные условия $t_k(0) = 0$ (чистая клетка) и $t_k(1) = 1$ (стандартный изотропный шум `0.05` — in-distribution для `NoiseRadarHead` на границах; на промежуточных $t \in (0, 1)$ смесь разных $t_k$ является OOD для замороженного радара, поэтому обязателен sanity-check ниже).
+1. **Рациональный сдвиг log-SNR по осям (SD3-shift) при стандартном `SIGMA_NOISE = 0.05`:**
+   $$t_k(t) = \frac{s_k\, t}{1 + (s_k - 1)\, t}, \qquad s_k = \exp\!\big(\text{linspace}(-\delta,\, +\delta,\, 8)\big), \quad \delta = 0.35\ \text{(параметр конфига, рабочий диапазон } 0.3\text{–}0.5\text{)}$$
+   - Точно сохраняет граничные условия $t_k(0) = 0$ (чистая клетка) и $t_k(1) = 1$ (стандартный изотропный шум `0.05`).
    - В отличие от степенной $t^{\alpha_k}$, производная конечна и гладка на обоих концах ($t_k'(0) = s_k,\, t_k'(1) = 1/s_k$, без рывков на последнем шаге).
-   - При $t=0.5$ и $\delta=0.7$: $t_0 = 0.33$ (смысловой каркас уже виден), $t_7 = 0.67$ (младшие оси достраиваются на поздних шагах, опираясь на старшие).
+   - При $t=0.5$ и $\delta=0.35$: $t_0 = 0.41$ (смысловой каркас опережает), $t_7 = 0.59$ (младшие оси достраиваются позже, не перегружая `NoiseRadarHead`).
 2. **Поосевой bridge-шаг во всех сэмплерах** (`euler_heun`, `rolling_wave`, `block_ar`, `crystal_radar`):
    $$V_{t_{\text{next}}, k} = \hat{V}_{0, k} + \frac{t_k(t_{\text{next}})}{t_k(t_{\text{cur}})}\,\big(V_{t_{\text{cur}}, k} - \hat{V}_{0, k}\big)$$
    *(в Heun 2-го порядка используется $\bar{V}_0 = \frac{1}{2}(\hat{V}_0^{(1)} + \hat{V}_0^{(2)})$ — точный интеграл для кусочно-постоянного $\hat{V}_0$ без прямого дифференцирования кривизны $t_k(t)$, т.е. ошибка 2-го порядка только от изменения $\hat{V}_0$ на шаге).*
-3. **Обязательный sanity-check до обучения v2:** за 10 секунд на 16 примерах `val` проверить монотонность и порог `0.05` замороженного `NoiseRadarHead` при $\delta \in \{0.0, 0.5, 0.7, 1.0\}$ и зафиксировать оптимальное $\delta$. В обучении `L_basis` взвешивает каждую ось `k` по её реальному $t_k(t)$.
+3. **Sanity-check `NoiseRadarHead` и декодера (выполнено на 16 val-примерах, `320` контентных клеток):**
+   - Абляция осей на чистом `V_0`: `4/8` осей дают `92.4% tok_acc` (`78.8%` 4/4), `5/8` — `96.5%` (`87.2%`), `6/8` — `97.3%` (`90.3%`), `7/8` — `97.44%` (`90.62%`, ровно как `8/8`).
+   - При $\delta \ge 0.5$ возникает локальная немонотонность `s7` на `t = 0.20` (старшие оси уже читаются); при **`δ = 0.3`** получены лучшие `ALL cell4/4` на богатых (`85.0%`) и хвостозависимых клетках (`76.9%` vs `69.2%` при `δ=0.0`) при минимальном сдвиге радара.
+   - В `crystal_radar_sample` лок принимается по `sig_v0` (выход модели, не `V_t`), поэтому зафиксирован параметр `axis_shift_delta = 0.35` (плюс опциональная страховка `lock_max_t = 0.15` в `crystal_radar_sample`). В обучении `L_basis` взвешивает каждую ось `k` по её реальному $t_k(t)$.
 
 ---
 
@@ -96,8 +102,8 @@ V_0_raw = V_t.float() + SIGMA_DATA * g_t * delta_x.float()
 3. `out_proj` сейчас плотная `Linear(1024, 1024)` (`1.05M`, не `PHM` и не `SphereLinear`).
 
 #### Принятое решение
-1. **Аналитическая поосевая EDM/Винеровская база** (по буферу эмпирических RMS-амплитуд `axis_sigma (8,)` и поосевому $t_k$ из п. 2.1):
-   $$c_{\text{skip}}^{\text{base}}(t_k) = \frac{(1 - t_k)\,\sigma_k^2}{(1 - t_k)^2\,\sigma_k^2 + t_k^2\,\sigma_{\text{data}}^2}, \qquad c_{\text{out}}^{\text{base}}(t_k) = \frac{t_k\,\sigma_k\,\sigma_{\text{data}}}{\sqrt{(1 - t_k)^2\,\sigma_k^2 + t_k^2\,\sigma_{\text{data}}^2}}$$
+1. **Аналитическая поосевая EDM/Винеровская база** (по буферу эмпирических RMS-амплитуд данных `axis_sigma (8,) = [0.0832, 0.0688, 0.0551, 0.0444, 0.0334, 0.0270, 0.0207, 0.0170]`, std изотропного шума $\sigma_{\text{noise}} = 0.05$ *(в коде исторически `SIGMA_DATA` — завести явный `SIGMA_NOISE = 0.05`, чтобы не путать с $\sigma_k$ данных!)* и поосевому $t_k$ из п. 2.1):
+   $$c_{\text{skip}}^{\text{base}}(t_k) = \frac{(1 - t_k)\,\sigma_k^2}{(1 - t_k)^2\,\sigma_k^2 + t_k^2\,\sigma_{\text{noise}}^2}, \qquad c_{\text{out}}^{\text{base}}(t_k) = \frac{t_k\,\sigma_k\,\sigma_{\text{noise}}}{\sqrt{(1 - t_k)^2\,\sigma_k^2 + t_k^2\,\sigma_{\text{noise}}^2}}$$
    - При $t = 0$: точное тождество ($1, 0$); при $t = 1$: прямое предсказание в масштабе $\sigma_k$ ($0, \sigma_k$); на шаге 0 — оптимальный линейный MMSE-деноизер на всех $t \in [0, 1]$ одновременно (цель `delta_k` имеет дисперсию $O(1)$ по всем осям).
 2. **Защита чистых кристаллов ($t_i = 0$ при $t_{\text{bar}} > 0$) без оракула `t_local` (ADR 139):**
    - Добавляем `+16` выходов (`keep_logit (8,)`, `out_gain_mod (8,)`) в `AxisBlockAdaLN` головы (`+1K` параметров):
@@ -373,8 +379,60 @@ V_0_raw = V_t.float() + SIGMA_DATA * g_t * delta_x.float()
    - `5.1` (раздельный `grad_clip`), `5.2` (сферический `scale` в `OrthMuon` с `c_base ≈ 2.26`), `5.3` (`EMA` warmup), `6` (спектрально-ортогональные метрики/лоссы из `G` с затуханием по `t`, статический XLA `L_bary` + `stopword_mask` в датасете/кэше для `L_bary/L_adj`).
 2. **Этап 1 (Инференс и скорость без переобучения):**
    - `2.3` (Procrustes CFG на GPU), `2.4` (log-SNR `t_grid` + Limited-Interval CFG), `7.1` (кэш KV промпта), `7.2 + 7.3` (батч `2B` с пропуском CA на `uncond`), `7.4` (оптимизация `NoiseRadar` на незалоченных клетках).
-3. **Этап 2 (Архитектура Phase 3 Alt v2 — все решения из §§1–4 приняты):**
-   - **Обязательные замеры до старта обучения v2:**
-     - замер реальных долей энергии `[sem | syn | pos]` по осям `k=0..7` и на `VOID` (п. 1);
-     - 10-секундный sanity-check замороженного `NoiseRadarHead` при $\delta \in \{0.0, 0.5, 0.7, 1.0\}$ (п. 2.1).
-   - **Внедрение v2:** п. 1 (`8×16d` + `7×16d` в CA), п. 2.1 (SD3-shift $t_k(t)$ + bridge-шаг), п. 2.2 (EDM поосевой `OutputHead` + `lambda_keep` + `PHMLinear(r=8)`), п. 3.1 (`Fourier features` до 16–32 циклов), п. 3.2 (19 датчиков `ConditionEmbedder`), п. 3.3 (`AxisBlockAdaLN`, D2, `r = 64` + диагностика ранга), п. 3.4 (`Energy-Gated SwiGLU`), п. 4 (правое выравнивание промпта к ответу, `base=500`), п. 7.5 (`crystal_radar` early-stop + Dynamic Crop со смесью полных батчей на GPU).
+3. **Этап 2 (Архитектура Phase 3 Alt v2 — все решения и предзамеры из §§1–4 выполнены):**
+   - **Внедрение v2:** п. 1 (`8×16d` + `7×16d` в CA), п. 2.1 (SD3-shift `axis_shift_delta = 0.35` + bridge-шаг), п. 2.2 (EDM поосевой `OutputHead` + `lambda_keep` + `PHMLinear(r=8)`), п. 3.1 (`Fourier features` до 16 циклов), п. 3.2 (19 датчиков `ConditionEmbedder`), п. 3.3 (`AxisBlockAdaLN`, D2, `r = 64` + диагностика ранга), п. 3.4 (`Energy-Gated SwiGLU`), п. 4 (правое выравнивание промпта к ответу, `base=500`), п. 7.5 (`crystal_radar` early-stop + Dynamic Crop со смесью полных батчей на GPU).
+
+---
+
+## 9. Зафиксированные конфиги и константы (Этапы 0–2)
+
+```yaml
+# === Этап 0: обучение без смены архитектуры ===
+stage0:
+  adamw_grad_clip: 1.0
+  sphere_grad_clip: 10.0           # страховочный (или null)
+  orthmuon_sphere_scale: true
+  orthmuon_c_base: 2.26            # опорная форма N=128 (0.2 * sqrt(128))
+  ema_decay: 0.999
+  ema_warmup: true                 # eff_decay = min(decay, (1 + n) / (10 + n)), n сохраняется в state_dict
+  loss_spec_diag_weight: 0.05      # SmoothL1(diag(Gh), diag(G0)) с весом (1 - t)
+  loss_orth_offdiag_weight: 0.05   # ||Gh - diag(Gh)||_F^2 / (||Gh||_F^2 + eps) с весом (1 - t)
+  stopword_cell_min_content_ratio: 0.5  # маска is_content_word_cell для L_bary / L_adj
+  static_xla_bary: true            # topk по content_mask * 2.0 + U[0, 1)
+
+# === Этап 1: инференс и ускорение (0 переобучений) ===
+stage1:
+  procrustes_cfg: true             # 8x8 SVD в fp32 (GPU/CPU)
+  t_grid_mode: "sd3"               # подобрать s in [0.4, 0.7] или power gamma in [1.3, 2.0] на val
+  limited_cfg_t_range: [0.25, 0.95] # спад cfg_scale -> 1.0 при t < 0.25
+  cache_ca_prompt_kv: true         # кэш (k_p_rot, v_p, attn_mask) по всем CA-слоям
+  batched_2b_cfg: true             # единый батч 2B = [cond || uncond]
+  skip_uncond_ca_on_infer: true    # GrassCA считается только на [:B] при инференсе
+  radar_mask_unlocked_only: true   # NoiseRadar только по ~locked клеткам
+  crystal_break_when_all_locked: true
+
+# === Этап 2: архитектура Phase 3 Alt v2 ===
+stage2_v2:
+  sigma_noise: 0.05                # явный SIGMA_NOISE (алиас для старого SIGMA_DATA)
+  axis_sigma: [0.08319, 0.06884, 0.05511, 0.04440, 0.03341, 0.02695, 0.02075, 0.01697]
+  axis_shift_delta: 0.35           # SD3-shift по осям (рабочий диапазон 0.3..0.5)
+  crystal_lock_max_t: 0.15         # страховка против раннего лока хвоста осей 4..7
+  sub_head_dim: 16
+  sa_num_sub_heads: 8              # [6 sem | 1 syn | 1 pos]
+  ca_num_sub_heads: 7              # [6 sem | 1 syn], pos (112:128) отсечён из Q/K
+  blkdiag_cross_talk_alpha: 0.15   # 0.15..0.20 в GrassSA/PA, 0.10 в CA o_proj -> 112:128
+  rope_grass_base: 500             # 8 пар частот на диапазон 0..191 (offset=64)
+  prompt_right_align: true         # последний реальный токен промпта на pos=63, SEP=64
+  fourier_time_dim: 64             # 32 частоты: 2*pi * 2^linspace(-1, 4, 32)
+  cond_sensors_dim: 19             # вход ConditionEmbedder: 64 + 19 = 83 -> 256 -> 256
+  adaln_type: "AxisBlockAdaLN"     # Вариант D2
+  adaln_bottleneck_r: 64           # с логированием r_eff / k_99 на val
+  ffn_energy_gate: true            # Energy-Gated SwiGLU, rad_feat = [abs_ln, rel_ln]
+  output_head_proj: "PHMLinear(8, 128, 8, 128, rank=8)"
+  output_head_keep_bias: -3.0      # lambda_keep старт ~0.05
+  output_head_gain_init: 0.1
+  loss_anchor_weight: 0.15         # SmoothL1(beta=0.01) на clean не-SEP клетках
+  loss_basis_high_t_mode: "decay_or_sign_only" # (1 - t)^2 или sign-only с detach (без SVD)
+  gpu_dynamic_crop: true
+  gpu_dynamic_crop_full_prob: 0.25 # 25% батчей полной длины 128 против сдвига распределения
+```

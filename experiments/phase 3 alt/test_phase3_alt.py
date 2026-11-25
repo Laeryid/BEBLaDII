@@ -29,18 +29,30 @@ from init_strategies import verify_init_invariants
 from matrix_layers import MATRIX_VARIANTS, build_matrix_alt_core, create_matrix_optimizers
 from vocab_optim import FastVocabOptimizer
 
+from train_phase3 import (
+    _apply_cfg_and_clamp,
+    build_t_grid,
+    clip_phase3_grads,
+    compute_axis_t,
+    compute_limited_cfg_scale,
+    procrustes_align_basis,
+)
 from train_phase3_alt import (
     EMAModel,
     GrassmannianAltDiffusionCore,
     GrassmannianSABlock,
     N_CANVAS,
     N_PROMPT,
+    OrthMuon,
     PerAxisGRNv3,
     SIGMA_DATA,
+    SIGMA_NOISE,
+    add_axis_shifted_noise,
     block_ar_sample,
     build_rollout_noisy_canvas,
     compute_phase3_loss,
     create_alt_optimizers,
+    crop_batch_for_gpu,
     crystal_radar_sample,
     euler_heun_sample,
     rolling_wave_sample,
@@ -375,29 +387,140 @@ def main() -> None:
         flush=True,
     )
 
-    print("[10/10] Checking all 7 matrix_layers variants (PHM, GrassAlign, L*X*R): invariants, grads, EMA...", flush=True)
+    print("[10/12] Checking all 7 matrix_layers variants (PHM, GrassAlign, L*X*R) on v2: invariants, grads, EMA...", flush=True)
     for m_var in MATRIX_VARIANTS:
-        m_core = build_matrix_alt_core(void_ref=void_ref, variant=m_var, preset="tiny", phm_rank=4)
+        m_core = build_matrix_alt_core(void_ref=void_ref, variant=m_var, preset="tiny", phm_rank=4, arch_version="v2")
         n_p = sum(p.numel() for p in m_core.parameters() if p.requires_grad)
         inv_m = verify_init_invariants(m_core, sep_concept=sep_ref, device=torch.device("cpu"))
         m_core.train()
         om_m, oa_m = create_matrix_optimizers(m_core)
-        ema_m = EMAModel(m_core, decay=0.99)
+        ema_m = EMAModel(m_core, decay=0.99, warmup=True)
         vh_m, st_m, sw_m = m_core(V_t[:1], t_mat[:1], V_prompt_a[:1], p_valid[:1], p_valid[:1], m_one[:1], return_sink_weights=True)
-        l_m, _ = compute_phase3_loss(vh_m, V_0[:1], t_mat[:1], w_cell[:1], i_last[:1], st_m, step=1, m_prompt=m_one[:1], sink_weights=sw_m)
+        l_m, _ = compute_phase3_loss(
+            vh_m, V_0[:1], t_mat[:1], w_cell[:1], i_last[:1], st_m,
+            step=1, m_prompt=m_one[:1], sink_weights=sw_m,
+            anchor_weight=0.15, axis_shift_delta=0.35, basis_high_t_mode="sign_only",
+        )
         l_m.backward()
         z_m = [
             name for name, p in m_core.named_parameters()
             if p.requires_grad and (p.grad is None or float(p.grad.abs().max().item()) == 0.0)
         ]
         assert not z_m, f"Нулевые градиенты в {m_var}: {z_m[:8]}"
+        clip_phase3_grads(om_m, oa_m, adamw_max_norm=1.0, sphere_max_norm=10.0)
         if om_m is not None:
             om_m.step()
         oa_m.step()
         ema_m.update(m_core)
         print(f"    -> {m_var:18s}: {n_p/1e6:5.2f}M params | sph_err={inv_m['max_sph_err']:.2e} | cfg_leak={inv_m['cfg_leak_diff']:.2e} | 0 zero-grad (OK)", flush=True)
 
-    print("=== ALL 10 PHASE 3 ALT ARCHITECTURE + VOCAB + MATRIX TESTS PASSED ===", flush=True)
+    print("[11/12] Checking Stage 0 (OrthMuon sphere scale, EMA warmup/resume, spec/orth/anchor/stopword loss) & Stage 1 (Procrustes CFG, t_grid, KV-cache + 2B CFG equivalence)...", flush=True)
+    # 11a. OrthMuon sphere_scale выравнивает угловой шаг между (128, 128) и (1024, 2048)
+    w_small = nn.Parameter(F.normalize(torch.randn(128, 128), p=2, dim=-1))
+    w_big = nn.Parameter(F.normalize(torch.randn(1024, 2048), p=2, dim=-1))
+    w_small_0, w_big_0 = w_small.data.clone(), w_big.data.clone()
+    w_small.grad = torch.randn_like(w_small)
+    w_big.grad = torch.randn_like(w_big)
+    om_test = OrthMuon([w_small, w_big], lr=1e-3, sphere=True, sphere_scale=True, sphere_c_base=2.26)
+    om_test.step()
+    ang_small = (w_small.data - w_small_0).norm(p=2, dim=-1).mean().item()
+    ang_big = (w_big.data - w_big_0).norm(p=2, dim=-1).mean().item()
+    ratio_ang = max(ang_small, ang_big) / max(min(ang_small, ang_big), 1e-8)
+    assert ratio_ang < 1.35, f"Угловые шаги OrthMuon не выровнены: small={ang_small:.5f}, big={ang_big:.5f}"
+
+    # 11b. EMA warmup + state_dict resume + обратная совместимость со старыми чекпоинтами
+    ema_w = EMAModel(core, decay=0.999, warmup=True)
+    for _ in range(10):
+        ema_w.update(core)
+    assert ema_w.num_updates == 10 and abs(ema_w.current_decay() - 11.0 / 20.0) < 1e-6
+    sd_ema = ema_w.state_dict()
+    ema_w2 = EMAModel(core, decay=0.999, warmup=True)
+    ema_w2.load_state_dict(sd_ema)
+    assert ema_w2.num_updates == 10
+    sd_legacy = {k: v for k, v in sd_ema.items() if k != "__num_updates__"}
+    ema_w3 = EMAModel(core, decay=0.999, warmup=True)
+    ema_w3.load_state_dict(sd_legacy)
+    assert ema_w3.num_updates == 0
+
+    # 11c. Procrustes CFG точно отменяет случайный поворот R in O(8)
+    q_rand, _ = torch.linalg.qr(torch.randn(8, 8))
+    vc_test = torch.randn(2, 16, 8, 128) * 0.05
+    vu_rot = torch.matmul(q_rand, vc_test)
+    vu_al = procrustes_align_basis(vu_rot, vc_test)
+    proc_err = (vu_al - vc_test).abs().max().item()
+    assert proc_err < 1e-5, f"Ошибка Procrustes-выравнивания: {proc_err}"
+    t_sd3 = build_t_grid(20, torch.device("cpu"), mode="sd3", shift=0.55)
+    assert abs(float(t_sd3[0].item()) - 1.0) < 1e-6 and abs(float(t_sd3[-1].item())) < 1e-6
+    assert float(t_sd3[10].item()) < 0.50, "SD3 shift=0.55 должен сгущать шаги к t->0"
+    assert compute_limited_cfg_scale(0.10, 3.0) == 1.0 and compute_limited_cfg_scale(0.50, 3.0) == 3.0
+
+    # 11d. Эквивалентность Stage 1 (prepare_prompt_cache + forward_cfg_batched) и эталонного раздельного forward
+    core.eval()
+    p_valid_short = torch.zeros(B, N_PROMPT, dtype=torch.bool)
+    p_valid_short[0, :12] = True
+    p_valid_short[1, :7] = True
+    with torch.no_grad():
+        vc_ref, _, sw_ref = core(V_t, t_mat, V_prompt_a, p_valid_short, p_valid_short, m_one, radar_sigma=radar_sig, return_sink_weights=True)
+        vu_ref, _, _ = core(V_t, t_mat, V_prompt_a, p_valid_short, p_uncond, m_zero, radar_sigma=radar_sig, return_sink_weights=False)
+        p_cache = core.prepare_prompt_cache(V_prompt_a, p_valid_short)
+        vc_fast, vu_fast, sw_fast = core.forward_cfg_batched(
+            V_t=V_t, t_mat=t_mat, x_prompt=p_cache["x_prompt"],
+            prompt_attn_mask=p_valid_short, prompt_cache=p_cache,
+            radar_sigma=radar_sig, return_sink_weights=True,
+        )
+    diff_c = (vc_fast - vc_ref).abs().max().item()
+    diff_u = (vu_fast - vu_ref).abs().max().item()
+    diff_sw = (sw_fast - sw_ref).abs().max().item()
+    assert diff_c < 1e-5 and diff_u < 1e-5 and diff_sw < 1e-5, f"Расхождение 2B+KV-cache: c={diff_c}, u={diff_u}, sw={diff_sw}"
+    print(f"    -> OrthMuon ang_ratio={ratio_ang:.2f}, procrustes_err={proc_err:.2e}, 2B+KV_diff=(c:{diff_c:.2e}, u:{diff_u:.2e}, sw:{diff_sw:.2e}) (OK)", flush=True)
+
+    print("[12/12] Checking Stage 2 v2 (right-aligned RoPE crop invariance, Dynamic Crop, v2 diagnostics, init_strategies, v1 regression)...", flush=True)
+    # 12a. Правое выравнивание промпта инвариантно к Dynamic Crop длины промпта (N_p=64 vs N_p=16)
+    with torch.no_grad():
+        xp_64 = core.encode_prompt(V_prompt_a, prompt_valid_mask=p_valid_short)
+        xp_16 = core.encode_prompt(V_prompt_a[:, :16], prompt_valid_mask=p_valid_short[:, :16])
+    crop_p_err = (xp_64[0, :12] - xp_16[0, :12]).abs().max().item()
+    assert crop_p_err < 1e-5, f"Правое выравнивание промпта нарушено при Dynamic Crop: {crop_p_err}"
+
+    # 12b. GPU Dynamic Crop (full_prob=0.0) корректно обрезает промпт и холст и проходит forward+loss+backward
+    is_cw = torch.ones(B, N_CANVAS, dtype=torch.bool)
+    is_cw[:, 0] = False
+    is_cw[:, 2::3] = False  # имитация стоп-слов
+    i_last_short = torch.tensor([18, 22], dtype=torch.long)
+    ans_tgt_full = torch.randint(0, 1000, (B, (N_CANVAS - 1) * 4))
+    vp_c, v0_c, pv_c, wc_c, at_c, cw_c = crop_batch_for_gpu(
+        V_prompt_a, V_0, p_valid_short, i_last_short, w_cell, ans_tgt_full, is_cw, full_prob=0.0
+    )
+    assert vp_c.shape[1] == 16 and v0_c.shape[1] == 32, f"Неверные формы Dynamic Crop: vp={vp_c.shape}, v0={v0_c.shape}"
+    t_crop = sample_mixed_noise_schedule(B, torch.device("cpu"), i_last=i_last_short, seq_len=v0_c.shape[1])
+    vt_crop = add_axis_shifted_noise(v0_c, t_crop, torch.randn_like(v0_c), delta=0.35, sigma_noise=SIGMA_NOISE)
+    vt_crop[:, 0] = v0_c[:, 0]
+    core.set_diagnostics_capture(True)
+    vh_c, st_c, sw_c = core(vt_crop, t_crop, vp_c, pv_c, pv_c, m_one, return_sink_weights=True)
+    core.set_diagnostics_capture(False)
+    diag_v2 = core.collect_v2_diagnostics()
+    assert "val/adaln_r_eff_mean" in diag_v2 and "val/sensor_imp_offdiag" in diag_v2
+    l_crop, m_crop = compute_phase3_loss(
+        vh_c, v0_c, t_crop, wc_c, i_last_short, st_c, step=5,
+        m_prompt=m_one, sink_weights=sw_c, is_content_word_cell=cw_c,
+        anchor_weight=0.15, axis_shift_delta=0.35, basis_high_t_mode="sign_only",
+    )
+    assert torch.isfinite(l_crop) and "loss/spec_diag" in m_crop and "loss/orth_offdiag" in m_crop
+
+    # 12c. Проверка геометрической инициализации all_geo на v2 + регрессия v1
+    from init_strategies import apply_init_strategy
+    core_init = build_matrix_alt_core(void_ref=void_ref, variant="all_matrix_safe", preset="tiny", arch_version="v2")
+    apply_init_strategy(core_init, "all_geo", void_ref=void_ref, sep_concept=sep_ref)
+    inv_init = verify_init_invariants(core_init, sep_concept=sep_ref, device=torch.device("cpu"))
+    core_v1 = GrassmannianAltDiffusionCore(void_ref=void_ref, preset="tiny", arch_version="v1")
+    inv_v1 = verify_init_invariants(core_v1, sep_concept=sep_ref, device=torch.device("cpu"))
+    print(
+        f"    -> crop_prompt_err={crop_p_err:.2e}, crop_shapes=({vp_c.shape[1]},{v0_c.shape[1]}), "
+        f"r_eff={diag_v2['val/adaln_r_eff_mean']:.1f}, all_geo_v2_sph={inv_init['max_sph_err']:.2e}, v1_leak={inv_v1['cfg_leak_diff']:.2e} (OK)",
+        flush=True,
+    )
+
+    print("=== ALL 12 PHASE 3 ALT (STAGE 0 + 1 + 2 v2) + VOCAB + MATRIX TESTS PASSED ===", flush=True)
 
 
 if __name__ == "__main__":

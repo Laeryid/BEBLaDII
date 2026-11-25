@@ -33,6 +33,7 @@ from storage.components.plan_c_layers import (
 )
 from train_phase3_alt import (
     AXIS_DIM,
+    AxisBlockAdaLN,
     FullSABlock,
     GrassmannianAltDiffusionCore,
     GrassmannianSABlock,
@@ -40,14 +41,18 @@ from train_phase3_alt import (
     N_CANVAS,
     NUM_AXES,
     OrthMuon,
+    PHMLinear,
     PerAxisGRNv3,
     PerHeadRMSNorm,
     _apply_cell_rope_to_vectors,
+    _axis_rad_feat,
     _clamp_fp16_safe,
     _clamp_swiglu,
     _compute_adaln_stats,
+    _init_blockdiag_sphere,
     _init_soft_gate_adaln,
     _repeat_adaln_stats_to_4096,
+    _safe_log_axis_norm,
 )
 
 MATRIX_VARIANTS: Tuple[str, ...] = (
@@ -60,96 +65,21 @@ MATRIX_VARIANTS: Tuple[str, ...] = (
     "all_matrix_ultra",
 )
 
+# Структурный блочно-диагональный старт [96->16 | 16->8 | 16->8] для GrassAlignSABlock (128 -> 32, §1)
+_GRASS_ALIGN_BLOCKS_32: Tuple[Tuple[Tuple[int, int], Tuple[int, int]], ...] = (
+    ((0, 16), (0, 96)),
+    ((16, 24), (96, 112)),
+    ((24, 32), (112, 128)),
+)
+
 
 # =============================================================================
-# 1. Факторизованный PHM-слой (Parameterized Hypercomplex Multiplication)
+# 1. Факторизованный PHM-слой (`PHMLinear` импортирован из train_phase3_alt) и `PHMFullSABlock`
 # =============================================================================
-class PHMLinear(nn.Module):
-    """
-    Факторизованный 2D-линейный слой над ячейкой X in R^{K_in x D_in}:
-        Y = sum_{m=1..r} A_m @ X @ F_m^T  in R^{K_out x D_out}
-
-    Вычисляется ровно за 2 плотных GEMM без материализации плотной (K_out*D_out, K_in*D_in):
-      1. `f_proj`: SphereLinear(D_in, rank * D_out) -> (B, N, K_in, rank * D_out)
-      2. `axis_mix` (K_out, K_in * rank) @ H (B*N, K_in * rank, D_out) -> (B, N, K_out, D_out)
-
-    Полная совместимость с OrthMuon/EMA (`f_proj.q_weight` имеет строго единичные строки).
-    """
-
-    def __init__(
-        self,
-        in_axes: int = NUM_AXES,
-        in_dim: int = AXIS_DIM,
-        out_axes: int = NUM_AXES,
-        out_dim: int = AXIS_DIM,
-        rank: int = 4,
-        cross_alpha: float = 0.25,
-    ):
-        super().__init__()
-        self.in_axes = int(in_axes)
-        self.in_dim = int(in_dim)
-        self.out_axes = int(out_axes)
-        self.out_dim = int(out_dim)
-        self.rank = int(rank)
-        self.in_features = self.in_axes * self.in_dim
-        self.out_features = self.out_axes * self.out_dim
-
-        self.f_proj = SphereLinear(self.in_dim, self.rank * self.out_dim, bias=False)
-        # Матрица осевого смешивания A: (K_out, K_in * rank), нормируется так, чтобы
-        # L2-норма каждой выходной строки была ~1.0 (сохраняя Kaiming-дисперсию SphereLinear).
-        self.axis_mix = nn.Parameter(torch.empty(self.out_axes, self.in_axes * self.rank))
-        self._init_axis_mix(cross_alpha=cross_alpha)
-
-    @torch.no_grad()
-    def _init_axis_mix(self, cross_alpha: float = 0.25) -> None:
-        A = torch.zeros(self.out_axes, self.in_axes, self.rank, dtype=torch.float32)
-        if self.rank == 1 or cross_alpha <= 0.0:
-            if self.out_axes == self.in_axes:
-                A[:, :, 0] = torch.eye(self.out_axes, dtype=torch.float32)
-            else:
-                nn.init.orthogonal_(A[:, :, 0])
-        else:
-            main_w = math.sqrt(max(0.0, 1.0 - cross_alpha ** 2))
-            if self.out_axes == self.in_axes:
-                A[:, :, 0] = main_w * torch.eye(self.out_axes, dtype=torch.float32)
-            else:
-                nn.init.orthogonal_(A[:, :, 0])
-                A[:, :, 0].mul_(main_w)
-            noise = torch.randn(self.out_axes, self.in_axes, self.rank - 1, dtype=torch.float32)
-            noise_norm = noise.flatten(1).norm(p=2, dim=-1, keepdim=True).clamp(min=1e-6).view(self.out_axes, 1, 1)
-            A[:, :, 1:] = (noise / noise_norm) * cross_alpha
-        self.axis_mix.copy_(A.reshape(self.out_axes, self.in_axes * self.rank))
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Принимает x формы (B, N, K_in, D_in) или (B, N, K_in * D_in);
-        возвращает тензор той же ранга (4D или 3D).
-        """
-        was_3d = x.ndim == 3
-        if was_3d:
-            B, N, _ = x.shape
-            x4 = x.view(B, N, self.in_axes, self.in_dim)
-        else:
-            B, N, _, _ = x.shape
-            x4 = x
-
-        # 1. Правый GEMM: (B, N, K_in, D_in) -> (B, N, K_in, rank * D_out)
-        h = self.f_proj(x4)
-        # Преобразуем в (B * N, K_in * rank, D_out) для одного батчевого левого GEMM
-        h_mat = h.reshape(B * N, self.in_axes * self.rank, self.out_dim)
-        # 2. Левый GEMM: (K_out, K_in * rank) @ (B*N, K_in * rank, D_out) -> (B*N, K_out, D_out)
-        a_mat = self.axis_mix.to(dtype=h_mat.dtype)
-        y4 = torch.matmul(a_mat, h_mat).view(B, N, self.out_axes, self.out_dim)
-        if was_3d:
-            return y4.reshape(B, N, self.out_features)
-        return y4
-
-
 class PHMFullSABlock(nn.Module):
     """
     Drop-in замена `FullSABlock` с PHM-проекциями на Q/KV/O (и опционально на SwiGLU FFN).
-    Сохраняет полную совместимость по входу/выходу (x_in, h_ca, x_prev, c, cos_full, sin_full, m_active),
-    `PerAxisGRNv3` DCA и `Soft-Gate AdaLN`.
+    Поддерживает как `Linear` AdaLN (v1), так и `AxisBlockAdaLN` D2 r=64 (v2).
     """
 
     def __init__(
@@ -163,6 +93,8 @@ class PHMFullSABlock(nn.Module):
         phm_ffn: bool = False,
         phm_rank: int = 4,
         cross_alpha: float = 0.25,
+        adaln_type: str = "linear",
+        adaln_bottleneck_r: int = 64,
     ):
         super().__init__()
         if intermediate_size % NUM_AXES != 0:
@@ -174,6 +106,8 @@ class PHMFullSABlock(nn.Module):
         self.phm_attn = phm_attn
         self.phm_ffn = phm_ffn
         self.phm_rank = phm_rank
+        self.adaln_type = adaln_type
+        self.adaln_bottleneck_r = int(adaln_bottleneck_r)
 
         self.dca_q = PerAxisGRNv3(NUM_AXES, AXIS_DIM, has_ca=has_ca)
         self.dca_kv = PerAxisGRNv3(NUM_AXES, AXIS_DIM, has_ca=has_ca)
@@ -205,8 +139,17 @@ class PHMFullSABlock(nn.Module):
             self.up_proj = SphereLinear(hidden_size, intermediate_size, bias=False)
             self.down_proj = SphereLinear(intermediate_size, hidden_size, bias=False)
 
-        self.adaln_proj = nn.Linear(cond_dim, 6 * hidden_size)
-        _init_soft_gate_adaln(self.adaln_proj, hidden_size, gate_bias=0.02)
+        if adaln_type == "axis_block":
+            self.adaln_proj: nn.Module = AxisBlockAdaLN(
+                cond_dim=cond_dim,
+                num_mods=6,
+                bottleneck_r=self.adaln_bottleneck_r,
+                gate_indices=(2, 5),
+                gate_bias=0.02,
+            )
+        else:
+            self.adaln_proj = nn.Linear(cond_dim, 6 * hidden_size)
+            _init_soft_gate_adaln(self.adaln_proj, hidden_size, gate_bias=0.02)
 
     def forward(
         self,
@@ -221,8 +164,17 @@ class PHMFullSABlock(nn.Module):
         B, N, K, D = x_prev.shape
         C = K * D
 
-        mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(x_prev.dtype)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
+        if isinstance(self.adaln_proj, AxisBlockAdaLN):
+            s_msa, sc_msa, g_msa, s_mlp, sc_mlp, g_mlp = self.adaln_proj(c, x_prev.dtype)
+            shift_msa = s_msa.reshape(B, N, C)
+            scale_msa = sc_msa.reshape(B, N, C)
+            gate_msa = g_msa.reshape(B, N, C)
+            shift_mlp = s_mlp.reshape(B, N, C)
+            scale_mlp = sc_mlp.reshape(B, N, C)
+            gate_mlp = g_mlp.reshape(B, N, C)
+        else:
+            mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(x_prev.dtype)
+            shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
         M = torch.cat([shift_msa, scale_msa, shift_mlp, scale_mlp], dim=-1)
         stats = _compute_adaln_stats(M, m_active)
 
@@ -279,14 +231,21 @@ class GrassAlignSABlock(GrassmannianSABlock):
         has_ca: bool = True,
         cond_dim: int = 256,
         use_bilinear_lxr: bool = False,
+        adaln_type: str = "linear",
+        adaln_bottleneck_r: int = 64,
+        use_energy_gate: bool = False,
+        blockdiag_alpha: float = 0.0,
     ):
         nn.Module.__init__(self)
         self.axis_dim = axis_dim
-        self.qk_dim = qk_dim
+        self.qk_dim = int(qk_dim)
         self.num_sub_heads = 1
-        self.sub_head_dim = qk_dim
+        self.sub_head_dim = self.qk_dim
         self.local_radius = None
         self.use_bilinear_lxr = bool(use_bilinear_lxr)
+        self.adaln_type = adaln_type
+        self.adaln_bottleneck_r = int(adaln_bottleneck_r)
+        self.use_energy_gate = bool(use_energy_gate)
 
         self.dca_q = PerAxisGRNv3(NUM_AXES, axis_dim, has_ca=has_ca)
         self.dca_kv = PerAxisGRNv3(NUM_AXES, axis_dim, has_ca=has_ca)
@@ -300,14 +259,17 @@ class GrassAlignSABlock(GrassmannianSABlock):
         nn.init.zeros_(self.norm_emb_kv.weight)
         nn.init.zeros_(self.norm_emb_kv.bias)
 
-        # Компактные проекции для Q/K (128 -> 32) и полные V/O (128 -> 128)
-        self.q_align_proj = SphereLinear(axis_dim, qk_dim, bias=False)
-        self.k_align_proj = SphereLinear(axis_dim, qk_dim, bias=False)
+        # Компактные проекции для Q/K (128 -> qk_dim) и полные V/O (128 -> 128)
+        self.q_align_proj = SphereLinear(axis_dim, self.qk_dim, bias=False)
+        self.k_align_proj = SphereLinear(axis_dim, self.qk_dim, bias=False)
         self.v_proj = SphereLinear(axis_dim, axis_dim, bias=False)
         self.o_proj = SphereLinear(axis_dim, axis_dim, bias=False)
+        if blockdiag_alpha > 0.0 and axis_dim == 128 and self.qk_dim == 32:
+            _init_blockdiag_sphere(self.q_align_proj, list(_GRASS_ALIGN_BLOCKS_32), alpha=blockdiag_alpha)
+            _init_blockdiag_sphere(self.k_align_proj, list(_GRASS_ALIGN_BLOCKS_32), alpha=blockdiag_alpha)
 
-        self.q_norm = PerHeadRMSNorm(1, qk_dim)
-        self.k_norm = PerHeadRMSNorm(1, qk_dim)
+        self.q_norm = PerHeadRMSNorm(1, self.qk_dim)
+        self.k_norm = PerHeadRMSNorm(1, self.qk_dim)
         self.v_gate = nn.Parameter(torch.ones(1, 1, 1, axis_dim))
         self.score_temp = nn.Parameter(torch.tensor(1.0))
 
@@ -315,13 +277,28 @@ class GrassAlignSABlock(GrassmannianSABlock):
         self.gate_proj = SphereLinear(axis_dim, ffn_dim, bias=False)
         self.up_proj = SphereLinear(axis_dim, ffn_dim, bias=False)
         self.down_proj = SphereLinear(ffn_dim, axis_dim, bias=False)
+        if self.use_energy_gate:
+            self.w_rad: Optional[nn.Linear] = nn.Linear(2, ffn_dim)
+            nn.init.zeros_(self.w_rad.weight)
+            nn.init.zeros_(self.w_rad.bias)
+        else:
+            self.w_rad = None
 
         if self.use_bilinear_lxr:
             self.axis_mix_attn = nn.Parameter(torch.eye(NUM_AXES))
             self.axis_mix_mlp = nn.Parameter(torch.eye(NUM_AXES))
 
-        self.adaln_proj = nn.Linear(cond_dim, 6 * axis_dim)
-        _init_soft_gate_adaln(self.adaln_proj, axis_dim, gate_bias=0.02)
+        if adaln_type == "axis_block":
+            self.adaln_proj: nn.Module = AxisBlockAdaLN(
+                cond_dim=cond_dim,
+                num_mods=6,
+                bottleneck_r=self.adaln_bottleneck_r,
+                gate_indices=(2, 5),
+                gate_bias=0.02,
+            )
+        else:
+            self.adaln_proj = nn.Linear(cond_dim, 6 * axis_dim)
+            _init_soft_gate_adaln(self.adaln_proj, axis_dim, gate_bias=0.02)
         self.register_buffer("win_mask_default", None, persistent=False)
 
     def forward(
@@ -336,43 +313,34 @@ class GrassAlignSABlock(GrassmannianSABlock):
     ) -> Tuple[torch.Tensor, Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
         B, N, K, D = x_prev.shape
 
-        mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(x_prev.dtype)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
-        M_mod = torch.cat([shift_msa, scale_msa, shift_mlp, scale_mlp], dim=-1)
-        stats = _repeat_adaln_stats_to_4096(_compute_adaln_stats(M_mod, m_active))
-
-        s_msa = shift_msa.unsqueeze(2)
-        sc_msa = scale_msa.unsqueeze(2)
-        g_msa = gate_msa.unsqueeze(2)
-        s_mlp = shift_mlp.unsqueeze(2)
-        sc_mlp = scale_mlp.unsqueeze(2)
-        g_mlp = gate_mlp.unsqueeze(2)
+        s_msa, sc_msa, g_msa, s_mlp, sc_mlp, g_mlp, stats = self._compute_adaln_mods(c, x_prev.dtype, m_active)
 
         x_q = self.dca_q(x_in, h_ca, x_prev)
         x_kv = self.dca_kv(x_in, h_ca, x_prev)
 
-        ln_q = torch.log1p(x_q.float().norm(p=2, dim=-1, keepdim=True)).to(x_q.dtype)
-        ln_kv = torch.log1p(x_kv.float().norm(p=2, dim=-1, keepdim=True)).to(x_kv.dtype)
+        ln_q = _safe_log_axis_norm(x_q).to(x_q.dtype)
+        ln_kv = _safe_log_axis_norm(x_kv).to(x_kv.dtype)
         h_q = (self.attn_norm_q(x_q) + self.norm_emb_q(ln_q)) * (1.0 + sc_msa) + s_msa
         h_kv = (self.attn_norm_kv(x_kv) + self.norm_emb_kv(ln_kv)) * (1.0 + sc_msa) + s_msa
 
-        # Q, K в R^32 с ячеечным RoPE: (B, 1, N, K, 32)
+        # Q, K в R^{qk_dim} с поддержкой RoPE как dim==qk_dim (v1), так и dim==16, qk_dim==32 (2x16d, v2)
+        rope_dim = int(cos.shape[-1])
+        n_rope_heads = self.qk_dim // rope_dim
         q = self.q_align_proj(h_q).unsqueeze(1)
         k = self.k_align_proj(h_kv).unsqueeze(1)
-        q = self.q_norm(q.reshape(B, 1, N * K, self.qk_dim)).view(B, 1, N, K, self.qk_dim)
-        k = self.k_norm(k.reshape(B, 1, N * K, self.qk_dim)).view(B, 1, N, K, self.qk_dim)
-        q = _apply_cell_rope_to_vectors(q, cos, sin).reshape(B, N * K, self.qk_dim)
-        k = _apply_cell_rope_to_vectors(k, cos, sin).reshape(B, N * K, self.qk_dim)
+        q = self.q_norm(q.reshape(B, 1, N * K, self.qk_dim)).view(B, N, K, n_rope_heads, rope_dim).permute(0, 3, 1, 2, 4)
+        k = self.k_norm(k.reshape(B, 1, N * K, self.qk_dim)).view(B, N, K, n_rope_heads, rope_dim).permute(0, 3, 1, 2, 4)
+        q = _apply_cell_rope_to_vectors(q, cos, sin).permute(0, 2, 3, 1, 4).reshape(B, N * K, self.qk_dim)
+        k = _apply_cell_rope_to_vectors(k, cos, sin).permute(0, 2, 3, 1, 4).reshape(B, N * K, self.qk_dim)
 
         # V в R^128 без RoPE: (B, N*K, 128)
         v = (self.v_proj(h_kv) * self.v_gate.to(h_kv.dtype)).reshape(B, N * K, D)
 
-        # 1. Один компактный matmul (B, N*K, 32) @ (B, 32, N*K) -> M: (B, N, K, N, K)
-        #    Переупорядочиваем в (B, N, N, K, K) только для подсчёта ||M_ij||_F^2 и строчной нормы
+        # 1. Один компактный matmul (B, N*K, qk_dim) @ (B, qk_dim, N*K) -> M: (B, N, K, N, K)
         m_raw = torch.matmul(q.float(), k.float().transpose(-2, -1)) / math.sqrt(self.qk_dim)
         m_blocks = m_raw.view(B, N, K, N, K)
 
-        # 2. Точный Грассманиановый скор ||M_ij||_F^2 -> softmax по (B, N, N) (128 x 128!)
+        # 2. Точный Грассманиановый скор ||M_ij||_F^2 -> softmax по (B, N, N)
         temp = self.score_temp.float().clamp(min=0.05, max=20.0)
         cell_scores = temp * m_blocks.pow(2).sum(dim=(2, 4)) / float(K)  # (B, N, N)
         cell_probs = F.softmax(cell_scores, dim=-1)  # (B, N, N)
@@ -381,7 +349,6 @@ class GrassAlignSABlock(GrassmannianSABlock):
         row_norm = m_blocks.norm(p=2, dim=4, keepdim=True).clamp(min=1e-4)
         m_router = m_blocks / row_norm  # (B, N, K, N, K)
 
-        # Комбинированный вес W[(i,a), (j,b)] = alpha_ij * M_tilde_ij[a, b]
         w_full = (m_router * cell_probs.view(B, N, 1, N, 1)).reshape(B, N * K, N * K).to(v.dtype)
         attn_out = torch.matmul(w_full, v).view(B, N, K, D)
 
@@ -391,7 +358,10 @@ class GrassAlignSABlock(GrassmannianSABlock):
         x = x_prev + g_msa * delta_attn
 
         h_mlp = self.mlp_norm(x) * (1.0 + sc_mlp) + s_mlp
-        gated = _clamp_swiglu(self.gate_proj(h_mlp), self.up_proj(h_mlp))
+        gate_pre = self.gate_proj(h_mlp)
+        if self.w_rad is not None:
+            gate_pre = gate_pre + self.w_rad(_axis_rad_feat(x))
+        gated = _clamp_swiglu(gate_pre, self.up_proj(h_mlp))
         mlp_out = _clamp_fp16_safe(self.down_proj(gated))
         if self.use_bilinear_lxr:
             mlp_out = torch.matmul(self.axis_mix_mlp.to(mlp_out.dtype), mlp_out)
@@ -416,6 +386,10 @@ class BilinearGrassSABlock(GrassmannianSABlock):
         local_radius: Optional[int] = 6,
         has_ca: bool = True,
         cond_dim: int = 256,
+        adaln_type: str = "linear",
+        adaln_bottleneck_r: int = 64,
+        use_energy_gate: bool = False,
+        blockdiag_alpha: float = 0.0,
     ):
         super().__init__(
             axis_dim=axis_dim,
@@ -424,6 +398,10 @@ class BilinearGrassSABlock(GrassmannianSABlock):
             local_radius=local_radius,
             has_ca=has_ca,
             cond_dim=cond_dim,
+            adaln_type=adaln_type,
+            adaln_bottleneck_r=adaln_bottleneck_r,
+            use_energy_gate=use_energy_gate,
+            blockdiag_alpha=blockdiag_alpha,
         )
         self.axis_mix_attn = nn.Parameter(torch.eye(NUM_AXES))
         self.axis_mix_mlp = nn.Parameter(torch.eye(NUM_AXES))
@@ -441,23 +419,13 @@ class BilinearGrassSABlock(GrassmannianSABlock):
         B, N, K, D = x_prev.shape
         H, dh = self.num_sub_heads, self.sub_head_dim
 
-        mods = self.adaln_proj(c.to(self.adaln_proj.weight.dtype)).to(x_prev.dtype)
-        shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = mods.chunk(6, dim=-1)
-        M = torch.cat([shift_msa, scale_msa, shift_mlp, scale_mlp], dim=-1)
-        stats = _repeat_adaln_stats_to_4096(_compute_adaln_stats(M, m_active))
-
-        s_msa = shift_msa.unsqueeze(2)
-        sc_msa = scale_msa.unsqueeze(2)
-        g_msa = gate_msa.unsqueeze(2)
-        s_mlp = shift_mlp.unsqueeze(2)
-        sc_mlp = scale_mlp.unsqueeze(2)
-        g_mlp = gate_mlp.unsqueeze(2)
+        s_msa, sc_msa, g_msa, s_mlp, sc_mlp, g_mlp, stats = self._compute_adaln_mods(c, x_prev.dtype, m_active)
 
         x_q = self.dca_q(x_in, h_ca, x_prev)
         x_kv = self.dca_kv(x_in, h_ca, x_prev)
 
-        ln_q = torch.log1p(x_q.float().norm(p=2, dim=-1, keepdim=True)).to(x_q.dtype)
-        ln_kv = torch.log1p(x_kv.float().norm(p=2, dim=-1, keepdim=True)).to(x_kv.dtype)
+        ln_q = _safe_log_axis_norm(x_q).to(x_q.dtype)
+        ln_kv = _safe_log_axis_norm(x_kv).to(x_kv.dtype)
         h_q = (self.attn_norm_q(x_q) + self.norm_emb_q(ln_q)) * (1.0 + sc_msa) + s_msa
         h_kv = (self.attn_norm_kv(x_kv) + self.norm_emb_kv(ln_kv)) * (1.0 + sc_msa) + s_msa
 
@@ -486,7 +454,10 @@ class BilinearGrassSABlock(GrassmannianSABlock):
         x = x_prev + g_msa * delta_attn
 
         h_mlp = self.mlp_norm(x) * (1.0 + sc_mlp) + s_mlp
-        gated = _clamp_swiglu(self.gate_proj(h_mlp), self.up_proj(h_mlp))
+        gate_pre = self.gate_proj(h_mlp)
+        if self.w_rad is not None:
+            gate_pre = gate_pre + self.w_rad(_axis_rad_feat(x))
+        gated = _clamp_swiglu(gate_pre, self.up_proj(h_mlp))
         mlp_out = _clamp_fp16_safe(self.down_proj(gated))
         mlp_out = torch.matmul(self.axis_mix_mlp.to(mlp_out.dtype), mlp_out)
         x = x + g_mlp * mlp_out
@@ -537,17 +508,24 @@ def build_matrix_alt_core(
                 phm_ffn=flags["phm_ffn"],
                 phm_rank=phm_rank,
                 cross_alpha=cross_alpha,
+                adaln_type=layer.adaln_type,
+                adaln_bottleneck_r=layer.adaln_bottleneck_r,
             )
             model.layers[idx] = new_layer
         elif kind == "grass_full" and flags["grass_align"]:
             assert isinstance(layer, GrassmannianSABlock)
+            qk_dim_align = 32 if (model.arch_version == "v2" and layer.sub_head_dim == 16) else layer.sub_head_dim
             new_layer = GrassAlignSABlock(
                 axis_dim=layer.axis_dim,
                 ffn_dim=layer.gate_proj.out_features,
-                qk_dim=layer.sub_head_dim,
+                qk_dim=qk_dim_align,
                 has_ca=layer.dca_q.has_ca,
                 cond_dim=layer.adaln_proj.in_features,
                 use_bilinear_lxr=flags["bilinear_lxr"],
+                adaln_type=layer.adaln_type,
+                adaln_bottleneck_r=layer.adaln_bottleneck_r,
+                use_energy_gate=layer.use_energy_gate,
+                blockdiag_alpha=model.blockdiag_alpha,
             )
             model.layers[idx] = new_layer
         elif kind in ("grass_full", "grass_local") and flags["bilinear_lxr"]:
@@ -559,6 +537,10 @@ def build_matrix_alt_core(
                 local_radius=layer.local_radius,
                 has_ca=layer.dca_q.has_ca,
                 cond_dim=layer.adaln_proj.in_features,
+                adaln_type=layer.adaln_type,
+                adaln_bottleneck_r=layer.adaln_bottleneck_r,
+                use_energy_gate=layer.use_energy_gate,
+                blockdiag_alpha=model.blockdiag_alpha,
             )
             model.layers[idx] = new_layer
 
@@ -571,11 +553,13 @@ def create_matrix_optimizers(
     adamw_lr: float = 3e-4,
     scale_1d_lr: float = 1.2e-3,
     weight_decay: float = 0.01,
+    orthmuon_sphere_scale: bool = True,
+    orthmuon_c_base: float = 2.26,
 ) -> Tuple[Optional[OrthMuon], torch.optim.AdamW]:
     """
     Аналог `create_alt_optimizers`, дополнительно отправляющий матрицы осевого смешивания
-    (`axis_mix`, `axis_mix_attn`, `axis_mix_mlp`, `score_temp`) в AdamW с `weight_decay = 0.0`,
-    чтобы WD не разрушал стартовую единичную диагональ I_8.
+    (`axis_mix`, `axis_mix_attn`, `axis_mix_mlp`, `score_temp`, `w_rad`, `output_gain`)
+    в корректные группы с `weight_decay = 0.0`.
     """
     raw_model = getattr(model, "module", model)
     sphere_params = []
@@ -594,9 +578,11 @@ def create_matrix_optimizers(
             or name.endswith(".ls_attn")
             or name.endswith(".ls_mlp")
             or name.endswith(".score_temp")
+            or name.endswith(".output_gain")
             or ("_norm" in name and "norm_emb" not in name)
             or ("q_norm." in name)
             or ("k_norm." in name)
+            or name.endswith("output_head.norm.weight")
         ):
             scale_1d_params.append(param)
         elif (
@@ -604,6 +590,7 @@ def create_matrix_optimizers(
             or "dca_kv." in name
             or "final_dca." in name
             or "norm_emb" in name
+            or ".w_rad." in name
             or "axis_mix" in name
             or name.endswith(".bias")
             or param.ndim < 2
@@ -616,10 +603,21 @@ def create_matrix_optimizers(
     opt_muon = None
     if sphere_params:
         opt_muon = OrthMuon(
-            [{"params": sphere_params, "lr": muon_lr, "weight_decay": 0.0, "sphere": True}],
+            [
+                {
+                    "params": sphere_params,
+                    "lr": muon_lr,
+                    "weight_decay": 0.0,
+                    "sphere": True,
+                    "sphere_scale": bool(orthmuon_sphere_scale),
+                    "sphere_c_base": float(orthmuon_c_base),
+                }
+            ],
             lr=muon_lr,
             momentum=0.95,
             ns_steps=5,
+            sphere_scale=bool(orthmuon_sphere_scale),
+            sphere_c_base=float(orthmuon_c_base),
         )
 
     adamw_groups = []
