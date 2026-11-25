@@ -1554,6 +1554,24 @@
       ],
       "summary": "ADR 141: Фаза 3 Plan C: Ограничение L_CE по уровню шума (t < 0.50), ослабление стоп-слов и отключение CE на Rollout против Unigram Mode Collapse (уточнение ADR 140)",
       "status": "accepted"
+    },
+    "decisions/142_phase3_alt_grassmannian_core_matrix_init_and_ab_protocol.md": {
+      "description": "ADR 142: Фаза 3 Alt (Plan C): 2D-Грассманианово ядро (GrassSA/GrassCA/PerAxisGRNv3), матричные оптимизации (safe), умная инициализация (all_5) и A/B-протокол с CFG-ΔSim (poc)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 142: Фаза 3 Alt (Plan C): 2D-Грассманианово ядро (GrassSA/GrassCA/PerAxisGRNv3), матричные оптимизации (safe), умная инициализация (all_5) и A/B-протокол с CFG-ΔSim",
+      "status": "poc"
+    },
+    "decisions/143_phase3_alt_fast_vocab_online_chunked_exact_ce_and_bf16_radar.md": {
+      "description": "ADR 143: Оптимизация словаря 131K × 1024 (FastVocabOptimizer): принятие NoiseRadar BF16 и случайного B_ce, отказ от Sampled Softmax (SVD rank=64) в пользу 1-проходного Online Chunked Exact CE (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 143: Оптимизация словаря 131K × 1024 (FastVocabOptimizer): принятие NoiseRadar BF16 и случайного B_ce, отказ от Sampled Softmax (SVD rank=64) в пользу 1-проходного Online Chunked Exact CE",
+      "status": "accepted"
     }
   },
   "knowledge_system": {
