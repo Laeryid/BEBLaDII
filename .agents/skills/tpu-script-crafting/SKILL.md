@@ -72,6 +72,18 @@ description: >-
 - [ ] **НЕТ `lerp_` со скаляром**: Не использовать `tensor.lerp_(..., weight=scalar)` из-за бага PyTorch/XLA, аллоцирующего CPU-тензор. Заменять на `tensor.sub_(diff * alpha_tensor)`.
 
 ### Блок E: FSDP, SPMD и Multi-Processing
+- [ ] **Актуальный API PyTorch/XLA >= 2.7 (`torch_xla.runtime` и `torch_xla.device`)**: В PyTorch/XLA 2.7+ (Kaggle TPU Python 3.12) **удалены** `xm.get_ordinal()`, `xm.get_local_ordinal()`, `xm.xrt_world_size()` (падают с `AttributeError`), а `xm.xla_device()` устарел (`DeprecationWarning`). Использовать исключительно:
+  ```python
+  import torch_xla
+  import torch_xla.runtime as xr
+
+  device = torch_xla.device()
+  world_size = xr.world_size()
+  rank = xr.global_ordinal()
+  local_rank = xr.local_ordinal()
+  is_master = (rank == 0)
+  ```
+- [ ] **Барьер `xm.rendezvous(...)` вызывается ВСЕМИ воркерами**: Никогда не помещать `xm.rendezvous(...)` внутрь веток, которые выполняются только на master-ранге (например, `if is_master:` или `if val_loader is not None:`, если `val_loader` создан только на `rank == 0`) — иначе multi-chip TPU уйдёт в вечный deadlock.
 - [ ] **Очистка `TPU_PROCESS_ADDRESSES="local"` перед `xmp.spawn`**: Контейнеры Kaggle TPU v5e-8/v3-8 по умолчанию задают `TPU_PROCESS_ADDRESSES="local"` (однопроцессный режим), что ломает `xmp.spawn` ошибкой `Invalid --2a886c8_slice_builder_worker_addresses specified. Expected 8 worker addresses, got 1`. Обязательно сбрасывать до `import torch_xla` и перед `xmp.spawn`:
   ```python
   if os.environ.get("TPU_PROCESS_ADDRESSES") == "local":

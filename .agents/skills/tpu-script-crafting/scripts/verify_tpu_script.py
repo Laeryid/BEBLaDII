@@ -42,11 +42,15 @@ class TPUASTVisitor(ast.NodeVisitor):
         self.clears_tpu_process_addresses: bool = False
         self.has_gcs_sdk: bool = False
         self.gcs_cli_lines: List[Tuple[int, str]] = []
+        self.xm_aliases: set = {"xm", "xla_model"}
+        self.removed_xm_direct_imports: Dict[str, str] = {}
 
     def visit_Import(self, node: ast.Import):
         for alias in node.names:
             if alias.name == "google.cloud.storage" or alias.name.startswith("google.cloud.storage."):
                 self.has_gcs_sdk = True
+            if alias.name == "torch_xla.core.xla_model":
+                self.xm_aliases.add(alias.asname or alias.name)
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
@@ -55,6 +59,27 @@ class TPUASTVisitor(ast.NodeVisitor):
             self.has_gcs_sdk = True
         elif mod.startswith("google.cloud.storage"):
             self.has_gcs_sdk = True
+        elif mod == "torch_xla.core":
+            for alias in node.names:
+                if alias.name == "xla_model":
+                    self.xm_aliases.add(alias.asname or alias.name)
+        elif mod == "torch_xla.core.xla_model":
+            removed_map = {
+                "get_ordinal": "xr.global_ordinal()",
+                "get_local_ordinal": "xr.local_ordinal()",
+                "xrt_world_size": "xr.world_size()",
+            }
+            for alias in node.names:
+                if alias.name in removed_map:
+                    local_name = alias.asname or alias.name
+                    self.removed_xm_direct_imports[local_name] = alias.name
+                    self.findings.append(Finding(
+                        "REMOVED_XLA_MODEL_API",
+                        "CRITICAL",
+                        f"Importing removed PyTorch/XLA >= 2.7 API 'torch_xla.core.xla_model.{alias.name}' raises ImportError/AttributeError on Kaggle/Cloud TPU.",
+                        node.lineno,
+                        f"Import 'torch_xla.runtime as xr' and use {removed_map[alias.name]} instead."
+                    ))
         self.generic_visit(node)
 
     def visit_Delete(self, node: ast.Delete):
@@ -172,9 +197,12 @@ class TPUASTVisitor(ast.NodeVisitor):
         self.in_train_loop = prev_train_loop
 
     def visit_If(self, node: ast.If):
-        # Track if we are inside a master ordinal check (e.g. if rank == 0 or xm.is_master_ordinal())
+        # Track if we are inside a master ordinal check (e.g. if rank == 0 or xr.global_ordinal() == 0)
         test_str = ast.unparse(node.test) if hasattr(ast, "unparse") else ""
-        is_master = any(k in test_str for k in ["is_master", "rank == 0", "local_rank == 0"])
+        is_master = any(
+            k in test_str
+            for k in ["is_master", "rank == 0", "local_rank == 0", "global_ordinal() == 0", "local_ordinal() == 0"]
+        )
         
         # Check: dynamic random condition inside train loop (e.g. if torch.rand(1).item() < 0.5)
         if self.in_loop > 0:
@@ -431,6 +459,49 @@ class TPUASTVisitor(ast.NodeVisitor):
                         first_cmd = parts[0]
                 if first_cmd in ("gsutil", "gcloud"):
                     self.gcs_cli_lines.append((node.lineno, first_cmd))
+
+        # 10. Check: Removed & deprecated torch_xla.core.xla_model APIs (PyTorch/XLA >= 2.7)
+        removed_xm_apis = {
+            "get_ordinal": "xr.global_ordinal()",
+            "get_local_ordinal": "xr.local_ordinal()",
+            "xrt_world_size": "xr.world_size()",
+        }
+        if isinstance(node.func, ast.Attribute):
+            owner_str = ast.unparse(node.func.value) if hasattr(ast, "unparse") else ""
+            if owner_str in self.xm_aliases or owner_str.endswith(".xla_model"):
+                if attr_name in removed_xm_apis:
+                    self.findings.append(Finding(
+                        "REMOVED_XLA_MODEL_API",
+                        "CRITICAL",
+                        f"'{owner_str}.{attr_name}()' was removed in PyTorch/XLA >= 2.7 and raises AttributeError on Kaggle/Cloud TPU.",
+                        node.lineno,
+                        f"Use {removed_xm_apis[attr_name]} (from 'import torch_xla.runtime as xr') instead."
+                    ))
+                elif attr_name == "xla_device":
+                    self.findings.append(Finding(
+                        "DEPRECATED_XLA_DEVICE_API",
+                        "WARNING",
+                        f"'{owner_str}.xla_device()' is deprecated in PyTorch/XLA >= 2.7 (emits DeprecationWarning).",
+                        node.lineno,
+                        "Use 'torch_xla.device()' instead."
+                    ))
+                elif attr_name == "rendezvous" and self.in_master_check:
+                    self.findings.append(Finding(
+                        "RENDEZVOUS_MASTER_ONLY_DEADLOCK",
+                        "CRITICAL",
+                        f"'{owner_str}.rendezvous()' called inside a master-only branch causes a multi-chip TPU deadlock.",
+                        node.lineno,
+                        "Move rendezvous() outside the master-only condition so all TPU ranks reach the barrier."
+                    ))
+        elif isinstance(node.func, ast.Name) and node.func.id in self.removed_xm_direct_imports:
+            orig_name = self.removed_xm_direct_imports[node.func.id]
+            self.findings.append(Finding(
+                "REMOVED_XLA_MODEL_API",
+                "CRITICAL",
+                f"'{orig_name}()' was removed in PyTorch/XLA >= 2.7 and raises AttributeError/ImportError on Kaggle/Cloud TPU.",
+                node.lineno,
+                f"Use {removed_xm_apis[orig_name]} (from 'import torch_xla.runtime as xr') instead."
+            ))
 
         self.generic_visit(node)
 

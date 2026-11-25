@@ -115,3 +115,13 @@ $$\frac{\Delta \theta}{\theta} \approx 10^{-5}$$
 ### Отсутствие `gsutil`/`gcloud` CLI на Kaggle TPU (коммит `ea5a61e`)
 - **Симптом:** Выгрузка и авто-резюм чекпоинтов из GCS тихо не работают, так как в контейнере Kaggle TPU отсутствуют бинарники `gcloud`/`gsutil`.
 - **Решение:** Использовать `google-cloud-storage` Python SDK (`google.cloud.storage.Client()`) как основной транспорт GCS, а вызовы `gsutil`/`gcloud` оставлять только как fallback под `shutil.which(...)`.
+
+### Удаление `xm.get_ordinal()` / `xm.get_local_ordinal()` / `xm.xrt_world_size()` в PyTorch/XLA >= 2.7
+- **Симптом:** Воркеры `xmp.spawn` на Kaggle TPU (Python 3.12, PyTorch/XLA >= 2.7) падают сразу при старте с `AttributeError: module 'torch_xla.core.xla_model' has no attribute 'get_ordinal'`, а перед этим сыпется `DeprecationWarning: Use torch_xla.device instead` на `xm.xla_device()`.
+- **Причина:** В PyTorch/XLA 2.7+ окончательно удалены legacy-обёртки из `torch_xla.core.xla_model`, перенесённые в `torch_xla.runtime` (`xr`). Локальный мок `fake_torch_xla` ранее продолжал экспортировать удалённые функции, поэтому CPU smoke test пропускал ошибку.
+- **Решение:** Перейти на `torch_xla.device()`, `xr.global_ordinal()`, `xr.local_ordinal()`, `xr.world_size()` и `is_master = (rank == 0)`. Удалить `get_ordinal`/`get_local_ordinal`/`xrt_world_size` из `fake_torch_xla` и добавить правило `REMOVED_XLA_MODEL_API` в Level 2 AST-аудит (`verify_tpu_script.py`).
+
+### Deadlock на `xm.rendezvous()` внутри master-only условия валидации
+- **Симптом:** На 8-чиповом TPU обучение зависает на первом же шаге валидации (`eval_every`), хотя 1-чиповый CPU smoke test проходит успешно.
+- **Причина:** `val_loader` инициализируется только при `if is_master:`, а барьер `xm.rendezvous(f"eval_done_{global_step}")` стоял внутри `if val_loader is not None and (global_step % args.eval_every == 0):`. Не-master воркеры (`rank 1..7`) пропускали барьер, а `rank 0` вечно ждал их на `rendezvous`.
+- **Решение:** Проверять расписание `if global_step % args.eval_every == 0:` на всех воркерах, внутри выполнять валидацию под `if is_master and val_loader is not None:`, а `xm.rendezvous(...)` вызывать безусловно для всех рангов.
