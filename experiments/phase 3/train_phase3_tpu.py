@@ -2244,7 +2244,7 @@ def save_checkpoint_tpu(
         payload["opt_muon_state_dict"] = opt_muon.state_dict()
 
     xm.save(payload, path, master_only=True)
-    if xm.is_master_ordinal():
+    if xr.global_ordinal() == 0:
         print(f"[Checkpoint] Шаг {step} сохранен: {path}", flush=True)
         if sync_gcs_flag and gcs_dir:
             ok = sync_to_gcs(path, gcs_dir)
@@ -2258,10 +2258,14 @@ def save_checkpoint_tpu(
 
 def _mp_train_worker(index: int, args: argparse.Namespace, env: EnvironmentConfig, resume_path: Optional[str]) -> None:
     """Рабочий процесс одного TPU-чипа (запускается через xmp.spawn)."""
-    device = xm.xla_device()
-    world_size = xr.global_runtime_device_count() if hasattr(xr, "global_runtime_device_count") else 1
-    rank = xm.get_ordinal()
-    is_master = xm.is_master_ordinal()
+    device = torch_xla.device()
+    world_size = (
+        xr.world_size()
+        if hasattr(xr, "world_size")
+        else (xr.global_runtime_device_count() if hasattr(xr, "global_runtime_device_count") else 1)
+    )
+    rank = xr.global_ordinal()
+    is_master = rank == 0
     use_bf16 = device.type == "xla"
 
     torch.manual_seed(42 + rank)
@@ -2626,9 +2630,9 @@ def _mp_train_worker(index: int, args: argparse.Namespace, env: EnvironmentConfi
             del V_0_hat, adaln_stats, sink_weights, loss_geo, loss, l_ce, ce_acc, m_dict
             xm.mark_step()
 
-            # 6. Валидация на EMA-весах (только master)
-            if val_loader is not None and (global_step % args.eval_every == 0):
-                if is_master:
+            # 6. Валидация на EMA-весах (только master, но rendezvous обязателен для всех воркеров)
+            if global_step % args.eval_every == 0:
+                if is_master and val_loader is not None:
                     val_res = evaluate_phase3_tpu(
                         model=model,
                         ema=ema,
