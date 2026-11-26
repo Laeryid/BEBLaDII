@@ -2164,6 +2164,7 @@ def load_alt_checkpoint(
     opt_adamw: torch.optim.AdamW,
     device: torch.device,
     ema: Optional[EMAModel] = None,
+    scaler: Optional[torch.amp.GradScaler] = None,
 ) -> int:
     ckpt = torch.load(path, map_location=device, weights_only=False)
     raw_model = getattr(model, "module", model)
@@ -2181,6 +2182,11 @@ def load_alt_checkpoint(
             print(f"[Resume Warning] OrthMuon state не загружен: {e}", flush=True)
     if ema is not None and ckpt.get("ema_state_dict") is not None:
         ema.load_state_dict(ckpt["ema_state_dict"])
+    if scaler is not None and ckpt.get("scaler_state_dict") is not None:
+        try:
+            scaler.load_state_dict(ckpt["scaler_state_dict"])
+        except Exception as e:
+            print(f"[Resume Warning] GradScaler state не загружен: {e}", flush=True)
 
     step = int(ckpt.get("step", 0))
     print(f"[Resume] Восстановлено состояние Phase 3 Alt с шага {step} ({path}).", flush=True)
@@ -2306,13 +2312,11 @@ def run_alt_training_loop(
     sync_gcs_flag: bool,
     use_wandb: bool,
     fast_vocab: Optional[FastVocabOptimizer] = None,
+    scaler: Optional[torch.amp.GradScaler] = None,
 ) -> None:
     raw_model = getattr(model, "module", model)
-    scaler = (
-        torch.amp.GradScaler("cuda", init_scale=16384.0, growth_interval=1000)
-        if env.use_grad_scaler
-        else None
-    )
+    if scaler is None and env.use_grad_scaler:
+        scaler = torch.amp.GradScaler("cuda", init_scale=16384.0, growth_interval=1000)
 
     sw_dev = stopword_mask.to(env.device)
     sep_cpu, _ = canonicalize_cell_basis(sep_concept.float())
@@ -2494,7 +2498,7 @@ def run_alt_training_loop(
 
                 # Сквозной токенный CE через замороженный Декодер (если включен)
                 w_ce = float(args.ce_weight) * min(
-                    1.0, float(max(1, step - start_step)) / float(max(1, args.ce_warmup_steps))
+                    1.0, float(max(1, step)) / float(max(1, args.ce_warmup_steps))
                 )
                 if decoder is not None and float(args.ce_weight) > 0.0 and (not use_rollout):
                     if fast_vocab is not None:
@@ -2643,7 +2647,8 @@ def run_alt_training_loop(
                 f"  [Alt Eval @ {step}] Sim_Gr={val_res['val/sim_gr_denoising']:.4f} (hi={val_res['val/sim_gr_hi']:.4f}) | "
                 f"TokAcc={val_res.get('val/tok_acc_low', 0.0):.3f} (hi={val_res.get('val/tok_acc_hi', 0.0):.3f}, CE_hi={val_res.get('val/ce_loss_hi', 0.0):.2f}) | "
                 f"CFG={val_res['val/cfg_contrast']:.4f} (hi={val_res['val/cfg_contrast_hi']:.4f}) | "
-                f"CFG_dSim(t50/t75)={val_res.get('val/cfg_dsim_t50', 0.0):+.4f}/{val_res.get('val/cfg_dsim_t75', 0.0):+.4f} | "
+                f"CFG_dSim(t50/t75/t95)={val_res.get('val/cfg_dsim_t50', 0.0):+.4f}/"
+                f"{val_res.get('val/cfg_dsim_t75', 0.0):+.4f}/{val_res.get('val/cfg_dsim_t95', 0.0):+.4f} | "
                 f"VOID_F1={val_res['val/void_f1']:.4f} (pm1={val_res['val/void_start_pm1']:.3f}) | "
                 f"orth={val_res.get('val/orth_err', 0.0):.3f} spec={val_res.get('val/spec_l1', 0.0):.4f} | "
                 f"blk(s/y/p)={val_res.get('val/err_sem', 0.0):.4f}/{val_res.get('val/err_syn', 0.0):.4f}/{val_res.get('val/err_pos', 0.0):.4f} | "
@@ -2722,7 +2727,7 @@ def evaluate_cfg_dsim(
     use_amp: bool,
     amp_dtype: torch.dtype,
     max_batches: int = 4,
-    t_levels: Tuple[float, ...] = (0.50, 0.75),
+    t_levels: Tuple[float, ...] = (0.50, 0.75, 0.95),
     seed: int = 4242,
 ) -> Dict[str, float]:
     """
@@ -2870,7 +2875,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ce-weight", "--ce_weight", dest="ce_weight", type=float, default=0.05)
     parser.add_argument("--ce-warmup-steps", "--ce_warmup_steps", dest="ce_warmup_steps", type=int, default=300)
     parser.add_argument("--ce-max-tokens", "--ce_max_tokens", dest="ce_max_tokens", type=int, default=512)
-    parser.add_argument("--ce-t-max", "--ce_t_max", dest="ce_t_max", type=float, default=0.50)
+    parser.add_argument("--ce-t-max", "--ce_t_max", dest="ce_t_max", type=float, default=0.70)
     parser.add_argument("--ce-stopword-weight", "--ce_stopword_weight", dest="ce_stopword_weight", type=float, default=0.25)
     parser.add_argument(
         "--no-fast-vocab", "--no_fast_vocab", dest="no_fast_vocab", action="store_true",
@@ -3173,9 +3178,16 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         orthmuon_c_base=float(getattr(args, "orthmuon_c_base", 2.26)),
     )
 
+    scaler = (
+        torch.amp.GradScaler("cuda", init_scale=16384.0, growth_interval=1000)
+        if env.use_grad_scaler
+        else None
+    )
     start_step = 0
     if has_resume_ckpt and resume_path is not None:
-        start_step = load_alt_checkpoint(resume_path, model, opt_muon, opt_adamw, env.device, ema=ema)
+        start_step = load_alt_checkpoint(
+            resume_path, model, opt_muon, opt_adamw, env.device, ema=ema, scaler=scaler
+        )
 
     sampler = (
         DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
@@ -3274,6 +3286,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             sync_gcs_flag=sync_gcs_flag,
             use_wandb=use_wandb,
             fast_vocab=fast_vocab,
+            scaler=scaler,
         )
     finally:
         if is_ddp and dist.is_initialized():
@@ -3332,7 +3345,7 @@ TRAINING_CONFIG: Dict[str, Any] = {
     "ce_weight": 0.05,
     "ce_warmup_steps": 300,
     "ce_max_tokens": 512,
-    "ce_t_max": 0.50,
+    "ce_t_max": 0.70,
     "ce_stopword_weight": 0.25,
     "ce_mode": "exact_chunked",
     "ce_vocab_chunk_size": 16384,

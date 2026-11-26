@@ -28,7 +28,7 @@ PROFILES: Dict[str, Dict[str, Any]] = {
             "- **Инференс (Этап 1):** Procrustes CFG (`8×8 SVD fp32`), `t_grid=sd3 (shift=0.55)`, `limited_cfg=[0.25, 0.95]`, кэш KV промпта + батчевый `2B` CFG с пропуском `uncond` в `GrassCA`, маскированный `NoiseRadar (~locked)` + `crystal_lock_max_t=0.15` + early-stop по `VOID`-хвосту\n"
             "- **Инициализация:** `all_5` (`wiener_damp=0.7`, `init_samples=128`)\n"
             "- **Словарь:** `NoiseRadar` в нативном `FP16/BF16` + 1-проходный точный `Online Chunked Exact CE` (`chunk=16384`, `0%` смещения) + случайный отбор `B_ce` (`ce_batch_select=random`, `0.5`)\n"
-            "- **Валидация:** `SimGr(low/hi)`, `CFG-ΔSim(t50/t75)`, `TokAcc/CE`, `orth_err / spec_l1`, `blk(sem/syn/pos)`, `adaln r_eff/k99`, живая генерация `t=1→0` каждые 500 шагов\n"
+            "- **Валидация:** `SimGr(low/hi)`, `CFG-ΔSim(t50/t75/t95)`, `TokAcc/CE`, `orth_err / spec_l1`, `blk(sem/syn/pos)`, `adaln r_eff/k99`, живая генерация `t=1→0` каждые 500 шагов\n"
             "- **GCS чекпоинты:** `gs://bebladii-weigths-us/planC/Phase3_Alt_Diffusion/v2_safe_all5/checkpoints/`\n"
             "- **Подключите в Kaggle Input:** `bogdanbuliakov/bebladii-planc-phase1-data` и `bogdanbuliakov/bebladii-planc-phase2-data` (ничего нового по словарю добавлять не нужно!)\n"
             "- **Секреты Kaggle:** `WANDB_API_KEY`, `GCP_SA_JSON`"

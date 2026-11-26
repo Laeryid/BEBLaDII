@@ -267,8 +267,13 @@ def compute_wiener_axis_betas(
     V_0 = torch.cat([sep_exp, v_ans], dim=1)  # (n, 128, 8, 128)
     i_last = torch.stack([train_items[i]["i_last"].long() for i in range(n)], dim=0)
 
-    # Эмпирический RMS по каждой из 8 осей на реальных контентных ячейках
-    axis_rms = v_ans.pow(2).mean(dim=(0, 1, 3)).sqrt()  # (8,)
+    # Эмпирический RMS по каждой из 8 осей строго на реальных контентных ячейках (без VOID-хвоста)
+    cell_idx = torch.arange(v_ans.shape[1], dtype=torch.long).unsqueeze(0)  # (1, 127)
+    content_mask = cell_idx < i_last.unsqueeze(1).clamp(min=1)              # (n, 127)
+    if content_mask.any():
+        axis_rms = v_ans[content_mask].pow(2).mean(dim=(0, 2)).sqrt()       # (8,)
+    else:
+        axis_rms = v_ans.pow(2).mean(dim=(0, 1, 3)).sqrt()                  # (8,)
 
     num = torch.zeros(NUM_AXES, dtype=torch.float64)
     den = torch.zeros(NUM_AXES, dtype=torch.float64)
