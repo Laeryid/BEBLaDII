@@ -4,14 +4,14 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~1119 (excluding excluded directories)
+**Total files in project:** ~1123 (excluding excluded directories)
 **Updated:** 2026-11-27
 
 ```
 BEBLaDII/
 |-- .know/  *(empty)*
 |-- data/  *(empty)*
-|-- experiments/  *609 files*
+|-- experiments/  *613 files*
 |   |-- Plan A/  *15 files*
 |   |   |-- phase 1/  *4 files*
 |   |   |-- phase 2/  *3 files*
@@ -35,12 +35,12 @@ BEBLaDII/
 |   |   |-- Kaggle/  *4 files*
 |   |   |-- checkpoints/  *1 files*
 |   |   `-- output/  *1 files*
-|   `-- phase 3 alt/  *20 files*
+|   `-- phase 3 alt/  *24 files*
 |       |-- Kaggle/  *3 files*
 |       |-- checkpoints/  *(empty)*
-|       `-- output/  *4 files*
+|       `-- output/  *7 files*
 |-- hugging face/  *2 files*
-|-- ideas/  *97 files*
+|-- ideas/  *98 files*
 |   `-- LaDiR_ Latent Diffusion Enhances LLMs for Text Reasoning_files/  *18 files*
 |-- kaggle_upload_1_2/  *1 files*
 |-- posts/  *30 files*
@@ -57,18 +57,16 @@ BEBLaDII/
 |   |   |-- rag/  *1 files*
 |   |   `-- utils/  *7 files*
 |   `-- beb_la_dii.egg-info/  *5 files*
-|-- storage/  *37 files*
+|-- storage/  *36 files*
 |   |-- components/  *20 files*
 |   |   |-- decoder/  *3 files*
 |   |   |-- encoder/  *3 files*
 |   |   |-- plan B/  *5 files*
 |   |   `-- tokenizer/  *6 files*
 |   |-- dictionaries/  *1 files*
-|   |-- experiments/  *15 files*
-|   |   |-- 20260613 Phase 3 ADR 31/  *13 files*
-|   |   `-- phase3/  *1 files*
-|   `-- prebuilt/  *1 files*
-|       `-- latentBERT/  *1 files*
+|   `-- experiments/  *15 files*
+|       |-- 20260613 Phase 3 ADR 31/  *13 files*
+|       `-- phase3/  *1 files*
 |-- tests/  *9 files*
 `-- tmp/  *8 files*
     `-- test_tracker/  *2 files*

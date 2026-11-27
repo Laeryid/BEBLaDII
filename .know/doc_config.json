@@ -1598,6 +1598,15 @@
       ],
       "summary": "ADR 145: Квантизация замороженной Системы 1 (GrassmannianEncoder и GrassmannianDecoder): пресеты весов, общий INT8-словарь и автопереключение по режиму и ускорителю",
       "status": "accepted"
+    },
+    "decisions/146_phase3_alt_v2_ab_step3000_safe_victory_and_analytics.md": {
+      "description": "ADR 146: Итоги A/B-эксперимента Phase 3 Alt v2 на шаге 3000 («3000 шагов правды»): победа safe (22.94M, all_5) над control (31.81M, dense + idea4), закрытие ветки dense и аналитический пайплайн (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [],
+      "summary": "ADR 146: Итоги A/B-эксперимента Phase 3 Alt v2 на шаге 3000 («3000 шагов правды»): победа safe (22.94M, all_5) над control (31.81M, dense + idea4), закрытие ветки dense и аналитический пайплайн",
+      "status": "accepted"
     }
   },
   "knowledge_system": {
