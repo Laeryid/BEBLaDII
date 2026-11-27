@@ -520,7 +520,88 @@ def main() -> None:
         flush=True,
     )
 
-    print("=== ALL 12 PHASE 3 ALT (STAGE 0 + 1 + 2 v2) + VOCAB + MATRIX TESTS PASSED ===", flush=True)
+    print("[13/13] Checking System 1 quantization (policy matrix, BakedLinear, Int8RowwiseLinear/Embedding, INT8 FastVocab CE/Radar)...", flush=True)
+    from storage.components.plan_c_layers import SphereLinear as _SphereLinear
+    from storage.components.quantization import (
+        BakedLinear,
+        Int8RowwiseEmbedding,
+        Int8RowwiseLinear,
+        resolve_system1_quant_policy,
+    )
+
+    # 13a. Политика переключения по режиму и ускорителю
+    p_tr_cpu = resolve_system1_quant_policy(mode="train", device="cpu", quant_mode="auto")
+    p_inf_cpu = resolve_system1_quant_policy(mode="inference", device="cpu", quant_mode="auto")
+    p_tr_xla = resolve_system1_quant_policy(mode="train", device="xla:0", quant_mode="auto")
+    p_inf_xla = resolve_system1_quant_policy(mode="inference", device="xla:0", quant_mode="auto")
+    assert p_tr_cpu.quant_mode == "emb_int8" and (not p_tr_cpu.decoder_layers_int8), f"Неверная train+cpu политика: {p_tr_cpu}"
+    assert p_inf_cpu.quant_mode == "int8" and p_inf_cpu.decoder_layers_int8 and p_inf_cpu.encoder_layers_int8
+    assert p_tr_xla.quant_mode == "half" and p_tr_xla.layer_dtype == torch.bfloat16
+    assert p_inf_xla.quant_mode == "half" and p_inf_xla.layer_dtype == torch.bfloat16
+
+    # 13b. BakedLinear и Int8RowwiseLinear из SphereLinear + защита буферов от .to(bf16)
+    sph = _SphereLinear(64, 128, bias=False)
+    baked = BakedLinear.from_module(sph, dtype=torch.bfloat16)
+    q_lin = Int8RowwiseLinear.from_module(sph, use_cpu_onednn=True)
+    q_lin.to(dtype=torch.bfloat16)  # не должен испортить q_weight(int8) и row_scale(fp32)
+    assert q_lin.q_weight.dtype == torch.int8 and q_lin.row_scale.dtype == torch.float32
+    x_q = torch.randn(2, 16, 64, requires_grad=True)
+    y_ref = sph(x_q)
+    y_baked = baked(x_q)
+    y_baked.sum().backward()
+    assert x_q.grad is not None and torch.isfinite(x_q.grad).all()
+    with torch.no_grad():
+        y_q = q_lin(x_q.detach())
+    cos_lin = float(F.cosine_similarity(y_ref.detach().flatten(), y_q.flatten(), dim=0).item())
+    assert cos_lin > 0.999, f"Низкая точность Int8RowwiseLinear: cos={cos_lin}"
+
+    # 13c. Int8RowwiseEmbedding + FastVocabOptimizer (0 копий lm_head_unit, точный CE backward и Radar)
+    W_v = torch.randn(2048, 64) * 0.1
+    emb_q = Int8RowwiseEmbedding.from_weight(W_v, out_dtype=torch.float32, use_cpu_onednn=True)
+    emb_q.to(dtype=torch.bfloat16)
+    assert emb_q.q_weight.dtype == torch.int8 and emb_q.row_scale.dtype == torch.float32
+    ids_q = torch.randint(0, 2048, (2, 16))
+    emb_err = (F.embedding(ids_q, W_v) - emb_q(ids_q)).abs().max().item()
+    assert emb_err < 5e-3, f"Слишком большая ошибка Int8RowwiseEmbedding: {emb_err}"
+
+    fv_q = FastVocabOptimizer(
+        lm_head_weight=emb_q.q_weight,
+        gemm_dtype=torch.float32,
+        ce_mode="exact_chunked",
+        ce_vocab_chunk_size=512,
+        lm_head_row_scale=emb_q.row_scale,
+        lm_head_unit_scale=emb_q.unit_scale,
+        tied_int8_embedding=emb_q,
+        use_cpu_onednn=True,
+    )
+    assert fv_q.is_int8_vocab and fv_q.lm_head_unit is None, "Для INT8-словаря не должен аллоцироваться lm_head_unit!"
+
+    h_ce1 = torch.randn(32, 64, requires_grad=True)
+    h_ce2 = h_ce1.detach().clone().requires_grad_(True)
+    tgt_ce = torch.randint(0, 2048, (32,))
+    loss_ref = F.cross_entropy(F.linear(h_ce1, W_v), tgt_ce)
+    loss_ref.backward()
+    per_ce_q, corr_q = fv_q.compute_exact_chunked_ce_from_hidden(
+        h_ce2, tgt_ce, torch.ones(32, dtype=torch.bool), emb_q.q_weight
+    )
+    per_ce_q.mean().backward()
+    gcos_q = float(F.cosine_similarity(h_ce1.grad.flatten(), h_ce2.grad.flatten(), dim=0).item())
+    assert gcos_q > 0.999, f"Низкий grad_cos INT8 Online Chunked CE: {gcos_q}"
+
+    # NoiseRadar через INT8 vs FP32
+    h_unp_q = torch.randn(2, 8, 64)
+    nr_ref = NoiseRadarHead(hidden_size=64, num_axes=8, chunk_size=4)
+    inv_n_ref = 1.0 / W_v.norm(p=2, dim=-1).clamp(min=1e-6)
+    st_fp32 = nr_ref.compute_dict_stats(h_unp_q, W_v, inv_n_ref, vocab_chunk_size=512)
+    st_int8 = fv_q.fast_compute_dict_stats(h_unp_q, vocab_chunk_size=512)
+    radar_err = (st_fp32 - st_int8).abs().max().item()
+    assert radar_err < 1e-2, f"Большая ошибка INT8 NoiseRadar: {radar_err}"
+    print(
+        f"    -> lin_cos={cos_lin:.6f}, emb_err={emb_err:.2e}, ce_gcos={gcos_q:.6f}, radar_max_err={radar_err:.4f} (OK)",
+        flush=True,
+    )
+
+    print("=== ALL 13 PHASE 3 ALT (STAGE 0 + 1 + 2 v2) + VOCAB + MATRIX + QUANT TESTS PASSED ===", flush=True)
 
 
 if __name__ == "__main__":

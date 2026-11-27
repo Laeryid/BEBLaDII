@@ -69,6 +69,7 @@ for _p in (str(PROJECT_ROOT), str(PHASE3_DIR), str(ALT_DIR)):
 
 from storage.components.decoder import get_decoder
 from storage.components.encoder import get_encoder
+from storage.components.quantization import estimate_model_memory_mb
 from storage.components.plan_c_layers import (
     RMSNorm,
     RotaryEmbedding128,
@@ -2810,6 +2811,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cuda", "cpu"], help="Устройство исполнения")
     parser.add_argument("--amp-dtype", "--amp_dtype", dest="amp_dtype", type=str, default="auto", choices=["auto", "fp16", "bf16", "fp32"])
     parser.add_argument("--cpu-bf16", "--cpu_bf16", dest="cpu_bf16", action="store_true", help="Включить bfloat16 autocast на CPU")
+    parser.add_argument(
+        "--sys1-quant", "--sys1_quant", dest="sys1_quant", type=str, default="auto",
+        choices=["auto", "fp32", "half", "fp16", "bf16", "emb_int8", "int8"],
+        help="Режим квантизации замороженной Системы 1 (Encoder+Decoder): auto (по ускорителю и --sys1-mode), fp32, half, emb_int8, int8",
+    )
+    parser.add_argument(
+        "--sys1-mode", "--sys1_mode", dest="sys1_mode", type=str, default="train",
+        choices=["train", "inference"],
+        help="Режим работы Системы 1 для --sys1-quant=auto: train (безопасный backward CE + emb_int8) или inference (полный int8)",
+    )
     parser.add_argument("--num-threads", "--num_threads", dest="num_threads", type=int, default=0, help="Ограничить число CPU-потоков PyTorch (0 = по умолчанию)")
 
     # Архитектура и матричные оптимизации
@@ -3018,15 +3029,44 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 
     # 1. Замороженная Система 1 (read-only) и опорные концепты
     tokenizer = get_tokenizer()
-    encoder = get_encoder(weights_path=env.encoder_weights_path, device=env.device, eval_mode=True)
-    decoder = get_decoder(weights_path=env.decoder_weights_path, encoder=encoder, device=env.device, eval_mode=True)
+    sys1_amp = env.amp_dtype if env.use_amp else None
+    encoder = get_encoder(
+        weights_path=env.encoder_weights_path,
+        device=env.device,
+        eval_mode=True,
+        quant_mode=args.sys1_quant,
+        mode=args.sys1_mode,
+        amp_dtype=sys1_amp,
+    )
+    decoder = get_decoder(
+        weights_path=env.decoder_weights_path,
+        encoder=encoder,
+        device=env.device,
+        eval_mode=True,
+        quant_mode=args.sys1_quant,
+        mode=args.sys1_mode,
+        amp_dtype=sys1_amp,
+    )
     for p in list(encoder.parameters()) + list(decoder.parameters()):
         p.requires_grad_(False)
+    if is_main_process:
+        q_pol = getattr(decoder, "quant_policy", None)
+        enc_mb = estimate_model_memory_mb(encoder)
+        dec_mb = estimate_model_memory_mb(decoder)
+        if q_pol is not None:
+            print(
+                f"[System1 Quant] mode={q_pol.mode} | dev={q_pol.device_type} | quant={q_pol.quant_mode} "
+                f"(enc={q_pol.encoder_preset}, dec={q_pol.decoder_preset}, layer={q_pol.layer_dtype}, "
+                f"radar={q_pol.radar_dtype}, onednn={q_pol.use_cpu_onednn_int8}) | "
+                f"mem: enc={enc_mb:.1f} MB, dec={dec_mb:.1f} MB | {q_pol.reason}",
+                flush=True,
+            )
 
     fast_vocab: Optional[FastVocabOptimizer] = None
     if not args.no_fast_vocab:
         fv_t0 = time.time()
-        fv_dtype = env.amp_dtype if env.use_amp else torch.float32
+        q_pol = getattr(decoder, "quant_policy", None)
+        fv_dtype = q_pol.radar_dtype if q_pol is not None else (env.amp_dtype if env.use_amp else torch.float32)
         fast_vocab = FastVocabOptimizer.from_decoder(
             decoder=decoder,
             gemm_dtype=fv_dtype,
@@ -3047,7 +3087,8 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             )
             print(
                 f"[FastVocab] Подключён за {time.time() - fv_t0:.2f}s "
-                f"(radar_dtype={fv_dtype}, ce_mode={fast_vocab.ce_mode}[{ce_desc}], "
+                f"(vocab={'int8' if fast_vocab.is_int8_vocab else 'float'}, radar_dtype={fv_dtype}, "
+                f"ce_mode={fast_vocab.ce_mode}[{ce_desc}], "
                 f"ce_batch_frac={fast_vocab.ce_batch_fraction:.2f}, ce_batch_select={fast_vocab.ce_batch_select})",
                 flush=True,
             )
@@ -3297,6 +3338,8 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 TRAINING_CONFIG: Dict[str, Any] = {
     "smoke_test": False,
     "device": "auto",
+    "sys1_quant": "auto",
+    "sys1_mode": "train",
     "use_dataparallel": True,
     "arch_preset": "standard",
     "arch_version": "v2",

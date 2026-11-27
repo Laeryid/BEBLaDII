@@ -20,6 +20,15 @@ try:
         clamp_to_unit_ball,
         safe_lorentzian_eigh,
     )
+    from ..quantization import (
+        Int8RowwiseEmbedding,
+        System1QuantPolicy,
+        is_quantized_checkpoint,
+        load_quantized_encoder_payload,
+        quantize_encoder_in_place,
+        resolve_component_weights_path,
+        resolve_system1_quant_policy,
+    )
 except ImportError:
     from plan_c_layers import (
         ModernBERTLayer,
@@ -30,6 +39,15 @@ except ImportError:
         canonicalize_cell_basis,
         clamp_to_unit_ball,
         safe_lorentzian_eigh,
+    )
+    from quantization import (
+        Int8RowwiseEmbedding,
+        System1QuantPolicy,
+        is_quantized_checkpoint,
+        load_quantized_encoder_payload,
+        quantize_encoder_in_place,
+        resolve_component_weights_path,
+        resolve_system1_quant_policy,
     )
 
 ENCODER_DIR = Path(__file__).resolve().parent
@@ -75,7 +93,9 @@ class ContextSyntaxEncoder(nn.Module):
         for layer in self.layers:
             x = layer(x, cos, sin)
         x = self.final_norm(x)
-        h_syn = self.syntax_norm(self.syntax_proj(x))
+        proj_w_dtype = self.syntax_proj.weight.dtype
+        x_proj = x if (torch.is_autocast_enabled(x.device.type) or x.dtype == proj_w_dtype) else x.to(proj_w_dtype)
+        h_syn = self.syntax_norm(self.syntax_proj(x_proj))
         B, T, _ = h_syn.shape
         return h_syn.view(B, T, self.num_axes, 16)
 
@@ -96,8 +116,17 @@ class BlockDiagonalVAEHead(nn.Module):
     def forward(
         self, h_sem: torch.Tensor, h_syn: torch.Tensor, h_pos: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        mu = torch.cat([self.mu_sem(h_sem), self.mu_syn(h_syn), self.mu_pos(h_pos)], dim=-1)
-        logvar = torch.cat([self.logvar_sem(h_sem), self.logvar_syn(h_syn), self.logvar_pos(h_pos)], dim=-1)
+        # Защищённый островок: при FP32 весах VAE-головы считаем строго в их точности (тонкие каналы syn/pos)
+        w_dtype = self.mu_sem.weight.dtype
+        if w_dtype == torch.float32:
+            with torch.autocast(device_type=h_sem.device.type, enabled=False):
+                hs, hy, hp = h_sem.float(), h_syn.float(), h_pos.float()
+                mu = torch.cat([self.mu_sem(hs), self.mu_syn(hy), self.mu_pos(hp)], dim=-1)
+                logvar = torch.cat([self.logvar_sem(hs), self.logvar_syn(hy), self.logvar_pos(hp)], dim=-1)
+            return mu, logvar
+        hs, hy, hp = h_sem.to(w_dtype), h_syn.to(w_dtype), h_pos.to(w_dtype)
+        mu = torch.cat([self.mu_sem(hs), self.mu_syn(hy), self.mu_pos(hp)], dim=-1)
+        logvar = torch.cat([self.logvar_sem(hs), self.logvar_syn(hy), self.logvar_pos(hp)], dim=-1)
         return mu, logvar
 
 
@@ -285,11 +314,31 @@ def get_encoder(
     device: Union[str, torch.device] = "cpu",
     dtype: Optional[torch.dtype] = None,
     eval_mode: bool = True,
+    quant_mode: str = "fp32",
+    mode: str = "inference",
+    amp_dtype: Optional[torch.dtype] = None,
 ) -> GrassmannianEncoder:
-    """Загружает GrassmannianEncoder из storage/components/encoder."""
+    """
+    Загружает GrassmannianEncoder из storage/components/encoder с поддержкой квантизации.
+
+    Параметры квантизации и переключения:
+      - quant_mode: 'fp32' (по умолчанию, полная обратная совместимость), 'auto' (автовыбор по mode+device),
+                    'half' ('fp16'/'bf16'), 'emb_int8', 'int8'.
+      - mode: 'train' (слои в FP16/BF16/FP32, словарь per-row INT8) или 'inference' (полный per-row INT8 на CPU/GPU).
+      - amp_dtype: желаемый compute dtype (например env.amp_dtype).
+    Если готовый квантизованный файл (weights_emb_int8_fp16.pt / weights_int8.pt / weights_fp16.pt) отсутствует
+    рядом с weights_path (например на Kaggle со старым датасетом), конвертация выполняется автоматически на лету.
+    """
     cfg_file = Path(config_path) if config_path else ENCODER_DIR / "config.json"
     with open(cfg_file, "r", encoding="utf-8") as f:
         cfg = json.load(f)
+
+    policy: System1QuantPolicy = resolve_system1_quant_policy(
+        mode=mode,
+        device=device,
+        quant_mode=quant_mode,
+        amp_dtype=(amp_dtype if amp_dtype is not None else dtype),
+    )
 
     model = GrassmannianEncoder(
         vocab_size=cfg.get("vocab_size", 131072),
@@ -302,13 +351,43 @@ def get_encoder(
         max_seq_len=cfg.get("max_seq_len", 4096),
     )
 
-    w_file = Path(weights_path) if weights_path else ENCODER_DIR / cfg.get("weights_file", "weights.pt")
-    sd = torch.load(w_file, map_location="cpu", weights_only=False)
-    if isinstance(sd, dict) and "model_state_dict" in sd:
-        sd = sd["model_state_dict"]
-    model.load_state_dict(sd, strict=True)
-    if dtype is not None:
-        model = model.to(dtype=dtype)
+    fallback_name = cfg.get("weights_file", "weights.pt")
+    w_file, _ = resolve_component_weights_path(
+        base_dir=ENCODER_DIR,
+        preset_filename=policy.encoder_weights_filename,
+        explicit_weights_path=weights_path,
+        fallback_filename=fallback_name,
+    )
+    raw = torch.load(w_file, map_location="cpu", weights_only=False)
+
+    if is_quantized_checkpoint(raw):
+        loaded_preset = load_quantized_encoder_payload(
+            model,
+            payload=raw,
+            layer_dtype=policy.layer_dtype,
+            use_cpu_onednn=policy.use_cpu_onednn_int8,
+        )
+        if policy.encoder_preset == "int8" and loaded_preset != "int8":
+            quantize_encoder_in_place(
+                model,
+                preset="int8",
+                layer_dtype=policy.layer_dtype,
+                use_cpu_onednn=policy.use_cpu_onednn_int8,
+            )
+    else:
+        sd = raw["model_state_dict"] if (isinstance(raw, dict) and "model_state_dict" in raw) else raw
+        model.load_state_dict(sd, strict=True)
+        if policy.encoder_preset != "fp32":
+            quantize_encoder_in_place(
+                model,
+                preset=policy.encoder_preset,
+                layer_dtype=policy.layer_dtype,
+                use_cpu_onednn=policy.use_cpu_onednn_int8,
+            )
+        elif dtype is not None:
+            model = model.to(dtype=dtype)
+
+    model.quant_policy = policy
     model = model.to(device)
     if eval_mode:
         model.eval()

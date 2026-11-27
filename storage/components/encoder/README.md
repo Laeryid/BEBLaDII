@@ -24,7 +24,19 @@ ids = tok.encode("Спектральное латентное пространс
 while len(ids) % 4 != 0:
     ids.append(10)
 
-input_ids = torch.tensor([ids], device=enc.embeddings.weight.device)
+input_ids = torch.tensor([ids], device=enc.embeddings.device if hasattr(enc.embeddings, "device") else enc.embeddings.weight.device)
 with torch.no_grad():
     V_cell = enc(input_ids)  # (1, N_cells, 8, 128)
+```
+
+## Квантизация и режимы (`quant_mode`, `mode`)
+Рядом с исходным `weights.pt` (FP32, 616 MB) хранятся переносимые компактные веса:
+- `weights_fp16.pt` (~308 MB) — запечённый `SphereLinear` и `embeddings` в FP16 (для TPU/GPU `half`);
+- `weights_emb_int8_fp16.pt` (~180 MB) — `embeddings` в per-row INT8 + запечённые слои в FP16 (автовыбор для `mode="train"` на GPU/CPU);
+- `weights_int8.pt` (~155 MB) — полный per-row INT8 (`embeddings` + `SphereLinear`, защищённые `vae_head`/`RMSNorm` в FP32; автовыбор для `mode="inference"` на CPU/GPU).
+
+```python
+# Автовыбор по ускорителю и режиму ('train' | 'inference')
+enc = get_encoder(device="cuda", quant_mode="auto", mode="train")
+enc_inf = get_encoder(device="cpu", quant_mode="auto", mode="inference")
 ```

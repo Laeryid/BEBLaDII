@@ -17,5 +17,10 @@
   "enable_noise_radar": true,
   "tied_lm_head": true,
   "weights_file": "weights.pt",
-  "ema_normalized_sphere": true
+  "ema_normalized_sphere": true,
+  "quantized_weights": {
+    "fp32": "weights.pt",
+    "half": "weights_fp16.pt",
+    "int8": "weights_int8.pt"
+  }
 }

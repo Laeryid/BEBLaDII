@@ -48,6 +48,7 @@ class _OnlineChunkedCELinearFn(torch.autograd.Function):
         tgt_safe: torch.Tensor,
         lm_head_weight: torch.Tensor,
         chunk_size: int,
+        lm_head_row_scale: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         if ctx.needs_input_grad[2]:
             raise RuntimeError(
@@ -57,6 +58,7 @@ class _OnlineChunkedCELinearFn(torch.autograd.Function):
         device = h_sub.device
         need_grad_h = bool(ctx.needs_input_grad[0])
         ctx.h_dtype = h_sub.dtype
+        is_int8 = lm_head_row_scale is not None
 
         with torch.no_grad(), torch.autocast(device_type=device.type, enabled=False):
             h_f32 = h_sub.detach().float()
@@ -75,6 +77,11 @@ class _OnlineChunkedCELinearFn(torch.autograd.Function):
                 w_c = lm_head_weight[start:end]
                 if w_c.device != device or w_c.dtype != torch.float32:
                     w_c = w_c.to(device=device, dtype=torch.float32)
+                if is_int8:
+                    rs_c = lm_head_row_scale[start:end]
+                    if rs_c.device != device or rs_c.dtype != torch.float32:
+                        rs_c = rs_c.to(device=device, dtype=torch.float32)
+                    w_c = w_c * rs_c.unsqueeze(-1)
 
                 z_c = F.linear(h_f32, w_c)  # (M, C_cur)
                 m_c, local_idx = z_c.max(dim=-1)  # (M,), (M,)
@@ -100,9 +107,15 @@ class _OnlineChunkedCELinearFn(torch.autograd.Function):
                         acc_w = acc_w * alpha.unsqueeze(-1) + torch.matmul(e_c, w_c)
                     m_run = m_new
 
-            w_tgt = lm_head_weight.index_select(0, tgt_safe)
+            tgt_dev = tgt_safe.to(device=lm_head_weight.device)
+            w_tgt = lm_head_weight.index_select(0, tgt_dev)
             if w_tgt.device != device or w_tgt.dtype != torch.float32:
                 w_tgt = w_tgt.to(device=device, dtype=torch.float32)
+            if is_int8:
+                rs_tgt = lm_head_row_scale.index_select(0, tgt_safe.to(device=lm_head_row_scale.device))
+                if rs_tgt.device != device or rs_tgt.dtype != torch.float32:
+                    rs_tgt = rs_tgt.to(device=device, dtype=torch.float32)
+                w_tgt = w_tgt * rs_tgt.unsqueeze(-1)
 
             z_tgt = (h_f32 * w_tgt).sum(dim=-1)
             s_safe = s_run.clamp(min=1e-30)
@@ -123,10 +136,10 @@ class _OnlineChunkedCELinearFn(torch.autograd.Function):
     def backward(ctx, grad_ce: torch.Tensor, _grad_corr: Optional[torch.Tensor]):
         (grad_dir,) = ctx.saved_tensors
         if grad_dir.numel() == 0:
-            return None, None, None, None
+            return None, None, None, None, None
         with torch.autocast(device_type=grad_dir.device.type, enabled=False):
             grad_h = (grad_dir * grad_ce.float().unsqueeze(-1)).to(dtype=ctx.h_dtype)
-        return grad_h, None, None, None
+        return grad_h, None, None, None, None
 
 
 class FastVocabOptimizer(nn.Module):
@@ -148,6 +161,10 @@ class FastVocabOptimizer(nn.Module):
         ce_pool_rand: int = 2048,
         ce_batch_fraction: float = 0.5,
         ce_batch_select: str = "random",
+        lm_head_row_scale: Optional[torch.Tensor] = None,
+        lm_head_unit_scale: Optional[torch.Tensor] = None,
+        tied_int8_embedding: Optional[nn.Module] = None,
+        use_cpu_onednn: bool = True,
     ):
         super().__init__()
         if ce_mode not in ("exact_chunked", "sampled"):
@@ -171,17 +188,34 @@ class FastVocabOptimizer(nn.Module):
         self.ce_pool_hard = min(int(ce_pool_hard), self.vocab_size)
         self.ce_pool_rand = min(int(ce_pool_rand), self.vocab_size)
         self.ce_batch_fraction = float(ce_batch_fraction)
+        self.use_cpu_onednn = bool(use_cpu_onednn)
 
         self._orig_compute_dict_stats = None
         self._attached_radar: Optional[nn.Module] = None
         # Ссылка на замороженный словарь без копирования (для ленивого построения SVD при sampled-режиме)
         self._lm_head_weight_ref: torch.Tensor = lm_head_weight.detach()
+        self._lm_head_row_scale_ref: Optional[torch.Tensor] = (
+            lm_head_row_scale.detach() if lm_head_row_scale is not None else None
+        )
+        self._lm_head_unit_scale_ref: Optional[torch.Tensor] = (
+            lm_head_unit_scale.detach() if lm_head_unit_scale is not None else None
+        )
+        self._tied_int8_embedding: Optional[nn.Module] = tied_int8_embedding
+        self.is_int8_vocab: bool = bool(
+            (tied_int8_embedding is not None)
+            or (lm_head_weight.dtype == torch.int8 and lm_head_row_scale is not None)
+        )
 
-        with torch.no_grad():
-            w_f32 = lm_head_weight.detach().float()
-            # 1. Преднормированный словарь в компактном gemm_dtype для NoiseRadarHead
-            w_unit = F.normalize(w_f32, p=2, dim=-1, eps=1e-6).to(dtype=gemm_dtype).contiguous()
-            self.register_buffer("lm_head_unit", w_unit, persistent=False)
+        w_f32: Optional[torch.Tensor] = None
+        if self.is_int8_vocab:
+            # Для INT8-словаря не создаём 256 MB копию lm_head_unit: NoiseRadar читает напрямую int8 * unit_scale
+            self.register_buffer("lm_head_unit", None, persistent=False)
+        else:
+            with torch.no_grad():
+                w_f32 = lm_head_weight.detach().float()
+                # 1. Преднормированный словарь в компактном gemm_dtype для NoiseRadarHead
+                w_unit = F.normalize(w_f32, p=2, dim=-1, eps=1e-6).to(dtype=gemm_dtype).contiguous()
+                self.register_buffer("lm_head_unit", w_unit, persistent=False)
 
         self.register_buffer("w_svd_vocab", None, persistent=False)
         self.register_buffer("w_svd_proj", None, persistent=False)
@@ -193,7 +227,12 @@ class FastVocabOptimizer(nn.Module):
         """Лениво строит низкоранговый SVD-эскиз словаря (только для sampled-режима)."""
         if self.w_svd_vocab is not None and self.w_svd_proj is not None:
             return
-        w_src = self._lm_head_weight_ref.float() if w_f32 is None else w_f32
+        if w_f32 is not None:
+            w_src = w_f32
+        elif self.is_int8_vocab and self._lm_head_row_scale_ref is not None:
+            w_src = self._lm_head_weight_ref.float() * self._lm_head_row_scale_ref.float().unsqueeze(-1)
+        else:
+            w_src = self._lm_head_weight_ref.float()
         u_r, s_r, v_r = torch.svd_lowrank(w_src, q=self.svd_rank, niter=self.svd_niter)
         self.w_svd_vocab = (u_r * s_r.unsqueeze(0)).to(dtype=self.gemm_dtype).contiguous()
         self.w_svd_proj = v_r.to(dtype=self.gemm_dtype).contiguous()
@@ -215,6 +254,7 @@ class FastVocabOptimizer(nn.Module):
     ) -> "FastVocabOptimizer":
         if getattr(decoder, "lm_head_weight", None) is None:
             raise RuntimeError("У декодера не задан lm_head_weight (вызовите tie_embeddings перед созданием FastVocabOptimizer).")
+        q_pol = getattr(decoder, "quant_policy", None)
         opt = cls(
             lm_head_weight=decoder.lm_head_weight,
             gemm_dtype=gemm_dtype,
@@ -226,6 +266,10 @@ class FastVocabOptimizer(nn.Module):
             ce_pool_rand=ce_pool_rand,
             ce_batch_fraction=ce_batch_fraction,
             ce_batch_select=ce_batch_select,
+            lm_head_row_scale=getattr(decoder, "lm_head_row_scale", None),
+            lm_head_unit_scale=getattr(decoder, "lm_head_unit_scale", None),
+            tied_int8_embedding=getattr(decoder, "_tied_int8_embedding", None),
+            use_cpu_onednn=bool(getattr(q_pol, "use_cpu_onednn_int8", True)),
         )
         if attach:
             opt.attach_to_decoder(decoder)
@@ -241,7 +285,9 @@ class FastVocabOptimizer(nn.Module):
     ) -> torch.Tensor:
         """
         Ускоренный drop-in для NoiseRadarHead.compute_dict_stats:
-        - использует преднормированный lm_head_unit в gemm_dtype (без FP32-каста и умножения на inv_n);
+        - для INT8-словаря использует единую int8 матрицу + unit_scale (0 лишней памяти; oneDNN на CPU,
+          gemm_dtype на GPU/TPU);
+        - для float-словаря использует преднормированный lm_head_unit в gemm_dtype;
         - работает фиксированными чанками (100% static shapes для XLA/TPU и GPU);
         - возвращает (B, L, 4): [cos_max, cos_2nd, cos_gap, log_norm_ratio] в float32.
         """
@@ -252,8 +298,45 @@ class FastVocabOptimizer(nn.Module):
         with torch.autocast(device_type=device.type, enabled=False):
             h_f32 = h_unpacked.float().reshape(B * L, D)
             h_norms = h_f32.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-6)
-            h_unit = (h_f32 / h_norms).to(dtype=self.gemm_dtype)
+            h_unit_f32 = h_f32 / h_norms
+            norm_feat = torch.log1p(h_norms / math.sqrt(D))
 
+            if self._tied_int8_embedding is not None:
+                cos_max, cos_2nd = self._tied_int8_embedding.compute_radar_top2_cos(
+                    h_unit_f32=h_unit_f32,
+                    chunk_size=chunk_sz,
+                    gemm_dtype=self.gemm_dtype,
+                    use_cpu_onednn=self.use_cpu_onednn,
+                )
+                cos_gap = (cos_max - cos_2nd).clamp(min=0.0)
+                return torch.cat([cos_max, cos_2nd, cos_gap, norm_feat], dim=-1).view(B, L, 4)
+
+            if self.lm_head_unit is None:
+                q_mat = lm_head_weight if lm_head_weight is not None else self._lm_head_weight_ref
+                us_vec = (
+                    self._lm_head_unit_scale_ref
+                    if self._lm_head_unit_scale_ref is not None
+                    else lm_head_inv_norms
+                )
+                eff_dtype = torch.float32 if (device.type == "cpu" and self.gemm_dtype == torch.float16) else self.gemm_dtype
+                h_unit = h_unit_f32.to(dtype=eff_dtype)
+                v_size = q_mat.size(0)
+                top2_vals = torch.full((B * L, 2), -10.0, device=device, dtype=torch.float32)
+                for start in range(0, v_size, chunk_sz):
+                    end = min(start + chunk_sz, v_size)
+                    q_c = q_mat[start:end].to(device=device, dtype=eff_dtype)
+                    us_c = us_vec[start:end].to(device=device, dtype=torch.float32)
+                    cos_chunk = F.linear(h_unit, q_c).float() * us_c.unsqueeze(0)
+                    k_take = min(2, end - start)
+                    chunk_top = torch.topk(cos_chunk, k=k_take, dim=-1).values
+                    merged = torch.cat([top2_vals, chunk_top], dim=-1)
+                    top2_vals = torch.topk(merged, k=2, dim=-1).values
+                cos_max = top2_vals[:, 0:1]
+                cos_2nd = top2_vals[:, 1:2]
+                cos_gap = (cos_max - cos_2nd).clamp(min=0.0)
+                return torch.cat([cos_max, cos_2nd, cos_gap, norm_feat], dim=-1).view(B, L, 4)
+
+            h_unit = h_unit_f32.to(dtype=self.gemm_dtype)
             u_mat = self.lm_head_unit
             if u_mat.device != device:
                 u_mat = u_mat.to(device=device)
@@ -273,7 +356,6 @@ class FastVocabOptimizer(nn.Module):
             cos_max = top2_vals[:, 0:1]
             cos_2nd = top2_vals[:, 1:2]
             cos_gap = (cos_max - cos_2nd).clamp(min=0.0)
-            norm_feat = torch.log1p(h_norms / math.sqrt(D))
             return torch.cat([cos_max, cos_2nd, cos_gap, norm_feat], dim=-1).view(B, L, 4)
 
     def attach_to_decoder(self, decoder: nn.Module) -> None:
@@ -397,7 +479,14 @@ class FastVocabOptimizer(nn.Module):
 
         # Один плотный GEMM (M, D) @ (D, K_pool) строго в float32 (ADR 125)
         with torch.autocast(device_type=device.type, enabled=False):
-            w_pool = lm_head_weight.index_select(0, pool_ids).float()
+            w_pool = lm_head_weight.index_select(0, pool_ids.to(device=lm_head_weight.device)).to(
+                device=device, dtype=torch.float32
+            )
+            if self._lm_head_row_scale_ref is not None and lm_head_weight.dtype == torch.int8:
+                rs_pool = self._lm_head_row_scale_ref.index_select(
+                    0, pool_ids.to(device=self._lm_head_row_scale_ref.device)
+                ).to(device=device, dtype=torch.float32)
+                w_pool = w_pool * rs_pool.unsqueeze(-1)
             logits_pool = F.linear(h_sub.float(), w_pool)  # (M, K_pool)
 
             neg_inf = torch.full_like(logits_pool, -1e9)
@@ -422,17 +511,20 @@ class FastVocabOptimizer(nn.Module):
         valid_sel_mask: torch.Tensor,
         lm_head_weight: torch.Tensor,
         chunk_size: Optional[int] = None,
+        lm_head_row_scale: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         """
         1-проходный точный Online Chunked Cross-Entropy по всему словарю V (131,072) строго в float32 (ADR 125):
+        - поддерживает как float lm_head_weight, так и per-row INT8 (через lm_head_row_scale);
         - 0.00% смещения CE и grad_cos = 1.000000 на полноранговом словаре в остром режиме;
         - пиковая память O(M * chunk_size) (~32 MB при M=512, chunk=16384 вместо >530 MB), без хранения логитов;
         - возвращает (per_tok_ce (M,), is_correct (M,) bool по точному argmax всего словаря).
         """
         c_sz = int(self.ce_vocab_chunk_size if chunk_size is None else chunk_size)
+        row_scale = lm_head_row_scale if lm_head_row_scale is not None else self._lm_head_row_scale_ref
         with torch.no_grad():
             tgt_safe = torch.where(valid_sel_mask, tgt_sub, torch.zeros_like(tgt_sub)).clamp(0, self.vocab_size - 1)
-        return _OnlineChunkedCELinearFn.apply(h_sub, tgt_safe, lm_head_weight, c_sz)
+        return _OnlineChunkedCELinearFn.apply(h_sub, tgt_safe, lm_head_weight, c_sz, row_scale)
 
     def compute_decoder_ce_loss(
         self,
@@ -524,6 +616,7 @@ class FastVocabOptimizer(nn.Module):
                 tgt_sub=tgt_sub,
                 valid_sel_mask=valid_sub,
                 lm_head_weight=decoder.lm_head_weight,
+                lm_head_row_scale=getattr(decoder, "lm_head_row_scale", None),
             )
         else:
             per_tok_ce, is_correct = self.compute_sampled_ce_from_hidden(

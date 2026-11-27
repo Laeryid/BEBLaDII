@@ -13,10 +13,25 @@
   "pad_token_id": 10,
   "max_seq_len": 4096,
   "subspace_layout": {
-    "sem": [0, 96],
-    "syn": [96, 112],
-    "pos_rope": [112, 128]
+    "sem": [
+      0,
+      96
+    ],
+    "syn": [
+      96,
+      112
+    ],
+    "pos_rope": [
+      112,
+      128
+    ]
   },
   "weights_file": "weights.pt",
-  "ema_normalized_sphere": true
+  "ema_normalized_sphere": true,
+  "quantized_weights": {
+    "fp32": "weights.pt",
+    "half": "weights_fp16.pt",
+    "emb_int8_half": "weights_emb_int8_fp16.pt",
+    "int8": "weights_int8.pt"
+  }
 }

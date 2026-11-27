@@ -19,6 +19,15 @@ try:
         clamp_to_unit_ball,
         safe_lorentzian_eigh,
     )
+    from ..quantization import (
+        Int8RowwiseEmbedding,
+        System1QuantPolicy,
+        is_quantized_checkpoint,
+        load_quantized_decoder_payload,
+        quantize_decoder_in_place,
+        resolve_component_weights_path,
+        resolve_system1_quant_policy,
+    )
 except ImportError:
     from plan_c_layers import (
         ModernBERTLayer,
@@ -28,6 +37,15 @@ except ImportError:
         canonicalize_cell_basis,
         clamp_to_unit_ball,
         safe_lorentzian_eigh,
+    )
+    from quantization import (
+        Int8RowwiseEmbedding,
+        System1QuantPolicy,
+        is_quantized_checkpoint,
+        load_quantized_decoder_payload,
+        quantize_decoder_in_place,
+        resolve_component_weights_path,
+        resolve_system1_quant_policy,
     )
 
 DECODER_DIR = Path(__file__).resolve().parent
@@ -83,7 +101,11 @@ class SetCrossAttentionUnpacker(nn.Module):
             h_gram = h_normed.to(cat_dtype).unsqueeze(2).expand(B, N, self.num_slots, 128)
 
         h_comb = torch.cat([h_attn, h_gram], dim=-1)
-        h_out = self.out_norm(self.out_proj(h_comb))
+        proj_w_dtype = self.out_proj.weight.dtype
+        if torch.is_autocast_enabled(V_cell.device.type) or h_comb.dtype == proj_w_dtype:
+            h_out = self.out_norm(self.out_proj(h_comb))
+        else:
+            h_out = self.out_norm(self.out_proj(h_comb.to(proj_w_dtype))).to(V_cell.dtype)
         return h_out.view(B, N * self.num_slots, self.hidden_size)
 
 
@@ -100,6 +122,9 @@ class NoiseRadarHead(nn.Module):
         self.hidden_size = hidden_size
         self.num_axes = num_axes
         self.chunk_size = chunk_size
+        self._tied_int8_embedding: Optional[Int8RowwiseEmbedding] = None
+        self._radar_gemm_dtype: Optional[torch.dtype] = None
+        self._use_cpu_onednn: bool = True
 
         self.cell_proj = nn.Linear(hidden_size, 32)
         self.tok_proj = nn.Linear(hidden_size, 32)
@@ -129,18 +154,38 @@ class NoiseRadarHead(nn.Module):
     ) -> torch.Tensor:
         """
         Вычисляет близость каждого слота (B, 4N, 1024) к ближайшим словам словаря без аллокации
-        полного тензора логитов (chunked max/top-2 косинус под no_grad в float32).
+        полного тензора логитов (chunked max/top-2 косинус под no_grad).
+        Поддерживает как float lm_head_weight, так и per-row INT8 (через _tied_int8_embedding или int8-тензор).
         Возвращает: (B, 4N, 4) -> [cos_max, cos_2nd, cos_gap, log_norm_ratio].
         """
         B, L, D = h_unpacked.shape
         device = h_unpacked.device
-        if lm_head_weight is None or lm_head_inv_norms is None:
+        if lm_head_weight is None and self._tied_int8_embedding is None:
             return torch.zeros(B, L, 4, device=device, dtype=torch.float32)
 
         with torch.autocast(device_type=device.type, enabled=False):
             h_f32 = h_unpacked.float().reshape(B * L, D)
             h_norms = h_f32.norm(p=2, dim=-1, keepdim=True).clamp(min=1e-6)
             h_unit = h_f32 / h_norms
+            norm_feat = torch.log1p(h_norms / math.sqrt(D))
+
+            if self._tied_int8_embedding is not None and (
+                lm_head_weight is None or lm_head_weight.data_ptr() == self._tied_int8_embedding.q_weight.data_ptr()
+            ):
+                eff_dtype = self._radar_gemm_dtype or (
+                    torch.float32 if device.type == "cpu" else torch.bfloat16
+                )
+                cos_max, cos_2nd = self._tied_int8_embedding.compute_radar_top2_cos(
+                    h_unit_f32=h_unit,
+                    chunk_size=vocab_chunk_size,
+                    gemm_dtype=eff_dtype,
+                    use_cpu_onednn=self._use_cpu_onednn,
+                )
+                cos_gap = (cos_max - cos_2nd).clamp(min=0.0)
+                return torch.cat([cos_max, cos_2nd, cos_gap, norm_feat], dim=-1).view(B, L, 4)
+
+            if lm_head_weight is None or lm_head_inv_norms is None:
+                return torch.zeros(B, L, 4, device=device, dtype=torch.float32)
 
             V_size = lm_head_weight.size(0)
             top2_vals = torch.full((B * L, 2), -10.0, device=device, dtype=torch.float32)
@@ -158,7 +203,6 @@ class NoiseRadarHead(nn.Module):
             cos_max = top2_vals[:, 0:1]
             cos_2nd = top2_vals[:, 1:2]
             cos_gap = (cos_max - cos_2nd).clamp(min=0.0)
-            norm_feat = torch.log1p(h_norms / math.sqrt(D))
             return torch.cat([cos_max, cos_2nd, cos_gap, norm_feat], dim=-1).view(B, L, 4)
 
     def forward(
@@ -271,13 +315,43 @@ class GrassmannianDecoder(nn.Module):
         # Разделяемая матрица эмбеддингов для tied LM head (ADR 125)
         self.register_buffer("lm_head_weight", None, persistent=False)
         self.register_buffer("lm_head_inv_norms", None, persistent=False)
+        self.register_buffer("lm_head_row_scale", None, persistent=False)
+        self.register_buffer("lm_head_unit_scale", None, persistent=False)
+        self._tied_int8_embedding: Optional[Int8RowwiseEmbedding] = None
 
-    def tie_embeddings(self, embeddings_weight: torch.Tensor) -> None:
-        """Привязывает матрицу эмбеддингов (131072 x 1024) как выходную голову и нормирует для радара."""
-        self.lm_head_weight = embeddings_weight
+    def tie_embeddings(self, embeddings_weight: Union[torch.Tensor, nn.Module]) -> None:
+        """
+        Привязывает матрицу эмбеддингов (131072 x 1024) как выходную голову и нормирует для радара.
+        Принимает:
+          - Int8RowwiseEmbedding (0 лишних копий памяти: одна int8-матрица на всё),
+          - nn.Embedding,
+          - обычный float torch.Tensor.
+        """
+        if isinstance(embeddings_weight, Int8RowwiseEmbedding):
+            self._tied_int8_embedding = embeddings_weight
+            self.lm_head_weight = embeddings_weight.q_weight
+            self.lm_head_row_scale = embeddings_weight.row_scale
+            # Для int8-словаря F.linear(h_unit, q_weight) * unit_scale == точный косинус
+            self.lm_head_inv_norms = embeddings_weight.unit_scale
+            self.lm_head_unit_scale = embeddings_weight.unit_scale
+            if self.noise_radar is not None:
+                self.noise_radar._tied_int8_embedding = embeddings_weight
+            return
+
+        if isinstance(embeddings_weight, nn.Embedding):
+            w_tensor = embeddings_weight.weight
+        else:
+            w_tensor = embeddings_weight
+
+        self._tied_int8_embedding = None
+        self.lm_head_weight = w_tensor
+        self.lm_head_row_scale = None
+        self.lm_head_unit_scale = None
         with torch.no_grad():
-            inv_norms = 1.0 / embeddings_weight.float().norm(p=2, dim=-1).clamp(min=1e-6)
+            inv_norms = 1.0 / w_tensor.float().norm(p=2, dim=-1).clamp(min=1e-6)
         self.lm_head_inv_norms = inv_norms
+        if self.noise_radar is not None:
+            self.noise_radar._tied_int8_embedding = None
 
     def _compute_eigvals_desc(self, V_cell: torch.Tensor) -> torch.Tensor:
         """Вычисляет отсортированный по убыванию спектр Gram(V_cell) в float32."""
@@ -355,7 +429,16 @@ class GrassmannianDecoder(nn.Module):
             )
             radar_out["eigvals"] = stage1["eigvals"]
             if self.noise_cond_proj is not None:
-                cond = self.noise_cond_proj(radar_out["sigma_tok_hat"].unsqueeze(-1).to(h_unpacked.dtype))
+                cond_w_dtype = self.noise_cond_proj[0].weight.dtype
+                if cond_w_dtype == torch.float32:
+                    with torch.autocast(device_type=V_cell.device.type, enabled=False):
+                        cond = self.noise_cond_proj(radar_out["sigma_tok_hat"].float().unsqueeze(-1)).to(
+                            h_unpacked.dtype
+                        )
+                else:
+                    cond = self.noise_cond_proj(radar_out["sigma_tok_hat"].unsqueeze(-1).to(cond_w_dtype)).to(
+                        h_unpacked.dtype
+                    )
                 h_unpacked = h_unpacked + cond
 
         full_len = N * self.chunk_size
@@ -370,13 +453,25 @@ class GrassmannianDecoder(nn.Module):
 
     def get_tied_head_logits(self, hidden_states: torch.Tensor) -> torch.Tensor:
         """Вычисление логитов строго в float32 с отключенным autocast (ADR 125)."""
+        if self._tied_int8_embedding is not None:
+            return self._tied_int8_embedding.linear_chunked_fp32(hidden_states)
         if self.lm_head_weight is None:
             raise RuntimeError(
                 "Не задана матрица lm_head_weight. Передайте embeddings_weight в get_decoder() или вызовите tie_embeddings()."
             )
         device_type = hidden_states.device.type
         with torch.autocast(device_type=device_type, enabled=False):
-            return F.linear(hidden_states.float(), self.lm_head_weight.float())
+            h_f32 = hidden_states.float()
+            if self.lm_head_row_scale is not None:
+                v_size = int(self.lm_head_weight.shape[0])
+                chunks = []
+                for start in range(0, v_size, 32768):
+                    end = min(start + 32768, v_size)
+                    w_c = self.lm_head_weight[start:end].to(device=h_f32.device, dtype=torch.float32)
+                    s_c = self.lm_head_row_scale[start:end].to(device=h_f32.device, dtype=torch.float32)
+                    chunks.append(F.linear(h_f32, w_c * s_c.unsqueeze(-1)))
+                return torch.cat(chunks, dim=-1)
+            return F.linear(h_f32, self.lm_head_weight.float())
 
     def forward(
         self, V_cell: torch.Tensor, return_radar: bool = False
@@ -409,7 +504,7 @@ class GrassmannianDecoder(nn.Module):
 def get_decoder(
     weights_path: Optional[Union[str, Path]] = None,
     config_path: Optional[Union[str, Path]] = None,
-    embeddings_weight: Optional[torch.Tensor] = None,
+    embeddings_weight: Optional[Union[torch.Tensor, nn.Module]] = None,
     encoder: Optional[nn.Module] = None,
     device: Union[str, torch.device] = "cpu",
     dtype: Optional[torch.dtype] = None,
@@ -418,11 +513,32 @@ def get_decoder(
     enable_noise_radar: Optional[bool] = None,
     num_smooth_layers: Optional[int] = None,
     use_ema: bool = True,
+    quant_mode: str = "fp32",
+    mode: str = "inference",
+    amp_dtype: Optional[torch.dtype] = None,
 ) -> GrassmannianDecoder:
-    """Загружает GrassmannianDecoder и привязывает матрицу эмбеддингов (от encoder или из ../encoder/weights.pt)."""
+    """
+    Загружает GrassmannianDecoder и привязывает матрицу эмбеддингов (от encoder или из ../encoder/).
+
+    Параметры квантизации и переключения:
+      - quant_mode: 'fp32' (по умолчанию, полная обратная совместимость), 'auto' (автовыбор по mode+device),
+                    'half' ('fp16'/'bf16'), 'emb_int8', 'int8'.
+      - mode: 'train' (слои в FP16/BF16/FP32 без int8 на слоях — для быстрого backward в L_ce)
+              или 'inference' (полный per-row INT8 на CPU/GPU).
+      - amp_dtype: желаемый compute dtype (например env.amp_dtype).
+    Если готовый квантизованный файл (weights_fp16.pt / weights_int8.pt) отсутствует рядом с weights_path,
+    конвертация выполняется автоматически на лету из weights.pt.
+    """
     cfg_file = Path(config_path) if config_path else DECODER_DIR / "config.json"
     with open(cfg_file, "r", encoding="utf-8") as f:
         cfg = json.load(f)
+
+    policy: System1QuantPolicy = resolve_system1_quant_policy(
+        mode=mode,
+        device=device,
+        quant_mode=quant_mode,
+        amp_dtype=(amp_dtype if amp_dtype is not None else dtype),
+    )
 
     use_canon = cfg.get("canonicalize_basis", True) if canonicalize_basis is None else canonicalize_basis
     use_radar = cfg.get("enable_noise_radar", True) if enable_noise_radar is None else enable_noise_radar
@@ -442,58 +558,128 @@ def get_decoder(
         enable_noise_radar=use_radar,
     )
 
-    w_file = Path(weights_path) if weights_path else DECODER_DIR / cfg.get("weights_file", "weights.pt")
-    raw_ckpt = torch.load(w_file, map_location="cpu", weights_only=False)
-    if isinstance(raw_ckpt, dict) and ("decoder_state_dict" in raw_ckpt or "ema_state_dict" in raw_ckpt):
-        # Тренировочный чекпоинт Phase 2 (с EMA-тенями и/или сырыми весами)
-        ema_shadow = (raw_ckpt.get("ema_state_dict") or {}).get("shadow") if use_ema else None
-        if isinstance(ema_shadow, dict) and len(ema_shadow) > 0:
-            sd = {}
-            for k, v in ema_shadow.items():
-                clean_k = k.replace("module.", "")
-                if clean_k.endswith(".q_weight"):
-                    v = F.normalize(v.float(), p=2, dim=-1, eps=1e-8)
-                sd[clean_k] = v
-        else:
-            sd = {k.replace("module.", ""): v for k, v in raw_ckpt["decoder_state_dict"].items()}
-    elif isinstance(raw_ckpt, dict) and "model_state_dict" in raw_ckpt:
-        sd = {k.replace("module.", ""): v for k, v in raw_ckpt["model_state_dict"].items()}
-    else:
-        sd = {k.replace("module.", ""): v for k, v in raw_ckpt.items()}
-
-    # Извлекаем веса декодера, если передан общий чекпоинт Phase 1
-    if any(k.startswith("dec_") or k.startswith("unpacker.") or k == "cell_in_norm.weight" for k in sd):
-        dec_prefixes = ("cell_in_norm.", "dec_context_layer.", "unpacker.", "dec_smooth_layers.", "dec_final_norm.", "noise_radar.", "noise_cond_proj.")
-        sd = {k: v for k, v in sd.items() if k.startswith(dec_prefixes)}
-
-    is_upgraded = any(k.startswith("noise_radar.") for k in model.state_dict()) and not any(
-        k.startswith("noise_radar.") for k in sd
+    fallback_name = cfg.get("weights_file", "weights.pt")
+    w_file, _ = resolve_component_weights_path(
+        base_dir=DECODER_DIR,
+        preset_filename=policy.decoder_weights_filename,
+        explicit_weights_path=weights_path,
+        fallback_filename=fallback_name,
     )
-    extra_smooth = n_smooth > 2 and not any(k.startswith("dec_smooth_layers.2.") for k in sd)
+    raw_ckpt = torch.load(w_file, map_location="cpu", weights_only=False)
 
-    model.load_state_dict(sd, strict=not (is_upgraded or extra_smooth))
+    if is_quantized_checkpoint(raw_ckpt):
+        loaded_preset = load_quantized_decoder_payload(
+            model,
+            payload=raw_ckpt,
+            layer_dtype=policy.layer_dtype,
+            use_cpu_onednn=policy.use_cpu_onednn_int8,
+        )
+        if policy.decoder_preset == "int8" and loaded_preset != "int8":
+            quantize_decoder_in_place(
+                model,
+                preset="int8",
+                layer_dtype=policy.layer_dtype,
+                use_cpu_onednn=policy.use_cpu_onednn_int8,
+            )
+    else:
+        if isinstance(raw_ckpt, dict) and ("decoder_state_dict" in raw_ckpt or "ema_state_dict" in raw_ckpt):
+            # Тренировочный чекпоинт Phase 2 (с EMA-тенями и/или сырыми весами)
+            ema_shadow = (raw_ckpt.get("ema_state_dict") or {}).get("shadow") if use_ema else None
+            if isinstance(ema_shadow, dict) and len(ema_shadow) > 0:
+                sd = {}
+                for k, v in ema_shadow.items():
+                    clean_k = k.replace("module.", "")
+                    if clean_k.endswith(".q_weight"):
+                        v = F.normalize(v.float(), p=2, dim=-1, eps=1e-8)
+                    sd[clean_k] = v
+            else:
+                sd = {k.replace("module.", ""): v for k, v in raw_ckpt["decoder_state_dict"].items()}
+        elif isinstance(raw_ckpt, dict) and "model_state_dict" in raw_ckpt:
+            sd = {k.replace("module.", ""): v for k, v in raw_ckpt["model_state_dict"].items()}
+        else:
+            sd = {k.replace("module.", ""): v for k, v in raw_ckpt.items()}
 
-    if extra_smooth:
-        with torch.no_grad():
-            for idx in range(2, n_smooth):
-                layer = model.dec_smooth_layers[idx]
-                layer.o_proj.row_scale.fill_(1e-3)
-                layer.down_proj.row_scale.fill_(1e-3)
+        # Извлекаем веса декодера, если передан общий чекпоинт Phase 1
+        if any(k.startswith("dec_") or k.startswith("unpacker.") or k == "cell_in_norm.weight" for k in sd):
+            dec_prefixes = ("cell_in_norm.", "dec_context_layer.", "unpacker.", "dec_smooth_layers.", "dec_final_norm.", "noise_radar.", "noise_cond_proj.")
+            sd = {k: v for k, v in sd.items() if k.startswith(dec_prefixes)}
+
+        is_upgraded = any(k.startswith("noise_radar.") for k in model.state_dict()) and not any(
+            k.startswith("noise_radar.") for k in sd
+        )
+        extra_smooth = n_smooth > 2 and not any(k.startswith("dec_smooth_layers.2.") for k in sd)
+
+        model.load_state_dict(sd, strict=not (is_upgraded or extra_smooth))
+
+        if extra_smooth:
+            with torch.no_grad():
+                for idx in range(2, n_smooth):
+                    layer = model.dec_smooth_layers[idx]
+                    layer.o_proj.row_scale.fill_(1e-3)
+                    layer.down_proj.row_scale.fill_(1e-3)
+
+        if policy.decoder_preset != "fp32":
+            quantize_decoder_in_place(
+                model,
+                preset=policy.decoder_preset,
+                layer_dtype=policy.layer_dtype,
+                use_cpu_onednn=policy.use_cpu_onednn_int8,
+            )
+        elif dtype is not None:
+            model = model.to(dtype=dtype)
 
     if embeddings_weight is not None:
         model.tie_embeddings(embeddings_weight)
     elif encoder is not None and hasattr(encoder, "embeddings"):
-        model.tie_embeddings(encoder.embeddings.weight)
+        model.tie_embeddings(encoder.embeddings)
     else:
-        enc_weights = DECODER_DIR.parent / "encoder" / "weights.pt"
-        if enc_weights.exists():
-            enc_sd = torch.load(enc_weights, map_location="cpu", weights_only=False)
-            if "embeddings.weight" in enc_sd:
-                model.tie_embeddings(enc_sd["embeddings.weight"])
+        enc_dir = DECODER_DIR.parent / "encoder"
+        enc_file, _ = resolve_component_weights_path(
+            base_dir=enc_dir,
+            preset_filename=policy.encoder_weights_filename,
+            explicit_weights_path=None,
+            fallback_filename="weights.pt",
+        )
+        if enc_file.exists():
+            enc_raw = torch.load(enc_file, map_location="cpu", weights_only=False)
+            if is_quantized_checkpoint(enc_raw):
+                enc_sd = enc_raw["state_dict"]
+                if "embeddings.q_weight" in enc_sd:
+                    q_w = enc_sd["embeddings.q_weight"]
+                    emb_mod = Int8RowwiseEmbedding(
+                        num_embeddings=int(q_w.shape[0]),
+                        embedding_dim=int(q_w.shape[1]),
+                        out_dtype=policy.layer_dtype,
+                        use_cpu_onednn=policy.use_cpu_onednn_int8,
+                    )
+                    emb_mod.q_weight.copy_(q_w)
+                    emb_mod.row_scale.copy_(enc_sd["embeddings.row_scale"])
+                    emb_mod.inv_norms.copy_(enc_sd["embeddings.inv_norms"])
+                    emb_mod.unit_scale.copy_(enc_sd["embeddings.unit_scale"])
+                    model.tie_embeddings(emb_mod)
+                elif "embeddings.weight" in enc_sd:
+                    model.tie_embeddings(enc_sd["embeddings.weight"])
+            elif isinstance(enc_raw, dict):
+                enc_sd = enc_raw.get("model_state_dict", enc_raw)
+                if "embeddings.weight" in enc_sd:
+                    w_e = enc_sd["embeddings.weight"]
+                    if policy.embedding_int8:
+                        emb_mod = Int8RowwiseEmbedding.from_weight(
+                            w_e, out_dtype=policy.layer_dtype, use_cpu_onednn=policy.use_cpu_onednn_int8
+                        )
+                        model.tie_embeddings(emb_mod)
+                    else:
+                        model.tie_embeddings(w_e.to(dtype=policy.layer_dtype) if policy.decoder_preset != "fp32" else w_e)
 
-    if dtype is not None:
-        model = model.to(dtype=dtype)
+    if model.noise_radar is not None:
+        model.noise_radar._radar_gemm_dtype = policy.radar_dtype
+        model.noise_radar._use_cpu_onednn = policy.use_cpu_onednn_int8
+
+    model.quant_policy = policy
     model = model.to(device)
+    if model._tied_int8_embedding is not None and model._tied_int8_embedding.device != torch.device(device):
+        model._tied_int8_embedding = model._tied_int8_embedding.to(device)
+        model.tie_embeddings(model._tied_int8_embedding)
     if eval_mode:
         model.eval()
     return model

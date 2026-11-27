@@ -28,4 +28,14 @@ with torch.no_grad():
     logits, radar = dec(V_cell, return_radar=True)          # Выход Б: (B, 4N, 131072) + радар
     texts = dec.decode_text(V_cell, tokenizer=tok)          # Строки с удалением SLOT_PAD (id=10)
 ```
-Если декодер используется отдельно от энкодера, `get_decoder()` автоматически подхватит `embeddings.weight` из `../encoder/weights.pt`. Также поддерживается передача `weights_path` напрямую на тренировочный чекпоинт Phase 2 (`decoder_state_dict` / `ema_state_dict`).
+Если декодер используется отдельно от энкодера, `get_decoder()` автоматически подхватит `embeddings` из `../encoder/` (включая компактный INT8-словарь при `quant_mode="auto"/"emb_int8"/"int8"`). Также поддерживается передача `weights_path` напрямую на тренировочный чекпоинт Phase 2 (`decoder_state_dict` / `ema_state_dict`).
+
+## Квантизация и режимы (`quant_mode`, `mode`)
+Рядом с исходным `weights.pt` (FP32, 202 MB) хранятся компактные веса (с сохранением `unpacker.gram_mlp`, `noise_radar`, `noise_cond_proj`, `RMSNorm` и расчёта логитов строго в FP32 по ADR 125/126):
+- `weights_fp16.pt` (~101 MB) — запечённые слои `ModernBERTLayer` в FP16 (автовыбор для `mode="train"` на GPU/TPU, быстрый backward для `L_ce`);
+- `weights_int8.pt` (~52 MB) — per-row INT8 на `SphereLinear` (автовыбор для `mode="inference"` на CPU/GPU; на CPU используется oneDNN `linear_dynamic`).
+
+```python
+dec = get_decoder(encoder=enc, device="cuda", quant_mode="auto", mode="train")
+dec_inf = get_decoder(encoder=enc_inf, device="cpu", quant_mode="auto", mode="inference")
+```
