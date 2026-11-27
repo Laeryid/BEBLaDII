@@ -1587,6 +1587,17 @@
       ],
       "summary": "ADR 144: Фаза 3 Alt v2 (Plan C): оптимизации обучения (Этап 0), инференса (Этап 1) и архитектуры v2 (Этап 2)",
       "status": "accepted"
+    },
+    "decisions/145_system1_encoder_decoder_quantization_and_auto_policy.md": {
+      "description": "ADR 145: Квантизация замороженной Системы 1 (GrassmannianEncoder и GrassmannianDecoder): пресеты весов, общий INT8-словарь и автопереключение по режиму и ускорителю (accepted)",
+      "covers": [
+        "Architecture Decisions"
+      ],
+      "depends_on": [
+        "KI_model_core.md"
+      ],
+      "summary": "ADR 145: Квантизация замороженной Системы 1 (GrassmannianEncoder и GrassmannianDecoder): пресеты весов, общий INT8-словарь и автопереключение по режиму и ускорителю",
+      "status": "accepted"
     }
   },
   "knowledge_system": {

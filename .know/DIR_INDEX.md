@@ -4,8 +4,8 @@
 > Only folders are shown (depth up to 3). Files are not included.
 > Automatically updated when running `/sync-knowledge`.
 
-**Total files in project:** ~1117 (excluding excluded directories)
-**Updated:** 2026-11-25
+**Total files in project:** ~1119 (excluding excluded directories)
+**Updated:** 2026-11-27
 
 ```
 BEBLaDII/
@@ -37,6 +37,7 @@ BEBLaDII/
 |   |   `-- output/  *1 files*
 |   `-- phase 3 alt/  *20 files*
 |       |-- Kaggle/  *3 files*
+|       |-- checkpoints/  *(empty)*
 |       `-- output/  *4 files*
 |-- hugging face/  *2 files*
 |-- ideas/  *97 files*
@@ -56,8 +57,8 @@ BEBLaDII/
 |   |   |-- rag/  *1 files*
 |   |   `-- utils/  *7 files*
 |   `-- beb_la_dii.egg-info/  *5 files*
-|-- storage/  *35 files*
-|   |-- components/  *18 files*
+|-- storage/  *37 files*
+|   |-- components/  *20 files*
 |   |   |-- decoder/  *3 files*
 |   |   |-- encoder/  *3 files*
 |   |   |-- plan B/  *5 files*
