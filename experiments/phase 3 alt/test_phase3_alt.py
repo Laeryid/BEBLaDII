@@ -526,6 +526,8 @@ def main() -> None:
         BakedLinear,
         Int8RowwiseEmbedding,
         Int8RowwiseLinear,
+        get_component_fallback_dirs,
+        resolve_component_weights_path,
         resolve_system1_quant_policy,
     )
 
@@ -596,6 +598,39 @@ def main() -> None:
     st_int8 = fv_q.fast_compute_dict_stats(h_unp_q, vocab_chunk_size=512)
     radar_err = (st_fp32 - st_int8).abs().max().item()
     assert radar_err < 1e-2, f"Большая ошибка INT8 NoiseRadar: {radar_err}"
+    # 13d. Проверка запасных путей (Kaggle + локальные BEBLaDII-planС-Phase{1,2}-Data)
+    import tempfile as _tempfile
+    enc_fb = get_component_fallback_dirs("encoder", project_root=REPO_ROOT)
+    dec_fb = get_component_fallback_dirs("decoder", project_root=REPO_ROOT)
+    assert any("bebladii-planc-phase1-data" in str(p).replace("\\", "/") for p in enc_fb), f"Нет Kaggle Phase1 fallback: {enc_fb}"
+    assert any("BEBLaDII-plan\u0421-Phase1-Data" in str(p) for p in enc_fb), f"Нет локального Phase1 fallback: {enc_fb}"
+    assert any("bebladii-planc-phase2-data" in str(p).replace("\\", "/") for p in dec_fb), f"Нет Kaggle Phase2 fallback: {dec_fb}"
+    assert any("BEBLaDII-plan\u0421-Phase2-Data" in str(p) for p in dec_fb), f"Нет локального Phase2 fallback: {dec_fb}"
+    with _tempfile.TemporaryDirectory() as _td:
+        _td_p = Path(_td)
+        _empty_base = _td_p / "empty_base"
+        _empty_base.mkdir()
+        _fb_dir = _td_p / "fb_kaggle"
+        _fb_dir.mkdir()
+        _preset_f = _fb_dir / "weights_int8.pt"
+        _preset_f.write_bytes(b"ok")
+        _res_p, _is_exact = resolve_component_weights_path(
+            base_dir=_empty_base,
+            preset_filename="weights_int8.pt",
+            explicit_weights_path=_empty_base / "weights.pt",
+            fallback_dirs=[_fb_dir],
+        )
+        assert _res_p == _preset_f and _is_exact, f"Fallback не нашёл пресет в запасном каталоге: {_res_p}, {_is_exact}"
+        _custom_f = _td_p / "custom_ckpt.pt"
+        _custom_f.write_bytes(b"custom")
+        _res_c, _is_exact_c = resolve_component_weights_path(
+            base_dir=_empty_base,
+            preset_filename="weights_int8.pt",
+            explicit_weights_path=_custom_f,
+            fallback_dirs=[_fb_dir],
+        )
+        assert _res_c == _custom_f and (not _is_exact_c), f"Кастомный explicit путь не должен подменяться fallback: {_res_c}"
+
     print(
         f"    -> lin_cos={cos_lin:.6f}, emb_err={emb_err:.2e}, ce_gcos={gcos_q:.6f}, radar_max_err={radar_err:.4f} (OK)",
         flush=True,

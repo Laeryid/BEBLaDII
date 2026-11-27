@@ -23,6 +23,7 @@ try:
     from ..quantization import (
         Int8RowwiseEmbedding,
         System1QuantPolicy,
+        get_component_fallback_dirs,
         is_quantized_checkpoint,
         load_quantized_encoder_payload,
         quantize_encoder_in_place,
@@ -43,6 +44,7 @@ except ImportError:
     from quantization import (
         Int8RowwiseEmbedding,
         System1QuantPolicy,
+        get_component_fallback_dirs,
         is_quantized_checkpoint,
         load_quantized_encoder_payload,
         quantize_encoder_in_place,
@@ -357,6 +359,7 @@ def get_encoder(
         preset_filename=policy.encoder_weights_filename,
         explicit_weights_path=weights_path,
         fallback_filename=fallback_name,
+        fallback_dirs=get_component_fallback_dirs("encoder"),
     )
     raw = torch.load(w_file, map_location="cpu", weights_only=False)
 

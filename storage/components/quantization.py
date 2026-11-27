@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -934,19 +934,72 @@ def load_quantized_decoder_payload(
     return preset
 
 
+def get_component_fallback_dirs(
+    component: str,
+    project_root: Optional[Union[str, Path]] = None,
+) -> List[Path]:
+    """
+    Возвращает упорядоченный список запасных каталогов для весов Системы 1
+    (Kaggle Input датасеты + локальные зеркала BEBLaDII-planС-Phase{1,2}-Data).
+    """
+    comp = str(component).strip().lower()
+    root = Path(project_root) if project_root is not None else Path(__file__).resolve().parents[2]
+    if comp == "encoder":
+        candidates = [
+            Path("/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/encoder"),
+            Path("/kaggle/input/bebladii-planc-phase1-data/encoder"),
+            root / "BEBLaDII-plan\u0421-Phase1-Data" / "encoder",  # кириллическая 'С'
+            root / "BEBLaDII-planC-Phase1-Data" / "encoder",       # латинская 'C'
+        ]
+    elif comp == "decoder":
+        candidates = [
+            Path("/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/decoder"),
+            Path("/kaggle/input/bebladii-planc-phase2-data/decoder"),
+            root / "BEBLaDII-plan\u0421-Phase2-Data" / "decoder",  # кириллическая 'С'
+            root / "BEBLaDII-planC-Phase2-Data" / "decoder",       # латинская 'C'
+        ]
+    else:
+        return []
+
+    out: List[Path] = []
+    seen = set()
+    for p in candidates:
+        key = str(p)
+        if key not in seen:
+            seen.add(key)
+            out.append(p)
+    return out
+
+
 def resolve_component_weights_path(
     base_dir: Path,
     preset_filename: str,
     explicit_weights_path: Optional[Union[str, Path]] = None,
     fallback_filename: str = "weights.pt",
+    fallback_dirs: Optional[Sequence[Union[str, Path]]] = None,
+    extra_fallback_filenames: Optional[Sequence[str]] = None,
 ) -> Tuple[Path, bool]:
     """
-    Ищет квантизованный файл весов рядом с explicit_weights_path (или в base_dir).
+    Ищет квантизованный файл весов рядом с explicit_weights_path, в base_dir и в запасных каталогах
+    (Kaggle датасеты bogdanbuliakov/bebladii-planc-phase{1,2}-data и локальные BEBLaDII-planС-Phase{1,2}-Data).
     Возвращает (path, is_exact_preset_file):
     - Если нужный файл пресета найден (например weights_int8.pt) -> (path, True);
-    - Иначе (например на Kaggle подключён датасет только с weights.pt) -> (fallback_path, False),
+    - Иначе (например подключён датасет только с weights.pt / phase2_decoder_step_25000.pt) -> (fallback_path, False),
       после чего загрузчик автоматически выполнит конвертацию на лету.
     """
+    fb_dirs: List[Path] = [Path(d) for d in (fallback_dirs or ())]
+    fb_names: List[str] = [fallback_filename]
+    for fn in (extra_fallback_filenames or ()):
+        if fn and fn not in fb_names:
+            fb_names.append(fn)
+
+    known_dirs = set()
+    for d in [base_dir] + fb_dirs:
+        try:
+            known_dirs.add(d.resolve())
+        except Exception:
+            known_dirs.add(d)
+
     if explicit_weights_path is not None:
         exp = Path(explicit_weights_path)
         if exp.name == preset_filename and exp.exists():
@@ -955,11 +1008,39 @@ def resolve_component_weights_path(
         if sibling.exists():
             return sibling, True
         if exp.exists():
+            # Если передан стандартный файл из известного каталога (например storage/.../weights.pt),
+            # сначала проверим наличие готового пресета в base_dir и запасных каталогах датасетов.
+            try:
+                exp_parent_res = exp.parent.resolve()
+            except Exception:
+                exp_parent_res = exp.parent
+            if exp_parent_res in known_dirs and exp.name in fb_names:
+                for d in [base_dir] + fb_dirs:
+                    cand = d / preset_filename
+                    if cand.exists():
+                        return cand, True
             return exp, (exp.name == preset_filename)
 
     candidate = base_dir / preset_filename
     if candidate.exists():
         return candidate, True
+
+    for d in fb_dirs:
+        cand = d / preset_filename
+        if cand.exists():
+            return cand, True
+
+    for fn in fb_names:
+        cand = base_dir / fn
+        if cand.exists():
+            return cand, (fn == preset_filename)
+
+    for d in fb_dirs:
+        for fn in fb_names:
+            cand = d / fn
+            if cand.exists():
+                return cand, (fn == preset_filename)
+
     return base_dir / fallback_filename, False
 
 
@@ -995,6 +1076,7 @@ __all__ = [
     "save_quantized_component",
     "load_quantized_encoder_payload",
     "load_quantized_decoder_payload",
+    "get_component_fallback_dirs",
     "resolve_component_weights_path",
     "estimate_model_memory_mb",
 ]

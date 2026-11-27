@@ -22,6 +22,7 @@ try:
     from ..quantization import (
         Int8RowwiseEmbedding,
         System1QuantPolicy,
+        get_component_fallback_dirs,
         is_quantized_checkpoint,
         load_quantized_decoder_payload,
         quantize_decoder_in_place,
@@ -41,6 +42,7 @@ except ImportError:
     from quantization import (
         Int8RowwiseEmbedding,
         System1QuantPolicy,
+        get_component_fallback_dirs,
         is_quantized_checkpoint,
         load_quantized_decoder_payload,
         quantize_decoder_in_place,
@@ -564,6 +566,8 @@ def get_decoder(
         preset_filename=policy.decoder_weights_filename,
         explicit_weights_path=weights_path,
         fallback_filename=fallback_name,
+        fallback_dirs=get_component_fallback_dirs("decoder"),
+        extra_fallback_filenames=("phase2_decoder_step_25000.pt",),
     )
     raw_ckpt = torch.load(w_file, map_location="cpu", weights_only=False)
 
@@ -639,6 +643,7 @@ def get_decoder(
             preset_filename=policy.encoder_weights_filename,
             explicit_weights_path=None,
             fallback_filename="weights.pt",
+            fallback_dirs=get_component_fallback_dirs("encoder"),
         )
         if enc_file.exists():
             enc_raw = torch.load(enc_file, map_location="cpu", weights_only=False)

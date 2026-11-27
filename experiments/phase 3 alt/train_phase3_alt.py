@@ -180,6 +180,8 @@ class AltEnvironmentConfig:
             search_roots = [
                 "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data",
                 "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data",
+                "/kaggle/input/bebladii-planc-phase2-data",
+                "/kaggle/input/bebladii-planc-phase1-data",
                 "/kaggle/input",
                 project_root,
             ]
@@ -205,6 +207,7 @@ class AltEnvironmentConfig:
                 "tekken_stopwords_mask.pt",
                 [
                     "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/data/tekken_stopwords_mask.pt",
+                    "/kaggle/input/bebladii-planc-phase1-data/data/tekken_stopwords_mask.pt",
                     os.path.join(project_root, "data", "plan C", "tekken_stopwords_mask.pt"),
                 ],
                 search_roots,
@@ -214,6 +217,10 @@ class AltEnvironmentConfig:
                 [
                     os.path.join(project_root, "storage", "components", "encoder", "weights.pt"),
                     "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/encoder/weights.pt",
+                    "/kaggle/input/bebladii-planc-phase1-data/encoder/weights.pt",
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase1-data/encoder/weights_emb_int8_fp16.pt",
+                    "/kaggle/input/bebladii-planc-phase1-data/encoder/weights_emb_int8_fp16.pt",
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase1-Data", "encoder", "weights.pt"),
                 ],
                 search_roots,
             )
@@ -221,8 +228,13 @@ class AltEnvironmentConfig:
                 "phase2_decoder_step_25000.pt",
                 [
                     "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/decoder/phase2_decoder_step_25000.pt",
+                    "/kaggle/input/bebladii-planc-phase2-data/decoder/phase2_decoder_step_25000.pt",
+                    "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/decoder/weights_fp16.pt",
+                    "/kaggle/input/bebladii-planc-phase2-data/decoder/weights_fp16.pt",
                     "/kaggle/input/datasets/bogdanbuliakov/bebladii-planc-phase2-data/decoder/weights.pt",
+                    "/kaggle/input/bebladii-planc-phase2-data/decoder/weights.pt",
                     os.path.join(project_root, "storage", "components", "decoder", "weights.pt"),
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase2-Data", "decoder", "phase2_decoder_step_25000.pt"),
                 ],
                 search_roots,
             )
@@ -247,9 +259,34 @@ class AltEnvironmentConfig:
                 ],
                 [],
             )
-            stopwords_path = os.path.join(project_root, "data", "plan C", "tekken_stopwords_mask.pt")
-            encoder_weights_path = os.path.join(project_root, "storage", "components", "encoder", "weights.pt")
-            decoder_weights_path = os.path.join(project_root, "storage", "components", "decoder", "weights.pt")
+            stopwords_path = resolve_file_path(
+                "tekken_stopwords_mask.pt",
+                [
+                    os.path.join(project_root, "data", "plan C", "tekken_stopwords_mask.pt"),
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase1-Data", "data", "tekken_stopwords_mask.pt"),
+                ],
+                [],
+            )
+            encoder_weights_path = resolve_file_path(
+                "weights.pt",
+                [
+                    os.path.join(project_root, "storage", "components", "encoder", "weights.pt"),
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase1-Data", "encoder", "weights.pt"),
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase1-Data", "encoder", "weights_emb_int8_fp16.pt"),
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase1-Data", "encoder", "weights_int8.pt"),
+                ],
+                [],
+            )
+            decoder_weights_path = resolve_file_path(
+                "weights.pt",
+                [
+                    os.path.join(project_root, "storage", "components", "decoder", "weights.pt"),
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase2-Data", "decoder", "weights_fp16.pt"),
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase2-Data", "decoder", "weights_int8.pt"),
+                    os.path.join(project_root, "BEBLaDII-plan\u0421-Phase2-Data", "decoder", "phase2_decoder_step_25000.pt"),
+                ],
+                [],
+            )
             wandb_mode = "disabled"
 
         sep_concept_path = os.path.join(project_root, "storage", "components", "sep_concept.pt")
