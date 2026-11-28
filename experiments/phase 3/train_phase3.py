@@ -2431,8 +2431,11 @@ def procrustes_align_basis(v_src: torch.Tensor, v_ref: torch.Tensor) -> torch.Te
     a = v_src.float()
     b = v_ref.float()
     m = torch.matmul(a, b.transpose(-2, -1))
-    u, _, vh = torch.linalg.svd(m)
-    r_opt = torch.matmul(vh.transpose(-2, -1), u.transpose(-2, -1))
+    # На некоторых GPU-драйверах (T4/cuSOLVER) батчевый torch.linalg.svd(8x8) на CUDA зависает;
+    # 8x8 матрица (64 KB) мгновенно и безопасно считается на CPU.
+    m_cpu = torch.nan_to_num(m.detach().cpu(), nan=0.0, posinf=0.0, neginf=0.0)
+    u, _, vh = torch.linalg.svd(m_cpu)
+    r_opt = torch.matmul(vh.transpose(-2, -1), u.transpose(-2, -1)).to(device=a.device, dtype=a.dtype)
     return torch.matmul(r_opt, a)
 
 
@@ -2543,7 +2546,6 @@ def _forward_sampler_v0(
     use_amp: bool,
     amp_dtype: torch.dtype,
     want_sink: bool = False,
-    debug_tag: str = "",
 ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
     """Единый вызов модели в сэмплерах: 2B батчевый CFG (§7.3) + кэш KV (§7.1) + пропуск CA на uncond (§7.2)."""
     in_dtype = amp_dtype if use_amp else torch.float32
@@ -2551,9 +2553,6 @@ def _forward_sampler_v0(
     need_cfg = abs(float(eff_cfg_scale) - 1.0) > 1e-4
     with torch.autocast(device_type=V_in.device.type, dtype=amp_dtype, enabled=use_amp):
         if need_cfg and hasattr(raw_core, "forward_cfg_batched"):
-            if debug_tag:
-                print(f"      [sampler:{debug_tag}] forward_cfg_batched start (eff_cfg={eff_cfg_scale:.2f})...", flush=True)
-            _t_fw = time.time()
             v0_cond, v0_uncond, sw = raw_core.forward_cfg_batched(
                 V_t=v_cast,
                 t_mat=t_mat,
@@ -2563,18 +2562,9 @@ def _forward_sampler_v0(
                 radar_sigma=radar_sig,
                 return_sink_weights=want_sink,
             )
-            if debug_tag:
-                if V_in.device.type == "cuda":
-                    torch.cuda.synchronize(V_in.device)
-                print(f"      [sampler:{debug_tag}] forward_cfg_batched done ({time.time() - _t_fw:.2f}s); _apply_cfg_and_clamp(procrustes={procrustes_cfg}) start...", flush=True)
-            _t_cfg = time.time()
             v0 = _apply_cfg_and_clamp(
                 v0_cond, v0_uncond, cfg_scale=eff_cfg_scale, cfg_rescale=cfg_rescale, procrustes=procrustes_cfg
             )
-            if debug_tag:
-                if V_in.device.type == "cuda":
-                    torch.cuda.synchronize(V_in.device)
-                print(f"      [sampler:{debug_tag}] _apply_cfg_and_clamp done ({time.time() - _t_cfg:.2f}s)", flush=True)
             return v0, sw
 
         fw_kwargs: Dict[str, Any] = dict(
@@ -2588,8 +2578,6 @@ def _forward_sampler_v0(
         )
         if prompt_cache is not None:
             fw_kwargs["prompt_cache"] = prompt_cache
-        if debug_tag:
-            print(f"      [sampler:{debug_tag}] forward_with_cached_prompt(cond) start (need_cfg={need_cfg})...", flush=True)
         v0_cond, _, sw = raw_core.forward_with_cached_prompt(**fw_kwargs)
         if need_cfg:
             fw_u = dict(fw_kwargs)
@@ -2597,17 +2585,11 @@ def _forward_sampler_v0(
             fw_u["m_prompt"] = m_uncond
             fw_u["return_sink_weights"] = False
             v0_uncond, _, _ = raw_core.forward_with_cached_prompt(**fw_u)
-            if debug_tag:
-                print(f"      [sampler:{debug_tag}] _apply_cfg_and_clamp(procrustes={procrustes_cfg}) start...", flush=True)
             v0 = _apply_cfg_and_clamp(
                 v0_cond, v0_uncond, cfg_scale=eff_cfg_scale, cfg_rescale=cfg_rescale, procrustes=procrustes_cfg
             )
         else:
             v0 = v0_cond.float()
-        if debug_tag:
-            if V_in.device.type == "cuda":
-                torch.cuda.synchronize(V_in.device)
-            print(f"      [sampler:{debug_tag}] single-branch done", flush=True)
     return v0, sw
 
 
@@ -2651,7 +2633,6 @@ def euler_heun_sample(
     x_prompt, prompt_cache = _prepare_sampler_prompt_cache(
         raw_core, V_prompt, prompt_valid_mask, use_amp=use_amp, amp_dtype=amp_dtype
     )
-    print("      [euler_heun] prompt_cache ready", flush=True)
 
     sep_exp = sep_concept.to(device=device, dtype=torch.float32).view(1, 1, 8, 128).expand(B, 1, 8, 128)
     noise = torch.randn((B, N_ANS, 8, 128), generator=gen, device=device, dtype=torch.float32) * SIGMA_NOISE
@@ -2663,17 +2644,10 @@ def euler_heun_sample(
     uncond_mask = torch.zeros_like(prompt_valid_mask)
     last_sink_weights = None
 
-    def predict_v0(
-        V_in: torch.Tensor, t_val: float, want_sink: bool = False, debug_tag: str = ""
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def predict_v0(V_in: torch.Tensor, t_val: float, want_sink: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         t_mat = torch.full((B, N_CANVAS), t_val, device=device, dtype=torch.float32)
         t_mat[:, 0] = 0.0
-        if debug_tag:
-            print(f"      [sampler:{debug_tag}] compute_radar_sigma start (t={t_val:.3f})...", flush=True)
-        _t_rad = time.time()
         radar_sig = compute_radar_sigma(decoder, V_in, use_amp=use_amp, amp_dtype=amp_dtype)
-        if debug_tag:
-            print(f"      [sampler:{debug_tag}] compute_radar_sigma done ({time.time() - _t_rad:.2f}s)", flush=True)
         eff_cfg = compute_limited_cfg_scale(t_val, cfg_scale, t_range=limited_cfg_t_range)
         v0, sw = _forward_sampler_v0(
             raw_core=raw_core,
@@ -2692,7 +2666,6 @@ def euler_heun_sample(
             use_amp=use_amp,
             amp_dtype=amp_dtype,
             want_sink=want_sink,
-            debug_tag=debug_tag,
         )
         v0[:, 0] = sep_exp[:, 0]
         return v0, sw
@@ -2700,11 +2673,8 @@ def euler_heun_sample(
     for k in range(num_steps):
         t_cur = float(t_grid[k].item())
         t_next = float(t_grid[k + 1].item())
-        _dtag = f"k{k}" if (k < 3 or k % 5 == 0) else ""
-        if _dtag:
-            print(f"      [euler_heun] step {k + 1}/{num_steps} (t={t_cur:.3f}->{t_next:.3f}) start...", flush=True)
 
-        v0_1, sw_1 = predict_v0(V_t, t_cur, want_sink=(k == num_steps - 1), debug_tag=(f"{_dtag}_1" if _dtag else ""))
+        v0_1, sw_1 = predict_v0(V_t, t_cur, want_sink=(k == num_steps - 1))
         if k == num_steps - 1:
             last_sink_weights = sw_1
 
@@ -2720,7 +2690,7 @@ def euler_heun_sample(
         V_pred_ans = v0_1[:, 1:] + ratio_ax * (V_t[:, 1:] - v0_1[:, 1:])
         V_pred = torch.cat([sep_exp, V_pred_ans], dim=1)
 
-        v0_2, _ = predict_v0(V_pred, t_next, want_sink=False, debug_tag=(f"{_dtag}_2" if _dtag else ""))
+        v0_2, _ = predict_v0(V_pred, t_next, want_sink=False)
         v0_bar_ans = 0.5 * (v0_1[:, 1:] + v0_2[:, 1:])
         V_next_ans = v0_bar_ans + ratio_ax * (V_t[:, 1:] - v0_bar_ans)
         V_t = torch.cat([sep_exp, V_next_ans], dim=1)
