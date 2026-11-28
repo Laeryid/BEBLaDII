@@ -32,7 +32,9 @@ BEBLaDII Phase 3 Alt (Plan C) — Гибридное Грассманианов�
 
 import argparse
 import dataclasses
+import datetime
 import glob
+import json
 import math
 import os
 import re
@@ -2749,6 +2751,9 @@ def run_alt_training_loop(
                 keep_local=not env.is_kaggle,
             )
 
+        if world_size > 1 and dist.is_initialized() and ((step % args.eval_every == 0) or (step % args.save_every == 0)):
+            dist.barrier()
+
     if is_main_process:
         print("=== Обучение Phase 3 Alt завершено ===", flush=True)
 
@@ -2964,6 +2969,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--wandb-name", "--wandb_name", dest="wandb_name", type=str, default="")
     parser.add_argument("--use-dataparallel", "--use_dataparallel", dest="use_dataparallel", action="store_true", default=True)
     parser.add_argument("--no-dataparallel", "--no_dataparallel", dest="no_dataparallel", action="store_true")
+    parser.add_argument("--config-json", "--config_json", dest="config_json", type=str, default="")
     args, _ = parser.parse_known_args()
     return args
 
@@ -2971,6 +2977,14 @@ def parse_args() -> argparse.Namespace:
 def main(args: Optional[argparse.Namespace] = None) -> None:
     if args is None:
         args = parse_args()
+
+    cfg_json = getattr(args, "config_json", "")
+    if cfg_json and os.path.exists(cfg_json):
+        with open(cfg_json, "r", encoding="utf-8") as _f:
+            _cfg_data = json.load(_f)
+        for _k, _v in _cfg_data.items():
+            if hasattr(args, _k):
+                setattr(args, _k, _v)
 
     if args.num_threads > 0:
         torch.set_num_threads(args.num_threads)
@@ -2983,7 +2997,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
 
     if is_ddp:
         torch.cuda.set_device(local_rank)
-        dist.init_process_group(backend="nccl")
+        dist.init_process_group(backend="nccl", timeout=datetime.timedelta(minutes=30))
 
     # Применяем пресет быстрого CPU-тестирования (не перезаписывая явные значения, если это smoke-test)
     if args.cpu_fast and not args.smoke_test:
@@ -3238,6 +3252,8 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         if is_ddp:
             for p in model.parameters():
                 dist.broadcast(p.data, src=0)
+            for b in model.buffers():
+                dist.broadcast(b.data, src=0)
         if is_main_process:
             inv = verify_init_invariants(model, sep_concept=sep_concept, device=env.device)
             print(
@@ -3377,6 +3393,7 @@ TRAINING_CONFIG: Dict[str, Any] = {
     "device": "auto",
     "sys1_quant": "auto",
     "sys1_mode": "train",
+    "use_ddp": True,
     "use_dataparallel": True,
     "arch_preset": "standard",
     "arch_version": "v2",
@@ -3437,7 +3454,59 @@ if __name__ == "__main__":
     cli_args = parse_args()
     is_notebook = any("ipykernel" in m for m in sys.modules)
     if is_notebook:
-        for k, v in TRAINING_CONFIG.items():
-            if hasattr(cli_args, k):
-                setattr(cli_args, k, v)
-    main(cli_args)
+        n_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        use_ddp_auto = (
+            bool(TRAINING_CONFIG.get("use_ddp", True))
+            and str(TRAINING_CONFIG.get("device", "auto")) != "cpu"
+            and n_gpus > 1
+            and ("RANK" not in os.environ)
+        )
+        script_path = ALT_DIR / "train_phase3_alt.py"
+        if use_ddp_auto and script_path.exists():
+            ddp_cfg = dict(TRAINING_CONFIG)
+            orig_ga = int(ddp_cfg.get("grad_accum_steps", 4))
+            ddp_cfg["grad_accum_steps"] = max(1, orig_ga // n_gpus)
+            eff_b = int(ddp_cfg.get("batch_size", 16)) * ddp_cfg["grad_accum_steps"] * n_gpus
+            cfg_dir = "/kaggle/working" if os.path.exists("/kaggle/working") else str(ALT_DIR)
+            cfg_path = os.path.join(cfg_dir, "ddp_runtime_config.json")
+            with open(cfg_path, "w", encoding="utf-8") as _f:
+                json.dump(ddp_cfg, _f, indent=2, ensure_ascii=False)
+            print(
+                f"[DDP Launcher] Обнаружено {n_gpus} GPU! Запуск torchrun (DDP) вместо DataParallel | "
+                f"grad_accum: {orig_ga} -> {ddp_cfg['grad_accum_steps']} (eff_batch={eff_b})",
+                flush=True,
+            )
+            proc_env = os.environ.copy()
+            proc_env["PYTHONUNBUFFERED"] = "1"
+            proc_env.setdefault("TORCH_NCCL_ASYNC_ERROR_HANDLING", "1")
+            cmd = [
+                sys.executable,
+                "-m",
+                "torch.distributed.run",
+                "--standalone",
+                f"--nproc_per_node={n_gpus}",
+                str(script_path),
+                "--config-json",
+                cfg_path,
+            ]
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+                env=proc_env,
+            )
+            assert proc.stdout is not None
+            for _line in proc.stdout:
+                print(_line, end="", flush=True)
+            ret = proc.wait()
+            if ret != 0:
+                raise RuntimeError(f"DDP-процесс (torchrun) завершился с кодом {ret}")
+        else:
+            for k, v in TRAINING_CONFIG.items():
+                if hasattr(cli_args, k):
+                    setattr(cli_args, k, v)
+            main(cli_args)
+    else:
+        main(cli_args)
