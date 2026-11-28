@@ -2420,23 +2420,49 @@ class EMAModel:
 # ## 7. Сэмплер Эйлера–Хьюна с CFG и Evaluation Gate
 
 # %%
+_PROCRUSTES_DEBUG_ONCE = True
+
+
 def procrustes_align_basis(v_src: torch.Tensor, v_ref: torch.Tensor) -> torch.Tensor:
     """
     8x8 ортогональное Procrustes-выравнивание базиса v_src к v_ref строго в float32 (§2.3):
       M = v_src @ v_ref^T = U Sigma W^T  =>  R* = W U^T in O(8),  v_aligned = R* v_src.
     На XLA/TPU возвращается v_src без SVD, чтобы не вызывать CPU-fallback.
     """
+    global _PROCRUSTES_DEBUG_ONCE
+    dbg = _PROCRUSTES_DEBUG_ONCE
+    _PROCRUSTES_DEBUG_ONCE = False
     if v_src.device.type == "xla":
         return v_src.float()
     a = v_src.float()
     b = v_ref.float()
+    if dbg:
+        print(f"        [procrustes] 1. matmul start shape={tuple(a.shape)} dev={a.device}", flush=True)
     m = torch.matmul(a, b.transpose(-2, -1))
-    # На некоторых GPU-драйверах (T4/cuSOLVER) батчевый torch.linalg.svd(8x8) на CUDA зависает;
-    # 8x8 матрица (64 KB) мгновенно и безопасно считается на CPU.
+    if dbg:
+        if a.device.type == "cuda":
+            torch.cuda.synchronize(a.device)
+        print(f"        [procrustes] 2. cpu copy start shape={tuple(m.shape)}", flush=True)
     m_cpu = torch.nan_to_num(m.detach().cpu(), nan=0.0, posinf=0.0, neginf=0.0)
+    if dbg:
+        print(f"        [procrustes] 3. svd(cpu) start finite={bool(torch.isfinite(m_cpu).all())}", flush=True)
     u, _, vh = torch.linalg.svd(m_cpu)
+    if dbg:
+        print("        [procrustes] 4. svd(cpu) done; to(device) start", flush=True)
     r_opt = torch.matmul(vh.transpose(-2, -1), u.transpose(-2, -1)).to(device=a.device, dtype=a.dtype)
-    return torch.matmul(r_opt, a)
+    if dbg:
+        if a.device.type == "cuda":
+            torch.cuda.synchronize(a.device)
+        print("        [procrustes] 5. r_opt @ a start", flush=True)
+    out = torch.matmul(r_opt, a)
+    if dbg:
+        if a.device.type == "cuda":
+            torch.cuda.synchronize(a.device)
+        print("        [procrustes] 6. done", flush=True)
+    return out
+
+
+_CFG_CLAMP_DEBUG_ONCE = True
 
 
 def _apply_cfg_and_clamp(
@@ -2450,15 +2476,29 @@ def _apply_cfg_and_clamp(
     Classifier-Free Guidance с опциональным 8x8 Procrustes-выравниванием базиса v0_uncond к v0_cond (§2.3),
     по-ячеечной стабилизацией Фробениусовой нормы (CFG Rescale) и проекцией строк в единичный шар B^128.
     """
+    global _CFG_CLAMP_DEBUG_ONCE
+    dbg = _CFG_CLAMP_DEBUG_ONCE
+    _CFG_CLAMP_DEBUG_ONCE = False
+    if dbg:
+        print("        [cfg_clamp] 1. start", flush=True)
     vc = v0_cond.float()
     vu = procrustes_align_basis(v0_uncond, vc) if procrustes else v0_uncond.float()
+    if dbg:
+        print("        [cfg_clamp] 2. rescale start", flush=True)
     v_cfg = vu + cfg_scale * (vc - vu)
     if cfg_rescale > 0.0:
         norm_c = torch.sqrt((vc ** 2).sum(dim=(-2, -1), keepdim=True) + 1e-12)
         norm_cfg = torch.sqrt((v_cfg ** 2).sum(dim=(-2, -1), keepdim=True) + 1e-12)
         v_rescaled = v_cfg * (norm_c / norm_cfg)
         v_cfg = cfg_rescale * v_rescaled + (1.0 - cfg_rescale) * v_cfg
-    return clamp_to_unit_ball(v_cfg)
+    if dbg:
+        print("        [cfg_clamp] 3. clamp_to_unit_ball start", flush=True)
+    res = clamp_to_unit_ball(v_cfg)
+    if dbg:
+        if v_cfg.device.type == "cuda":
+            torch.cuda.synchronize(v_cfg.device)
+        print("        [cfg_clamp] 4. done", flush=True)
+    return res
 
 
 def build_t_grid(
