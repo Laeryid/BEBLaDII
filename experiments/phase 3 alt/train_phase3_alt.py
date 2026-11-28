@@ -3052,7 +3052,7 @@ def parse_args() -> argparse.Namespace:
     # Логирование, чекпоинты, multi-GPU
     parser.add_argument("--log-every", "--log_every", dest="log_every", type=int, default=20)
     parser.add_argument("--eval-every", "--eval_every", dest="eval_every", type=int, default=500)
-    parser.add_argument("--eval-batches", "--eval_batches", dest="eval_batches", type=int, default=4)
+    parser.add_argument("--eval-batches", "--eval_batches", dest="eval_batches", type=int, default=16)
     parser.add_argument("--gen-steps", "--gen_steps", dest="gen_steps", type=int, default=20)
     parser.add_argument("--save-every", "--save_every", dest="save_every", type=int, default=500)
     parser.add_argument("--resume-ckpt", "--resume_ckpt", dest="resume_ckpt", type=str, default="auto")
@@ -3110,7 +3110,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             args.log_every = 5
         if args.eval_every == 500:
             args.eval_every = 50
-        if args.eval_batches == 4:
+        if args.eval_batches == 16:
             args.eval_batches = 2
         if args.gen_steps == 20:
             args.gen_steps = 8
@@ -3532,7 +3532,7 @@ TRAINING_CONFIG: Dict[str, Any] = {
     "ema_decay": 0.999,
     "log_every": 20,
     "eval_every": 200,
-    "eval_batches": 4,
+    "eval_batches": 16,
     "cfg_dsim_batches": 4,
     "gen_steps": 20,
     "save_every": 500,

@@ -2420,53 +2420,25 @@ class EMAModel:
 # ## 7. Сэмплер Эйлера–Хьюна с CFG и Evaluation Gate
 
 # %%
-_PROCRUSTES_DEBUG_ONCE = True
-
-
 def procrustes_align_basis(v_src: torch.Tensor, v_ref: torch.Tensor) -> torch.Tensor:
     """
     8x8 ортогональное Procrustes-выравнивание базиса v_src к v_ref строго в float32 (§2.3):
       M = v_src @ v_ref^T = U Sigma W^T  =>  R* = W U^T in O(8),  v_aligned = R* v_src.
     На XLA/TPU возвращается v_src без SVD, чтобы не вызывать CPU-fallback.
     """
-    global _PROCRUSTES_DEBUG_ONCE
-    dbg = _PROCRUSTES_DEBUG_ONCE
-    _PROCRUSTES_DEBUG_ONCE = False
     if v_src.device.type == "xla":
         return v_src.float()
     a = v_src.float()
     b = v_ref.float()
-    if dbg:
-        print(f"        [procrustes] 1. matmul start shape={tuple(a.shape)} dev={a.device}", flush=True)
     m = torch.matmul(a, b.transpose(-2, -1))
-    if dbg:
-        if a.device.type == "cuda":
-            torch.cuda.synchronize(a.device)
-        print(f"        [procrustes] 2. cpu copy start shape={tuple(m.shape)}", flush=True)
     # SVD (CPU LAPACK и cuSOLVER) зависает на Kaggle DDP -> полярный множитель
     # U Vh через итерации Ньютона–Шульца (только matmul, без LAPACK).
     m = torch.nan_to_num(m.detach(), nan=0.0, posinf=0.0, neginf=0.0)
-    if dbg:
-        print("        [procrustes] 3. newton-schulz polar start", flush=True)
     x = m / m.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-8)
     for _ in range(40):
         x = 1.5 * x - 0.5 * torch.matmul(x, torch.matmul(x.transpose(-2, -1), x))
-    if dbg:
-        print("        [procrustes] 4. polar done", flush=True)
     r_opt = x.transpose(-2, -1).to(dtype=a.dtype)  # (U Vh)^T = Vh^T U^T
-    if dbg:
-        if a.device.type == "cuda":
-            torch.cuda.synchronize(a.device)
-        print("        [procrustes] 5. r_opt @ a start", flush=True)
-    out = torch.matmul(r_opt, a)
-    if dbg:
-        if a.device.type == "cuda":
-            torch.cuda.synchronize(a.device)
-        print("        [procrustes] 6. done", flush=True)
-    return out
-
-
-_CFG_CLAMP_DEBUG_ONCE = True
+    return torch.matmul(r_opt, a)
 
 
 def _apply_cfg_and_clamp(
@@ -2480,29 +2452,15 @@ def _apply_cfg_and_clamp(
     Classifier-Free Guidance с опциональным 8x8 Procrustes-выравниванием базиса v0_uncond к v0_cond (§2.3),
     по-ячеечной стабилизацией Фробениусовой нормы (CFG Rescale) и проекцией строк в единичный шар B^128.
     """
-    global _CFG_CLAMP_DEBUG_ONCE
-    dbg = _CFG_CLAMP_DEBUG_ONCE
-    _CFG_CLAMP_DEBUG_ONCE = False
-    if dbg:
-        print("        [cfg_clamp] 1. start", flush=True)
     vc = v0_cond.float()
     vu = procrustes_align_basis(v0_uncond, vc) if procrustes else v0_uncond.float()
-    if dbg:
-        print("        [cfg_clamp] 2. rescale start", flush=True)
     v_cfg = vu + cfg_scale * (vc - vu)
     if cfg_rescale > 0.0:
         norm_c = torch.sqrt((vc ** 2).sum(dim=(-2, -1), keepdim=True) + 1e-12)
         norm_cfg = torch.sqrt((v_cfg ** 2).sum(dim=(-2, -1), keepdim=True) + 1e-12)
         v_rescaled = v_cfg * (norm_c / norm_cfg)
         v_cfg = cfg_rescale * v_rescaled + (1.0 - cfg_rescale) * v_cfg
-    if dbg:
-        print("        [cfg_clamp] 3. clamp_to_unit_ball start", flush=True)
-    res = clamp_to_unit_ball(v_cfg)
-    if dbg:
-        if v_cfg.device.type == "cuda":
-            torch.cuda.synchronize(v_cfg.device)
-        print("        [cfg_clamp] 4. done", flush=True)
-    return res
+    return clamp_to_unit_ball(v_cfg)
 
 
 def build_t_grid(
@@ -2695,8 +2653,6 @@ def euler_heun_sample(
         t_mat[:, 0] = 0.0
         radar_sig = compute_radar_sigma(decoder, V_in, use_amp=use_amp, amp_dtype=amp_dtype)
         eff_cfg = compute_limited_cfg_scale(t_val, cfg_scale, t_range=limited_cfg_t_range)
-        if tag:
-            print(f"      [euler_heun:{tag}] predict_v0 start (t={t_val:.3f}, cfg={eff_cfg:.2f})...", flush=True)
         v0, sw = _forward_sampler_v0(
             raw_core=raw_core,
             V_in=V_in,
@@ -2715,17 +2671,12 @@ def euler_heun_sample(
             amp_dtype=amp_dtype,
             want_sink=want_sink,
         )
-        if tag:
-            if device.type == "cuda":
-                torch.cuda.synchronize(device)
-            print(f"      [euler_heun:{tag}] predict_v0 done", flush=True)
         v0[:, 0] = sep_exp[:, 0]
         return v0, sw
 
     for k in range(num_steps):
         t_cur = float(t_grid[k].item())
         t_next = float(t_grid[k + 1].item())
-        print(f"      [euler_heun] step {k + 1}/{num_steps} (t={t_cur:.3f}->{t_next:.3f})...", flush=True)
 
         v0_1, sw_1 = predict_v0(V_t, t_cur, want_sink=(k == num_steps - 1), tag=f"k{k}_1")
         if k == num_steps - 1:
@@ -3325,8 +3276,6 @@ def evaluate_phase3(
     for b_idx, batch in enumerate(val_dataloader):
         if b_idx >= max_batches:
             break
-        _t_b = time.time()
-        print(f"    [eval_p3] batch {b_idx + 1}/{max_batches} start...", flush=True)
         prompt_ids = batch["prompt_ids"].to(device)
         ans_ids = batch["ans_ids"].to(device)
         n_real_prompt = batch["n_real_prompt"].to(device)
@@ -3424,8 +3373,6 @@ def evaluate_phase3(
         # Генерация с нуля на первом батче (2 примера) + декодирование текста
         if run_generation_check and b_idx == 0 and B >= 1:
             n_gen = min(2, B)
-            _t_gen = time.time()
-            print(f"    [eval_p3] euler_heun_sample start (n_gen={n_gen}, steps={gen_steps})...", flush=True)
             V_gen, _ = euler_heun_sample(
                 raw_model,
                 V_prompt[:n_gen],
@@ -3438,8 +3385,6 @@ def evaluate_phase3(
                 amp_dtype=amp_dtype,
                 seed=1234,
             )
-            print(f"    [eval_p3] euler_heun_sample done in {time.time() - _t_gen:.2f}s; crystal_radar_sample start...", flush=True)
-            _t_cryst = time.time()
             V_gen_cryst, _ = crystal_radar_sample(
                 raw_model,
                 V_prompt[:n_gen],
@@ -3453,11 +3398,8 @@ def evaluate_phase3(
                 amp_dtype=amp_dtype,
                 seed=1234,
             )
-            print(f"    [eval_p3] crystal_radar_sample done in {time.time() - _t_cryst:.2f}s; decode_latent_answers start...", flush=True)
-            _t_dec = time.time()
             gen_texts, gen_vstarts = decode_latent_answers(V_gen, decoder, tokenizer, void_cpu)
             cryst_texts, cryst_vstarts = decode_latent_answers(V_gen_cryst, decoder, tokenizer, void_cpu)
-            print(f"    [eval_p3] decode_latent_answers done in {time.time() - _t_dec:.2f}s", flush=True)
             for g_i in range(n_gen):
                 q_str = WordAwareElasticChunker.detokenize_non_pad(
                     prompt_ids[g_i], tokenizer=tokenizer, pad_token_id=PAD_TOKEN_ID, skip_special_tokens=True
@@ -3471,7 +3413,6 @@ def evaluate_phase3(
                         "void_start_crystal": str(cryst_vstarts[g_i]),
                     }
                 )
-        print(f"    [eval_p3] batch {b_idx + 1}/{max_batches} done in {time.time() - _t_b:.2f}s", flush=True)
 
     precision = tp / max(1, tp + fp)
     recall = tp / max(1, tp + fn)
