@@ -2443,13 +2443,17 @@ def procrustes_align_basis(v_src: torch.Tensor, v_ref: torch.Tensor) -> torch.Te
         if a.device.type == "cuda":
             torch.cuda.synchronize(a.device)
         print(f"        [procrustes] 2. cpu copy start shape={tuple(m.shape)}", flush=True)
-    m_cpu = torch.nan_to_num(m.detach().cpu(), nan=0.0, posinf=0.0, neginf=0.0)
+    # SVD (CPU LAPACK и cuSOLVER) зависает на Kaggle DDP -> полярный множитель
+    # U Vh через итерации Ньютона–Шульца (только matmul, без LAPACK).
+    m = torch.nan_to_num(m.detach(), nan=0.0, posinf=0.0, neginf=0.0)
     if dbg:
-        print(f"        [procrustes] 3. svd(cpu) start finite={bool(torch.isfinite(m_cpu).all())}", flush=True)
-    u, _, vh = torch.linalg.svd(m_cpu)
+        print("        [procrustes] 3. newton-schulz polar start", flush=True)
+    x = m / m.norm(dim=(-2, -1), keepdim=True).clamp_min(1e-8)
+    for _ in range(40):
+        x = 1.5 * x - 0.5 * torch.matmul(x, torch.matmul(x.transpose(-2, -1), x))
     if dbg:
-        print("        [procrustes] 4. svd(cpu) done; to(device) start", flush=True)
-    r_opt = torch.matmul(vh.transpose(-2, -1), u.transpose(-2, -1)).to(device=a.device, dtype=a.dtype)
+        print("        [procrustes] 4. polar done", flush=True)
+    r_opt = x.transpose(-2, -1).to(dtype=a.dtype)  # (U Vh)^T = Vh^T U^T
     if dbg:
         if a.device.type == "cuda":
             torch.cuda.synchronize(a.device)
