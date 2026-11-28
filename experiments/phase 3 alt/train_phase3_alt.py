@@ -3211,56 +3211,62 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
     ).to(env.device)
 
     resume_path = None
-    if args.resume_ckpt and args.resume_ckpt.lower() != "none":
-        if args.resume_ckpt == "auto":
-            resume_path = find_latest_alt_checkpoint(
-                env.checkpoint_dir, env.gcs_checkpoints_dir if sync_gcs_flag else None
-            )
-        else:
-            resume_path = args.resume_ckpt
-    has_resume_ckpt = bool(resume_path and os.path.exists(resume_path))
+    has_resume_ckpt = False
+    if is_main_process:
+        if args.resume_ckpt and args.resume_ckpt.lower() != "none":
+            if args.resume_ckpt == "auto":
+                resume_path = find_latest_alt_checkpoint(
+                    env.checkpoint_dir, env.gcs_checkpoints_dir if sync_gcs_flag else None
+                )
+            else:
+                resume_path = args.resume_ckpt
+        has_resume_ckpt = bool(resume_path and os.path.exists(resume_path))
+    if is_ddp:
+        resume_info = [resume_path, has_resume_ckpt]
+        dist.broadcast_object_list(resume_info, src=0)
+        resume_path, has_resume_ckpt = resume_info[0], bool(resume_info[1])
 
     # При старте с нуля применяем геометрическую/data-driven инициализацию ДО создания EMA
     if (not has_resume_ckpt) and args.init_mode != "none":
-        t_init0 = time.time()
-        init_items = None
-        if args.init_mode in ("compat", "all_5", "idea4_wiener_head", "idea5_kmeans_ffn"):
-            if isinstance(train_dataset, PrecomputedLatentDataset):
-                init_items = train_dataset.items[: args.init_samples]
-            else:
-                init_cache = build_or_load_latent_cache(
-                    raw_dataset=raw_train_dataset,
-                    encoder=encoder,
-                    stopword_mask=stopword_mask,
-                    device=env.device,
-                    use_amp=env.use_amp,
-                    amp_dtype=env.amp_dtype,
-                    num_samples=min(args.init_samples, len(raw_train_dataset)),
-                    cache_path=None,
-                )
-                init_items = init_cache.items
-
-        init_info = apply_init_strategy(
-            model=model,
-            strategy_name=args.init_mode,
-            void_ref=void_concept,
-            sep_concept=sep_concept,
-            train_items=init_items,
-            wiener_damp=args.wiener_damp,
-            base_seed=args.init_seed,
-        )
-        if is_ddp:
-            for p in model.parameters():
-                dist.broadcast(p.data, src=0)
-            for b in model.buffers():
-                dist.broadcast(b.data, src=0)
         if is_main_process:
+            t_init0 = time.time()
+            init_items = None
+            if args.init_mode in ("compat", "all_5", "idea4_wiener_head", "idea5_kmeans_ffn"):
+                if isinstance(train_dataset, PrecomputedLatentDataset):
+                    init_items = train_dataset.items[: args.init_samples]
+                else:
+                    init_cache = build_or_load_latent_cache(
+                        raw_dataset=raw_train_dataset,
+                        encoder=encoder,
+                        stopword_mask=stopword_mask,
+                        device=env.device,
+                        use_amp=env.use_amp,
+                        amp_dtype=env.amp_dtype,
+                        num_samples=min(args.init_samples, len(raw_train_dataset)),
+                        cache_path=None,
+                    )
+                    init_items = init_cache.items
+
+            init_info = apply_init_strategy(
+                model=model,
+                strategy_name=args.init_mode,
+                void_ref=void_concept,
+                sep_concept=sep_concept,
+                train_items=init_items,
+                wiener_damp=args.wiener_damp,
+                base_seed=args.init_seed,
+            )
             inv = verify_init_invariants(model, sep_concept=sep_concept, device=env.device)
             print(
                 f"[Init] mode={args.init_mode} (damp={args.wiener_damp}) применена за {time.time() - t_init0:.2f}s | "
                 f"sph_err={inv['max_sph_err']:.2e} | cfg_leak={inv['cfg_leak_diff']:.2e} | info={init_info}",
                 flush=True,
             )
+        if is_ddp:
+            for p in model.parameters():
+                dist.broadcast(p.data, src=0)
+            for b in model.buffers():
+                dist.broadcast(b.data, src=0)
 
     ema = EMAModel(model, decay=args.ema_decay, device=env.device, warmup=True) if not args.no_ema else None
     opt_muon, opt_adamw = create_alt_optimizers(
@@ -3341,7 +3347,11 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
         )
 
     # 4. Multi-GPU (DDP основной режим, DataParallel fallback)
-    if env.device.type == "cuda" and torch.cuda.device_count() > 1:
+    if is_ddp:
+        # В DDP каждый процесс прогревает cuSOLVER только на своём GPU
+        _eye = torch.eye(8, device=env.device, dtype=torch.float32)
+        _ = torch.linalg.eigh(_eye)
+    elif env.device.type == "cuda" and torch.cuda.device_count() > 1:
         warmup_linalg_backends()
 
     wrapped_model: nn.Module = model
@@ -3419,7 +3429,7 @@ TRAINING_CONFIG: Dict[str, Any] = {
     "val_data_path": "auto",
     "batch_size": 16,
     "grad_accum_steps": 4,
-    "max_steps": 3000,
+    "max_steps": 20000,
     "muon_lr": 1e-3,
     "adamw_lr": 3e-4,
     "scale_1d_lr": 1.2e-3,
