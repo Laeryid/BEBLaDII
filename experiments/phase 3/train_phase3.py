@@ -3269,6 +3269,8 @@ def evaluate_phase3(
     for b_idx, batch in enumerate(val_dataloader):
         if b_idx >= max_batches:
             break
+        _t_b = time.time()
+        print(f"    [eval_p3] batch {b_idx + 1}/{max_batches} start...", flush=True)
         prompt_ids = batch["prompt_ids"].to(device)
         ans_ids = batch["ans_ids"].to(device)
         n_real_prompt = batch["n_real_prompt"].to(device)
@@ -3366,6 +3368,8 @@ def evaluate_phase3(
         # Генерация с нуля на первом батче (2 примера) + декодирование текста
         if run_generation_check and b_idx == 0 and B >= 1:
             n_gen = min(2, B)
+            _t_gen = time.time()
+            print(f"    [eval_p3] euler_heun_sample start (n_gen={n_gen}, steps={gen_steps})...", flush=True)
             V_gen, _ = euler_heun_sample(
                 raw_model,
                 V_prompt[:n_gen],
@@ -3378,6 +3382,8 @@ def evaluate_phase3(
                 amp_dtype=amp_dtype,
                 seed=1234,
             )
+            print(f"    [eval_p3] euler_heun_sample done in {time.time() - _t_gen:.2f}s; crystal_radar_sample start...", flush=True)
+            _t_cryst = time.time()
             V_gen_cryst, _ = crystal_radar_sample(
                 raw_model,
                 V_prompt[:n_gen],
@@ -3391,8 +3397,11 @@ def evaluate_phase3(
                 amp_dtype=amp_dtype,
                 seed=1234,
             )
+            print(f"    [eval_p3] crystal_radar_sample done in {time.time() - _t_cryst:.2f}s; decode_latent_answers start...", flush=True)
+            _t_dec = time.time()
             gen_texts, gen_vstarts = decode_latent_answers(V_gen, decoder, tokenizer, void_cpu)
             cryst_texts, cryst_vstarts = decode_latent_answers(V_gen_cryst, decoder, tokenizer, void_cpu)
+            print(f"    [eval_p3] decode_latent_answers done in {time.time() - _t_dec:.2f}s", flush=True)
             for g_i in range(n_gen):
                 q_str = WordAwareElasticChunker.detokenize_non_pad(
                     prompt_ids[g_i], tokenizer=tokenizer, pad_token_id=PAD_TOKEN_ID, skip_special_tokens=True
@@ -3406,6 +3415,7 @@ def evaluate_phase3(
                         "void_start_crystal": str(cryst_vstarts[g_i]),
                     }
                 )
+        print(f"    [eval_p3] batch {b_idx + 1}/{max_batches} done in {time.time() - _t_b:.2f}s", flush=True)
 
     precision = tp / max(1, tp + fp)
     recall = tp / max(1, tp + fn)
