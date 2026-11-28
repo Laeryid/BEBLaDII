@@ -2644,11 +2644,15 @@ def euler_heun_sample(
     uncond_mask = torch.zeros_like(prompt_valid_mask)
     last_sink_weights = None
 
-    def predict_v0(V_in: torch.Tensor, t_val: float, want_sink: bool = False) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    def predict_v0(
+        V_in: torch.Tensor, t_val: float, want_sink: bool = False, tag: str = ""
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         t_mat = torch.full((B, N_CANVAS), t_val, device=device, dtype=torch.float32)
         t_mat[:, 0] = 0.0
         radar_sig = compute_radar_sigma(decoder, V_in, use_amp=use_amp, amp_dtype=amp_dtype)
         eff_cfg = compute_limited_cfg_scale(t_val, cfg_scale, t_range=limited_cfg_t_range)
+        if tag:
+            print(f"      [euler_heun:{tag}] predict_v0 start (t={t_val:.3f}, cfg={eff_cfg:.2f})...", flush=True)
         v0, sw = _forward_sampler_v0(
             raw_core=raw_core,
             V_in=V_in,
@@ -2667,14 +2671,19 @@ def euler_heun_sample(
             amp_dtype=amp_dtype,
             want_sink=want_sink,
         )
+        if tag:
+            if device.type == "cuda":
+                torch.cuda.synchronize(device)
+            print(f"      [euler_heun:{tag}] predict_v0 done", flush=True)
         v0[:, 0] = sep_exp[:, 0]
         return v0, sw
 
     for k in range(num_steps):
         t_cur = float(t_grid[k].item())
         t_next = float(t_grid[k + 1].item())
+        print(f"      [euler_heun] step {k + 1}/{num_steps} (t={t_cur:.3f}->{t_next:.3f})...", flush=True)
 
-        v0_1, sw_1 = predict_v0(V_t, t_cur, want_sink=(k == num_steps - 1))
+        v0_1, sw_1 = predict_v0(V_t, t_cur, want_sink=(k == num_steps - 1), tag=f"k{k}_1")
         if k == num_steps - 1:
             last_sink_weights = sw_1
 
@@ -2690,7 +2699,7 @@ def euler_heun_sample(
         V_pred_ans = v0_1[:, 1:] + ratio_ax * (V_t[:, 1:] - v0_1[:, 1:])
         V_pred = torch.cat([sep_exp, V_pred_ans], dim=1)
 
-        v0_2, _ = predict_v0(V_pred, t_next, want_sink=False)
+        v0_2, _ = predict_v0(V_pred, t_next, want_sink=False, tag=f"k{k}_2")
         v0_bar_ans = 0.5 * (v0_1[:, 1:] + v0_2[:, 1:])
         V_next_ans = v0_bar_ans + ratio_ax * (V_t[:, 1:] - v0_bar_ans)
         V_t = torch.cat([sep_exp, V_next_ans], dim=1)
