@@ -2330,6 +2330,136 @@ def _infer_content_word_mask_from_targets(
     return torch.cat([torch.zeros((B, 1), device=ans_targets.device, dtype=torch.bool), is_cw_ans], dim=1)
 
 
+def _run_alt_validation(
+    raw_model: nn.Module,
+    encoder: nn.Module,
+    decoder: Optional[nn.Module],
+    tokenizer: Any,
+    val_dataloader: DataLoader,
+    sw_dev: torch.Tensor,
+    sep_cpu: torch.Tensor,
+    void_cpu: torch.Tensor,
+    env: AltEnvironmentConfig,
+    args: argparse.Namespace,
+    ema: Optional[EMAModel],
+    opt_muon: Optional[OrthMuon],
+    opt_adamw: torch.optim.AdamW,
+    scaler: Optional[torch.amp.GradScaler],
+    step: int,
+    best_sim_gr: float,
+    sync_gcs_flag: bool,
+    use_wandb: bool,
+    save_best: bool = True,
+) -> float:
+    """Выполняет полный цикл валидации на EMA-весах с поэтапным логированием времени."""
+    t_val_start = time.time()
+    print(f"  [Alt Eval @ {step}] Старт валидации (batches={args.eval_batches}, gen_steps={args.gen_steps})...", flush=True)
+    if ema is not None:
+        ema.apply_shadow(raw_model)
+    try:
+        raw_model.set_diagnostics_capture(True)
+        eval_dec = decoder if (not args.no_eval_decoder) else None
+
+        t_ep3 = time.time()
+        val_res = evaluate_phase3(
+            model=raw_model,
+            encoder=encoder,
+            decoder=eval_dec,
+            tokenizer=tokenizer,
+            val_dataloader=val_dataloader,
+            stopword_mask=sw_dev,
+            sep_concept=sep_cpu,
+            void_concept=void_cpu,
+            device=env.device,
+            use_amp=env.use_amp,
+            amp_dtype=env.amp_dtype,
+            max_batches=args.eval_batches,
+            run_generation_check=(eval_dec is not None and not args.no_gen_check),
+            gen_steps=args.gen_steps,
+        )
+        print(f"  [Alt Eval @ {step}] evaluate_phase3 завершен за {time.time() - t_ep3:.2f}s", flush=True)
+
+        raw_model.set_diagnostics_capture(False)
+        t_diag = time.time()
+        val_res.update(raw_model.collect_v2_diagnostics())
+        print(f"  [Alt Eval @ {step}] collect_v2_diagnostics завершен за {time.time() - t_diag:.2f}s", flush=True)
+
+        if int(args.cfg_dsim_batches) > 0:
+            t_dsim = time.time()
+            val_res.update(
+                evaluate_cfg_dsim(
+                    model=raw_model,
+                    encoder=encoder,
+                    val_dataloader=val_dataloader,
+                    stopword_mask=sw_dev,
+                    sep_concept=sep_cpu,
+                    device=env.device,
+                    use_amp=env.use_amp,
+                    amp_dtype=env.amp_dtype,
+                    max_batches=int(args.cfg_dsim_batches),
+                )
+            )
+            print(f"  [Alt Eval @ {step}] evaluate_cfg_dsim завершен за {time.time() - t_dsim:.2f}s", flush=True)
+    finally:
+        raw_model.set_diagnostics_capture(False)
+        if ema is not None:
+            ema.restore(raw_model)
+
+    gen_samples = val_res.pop("gen_samples", [])
+    print(
+        f"  [Alt Eval @ {step}] Sim_Gr={val_res['val/sim_gr_denoising']:.4f} (hi={val_res['val/sim_gr_hi']:.4f}) | "
+        f"TokAcc={val_res.get('val/tok_acc_low', 0.0):.3f} (hi={val_res.get('val/tok_acc_hi', 0.0):.3f}, CE_hi={val_res.get('val/ce_loss_hi', 0.0):.2f}) | "
+        f"CFG={val_res['val/cfg_contrast']:.4f} (hi={val_res['val/cfg_contrast_hi']:.4f}) | "
+        f"CFG_dSim(t50/t75/t95)={val_res.get('val/cfg_dsim_t50', 0.0):+.4f}/"
+        f"{val_res.get('val/cfg_dsim_t75', 0.0):+.4f}/{val_res.get('val/cfg_dsim_t95', 0.0):+.4f} | "
+        f"VOID_F1={val_res['val/void_f1']:.4f} (pm1={val_res['val/void_start_pm1']:.3f}) | "
+        f"orth={val_res.get('val/orth_err', 0.0):.3f} spec={val_res.get('val/spec_l1', 0.0):.4f} | "
+        f"blk(s/y/p)={val_res.get('val/err_sem', 0.0):.4f}/{val_res.get('val/err_syn', 0.0):.4f}/{val_res.get('val/err_pos', 0.0):.4f} | "
+        f"radar={val_res['val/radar_sigma_cell']:.3f} | "
+        f"sink_c={val_res['val/sink_attn_content']:.3f} (hi={val_res['val/sink_attn_content_hi']:.3f}) | "
+        f"rk={val_res['val/rk_eff_content']:.2f} | "
+        f"adaln_min={val_res['val/sigma_adaln_min']:.2e}"
+        + (
+            f" (r_eff={val_res['val/adaln_r_eff_mean']:.1f}/k99={val_res['val/adaln_k99_max']:.0f})"
+            if "val/adaln_r_eff_mean" in val_res
+            else ""
+        )
+        + f" | total={time.time() - t_val_start:.2f}s",
+        flush=True,
+    )
+    for idx_g, gs in enumerate(gen_samples):
+        print(
+            f"    [Sample {idx_g} Full] Q: {gs['prompt']!r} -> void_start={gs['void_start']} | A: {gs['generated']!r}",
+            flush=True,
+        )
+        if "generated_crystal" in gs:
+            print(
+                f"    [Sample {idx_g} Cryst] void_start={gs['void_start_crystal']} | A: {gs['generated_crystal']!r}",
+                flush=True,
+            )
+    if use_wandb:
+        import wandb
+        wandb.log(val_res, step=step)
+
+    if save_best and val_res["val/sim_gr_denoising"] > best_sim_gr:
+        best_sim_gr = val_res["val/sim_gr_denoising"]
+        best_path = os.path.join(env.checkpoint_dir, "phase3_alt_best_model.pt")
+        save_checkpoint(
+            model=raw_model,
+            opt_muon=opt_muon,
+            opt_adamw=opt_adamw,
+            scaler=scaler,
+            step=step,
+            metrics=val_res,
+            path=best_path,
+            ema=ema,
+            sync_gcs_flag=sync_gcs_flag,
+            gcs_dir=env.gcs_checkpoints_dir,
+            keep_local=True,
+        )
+    return best_sim_gr
+
+
 def run_alt_training_loop(
     model: nn.Module,
     encoder: nn.Module,
@@ -2387,7 +2517,7 @@ def run_alt_training_loop(
         )
         print(f"    Стек слоев ({len(raw_model.stack_spec)}): {raw_model.stack_spec}", flush=True)
 
-    # Тестовый запрос к val_dataloader на старте, чтобы сразу выявить зависание DataLoader/воркеров
+    # Тестовый запрос к val_dataloader и полная стартовая валидация (сразу после загрузки чекпоинта)
     if is_main_process and val_dataloader is not None:
         _t_val_probe = time.time()
         _val_probe_batch = next(iter(val_dataloader))
@@ -2396,6 +2526,27 @@ def run_alt_training_loop(
         print(
             f"[Val Probe OK] val_dataloader отдал 1 батч (B={_val_probe_bs}) за {time.time() - _t_val_probe:.2f}s",
             flush=True,
+        )
+        _run_alt_validation(
+            raw_model=raw_model,
+            encoder=encoder,
+            decoder=decoder,
+            tokenizer=tokenizer,
+            val_dataloader=val_dataloader,
+            sw_dev=sw_dev,
+            sep_cpu=sep_cpu,
+            void_cpu=void_cpu,
+            env=env,
+            args=args,
+            ema=ema,
+            opt_muon=opt_muon,
+            opt_adamw=opt_adamw,
+            scaler=scaler,
+            step=step,
+            best_sim_gr=best_sim_gr,
+            sync_gcs_flag=sync_gcs_flag,
+            use_wandb=use_wandb,
+            save_best=False,
         )
     if world_size > 1 and dist.is_initialized():
         dist.barrier()
@@ -2673,96 +2824,27 @@ def run_alt_training_loop(
 
         # Валидация на EMA-весах
         if is_main_process and val_dataloader is not None and (step % args.eval_every == 0):
-            if ema is not None:
-                ema.apply_shadow(raw_model)
-            raw_model.set_diagnostics_capture(True)
-            eval_dec = decoder if (not args.no_eval_decoder) else None
-            val_res = evaluate_phase3(
-                model=raw_model,
+            best_sim_gr = _run_alt_validation(
+                raw_model=raw_model,
                 encoder=encoder,
-                decoder=eval_dec,
+                decoder=decoder,
                 tokenizer=tokenizer,
                 val_dataloader=val_dataloader,
-                stopword_mask=sw_dev,
-                sep_concept=sep_cpu,
-                void_concept=void_cpu,
-                device=env.device,
-                use_amp=env.use_amp,
-                amp_dtype=env.amp_dtype,
-                max_batches=args.eval_batches,
-                run_generation_check=(eval_dec is not None and not args.no_gen_check),
-                gen_steps=args.gen_steps,
+                sw_dev=sw_dev,
+                sep_cpu=sep_cpu,
+                void_cpu=void_cpu,
+                env=env,
+                args=args,
+                ema=ema,
+                opt_muon=opt_muon,
+                opt_adamw=opt_adamw,
+                scaler=scaler,
+                step=step,
+                best_sim_gr=best_sim_gr,
+                sync_gcs_flag=sync_gcs_flag,
+                use_wandb=use_wandb,
+                save_best=True,
             )
-            raw_model.set_diagnostics_capture(False)
-            val_res.update(raw_model.collect_v2_diagnostics())
-            if int(args.cfg_dsim_batches) > 0:
-                val_res.update(
-                    evaluate_cfg_dsim(
-                        model=raw_model,
-                        encoder=encoder,
-                        val_dataloader=val_dataloader,
-                        stopword_mask=sw_dev,
-                        sep_concept=sep_cpu,
-                        device=env.device,
-                        use_amp=env.use_amp,
-                        amp_dtype=env.amp_dtype,
-                        max_batches=int(args.cfg_dsim_batches),
-                    )
-                )
-            if ema is not None:
-                ema.restore(raw_model)
-
-            gen_samples = val_res.pop("gen_samples", [])
-            print(
-                f"  [Alt Eval @ {step}] Sim_Gr={val_res['val/sim_gr_denoising']:.4f} (hi={val_res['val/sim_gr_hi']:.4f}) | "
-                f"TokAcc={val_res.get('val/tok_acc_low', 0.0):.3f} (hi={val_res.get('val/tok_acc_hi', 0.0):.3f}, CE_hi={val_res.get('val/ce_loss_hi', 0.0):.2f}) | "
-                f"CFG={val_res['val/cfg_contrast']:.4f} (hi={val_res['val/cfg_contrast_hi']:.4f}) | "
-                f"CFG_dSim(t50/t75/t95)={val_res.get('val/cfg_dsim_t50', 0.0):+.4f}/"
-                f"{val_res.get('val/cfg_dsim_t75', 0.0):+.4f}/{val_res.get('val/cfg_dsim_t95', 0.0):+.4f} | "
-                f"VOID_F1={val_res['val/void_f1']:.4f} (pm1={val_res['val/void_start_pm1']:.3f}) | "
-                f"orth={val_res.get('val/orth_err', 0.0):.3f} spec={val_res.get('val/spec_l1', 0.0):.4f} | "
-                f"blk(s/y/p)={val_res.get('val/err_sem', 0.0):.4f}/{val_res.get('val/err_syn', 0.0):.4f}/{val_res.get('val/err_pos', 0.0):.4f} | "
-                f"radar={val_res['val/radar_sigma_cell']:.3f} | "
-                f"sink_c={val_res['val/sink_attn_content']:.3f} (hi={val_res['val/sink_attn_content_hi']:.3f}) | "
-                f"rk={val_res['val/rk_eff_content']:.2f} | "
-                f"adaln_min={val_res['val/sigma_adaln_min']:.2e}"
-                + (
-                    f" (r_eff={val_res['val/adaln_r_eff_mean']:.1f}/k99={val_res['val/adaln_k99_max']:.0f})"
-                    if "val/adaln_r_eff_mean" in val_res
-                    else ""
-                ),
-                flush=True,
-            )
-            for idx_g, gs in enumerate(gen_samples):
-                print(
-                    f"    [Sample {idx_g} Full] Q: {gs['prompt']!r} -> void_start={gs['void_start']} | A: {gs['generated']!r}",
-                    flush=True,
-                )
-                if "generated_crystal" in gs:
-                    print(
-                        f"    [Sample {idx_g} Cryst] void_start={gs['void_start_crystal']} | A: {gs['generated_crystal']!r}",
-                        flush=True,
-                    )
-            if use_wandb:
-                import wandb
-                wandb.log(val_res, step=step)
-
-            if val_res["val/sim_gr_denoising"] > best_sim_gr:
-                best_sim_gr = val_res["val/sim_gr_denoising"]
-                best_path = os.path.join(env.checkpoint_dir, "phase3_alt_best_model.pt")
-                save_checkpoint(
-                    model=raw_model,
-                    opt_muon=opt_muon,
-                    opt_adamw=opt_adamw,
-                    scaler=scaler,
-                    step=step,
-                    metrics=val_res,
-                    path=best_path,
-                    ema=ema,
-                    sync_gcs_flag=sync_gcs_flag,
-                    gcs_dir=env.gcs_checkpoints_dir,
-                    keep_local=True,
-                )
 
         if world_size > 1 and dist.is_initialized() and ((step % args.eval_every == 0) or (step % args.save_every == 0)):
             dist.barrier()
