@@ -2387,6 +2387,19 @@ def run_alt_training_loop(
         )
         print(f"    Стек слоев ({len(raw_model.stack_spec)}): {raw_model.stack_spec}", flush=True)
 
+    # Тестовый запрос к val_dataloader на старте, чтобы сразу выявить зависание DataLoader/воркеров
+    if is_main_process and val_dataloader is not None:
+        _t_val_probe = time.time()
+        _val_probe_batch = next(iter(val_dataloader))
+        _val_probe_bs = int(_val_probe_batch["prompt_ids"].shape[0])
+        del _val_probe_batch
+        print(
+            f"[Val Probe OK] val_dataloader отдал 1 батч (B={_val_probe_bs}) за {time.time() - _t_val_probe:.2f}s",
+            flush=True,
+        )
+    if world_size > 1 and dist.is_initialized():
+        dist.barrier()
+
     while step < args.max_steps:
         step += 1
         t0 = time.time()
@@ -2641,6 +2654,23 @@ def run_alt_training_loop(
                 import wandb
                 wandb.log({**accum_metrics, **dca_stat, "lr/mult": lr_mult, "time/step_sec": dt}, step=step)
 
+        # Регулярный чекпоинт (до валидации, чтобы прогресс не терялся при таймауте/сбое eval)
+        if is_main_process and (step % args.save_every == 0):
+            ckpt_path = os.path.join(env.checkpoint_dir, f"phase3_alt_step_{step}.pt")
+            save_checkpoint(
+                model=raw_model,
+                opt_muon=opt_muon,
+                opt_adamw=opt_adamw,
+                scaler=scaler,
+                step=step,
+                metrics=accum_metrics,
+                path=ckpt_path,
+                ema=ema,
+                sync_gcs_flag=sync_gcs_flag,
+                gcs_dir=env.gcs_checkpoints_dir,
+                keep_local=not env.is_kaggle,
+            )
+
         # Валидация на EMA-весах
         if is_main_process and val_dataloader is not None and (step % args.eval_every == 0):
             if ema is not None:
@@ -2733,23 +2763,6 @@ def run_alt_training_loop(
                     gcs_dir=env.gcs_checkpoints_dir,
                     keep_local=True,
                 )
-
-        # Регулярный чекпоинт
-        if is_main_process and (step % args.save_every == 0):
-            ckpt_path = os.path.join(env.checkpoint_dir, f"phase3_alt_step_{step}.pt")
-            save_checkpoint(
-                model=raw_model,
-                opt_muon=opt_muon,
-                opt_adamw=opt_adamw,
-                scaler=scaler,
-                step=step,
-                metrics=accum_metrics,
-                path=ckpt_path,
-                ema=ema,
-                sync_gcs_flag=sync_gcs_flag,
-                gcs_dir=env.gcs_checkpoints_dir,
-                keep_local=not env.is_kaggle,
-            )
 
         if world_size > 1 and dist.is_initialized() and ((step % args.eval_every == 0) or (step % args.save_every == 0)):
             dist.barrier()
@@ -2957,7 +2970,7 @@ def parse_args() -> argparse.Namespace:
     # Логирование, чекпоинты, multi-GPU
     parser.add_argument("--log-every", "--log_every", dest="log_every", type=int, default=20)
     parser.add_argument("--eval-every", "--eval_every", dest="eval_every", type=int, default=500)
-    parser.add_argument("--eval-batches", "--eval_batches", dest="eval_batches", type=int, default=16)
+    parser.add_argument("--eval-batches", "--eval_batches", dest="eval_batches", type=int, default=4)
     parser.add_argument("--gen-steps", "--gen_steps", dest="gen_steps", type=int, default=20)
     parser.add_argument("--save-every", "--save_every", dest="save_every", type=int, default=500)
     parser.add_argument("--resume-ckpt", "--resume_ckpt", dest="resume_ckpt", type=str, default="auto")
@@ -3015,7 +3028,7 @@ def main(args: Optional[argparse.Namespace] = None) -> None:
             args.log_every = 5
         if args.eval_every == 500:
             args.eval_every = 50
-        if args.eval_batches == 16:
+        if args.eval_batches == 4:
             args.eval_batches = 2
         if args.gen_steps == 20:
             args.gen_steps = 8
@@ -3436,8 +3449,8 @@ TRAINING_CONFIG: Dict[str, Any] = {
     "lr_warmup_steps": 500,
     "ema_decay": 0.999,
     "log_every": 20,
-    "eval_every": 500,
-    "eval_batches": 16,
+    "eval_every": 200,
+    "eval_batches": 4,
     "cfg_dsim_batches": 4,
     "gen_steps": 20,
     "save_every": 500,
